@@ -111,6 +111,9 @@ def fetch_image(
         image = ele["image"]
     else:
         image = ele["image_url"]
+        if isinstance(image, dict) and "url" in image:
+            image = image.get('url', "")
+    
     image_obj = None
     if isinstance(image, Image.Image):
         image_obj = image
