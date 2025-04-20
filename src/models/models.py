@@ -229,6 +229,121 @@ class BaseVLM:
         return image_obj
 
 
+class BaseAPIModel:
+    """
+    Base class for interacting with LLMs via external APIs (OpenAI, OpenRouter, Gemini compatible).
+    """
+
+    def __init__(
+        self,
+        model_name: str,
+        api_key: Optional[str] = None,
+        base_url: Optional[str] = None,
+        max_tokens: int = 1024,
+    ) -> None:
+        """
+        Initializes the API client.
+
+        Args:
+            model_name: The name of the model to use (e.g., "openai/gpt-4o").
+            api_key: The API key for authentication. Reads from OPENROUTER_API_KEY, OPENAI_API_KEY, or GEMINI_API_KEY env vars if not provided.
+            base_url: The base URL of the API endpoint. Defaults to OpenRouter if not provided.
+            max_tokens: The default maximum number of tokens to generate.
+        """
+        self.model_name = model_name
+        self.api_key = (
+            api_key
+            or os.getenv("OPENROUTER_API_KEY")
+            or os.getenv("OPENAI_API_KEY")
+            or os.getenv("GEMINI_API_KEY")
+        )
+        if not self.api_key:
+            raise ValueError(
+                "API key must be provided either as an argument or set in environment variables (OPENROUTER_API_KEY, OPENAI_API_KEY, GEMINI_API_KEY)."
+            )
+
+        # Default to OpenRouter URL if not specified
+        self.base_url = base_url or "https://openrouter.ai/api/v1"
+        # Ensure the base URL ends with /chat/completions
+        if not self.base_url.endswith("/chat/completions"):
+            self.base_url = self.base_url.rstrip("/") + "/chat/completions"
+
+        self._max_tokens = max_tokens
+        self._headers = {
+            "Authorization": f"Bearer {self.api_key}",
+            "Content-Type": "application/json",
+        }
+
+    def run(
+        self,
+        messages: List[Dict[str, str]],
+        json_mode: bool = False,
+        max_tokens: Optional[int] = None,
+        **kwargs,  # Allow passing additional API parameters
+    ) -> str:
+        """
+        Sends messages to the specified API endpoint and returns the model's response.
+
+        Args:
+            messages: A list of message dictionaries, following the OpenAI format.
+            json_mode: If True, requests JSON output from the model.
+            max_tokens: Overrides the default max_tokens for this specific call.
+            **kwargs: Additional parameters to pass to the API (e.g., temperature, top_p).
+
+        Returns:
+            The generated text content from the model.
+        """
+        payload = {
+            "model": self.model_name,
+            "messages": messages,
+            "max_tokens": max_tokens if max_tokens is not None else self._max_tokens,
+            **kwargs,  # Add any extra parameters
+        }
+
+        if json_mode:
+            # Add response_format for OpenAI/OpenRouter compatible APIs
+            payload["response_format"] = {"type": "json_object"}
+            # Note: Gemini API might use a different mechanism for JSON mode.
+            # This implementation primarily targets OpenAI/OpenRouter compatibility.
+
+        try:
+            response = requests.post(
+                self.base_url,
+                headers=self._headers,
+                json=payload,
+                timeout=180,  # Added timeout
+            )
+            response.raise_for_status()  # Raise an exception for bad status codes (4xx or 5xx)
+            result = response.json()
+
+            # Extract content based on typical API response structure
+            content = (
+                result.get("choices", [{}])[0].get("message", {}).get("content", "")
+            )
+
+            if not content:
+                # Handle potential variations in response structure or errors
+                print(
+                    f"Warning: Received empty content or unexpected response format: {result}"
+                )
+                return ""  # Or raise an error
+
+            # If json_mode was requested, the content should already be a JSON string.
+            # No need for manual stripping of ```json like in local models.
+            # If the API doesn't strictly adhere and adds backticks, add parsing here.
+            # For now, assume the API returns a valid JSON string in the content field when json_mode is enabled.
+
+            return content
+
+        except requests.exceptions.RequestException as e:
+            print(f"API request failed: {e}")
+            # Consider more specific error handling or re-raising
+            raise  # Re-raise the exception after logging
+        except (KeyError, IndexError, json.JSONDecodeError) as e:
+            print(f"Failed to parse API response: {e}. Response: {response.text}")
+            raise ValueError(f"Failed to parse API response: {response.text}") from e
+
+
 class PeftHead:
     def __init__(self, model: BaseModel):
         self.model = model
