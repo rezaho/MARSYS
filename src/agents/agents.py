@@ -60,16 +60,375 @@ import json
 import os
 import random
 import re
+import threading
+import uuid
+import weakref
 from datetime import datetime
 from queue import Queue
-from typing import Dict, List, Optional
+from typing import Any, Dict, List, Optional
+from weakref import WeakValueDictionary
 
 from src.agents.memory import MessageMemory
 from src.environment.web_browser import BrowserTool
-from src.models.models import BaseLLM, BaseVLM, PeftHead
+from src.models.models import BaseAPIModel, BaseLLM, BaseVLM, PeftHead
+
+
+class AgentRegistry:
+    _agents = weakref.WeakValueDictionary()
+    _lock = threading.Lock()
+    _counter = 0
+
+    @classmethod
+    def register(cls, agent, name=None, prefix="BaseAgent"):
+        with cls._lock:
+            if name is None:
+                cls._counter += 1
+                name = f"{prefix}-{cls._counter}"
+            else:
+                if name in cls._agents:
+                    raise ValueError(f"Agent name '{name}' already exists.")
+            cls._agents[name] = agent
+            return name
+
+    @classmethod
+    def unregister(cls, name):
+        with cls._lock:
+            cls._agents.pop(name, None)
+
+    @classmethod
+    def get(cls, name):
+        return cls._agents.get(name)
+
+    @classmethod
+    def all(cls):
+        return dict(cls._agents)
 
 
 class BaseAgent:
+    """
+    Minimal base class for all agents.
+    Handles agent registration, task queue, and basic properties.
+    """
+
+    def __init__(
+        self,
+        model: BaseVLM | BaseLLM,
+        system_prompt: str,
+        tools: Optional[Dict] = None,
+        tools_schema: Optional[Dict] = None,
+        max_tokens: Optional[int] = 512,
+        agent_name: Optional[str] = None,
+    ):
+        # Check tools/tools_schema consistency
+        if tools and not tools_schema:
+            raise ValueError("The tools schema is required if the tools are provided.")
+        if tools_schema and not tools:
+            raise ValueError("The tools are required if the tools schema is provided.")
+        self.tools = tools
+        self.tools_schema = tools_schema
+        self.system_prompt = system_prompt
+        self.model = model
+        self.max_tokens = max_tokens
+        self.tasks = Queue()
+        self.name = AgentRegistry.register(
+            self, agent_name, prefix=self.__class__.__name__
+        )
+
+    def __del__(self):
+        AgentRegistry.unregister(self.name)
+
+
+class BaseLearnableAgent(BaseAgent):
+    """
+    Base class for learnable agents (handles learning head logic).
+    """
+
+    def __init__(
+        self,
+        model: BaseVLM | BaseLLM,
+        system_prompt: str,
+        learning_head: str = None,
+        learning_head_config: Optional[Dict] = None,
+        max_tokens: Optional[int] = 512,
+        agent_name: Optional[str] = None,
+        **kwargs,
+    ):
+        super().__init__(
+            model=model,
+            system_prompt=system_prompt,
+            tools=kwargs.get("tools"),
+            tools_schema=kwargs.get("tools_schema"),
+            max_tokens=max_tokens,
+            agent_name=agent_name,
+        )
+        self._learning_head_name = learning_head
+        self._learning_config = learning_head_config
+        if learning_head == "peft":
+            self.model = PeftHead(model=self.model)
+            self.model.prepare_peft_model(**learning_head_config)
+
+
+import time
+from abc import ABC, abstractmethod
+
+
+class BaseMemory(ABC):
+    """
+    Abstract base class for memory modules.
+    Defines the interface for memory operations.
+    """
+
+    def __init__(self, memory_type: str):
+        self.memory_type = memory_type
+
+    @abstractmethod
+    def update_memory(self, *args, **kwargs):
+        raise NotImplementedError("update_memory must be implemented in subclasses.")
+
+    @abstractmethod
+    def replace_memory(self, *args, **kwargs):
+        raise NotImplementedError("replace_memory must be implemented in subclasses.")
+
+    @abstractmethod
+    def delete_memory(self, *args, **kwargs):
+        raise NotImplementedError("delete_memory must be implemented in subclasses.")
+
+    @abstractmethod
+    def retrieve_recent(self, n=1):
+        raise NotImplementedError("retrieve_recent must be implemented in subclasses.")
+
+    @abstractmethod
+    def retrieve_all(self):
+        raise NotImplementedError("retrieve_all must be implemented in subclasses.")
+
+    @abstractmethod
+    def reset_memory(self):
+        raise NotImplementedError("reset_memory must be implemented in subclasses.")
+
+    @abstractmethod
+    def to_llm_format(self, *args, **kwargs):
+        raise NotImplementedError("to_llm_format must be implemented in subclasses.")
+
+
+class ConversationMemory(BaseMemory):
+    """
+    Memory module that stores conversation history.
+    """
+
+    def __init__(self, system_prompt: Optional[str] = None):
+        super().__init__(memory_type="conversation_history")
+        self.memory = []
+        if system_prompt:
+            self.memory.append({"role": "system", "content": system_prompt})
+
+    def update_memory(self, role: str, content: str):
+        self.memory.append({"role": role, "content": content})
+
+    def replace_memory(self, idx: int, role: str, content: str):
+        if 0 <= idx < len(self.memory):
+            self.memory[idx] = {"role": role, "content": content}
+        else:
+            raise IndexError("Memory index out of range.")
+
+    def delete_memory(self, idx: int):
+        if 0 <= idx < len(self.memory):
+            del self.memory[idx]
+        else:
+            raise IndexError("Memory index out of range.")
+
+    def retrieve_recent(self, n=1):
+        return self.memory[-n:] if n > 0 else []
+
+    def retrieve_all(self):
+        return list(self.memory)
+
+    def retrieve_by_role(self, role: str, n=None):
+        filtered = [m for m in self.memory if m["role"] == role]
+        return filtered[-n:] if n else filtered
+
+    def reset_memory(self):
+        self.memory.clear()
+
+    def to_llm_format(self):
+        return list(self.memory)
+
+
+class KGMemory(BaseMemory):
+    """
+    Memory module that stores knowledge as triplets in a knowledge graph.
+    Requires an LLM for fact extraction from text.
+    """
+
+    def __init__(
+        self,
+        model: BaseVLM | BaseLLM | BaseAPIModel,
+        system_prompt: Optional[str] = None,
+    ):
+        super().__init__(memory_type="kg")
+        self.model = model
+        self.kg = []
+        if system_prompt:
+            self.kg.append(
+                {
+                    "role": "system",
+                    "subject": "system",
+                    "predicate": "init",
+                    "object": system_prompt,
+                    "timestamp": time.time(),
+                }
+            )
+
+    def update_memory(self, role: str, subject: str, predicate: str, obj: str):
+        timestamp = time.time()
+        self.kg.append(
+            {
+                "role": role,
+                "subject": subject,
+                "predicate": predicate,
+                "object": obj,
+                "timestamp": timestamp,
+            }
+        )
+
+    def replace_memory(
+        self, idx: int, role: str, subject: str, predicate: str, obj: str
+    ):
+        if 0 <= idx < len(self.kg):
+            self.kg[idx] = {
+                "role": role,
+                "subject": subject,
+                "predicate": predicate,
+                "object": obj,
+                "timestamp": time.time(),
+            }
+        else:
+            raise IndexError("KG index out of range.")
+
+    def delete_memory(self, idx: int):
+        if 0 <= idx < len(self.kg):
+            del self.kg[idx]
+        else:
+            raise IndexError("KG index out of range.")
+
+    def retrieve_recent(self, n=1):
+        sorted_kg = sorted(self.kg, key=lambda x: x["timestamp"], reverse=True)
+        return [self._kg_to_llm_format(fact) for fact in sorted_kg[:n]] if n > 0 else []
+
+    def retrieve_all(self):
+        return [self._kg_to_llm_format(fact) for fact in self.kg]
+
+    def retrieve_by_role(self, role: str, n=None):
+        filtered = [fact for fact in self.kg if fact["role"] == role]
+        filtered = sorted(filtered, key=lambda x: x["timestamp"], reverse=True)
+        if n:
+            filtered = filtered[:n]
+        return [self._kg_to_llm_format(fact) for fact in filtered]
+
+    def reset_memory(self):
+        self.kg.clear()
+
+    def to_llm_format(self):
+        return [self._kg_to_llm_format(fact) for fact in self.kg]
+
+    def _kg_to_llm_format(self, fact):
+        content = f"{fact['subject']} {fact['predicate']} {fact['object']} (added at {time.strftime('%Y-%m-%d %H:%M:%S', time.localtime(fact['timestamp']))})"
+        return {"role": fact["role"], "content": content}
+
+    def extract_and_update_from_text(self, input_text: str, role: str = "user"):
+        extraction_prompt = (
+            "Extract all knowledge graph facts from the following text. "
+            "Return a JSON list of triplets, where each triplet is a dict with keys: subject, predicate, object. "
+            'Example: [{"subject": "Paris", "predicate": "is the capital of", "object": "France"}, ...]'
+        )
+        messages = [
+            {"role": "system", "content": extraction_prompt},
+            {"role": role, "content": input_text},
+        ]
+        try:
+            result = self.model.run(messages=messages, json_mode=True)
+        except Exception:
+            result = self.model.run(messages=messages)
+        if isinstance(result, str):
+            try:
+                facts = json.loads(result)
+            except Exception:
+                facts = []
+        else:
+            facts = result if isinstance(result, list) else []
+        for fact in facts:
+            if (
+                isinstance(fact, dict)
+                and "subject" in fact
+                and "predicate" in fact
+                and "object" in fact
+            ):
+                self.update_memory(
+                    role, fact["subject"], fact["predicate"], fact["object"]
+                )
+        return facts
+
+
+class MemoryManager:
+    """
+    Factory/manager for memory modules. Instantiates and delegates to the correct memory type.
+    """
+
+    def __init__(
+        self,
+        memory_type: str,
+        system_prompt: Optional[str] = None,
+        model: Optional[BaseVLM | BaseLLM | BaseAPIModel] = None,
+    ):
+        self.memory_type = memory_type
+        if memory_type == "conversation_history":
+            self.memory_module = ConversationMemory(system_prompt=system_prompt)
+        elif memory_type == "kg":
+            if model is None:
+                raise ValueError(
+                    "KGMemory requires a 'model' instance for fact extraction."
+                )
+            self.memory_module = KGMemory(model=model, system_prompt=system_prompt)
+        else:
+            raise ValueError(f"Unknown memory_type: {memory_type}")
+
+    def update_memory(self, *args, **kwargs):
+        return self.memory_module.update_memory(*args, **kwargs)
+
+    def replace_memory(self, *args, **kwargs):
+        return self.memory_module.replace_memory(*args, **kwargs)
+
+    def delete_memory(self, *args, **kwargs):
+        return self.memory_module.delete_memory(*args, **kwargs)
+
+    def retrieve_recent(self, *args, **kwargs):
+        return self.memory_module.retrieve_recent(*args, **kwargs)
+
+    def retrieve_all(self):
+        return self.memory_module.retrieve_all()
+
+    def retrieve_by_role(self, *args, **kwargs):
+        return self.memory_module.retrieve_by_role(*args, **kwargs)
+
+    def reset_memory(self):
+        return self.memory_module.reset_memory()
+
+    def to_llm_format(self):
+        return self.memory_module.to_llm_format()
+
+    def extract_and_update_from_text(self, *args, **kwargs):
+        if self.memory_type == "kg":
+            return self.memory_module.extract_and_update_from_text(*args, **kwargs)
+        else:
+            raise NotImplementedError(
+                "extract_and_update_from_text is only available for KGMemory."
+            )
+
+
+class LearnableAgent(BaseLearnableAgent):
+    """
+    A full-featured agent capable of learning (e.g., via PEFT) and utilizing memory.
+    """
+
     def __init__(
         self,
         model: BaseVLM | BaseLLM,
@@ -80,258 +439,270 @@ class BaseAgent:
         learning_head_config: Optional[Dict] = None,
         memory_type: Optional[str] = "conversation_history",
         max_tokens: Optional[int] = 512,
+        agent_name: Optional[str] = None,
     ):
-        """Initialize the BaseAgent with the specified parameters."""
-        # check if the tools provided the tools schema is also provided
-        if tools and not tools_schema:
-            raise ValueError("The tools schema is required if the tools are provided.")
-        if tools_schema and not tools:
-            raise ValueError("The tools are required if the tools schema is provided.")
-        self.tools = tools
-        self.tools_schema = tools_schema
+        super().__init__(
+            model=model,
+            system_prompt=system_prompt,
+            learning_head=learning_head,
+            learning_head_config=learning_head_config,
+            max_tokens=max_tokens,
+            agent_name=agent_name,
+            tools=tools,
+            tools_schema=tools_schema,
+        )
+        kg_model = self.model.model if hasattr(self.model, "peft_head") else self.model
+        self.memory = MemoryManager(
+            memory_type=memory_type,
+            system_prompt=system_prompt,
+            model=kg_model if memory_type == "kg" else None,
+        )
 
-        self.system_prompt = system_prompt
-
-        self.model = model
-        self._learning_config = learning_head_config
-        self._learning_head_name = learning_head
-        self.memory_type = memory_type
-        self.max_tokens = max_tokens
-        # Initialize the learning head if specified
-        if learning_head == "peft":
-            self.model = PeftHead(model=self.model)
-            self.model.prepare_peft_model(**learning_head_config)
-
-        # Initialize memory if specified
-
-        self.memory = None
-        if memory_type == "conversation_history":
-            self.memory = MessageMemory()
-            self.memory.append("system", system_prompt)
-
-        # Initialize the list of tasks in the queue
-        self.tasks = Queue()  # Initialize as a Queue for FIFO task management
-
-    # def predict(
-    #     self,
-    #     messages: List[Dict[str, str|Dict]],
-    #     max_tokens: int = None,
-    #     json_mode: bool = False,
-    #     append_output: bool = True,
-    # ) -> str:
-    #     # Managing the memory
-    #     if isinstance(self.memory, MessageMemory):
-    #         self.memory.reset()
-    #         if "system" not in set([messages.get("role")]):
-    #             raise ValueError(
-    #                 "The messages dictionary should contain a system message."
-    #             )
-    #         for msg in messages:
-    #             self.memory.append(msg["role"], msg["message"])
-    #     # Run the model
-    #     output = self.model.run(
-    #         messages=self.memory.get_all(),
-    #         max_tokens=max_tokens if max_tokens else self.max_tokens,
-    #         json_mode=json_mode,
-    #     )
-    #     # Add the output to the memory
-    #     if isinstance(self.memory, MessageMemory) and append_output:
-    #         self.memory.append("assistant", output)
-    #     return output
-
-    def plan(
-        self,
-        context: Optional[List[Dict[str, str | Dict]]] = None,
-        max_tokens: int = None,
-    ) -> str:
-        # replace the system prompt with the planning prompt if it exists in the context otherwise use the default system prompt
-        # first find the index of the system prompt by checking the role in the cntext
-        if context:
-            system_prompt_idx = next(
-                (i for i, item in enumerate(context) if item.get("role") == "system"),
-                None,
-            )
-            if system_prompt_idx is not None:
-                context[system_prompt_idx]["message"] = self.system_prompt_planning
-            else:
-                # otherwise append the system prompt to the beginning of the context
-                context.insert(
-                    0, {"role": "system", "message": self.system_prompt_planning}
-                )
-        else:
-            context = self.memory.get_all()
-
-        output = self.model.run(messages=context, max_tokens=max_tokens, json_mode=True)
-        # tasks = output.get("tasks")
-        # if tasks:
-        #     for task in tasks:
-        #         self.tasks.put(task)
-        # Append the output to the memory
-        self.memory.append("assistant", output)
+    def plan(self, user_prompt: str, max_tokens: int = None, role: str = "user") -> str:
+        self.memory.update_memory(role, user_prompt)
+        context = self.memory.to_llm_format()
+        system_prompt_planning = getattr(self, "system_prompt_planning", None)
+        if system_prompt_planning:
+            system_updated = False
+            for msg in context:
+                if msg["role"] == "system":
+                    msg["content"] = system_prompt_planning
+                    system_updated = True
+                    break
+            if not system_updated:
+                context.insert(0, {"role": "system", "content": system_prompt_planning})
+        output = self.model.run(
+            messages=context,
+            max_tokens=max_tokens or self.max_tokens,
+            json_mode=True,
+            tools=self.tools_schema,
+        )
+        output_str = json.dumps(output) if isinstance(output, dict) else str(output)
+        self.memory.update_memory("assistant", output_str)
+        return output
 
     def execute(
-        self, context: List[Dict[str, str | Dict]], max_tokens: int = None
+        self, user_prompt: str, max_tokens: int = None, role: str = "user"
     ) -> str:
-        _ = self.model.run(messages=context, max_tokens=max_tokens, json_mode=True)
+        self.memory.update_memory(role, user_prompt)
+        context = self.memory.to_llm_format()
+        output = self.model.run(
+            messages=context,
+            max_tokens=max_tokens or self.max_tokens,
+            json_mode=False,
+            tools=self.tools_schema,
+        )
+        output_str = json.dumps(output) if isinstance(output, dict) else str(output)
+        self.memory.update_memory("assistant", output_str)
+        return output
 
 
-class BrowserAgent(BaseAgent):
-    """BrowserAgent is an agent that leverages the Playwright library to automate browser interactions with the web.
-
-    This agent extends the BaseAgent and is designed to facilitate tasks that involve navigating websites,
-    simulating user interactions, and extracting web content through browser automation.
-
-        model (BaseVLM): The underlying model used to generate and process actions.
-        generation_system_prompt (str): The prompt provided to initiate the agent's behavior for normal steps.
-        critic_system_prompt (str): The prompt provided to guide the agent when evaluating its current step.
-        learning_head (str, optional): Identifier for a specific learning module, if applicable.
-        learning_head_config (dict, optional): Configuration parameters for the learning head module.
-        memory_type (str, optional): Type of memory used to maintain conversation context (default is "conversation_history").
-        max_tokens (int, optional): Maximum number of tokens allowed in responses (default is 512).
-
-    Methods:
-        think(prompt: str | List[Dict[str, str]], max_tokens: int = None) -> str:
-            Executes the agent's normal step after dynamically ensuring that the generation system prompt
-            has been included in the conversation context.
-        critic() -> str:
-            Executes the agent's critic step after dynamically ensuring that the critic system prompt
-            has been included in the conversation context.
-        run(prompt: str | List[Dict[str, str]], max_steps: int = 15) -> str:
-            Runs the agent loop.
+class Agent(BaseAgent):
+    """
+    A non-learnable agent that utilizes memory and can interact with local models or external APIs.
     """
 
     def __init__(
         self,
-        model: BaseVLM,
-        generation_system_prompt: str = None,
-        critic_system_prompt: str = None,
-        learning_head: str = None,
-        learning_head_config: Optional[Dict] = None,
+        model_config: Dict[str, Any],
+        system_prompt: str,
+        tools: Optional[Dict] = None,
+        tools_schema: Optional[Dict] = None,
         memory_type: Optional[str] = "conversation_history",
         max_tokens: Optional[int] = 512,
+        agent_name: Optional[str] = None,
     ):
-        """Initialize the BrowserAgent with generation and critic system prompts."""
-        if not generation_system_prompt:
-            generation_system_prompt = """You are a Browser Agent that automates web interactions. You follow clear guidelines to navigate websites, gather information, and perform actions on behalf of users.
+        model_max_tokens = model_config.get("max_tokens", max_tokens)
+        self.model_instance = self._create_model_from_config(
+            model_config, default_max_tokens=model_max_tokens
+        )
+        super().__init__(
+            model=self.model_instance,
+            system_prompt=system_prompt,
+            tools=tools,
+            tools_schema=tools_schema,
+            max_tokens=max_tokens,
+            agent_name=agent_name,
+        )
+        self.memory = MemoryManager(
+            memory_type=memory_type,
+            system_prompt=system_prompt,
+            model=self.model_instance if memory_type == "kg" else None,
+        )
+        self._model_config = model_config
 
-# KEY PRINCIPLES:
+    def _create_model_from_config(
+        self, config: Dict[str, Any], default_max_tokens: int
+    ) -> BaseLLM | BaseVLM | BaseAPIModel:
+        model_type = config.get("type")
+        model_name = config.get("name")
+        max_tokens = config.get("max_tokens", default_max_tokens)
+        if not model_name:
+            raise ValueError("Model configuration must include a 'name'.")
+        if model_type == "local":
+            model_class_type = config.get("class", "llm")
+            torch_dtype = config.get("torch_dtype", "auto")
+            device_map = config.get("device_map", "auto")
+            extra_kwargs = {
+                k: v
+                for k, v in config.items()
+                if k
+                not in [
+                    "type",
+                    "name",
+                    "class",
+                    "max_tokens",
+                    "torch_dtype",
+                    "device_map",
+                ]
+            }
+            if model_class_type == "llm":
+                return BaseLLM(
+                    model_name=model_name,
+                    max_tokens=max_tokens,
+                    torch_dtype=torch_dtype,
+                    device_map=device_map,
+                    **extra_kwargs,
+                )
+            elif model_class_type == "vlm":
+                return BaseVLM(
+                    model_name=model_name,
+                    max_tokens=max_tokens,
+                    torch_dtype=torch_dtype,
+                    device_map=device_map,
+                    **extra_kwargs,
+                )
+            else:
+                raise ValueError(f"Unsupported local model class: {model_class_type}")
+        elif model_type == "api":
+            api_key = config.get("api_key")
+            base_url = config.get("base_url")
+            extra_kwargs = {
+                k: v
+                for k, v in config.items()
+                if k not in ["type", "name", "api_key", "base_url", "max_tokens"]
+            }
+            return BaseAPIModel(
+                model_name=model_name,
+                api_key=api_key,
+                base_url=base_url,
+                max_tokens=max_tokens,
+            )
+        else:
+            raise ValueError(
+                f"Unsupported model type in config: {model_type}. Must be 'local' or 'api'."
+            )
 
-1. ANALYZE BEFORE PLANNING:
-   - Begin by analyzing the user's query to identify key components, constraints, and implied intentions
-   - Break down vague terms into specific, actionable concepts
-   - Identify missing information that may need to be researched first
-   - Structure the analysis clearly to guide your planning
+    def _get_api_kwargs(self) -> Dict[str, Any]:
+        if isinstance(self.model_instance, BaseAPIModel):
+            kwargs = {
+                k: v
+                for k, v in self._model_config.items()
+                if k
+                not in [
+                    "type",
+                    "name",
+                    "class",
+                    "api_key",
+                    "base_url",
+                    "max_tokens",
+                    "torch_dtype",
+                    "device_map",
+                ]
+            }
+            return kwargs
+        return {}
 
-2. PROGRESSIVE RESEARCH STRATEGY:
-   - Always start with broad searches to identify the best resources first, then narrow down
-   - For general concepts (e.g., "sunny islands"), first research what specific options exist
-   - For products/services, first identify reputable websites that offer them, then navigate directly
-   - Never assume you know specific websites - discover them through search first
+    def chat(
+        self,
+        user_prompt: str,
+        max_tokens: Optional[int] = None,
+        role: str = "user",
+        json_mode: bool = False,
+        **kwargs,
+    ) -> str:
+        self.memory.update_memory(role, user_prompt)
+        context = self.memory.to_llm_format()
+        api_kwargs = self._get_api_kwargs()
+        api_kwargs.update(kwargs)
+        output = self.model_instance.run(
+            messages=context,
+            max_tokens=max_tokens or self.max_tokens,
+            json_mode=json_mode,
+            tools=self.tools_schema,
+            **api_kwargs,
+        )
+        output_str = (
+            json.dumps(output)
+            if isinstance(output, dict) and json_mode
+            else str(output)
+        )
+        self.memory.update_memory("assistant", output_str)
+        return output
 
-3. COMPREHENSIVE PLANNING:
-   - Create a step-by-step plan with branching options for different scenarios
-   - Include explicit fail recovery steps in your plan (e.g., "If X fails, return to homepage and...")
-   - Break down complex tasks into logical sequential steps
-   - Your plan should identify information to gather before making decisions
+    def plan(
+        self,
+        user_prompt: str,
+        max_tokens: int = None,
+        role: str = "user",
+        **kwargs,
+    ) -> str:
+        self.memory.update_memory(role, user_prompt)
+        context = self.memory.to_llm_format()
+        system_prompt_planning = getattr(self, "system_prompt_planning", None)
+        if system_prompt_planning:
+            system_updated = False
+            for msg in context:
+                if msg["role"] == "system":
+                    msg["content"] = system_prompt_planning
+                    system_updated = True
+                    break
+            if not system_updated:
+                context.insert(0, {"role": "system", "content": system_prompt_planning})
+        api_kwargs = self._get_api_kwargs()
+        api_kwargs.update(kwargs)
+        output = self.model_instance.run(
+            messages=context,
+            max_tokens=max_tokens or self.max_tokens,
+            json_mode=True,
+            tools=self.tools_schema,
+            **api_kwargs,
+        )
+        output_str = json.dumps(output) if isinstance(output, dict) else str(output)
+        self.memory.update_memory("assistant", output_str)
+        return output
 
-4. URL NAVIGATION:
-   - CRITICAL: NEVER use example.com or fabricated URLs
-   - Always use Google Search to discover legitimate websites
-   - After identifying valid website URLs through search, navigate to them directly
-   - Example: Search for "nike running shoes", then navigate directly to nike.com once identified
 
-5. STEP-BY-STEP EXECUTION:
-   - After planning, execute ONE step at a time
-   - Validate results after each step before proceeding
-   - Explain your actions and observations at each stage
-   - Revise your plan if a step reveals new information
+class BrowserAgent(Agent):
+    """BrowserAgent is an agent that leverages the Playwright library to automate browser interactions with the web."""
 
-6. TOOL USAGE:
-   - All tool requests MUST be wrapped in <tool_call>{...}</tool_call> XML tag which contains a valid JSON object
-   - Remember that inside the <tool_call> tags, the JSON object should be a single line without any newlines
-   - Include all required parameters in the correct format
-   - Tool calling should be properly structured with action type and parameters
-
-7. TASK COMPLETION:
-   - Only use <data>{<Valid-JSON-object>}</data> tags when the task is FULLY COMPLETE or CANNOT be completed
-   - The data tags signify final task completion (success or failure)
-   - Include relevant data extracted from the web or compiled data that was requested in a structured format.
-   - Remember inside the <data> tags, the JSON object should be a single line without any newlines.
-   - The only valid tag for returning data is <data>{...}</data>, nothing else is accepted including <data_return>
-   
-   
-- IMPORTANT: Remember that you must try to provide a reasoning on why you are taking this step or why you are using a specific tool. If you are trying the same step again, you should provide a reasoning on why you are trying it again."""
-
-        if not critic_system_prompt:
-            critic_system_prompt = """You are a skeptical Critic Agent that rigorously evaluates an agent's CURRENT STEP in a multi-step process. You are NEVER addressing the user's query directly and you are not performing any action yourself - you are analyzing the agent's current step execution to find flaws, errors, and inefficiencies or help it to achieve the user's goal.
-
-CRITICAL INSTRUCTION: You are evaluating ONE STEP in a multi-step process. DO NOT critique the agent for not completing the entire task - that is not expected in a single step. Instead, focus solely on whether this specific step was executed correctly and effectively.
-
-Your role is to identify problems in the agent’s CURRENT action and to actively question the decisions taken by the generation agent. Ask yourself whether the generation agent has overlooked potential pitfalls or made unsupported assumptions. Your critical feedback should not only point out issues but also challenge the reasoning behind the agent's choices—this will help the generation agent identify its own flaws or mistakes.
-
-Focus areas for your step-by-step critical analysis:
-
-1. Tool Call Validation:
-   - Scrutinize every parameter passed to tool calls for correctness, validity, and appropriateness.
-   - For URLs and API calls: verify that parameters and formats are correct.
-   - Flag any generic, placeholder, or ill-defined references.
-
-2. Reasoning Flaws Detection:
-   - Identify logical fallacies or unsupported assumptions in the current step.
-   - Question any repetitive or unproductive actions.
-   - Ask whether the generation agent might have overlooked alternative approaches or hidden implications.
-
-3. Step Execution Assessment:
-   - Determine if the chosen step is logical and efficient given the overall task.
-   - Assess how well errors are handled and whether progress toward the goal is clearly made.
-   - Challenge any decisions that seem inconsistent with previous steps or overall objectives.
-
-4. Intermediate Output Quality:
-   - Evaluate if the output is actionable, accurate, and relevant for subsequent steps.
-   - Question if the information provided is sufficient for informed decision-making in later steps.
-
-5. Recommendations:
-   - Offer succinct recommendations to improve the current approach.
-   - Include questions that provoke re-evaluation of the generation agent’s assumptions and decisions.
-
-# Step Assessment:
-[Assign a grade to THIS STEP ONLY: Unsatisfactory/Needs Improvement/Satisfactory/Good/Excellent]
-
-- Example on How NOT to Respond:
-"I need to proceed I need to do XYZ..." # the reason why this is not a good response is that you are not here to perform the task but to evaluate the current step of another agent. You can suggest the agent to proceed to do XYZ but you should not do it yourself.
-
-- Example on How to Respond:
-"The agent should proceed to do XYZ, but it should first validate the user's input to ensure it aligns with the expected format and requirements. This will help prevent errors and ensure a smoother execution of the task".
-
-- IMPORTANT: Remember that you must try to provide a respond. Even when you think the agent is doing everything correctly, you should provide feedback on why you think so."""
+    def __init__(
+        self,
+        model_config: Dict[str, Any],
+        generation_system_prompt: str = None,
+        critic_system_prompt: str = None,
+        memory_type: Optional[str] = "conversation_history",
+        max_tokens: Optional[int] = 512,
+        agent_name: Optional[str] = None,
+    ):
         self.generation_system_prompt = generation_system_prompt
         self.critic_system_prompt = critic_system_prompt
-
         super().__init__(
-            model,
-            generation_system_prompt,
+            model_config=model_config,
+            system_prompt=generation_system_prompt,
             tools=None,
             tools_schema=None,
-            learning_head=learning_head,
-            learning_head_config=learning_head_config,
             memory_type=memory_type,
             max_tokens=max_tokens,
+            agent_name=agent_name,
         )
-        # Initialize memory with the generation system prompt
-        if self.memory is not None:
-            self.memory.append("system", self.generation_system_prompt)
 
-    def think(
-        self,
-        user_prompt: str | List[Dict[str, str]] = None,
-        max_tokens: int = None,
-    ) -> str:
+    def think(self, user_prompt: str = None, max_tokens: int = None) -> str:
         if not max_tokens:
             max_tokens = self.max_tokens
         if user_prompt:
-            self.memory.append("user", user_prompt)
-
-        messages = self.memory.get_all()
+            self.memory.update_memory("user", user_prompt)
+        messages = self.memory.retrieve_all()
         system_updated = False
         for msg in messages:
             if msg.get("role") == "system":
@@ -342,26 +713,20 @@ Focus areas for your step-by-step critical analysis:
             messages.insert(
                 0, {"role": "system", "content": self.generation_system_prompt}
             )
-
-        output = self.model.run(
+        api_kwargs = self._get_api_kwargs()
+        output = self.model_instance.run(
             messages=messages,
             role="agent",
             tools=self.tools_schema,
-            max_tokens=max_tokens,
+            max_tokens=max_tokens or self.max_tokens,
             json_mode=False,
+            **api_kwargs,
         )
-
-        tool_call, data, error_info = self.process_model_output(output)
-        self.memory.append("agent", output)
-        if tool_call and not error_info:
-            self.memory.append("agent", "", tool_call)
-        elif error_info:
-            self.memory.append("agent", error_info)
-
-        return output, tool_call, data
+        self.memory.update_memory("agent", output)
+        return output
 
     def critic(self):
-        messages = self.memory.get_all()
+        messages = self.memory.retrieve_all()
         system_updated = False
         for msg in messages:
             if msg.get("role") == "system":
@@ -370,60 +735,36 @@ Focus areas for your step-by-step critical analysis:
                 break
         if not system_updated:
             messages.insert(0, {"role": "system", "content": self.critic_system_prompt})
-
-        output = self.model.run(
+        api_kwargs = self._get_api_kwargs()
+        output = self.model_instance.run(
             messages=messages,
             role="critic",
             max_tokens=self.max_tokens,
             json_mode=False,
+            **api_kwargs,
         )
-        self.memory.append("critic", output)
+        self.memory.update_memory("critic", output)
         return output
-
-    async def run(
-        self,
-        prompt: str | List[Dict[str, str]],
-        max_steps: int = 15,
-    ) -> str:
-        output = None
-        self.memory.reset()
-        # Use the generation system prompt for normal execution
-        self.memory.append("system", self.generation_system_prompt)
-        self.memory.append("user", prompt)
-        output, _, _ = self.think()
-        current_step = 0
-        while (output.get("state") != "finished") and (current_step < max_steps):
-            next_action = output.get("next_action")
-            if next_action:
-                if next_action["type"] == "function":
-                    await self.execute_function(next_action["function"])
-                else:
-                    pass
-            else:
-                output, _, _ = self.think()
-            current_step += 1
 
     @classmethod
     async def create(
         cls,
-        model: BaseVLM,
+        model_config: Dict[str, Any],
         generation_system_prompt: str = None,
         critic_system_prompt: str = None,
-        learning_head: str = None,
-        learning_head_config: Optional[Dict] = None,
         memory_type: Optional[str] = "conversation_history",
         max_tokens: Optional[int] = 512,
         temp_dir: Optional[str] = "./tmp/screenshots",
         headless_browser: bool = True,
+        agent_name: Optional[str] = None,
     ):
         agent = cls(
-            model,
-            generation_system_prompt,
-            critic_system_prompt,
-            learning_head,
-            learning_head_config,
-            memory_type,
-            max_tokens,
+            model_config=model_config,
+            generation_system_prompt=generation_system_prompt,
+            critic_system_prompt=critic_system_prompt,
+            memory_type=memory_type,
+            max_tokens=max_tokens,
+            agent_name=agent_name,
         )
         web_browser = importlib.import_module("src.environment.web_browser")
         agent.tools_schema = [
@@ -441,25 +782,23 @@ Focus areas for your step-by-step critical analysis:
     @classmethod
     async def create_safe(
         cls,
-        model: BaseVLM,
+        model_config: Dict[str, Any],
         generation_system_prompt: str = None,
         critic_system_prompt: str = None,
-        learning_head: str = None,
-        learning_head_config: Optional[Dict] = None,
         memory_type: Optional[str] = "conversation_history",
         max_tokens: Optional[int] = 512,
         temp_dir: Optional[str] = "./tmp/screenshots",
         headless_browser: bool = True,
         timeout: Optional[int] = None,
+        agent_name: Optional[str] = None,
     ) -> "BrowserAgent":
         agent = cls(
-            model,
-            generation_system_prompt,
-            critic_system_prompt,
-            learning_head,
-            learning_head_config,
-            memory_type,
-            max_tokens,
+            model_config=model_config,
+            generation_system_prompt=generation_system_prompt,
+            critic_system_prompt=critic_system_prompt,
+            memory_type=memory_type,
+            max_tokens=max_tokens,
+            agent_name=agent_name,
         )
         web_browser = importlib.import_module("src.environment.web_browser")
         agent.tools_schema = [
@@ -491,116 +830,3 @@ Focus areas for your step-by-step critical analysis:
                 method = getattr(self.browser_tool, attr)
                 if callable(method):
                     self.browser_methods[attr] = method
-
-    def verify_model_output(self, output: Dict[str, str | Dict]) -> bool:
-        if not isinstance(output, dict):
-            return False
-        if "state" not in output or "next_action" not in output:
-            return False
-        return True
-
-    def process_model_output(self, output: str) -> Dict:
-        tool_call = dict()
-        data = dict()
-        error_info = dict()
-
-        tool_call_match = re.search(r"<tool_call>(.*?)</tool_call>", output, re.DOTALL)
-        if tool_call_match:
-            try:
-                tool_call = json.loads(tool_call_match[1])
-            except json.JSONDecodeError as e:
-                error_info = {
-                    "state": "fail",
-                    "details": f"Invalid JSON format for tool call: {str(e)}",
-                    "original_call": tool_call_match,
-                }
-
-        data_match = re.search(r"<data>(.*?)</data>", output, re.DOTALL)
-        if data_match:
-            try:
-                data = json.loads(data_match[1])
-            except json.JSONDecodeError as e:
-                if "details" in error_info:
-                    error_info[
-                        "details"
-                    ] += f"\n Invalid JSON format for data: {str(e)}"
-                else:
-                    error_info["details"] = f"Invalid JSON format for data: {str(e)}"
-                error_info["state"] = "fail"
-                error_info["original_data"] = data_match
-
-        return tool_call, data, error_info
-
-    def validation_tool_call(self, context: Dict[str, str | Dict]) -> Dict:
-        valid = True
-        details = {}
-        if "name" not in context:
-            details = {
-                "state": "fail",
-                "state_info": 'The tool call does not have a "name" key.',
-            }
-            valid = False
-        if "parameters" not in context:
-            if "state_info" in details:
-                details[
-                    "state_info"
-                ] += '\n The tool call does not have a "parameters" key either.'
-            else:
-                details["state_info"] = (
-                    'The tool call does not have a "parameters" key.'
-                )
-                details["state"] = "fail"
-            valid = False
-        return valid, details
-
-    async def execute_function(self, context):
-        valid, details = self.validation_tool_call(context)
-        if not valid:
-            return details
-        # Drop reasoning from the context parameters
-        if "reasoning" in context.get("parameters", {}):
-            _ = context["parameters"].pop("reasoning", None)
-
-        function_name = context["name"]
-        parameters = {
-            k: v for k, v in context["parameters"].items() if k != "reasoning"
-        }
-
-        if function_name in self.browser_methods:
-            try:
-                _ = await self.browser_methods[function_name](**parameters)
-                filename = f"{function_name}_{datetime.now().strftime('%Y-%m-%d_%H-%M-%S')}_{random.randint(0, int(1e9)):09d}.png"
-                screenshot_path = await self.browser_methods["screenshot"](
-                    filename=filename
-                )
-
-                new_context = context | {
-                    "state": "success",
-                    "image": screenshot_path,
-                }
-            except Exception as e:
-                new_context = context | {
-                    "state": "fail",
-                    "state_info": f"The function {function_name} failed to execute. Error: {str(e)}",
-                    # "image": None,
-                    "html_content": None,
-                }
-            # try:
-            # Add the HTML content to the context
-            html_content = await self.browser_methods["get_html"]()
-            new_context["html_content"] = html_content
-            # except Exception as e:
-            #     new_context["html_content"] = None
-            #     new_context["state_info"] = (
-            #         f"{new_context.get('state_info', '')}\n Error fetching HTML content: {str(e)}"
-            #     )
-        else:
-            new_context = context | {
-                "state": "fail",
-                "state_info": "The requested function is not available or not a valid function name.",
-                # "image": None,
-            }
-        # First clean the tool messages
-        self.memory.clean_tool_messages()
-        # Append the tool call to the
-        self.memory.append("tool", new_context)
