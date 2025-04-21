@@ -7,12 +7,14 @@ and resource cleanup functionalities.
 
 import asyncio
 import uuid
+import logging
 from typing import Dict, List, Optional, Tuple, Type, Any, Callable
 
 from pydantic import BaseModel, Field
 
 from src.agents.agents import (Agent, AgentRegistry, BaseAgent, BrowserAgent,
-                               LearnableAgent, LogLevel, RequestContext, ProgressUpdate, ProgressLogger)
+                               LearnableAgent, LogLevel, RequestContext, ProgressUpdate, ProgressLogger,
+                               BaseLLM, BaseVLM)
 from src.learning.rl import GRPOConfig, GRPOTrainer
 
 
@@ -35,6 +37,9 @@ class AgentConfig(BaseModel):
         memory_type: Type of memory module to use ('conversation_history' or 'kg').
         max_tokens: Default maximum tokens for model responses.
         allowed_peers: List of agent names this agent is allowed to invoke.
+        temp_dir: Optional directory for temporary files (e.g., screenshots).
+        headless_browser: Whether the browser should run in headless mode.
+        browser_init_timeout: Timeout for browser initialization.
     """
     name: str
     agent_class: str
@@ -50,14 +55,17 @@ class AgentConfig(BaseModel):
     memory_type: Optional[str] = "conversation_history"
     max_tokens: Optional[int] = 512
     allowed_peers: Optional[List[str]] = Field(default_factory=list)
+    temp_dir: Optional[str] = "./tmp/screenshots"
+    headless_browser: bool = True
+    browser_init_timeout: Optional[int] = 30
 
 
 class BaseCrew:
     """
     Manages a collection of agents defined by configurations.
 
-    Handles agent initialization, provides an entry point for running tasks,
-    and manages cleanup of resources like browser instances.
+    Handles agent initialization via an async factory method, provides an entry point
+    for running tasks, and manages cleanup of resources like browser instances.
 
     Attributes:
         agent_configs: List of configurations for each agent in the crew.
@@ -66,7 +74,7 @@ class BaseCrew:
     """
     def __init__(self, agent_configs: List[AgentConfig], learning_config: Optional[GRPOConfig] = None) -> None:
         """
-        Initializes the BaseCrew.
+        Initializes the BaseCrew synchronously. Agent initialization happens in the async `create` method.
 
         Args:
             agent_configs: A list of AgentConfig objects defining the agents.
@@ -75,14 +83,29 @@ class BaseCrew:
         self.agent_configs = agent_configs
         self.learning_config = learning_config
         self.agents: Dict[str, BaseAgent] = {}
-        self._initialize_agents()
 
-    def _initialize_agents(self) -> None:
+    @classmethod
+    async def create(cls, agent_configs: List[AgentConfig], learning_config: Optional[GRPOConfig] = None) -> "BaseCrew":
         """
-        Initializes agent instances based on the provided configurations.
+        Asynchronously creates and initializes a BaseCrew instance, including its agents.
+
+        Args:
+            agent_configs: A list of AgentConfig objects defining the agents.
+            learning_config: Optional configuration for reinforcement learning.
+
+        Returns:
+            An initialized BaseCrew instance with agents ready.
+        """
+        crew = cls(agent_configs, learning_config)
+        await crew._initialize_agents()
+        return crew
+
+    async def _initialize_agents(self) -> None:
+        """
+        Asynchronously initializes agent instances based on the provided configurations.
 
         Registers each agent with the AgentRegistry. Handles different agent types
-        and their specific initialization requirements.
+        and their specific initialization requirements, including async ones like BrowserAgent.
 
         Raises:
             ValueError: If an unknown agent class is specified or required configuration
@@ -94,6 +117,9 @@ class BaseCrew:
             "LearnableAgent": LearnableAgent,
             "BrowserAgent": BrowserAgent,
         }
+
+        loaded_models: Dict[str, Union[BaseLLM, BaseVLM]] = {}
+        initialization_tasks = []
 
         for config in self.agent_configs:
             agent_cls_name = config.agent_class
@@ -113,38 +139,61 @@ class BaseCrew:
 
             agent: Optional[BaseAgent] = None
 
-            if agent_cls is Agent or issubclass(agent_cls, Agent):
+            if agent_cls is Agent:
                 if not config.model_config:
                     raise ValueError(f"Agent '{config.name}' requires 'model_config'.")
                 agent_args["model_config"] = config.model_config
-                if agent_cls is BrowserAgent:
-                    agent_args["system_prompt"] = config.generation_system_prompt or config.system_prompt
-                    agent_args["generation_system_prompt"] = config.generation_system_prompt
-                    agent_args["critic_system_prompt"] = config.critic_system_prompt
+                agent = Agent(**agent_args)
+                self.agents[config.name] = agent
+                logging.info(f"Initialized agent: {config.name} ({agent_cls_name})")
+
+            elif agent_cls is BrowserAgent:
+                if not config.model_config:
+                    raise ValueError(f"BrowserAgent '{config.name}' requires 'model_config'.")
+                browser_args = agent_args.copy()
+                browser_args["model_config"] = config.model_config
+                browser_args["generation_system_prompt"] = config.generation_system_prompt or config.system_prompt
+                browser_args["critic_system_prompt"] = config.critic_system_prompt
+                browser_args["temp_dir"] = config.temp_dir
+                browser_args["headless_browser"] = config.headless_browser
+                browser_args["timeout"] = config.browser_init_timeout
+                browser_args.pop("system_prompt", None)
+
+                async def init_browser_agent(args_dict):
                     try:
-                        agent = BrowserAgent(**agent_args)
-                        print(f"Note: BrowserAgent '{config.name}' browser tool needs async initialization.")
+                        instance = await BrowserAgent.create_safe(**args_dict)
+                        self.agents[instance.name] = instance
+                        logging.info(f"Initialized agent: {instance.name} ({agent_cls_name})")
                     except Exception as e:
-                        print(f"Error creating BrowserAgent '{config.name}' synchronously: {e}")
-                        continue
-                else:
-                    agent = Agent(**agent_args)
+                        logging.error(f"Failed to initialize BrowserAgent '{args_dict.get('agent_name')}': {e}")
+                        raise
+
+                initialization_tasks.append(init_browser_agent(browser_args))
 
             elif agent_cls is LearnableAgent:
                 if not config.model_ref:
                     raise ValueError(f"LearnableAgent '{config.name}' needs a model reference ('model_ref').")
+
                 class DummyModel:
                     def run(self, **kwargs: Any) -> str: return "Dummy model response"
-                agent_args["model"] = DummyModel()
+                actual_model = DummyModel()
+
+                agent_args["model"] = actual_model
                 agent_args["learning_head"] = config.learning_head
                 agent_args["learning_head_config"] = config.learning_head_config
                 agent = LearnableAgent(**agent_args)
-            else:
-                raise TypeError(f"Agent class {agent_cls_name} not directly supported in this basic init.")
-
-            if agent:
                 self.agents[config.name] = agent
-                print(f"Registered agent: {config.name} ({agent_cls_name})")
+                logging.info(f"Initialized agent: {config.name} ({agent_cls_name})")
+
+            else:
+                raise TypeError(f"Agent class {agent_cls_name} initialization not implemented.")
+
+        if initialization_tasks:
+            await asyncio.gather(*initialization_tasks)
+
+        for config in self.agent_configs:
+            if config.name not in self.agents:
+                logging.warning(f"Agent '{config.name}' was configured but not found in initialized agents.")
 
     async def run_task(
         self,
@@ -175,9 +224,15 @@ class BaseCrew:
             ValueError: If the initial agent name is not found.
             Exception: Propagates exceptions raised during task execution.
         """
+        if not self.agents and self.agent_configs:
+            logging.warning("run_task called before agents were initialized. Call BaseCrew.create() first.")
+
         initial_agent = AgentRegistry.get(initial_agent_name)
         if not initial_agent:
-            raise ValueError(f"Initial agent '{initial_agent_name}' not found in registry.")
+            if any(cfg.name == initial_agent_name for cfg in self.agent_configs):
+                raise ValueError(f"Initial agent '{initial_agent_name}' was configured but failed to initialize or is not registered.")
+            else:
+                raise ValueError(f"Initial agent '{initial_agent_name}' not found in configuration or registry.")
 
         progress_queue: asyncio.Queue[Optional[ProgressUpdate]] = asyncio.Queue()
         task_id = str(uuid.uuid4())
@@ -196,15 +251,16 @@ class BaseCrew:
             callee_agent_name=initial_agent_name,
         )
 
-        await ProgressLogger.log(initial_request_context, LogLevel.MINIMAL, f"Task started. Initial agent: {initial_agent_name}")
+        await ProgressLogger.log(initial_request_context, LogLevel.MINIMAL, f"Task '{task_id}' started. Initial agent: {initial_agent_name}")
 
         try:
             result: Any = await initial_agent.handle_invocation(initial_prompt, initial_request_context)
-            await ProgressLogger.log(initial_request_context, LogLevel.MINIMAL, "Task finished successfully.")
+            await ProgressLogger.log(initial_request_context, LogLevel.MINIMAL, f"Task '{task_id}' finished successfully.")
             await progress_queue.put(None)
             return result, progress_queue
         except Exception as e:
-            await ProgressLogger.log(initial_request_context, LogLevel.MINIMAL, f"Task failed: {e}", data={"error": str(e)})
+            logging.exception(f"Task '{task_id}' failed with exception.")
+            await ProgressLogger.log(initial_request_context, LogLevel.MINIMAL, f"Task '{task_id}' failed: {e}", data={"error": str(e)})
             await progress_queue.put(None)
             raise
 
@@ -212,9 +268,13 @@ class BaseCrew:
         """
         Performs cleanup operations for the crew, such as closing browser instances.
         """
-        print("Cleaning up crew resources...")
+        logging.info("Cleaning up crew resources...")
+        cleanup_tasks = []
         for agent_name, agent in self.agents.items():
             if isinstance(agent, BrowserAgent):
-                print(f"Closing browser for agent: {agent_name}")
-                await agent.close_browser()
-        print("Crew cleanup finished.")
+                logging.info(f"Scheduling browser close for agent: {agent_name}")
+                cleanup_tasks.append(agent.close_browser())
+
+        if cleanup_tasks:
+            await asyncio.gather(*cleanup_tasks)
+        logging.info("Crew cleanup finished.")
