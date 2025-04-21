@@ -19,8 +19,7 @@ import time
 import uuid
 import weakref
 from abc import ABC, abstractmethod
-from typing import Any, Dict, List, Optional, Set, Tuple, Union, Type, Callable, AsyncGenerator
-from weakref import WeakValueDictionary
+from typing import Any, Callable, Dict, List, Optional, Union
 
 # Assuming BaseModel is imported correctly for BrowserAgent schema generation
 from pydantic import BaseModel
@@ -30,8 +29,10 @@ from src.models.models import BaseAPIModel, BaseLLM, BaseVLM, PeftHead
 
 # --- Core Data Structures ---
 
+
 class LogLevel(enum.IntEnum):
     """Enumeration for different logging verbosity levels."""
+
     NONE = 0
     MINIMAL = 1
     SUMMARY = 2
@@ -42,6 +43,7 @@ class LogLevel(enum.IntEnum):
 @dataclasses.dataclass
 class ProgressUpdate:
     """Dataclass representing a single progress update during task execution."""
+
     timestamp: float
     level: LogLevel
     message: str
@@ -69,6 +71,7 @@ class RequestContext:
         caller_agent_name: Name of the agent that invoked the current agent.
         callee_agent_name: Name of the agent currently being invoked.
     """
+
     task_id: str
     initial_prompt: Any
     progress_queue: asyncio.Queue[Optional[ProgressUpdate]]
@@ -87,8 +90,10 @@ class RequestContext:
 
 # --- Logging Utility ---
 
+
 class ProgressLogger:
     """Utility class for logging progress updates."""
+
     @staticmethod
     async def log(
         request_context: Optional[RequestContext],
@@ -110,7 +115,11 @@ class ProgressLogger:
             interaction_id: The ID of the specific interaction this log relates to.
             data: Optional dictionary containing additional structured data.
         """
-        if request_context and request_context.progress_queue and level <= request_context.log_level:
+        if (
+            request_context
+            and request_context.progress_queue
+            and level <= request_context.log_level
+        ):
             update = ProgressUpdate(
                 timestamp=time.time(),
                 level=level,
@@ -125,8 +134,8 @@ class ProgressLogger:
                 # but await ensures the message is sent before proceeding.
                 await request_context.progress_queue.put(update)
             except Exception as e:
-                 # Log error if putting to queue fails (e.g., queue closed)
-                 logging.error(f"Failed to put progress update on queue: {e}")
+                # Log error if putting to queue fails (e.g., queue closed)
+                logging.error(f"Failed to put progress update on queue: {e}")
         elif level > LogLevel.NONE:
             # Fallback to standard logging if no queue or level too low for queue
             log_level_map = {
@@ -137,7 +146,9 @@ class ProgressLogger:
             }
             std_log_level = log_level_map.get(level, logging.INFO)
             log_msg = f"[Task:{request_context.task_id if request_context else 'N/A'}]"
-            current_interaction_id = interaction_id or (request_context.interaction_id if request_context else None)
+            current_interaction_id = interaction_id or (
+                request_context.interaction_id if request_context else None
+            )
             if current_interaction_id:
                 log_msg += f"[Interaction:{current_interaction_id}]"
             if agent_name:
@@ -155,6 +166,7 @@ class ProgressLogger:
 
 # --- Agent Registry ---
 
+
 class AgentRegistry:
     """
     Manages the registration and retrieval of agent instances using weak references.
@@ -162,12 +174,17 @@ class AgentRegistry:
     Ensures that agents can find and communicate with each other without creating
     strong circular dependencies that would prevent garbage collection.
     """
-    _agents: weakref.WeakValueDictionary[str, "BaseAgent"] = weakref.WeakValueDictionary()
-    _lock = threading.Lock() # Lock for thread-safe registration/unregistration
-    _counter: int = 0 # Counter for generating unique names
+
+    _agents: weakref.WeakValueDictionary[str, "BaseAgent"] = (
+        weakref.WeakValueDictionary()
+    )
+    _lock = threading.Lock()  # Lock for thread-safe registration/unregistration
+    _counter: int = 0  # Counter for generating unique names
 
     @classmethod
-    def register(cls, agent: "BaseAgent", name: Optional[str] = None, prefix: str = "BaseAgent") -> str:
+    def register(
+        cls, agent: "BaseAgent", name: Optional[str] = None, prefix: str = "BaseAgent"
+    ) -> str:
         """
         Registers an agent instance with the registry.
 
@@ -195,7 +212,9 @@ class AgentRegistry:
                     )
             # Add or update the agent in the registry
             cls._agents[name] = agent
-            logging.info(f"Agent registered: {name} (Class: {agent.__class__.__name__})")
+            logging.info(
+                f"Agent registered: {name} (Class: {agent.__class__.__name__})"
+            )
             return name
 
     @classmethod
@@ -240,6 +259,7 @@ class AgentRegistry:
 
 
 # --- Base Agent Class ---
+
 
 class BaseAgent(ABC):
     """
@@ -308,39 +328,58 @@ class BaseAgent(ABC):
             AgentRegistry.unregister(self.name)
         except Exception as e:
             # Log error during cleanup if necessary
-            logging.debug(f"Error during agent '{self.name}' unregistration in __del__: {e}")
+            logging.debug(
+                f"Error during agent '{self.name}' unregistration in __del__: {e}"
+            )
 
-
-    async def _log_progress(self, request_context: RequestContext, level: LogLevel, message: str, **kwargs: Any) -> None:
+    async def _log_progress(
+        self,
+        request_context: RequestContext,
+        level: LogLevel,
+        message: str,
+        **kwargs: Any,
+    ) -> None:
         """Helper method to log progress updates using the ProgressLogger."""
-        await ProgressLogger.log(request_context, level, message, agent_name=self.name, **kwargs)
+        await ProgressLogger.log(
+            request_context, level, message, agent_name=self.name, **kwargs
+        )
 
-    def _add_interaction_to_log(self, task_id: str, interaction_data: Dict[str, Any]) -> None:
+    def _add_interaction_to_log(
+        self, task_id: str, interaction_data: Dict[str, Any]
+    ) -> None:
         """Adds a (potentially truncated) interaction record to the communication log."""
         if task_id not in self.communication_log:
             self.communication_log[task_id] = []
         # Basic sanitization/truncation for logging potentially large data
         log_data = {}
         for key, value in interaction_data.items():
-            if key in ["request", "response", "error"] and isinstance(value, (str, bytes)):
-                 # Truncate long strings/bytes
-                 log_data[key] = str(value)[:500] + ("..." if len(str(value)) > 500 else "")
+            if key in ["request", "response", "error"] and isinstance(
+                value, (str, bytes)
+            ):
+                # Truncate long strings/bytes
+                log_data[key] = str(value)[:500] + (
+                    "..." if len(str(value)) > 500 else ""
+                )
             elif key in ["request", "response"] and isinstance(value, (dict, list)):
-                 # Try to dump complex types as JSON, truncate
-                 try:
-                      log_data[key] = json.dumps(value)[:500] + ("..." if len(json.dumps(value)) > 500 else "")
-                 except TypeError:
-                      log_data[key] = f"[Unserializable {type(value)}]"
+                # Try to dump complex types as JSON, truncate
+                try:
+                    log_data[key] = json.dumps(value)[:500] + (
+                        "..." if len(json.dumps(value)) > 500 else ""
+                    )
+                except TypeError:
+                    log_data[key] = f"[Unserializable {type(value)}]"
             else:
-                 # Keep other types as is (e.g., numbers, booleans)
-                 log_data[key] = value
+                # Keep other types as is (e.g., numbers, booleans)
+                log_data[key] = value
         self.communication_log[task_id].append(log_data)
 
     def get_communication_log(self, task_id: str) -> List[Dict[str, Any]]:
         """Retrieves the communication log for a specific task."""
         return self.communication_log.get(task_id, [])
 
-    async def invoke_agent(self, target_agent_name: str, request: Any, request_context: RequestContext) -> Any:
+    async def invoke_agent(
+        self, target_agent_name: str, request: Any, request_context: RequestContext
+    ) -> Any:
         """
         Invokes another registered agent asynchronously.
 
@@ -382,7 +421,9 @@ class BaseAgent(ABC):
 
         # 2. Check Limits
         if request_context.depth + 1 > request_context.max_depth:
-            error_msg = f"Maximum invocation depth ({request_context.max_depth}) reached."
+            error_msg = (
+                f"Maximum invocation depth ({request_context.max_depth}) reached."
+            )
             await self._log_progress(
                 request_context,
                 LogLevel.MINIMAL,
@@ -432,7 +473,7 @@ class BaseAgent(ABC):
             "type": "invoke",
             "caller": self.name,
             "callee": target_agent_name,
-            "request": request, # Logged via _add_interaction_to_log with truncation
+            "request": request,  # Logged via _add_interaction_to_log with truncation
             "depth": new_request_context.depth,
             "status": "pending",
         }
@@ -444,18 +485,30 @@ class BaseAgent(ABC):
             f"Invoking agent '{target_agent_name}' (Depth: {new_request_context.depth}, Interaction: {new_request_context.interaction_count})",
         )
         if new_request_context.log_level >= LogLevel.DEBUG:
-             await self._log_progress(new_request_context, LogLevel.DEBUG, "Request details", data={"request": request})
+            await self._log_progress(
+                new_request_context,
+                LogLevel.DEBUG,
+                "Request details",
+                data={"request": request},
+            )
 
         # 6. Call Target Agent's handler
         try:
-            response = await target_agent.handle_invocation(request, new_request_context)
+            response = await target_agent.handle_invocation(
+                request, new_request_context
+            )
             # Update log entry status on success
             # Find the specific log entry to update status (might need better indexing if high concurrency)
-            for entry in reversed(self.communication_log.get(request_context.task_id, [])):
-                 if entry.get("interaction_id") == interaction_id and entry.get("type") == "invoke":
-                      entry["status"] = "success"
-                      # entry["response"] = response # Avoid logging full response here, logged by callee
-                      break
+            for entry in reversed(
+                self.communication_log.get(request_context.task_id, [])
+            ):
+                if (
+                    entry.get("interaction_id") == interaction_id
+                    and entry.get("type") == "invoke"
+                ):
+                    entry["status"] = "success"
+                    # entry["response"] = response # Avoid logging full response here, logged by callee
+                    break
 
             await self._log_progress(
                 new_request_context,
@@ -463,25 +516,37 @@ class BaseAgent(ABC):
                 f"Received response from '{target_agent_name}'",
             )
             if new_request_context.log_level >= LogLevel.DEBUG:
-                 await self._log_progress(new_request_context, LogLevel.DEBUG, "Response details", data={"response": response})
+                await self._log_progress(
+                    new_request_context,
+                    LogLevel.DEBUG,
+                    "Response details",
+                    data={"response": response},
+                )
 
             return response
         except Exception as e:
             # Update log entry status on error
-            for entry in reversed(self.communication_log.get(request_context.task_id, [])):
-                 if entry.get("interaction_id") == interaction_id and entry.get("type") == "invoke":
-                      entry["status"] = "error"
-                      entry["error"] = str(e)
-                      break
+            for entry in reversed(
+                self.communication_log.get(request_context.task_id, [])
+            ):
+                if (
+                    entry.get("interaction_id") == interaction_id
+                    and entry.get("type") == "invoke"
+                ):
+                    entry["status"] = "error"
+                    entry["error"] = str(e)
+                    break
             await self._log_progress(
                 new_request_context,
                 LogLevel.MINIMAL,
                 f"Error invoking agent '{target_agent_name}': {e}",
                 data={"error": str(e)},
             )
-            raise # Re-raise the exception
+            raise  # Re-raise the exception
 
-    async def handle_invocation(self, request: Any, request_context: RequestContext) -> Any:
+    async def handle_invocation(
+        self, request: Any, request_context: RequestContext
+    ) -> Any:
         """
         Handles an incoming invocation request from another agent or the user.
 
@@ -507,7 +572,10 @@ class BaseAgent(ABC):
         )
         if request_context.log_level >= LogLevel.DEBUG:
             await self._log_progress(
-                request_context, LogLevel.DEBUG, "Request details", data={"request": request}
+                request_context,
+                LogLevel.DEBUG,
+                "Request details",
+                data={"request": request},
             )
 
         # Log handling attempt (callee side)
@@ -517,7 +585,7 @@ class BaseAgent(ABC):
             "type": "handle",
             "caller": request_context.caller_agent_name or "user",
             "callee": self.name,
-            "request": request, # Logged via _add_interaction_to_log
+            "request": request,  # Logged via _add_interaction_to_log
             "depth": request_context.depth,
             "status": "processing",
         }
@@ -525,17 +593,19 @@ class BaseAgent(ABC):
 
         try:
             # Determine run_mode and prompt_data from request
-            run_mode = "chat" # Default mode
+            run_mode = "chat"  # Default mode
             prompt_data = request
 
             if isinstance(request, dict):
                 # Allow request dictionary to specify mode and prompt
-                run_mode = request.get("action", run_mode) # Use 'action' key for mode
-                prompt_data = request.get("prompt", prompt_data) # Use 'prompt' key for data
+                run_mode = request.get("action", run_mode)  # Use 'action' key for mode
+                prompt_data = request.get(
+                    "prompt", prompt_data
+                )  # Use 'prompt' key for data
 
             # Special handling for BrowserAgent if no mode specified
             elif isinstance(self, BrowserAgent) and run_mode == "chat":
-                run_mode = "think" # Default BrowserAgent mode is 'think'
+                run_mode = "think"  # Default BrowserAgent mode is 'think'
 
             await self._log_progress(
                 request_context, LogLevel.DETAILED, f"Determined run_mode='{run_mode}'."
@@ -543,12 +613,19 @@ class BaseAgent(ABC):
 
             # Call the agent's core logic implementation
             # Pass any extra kwargs from the request dict if needed by _run
-            extra_kwargs = request.get("kwargs", {}) if isinstance(request, dict) else {}
-            result = await self._run(prompt=prompt_data, request_context=request_context, run_mode=run_mode, **extra_kwargs)
+            extra_kwargs = (
+                request.get("kwargs", {}) if isinstance(request, dict) else {}
+            )
+            result = await self._run(
+                prompt=prompt_data,
+                request_context=request_context,
+                run_mode=run_mode,
+                **extra_kwargs,
+            )
 
             # Update log entry status on success
             log_entry_callee["status"] = "success"
-            log_entry_callee["response"] = result # Log full response here
+            log_entry_callee["response"] = result  # Log full response here
 
             await self._log_progress(
                 request_context,
@@ -573,10 +650,12 @@ class BaseAgent(ABC):
                 f"Error handling invocation from '{request_context.caller_agent_name or 'user'}': {e}",
                 data={"error": str(e)},
             )
-            raise # Re-raise the exception
+            raise  # Re-raise the exception
 
     @abstractmethod
-    async def _run(self, prompt: Any, request_context: RequestContext, run_mode: str, **kwargs: Any) -> Any:
+    async def _run(
+        self, prompt: Any, request_context: RequestContext, run_mode: str, **kwargs: Any
+    ) -> Any:
         """
         Abstract method for the core execution logic of the agent.
 
@@ -603,6 +682,7 @@ class BaseAgent(ABC):
 
 # --- Learnable Agent Base Class ---
 
+
 class BaseLearnableAgent(BaseAgent):
     """
     Base class for agents that can incorporate learnable components (e.g., PEFT heads).
@@ -613,16 +693,17 @@ class BaseLearnableAgent(BaseAgent):
         _learning_head_name: Name of the learning head type (e.g., 'peft').
         _learning_config: Configuration dictionary for the learning head.
     """
+
     def __init__(
         self,
-        model: Union[BaseVLM, BaseLLM], # Learnable agents typically use local models
+        model: Union[BaseVLM, BaseLLM],  # Learnable agents typically use local models
         system_prompt: str,
         learning_head: Optional[str] = None,
         learning_head_config: Optional[Dict[str, Any]] = None,
         max_tokens: Optional[int] = 512,
         agent_name: Optional[str] = None,
         allowed_peers: Optional[List[str]] = None,
-        **kwargs: Any, # Catch tools/tools_schema passed from subclass
+        **kwargs: Any,  # Catch tools/tools_schema passed from subclass
     ) -> None:
         """
         Initializes the BaseLearnableAgent.
@@ -650,10 +731,14 @@ class BaseLearnableAgent(BaseAgent):
         self._learning_config = learning_head_config
         if learning_head == "peft":
             if not learning_head_config:
-                 raise ValueError("learning_head_config is required when learning_head is 'peft'")
+                raise ValueError(
+                    "learning_head_config is required when learning_head is 'peft'"
+                )
             # Ensure the base model is suitable for PEFT
             if not isinstance(model, (BaseLLM, BaseVLM)):
-                 raise TypeError(f"Base model for PEFT must be BaseLLM or BaseVLM, got {type(model)}")
+                raise TypeError(
+                    f"Base model for PEFT must be BaseLLM or BaseVLM, got {type(model)}"
+                )
             # Wrap the model with the PeftHead
             self.model = PeftHead(model=self.model)
             # Prepare the model for PEFT training/inference
@@ -662,8 +747,10 @@ class BaseLearnableAgent(BaseAgent):
 
 # --- Memory Classes ---
 
+
 class BaseMemory(ABC):
     """Abstract base class for agent memory modules."""
+
     def __init__(self, memory_type: str) -> None:
         """
         Initializes BaseMemory.
@@ -787,7 +874,9 @@ class ConversationMemory(BaseMemory):
         # Return a copy to prevent external modification
         return list(self.memory)
 
-    def retrieve_by_role(self, role: str, n: Optional[int] = None) -> List[Dict[str, str]]:
+    def retrieve_by_role(
+        self, role: str, n: Optional[int] = None
+    ) -> List[Dict[str, str]]:
         """
         Retrieves messages filtered by role, optionally limited to the most recent 'n'.
 
@@ -847,7 +936,7 @@ class KGMemory(BaseMemory):
             # Store system prompt as a special fact
             self.kg.append(
                 {
-                    "role": "system", # Use role for consistency
+                    "role": "system",  # Use role for consistency
                     "subject": "system",
                     "predicate": "has_initial_prompt",
                     "object": system_prompt,
@@ -898,7 +987,7 @@ class KGMemory(BaseMemory):
                 "subject": subject,
                 "predicate": predicate,
                 "object": obj,
-                "timestamp": time.time(), # Update timestamp on replace
+                "timestamp": time.time(),  # Update timestamp on replace
             }
         else:
             raise IndexError("KG index out of range.")
@@ -938,7 +1027,9 @@ class KGMemory(BaseMemory):
         # Return a copy
         return [self._kg_to_llm_format(fact) for fact in self.kg]
 
-    def retrieve_by_role(self, role: str, n: Optional[int] = None) -> List[Dict[str, str]]:
+    def retrieve_by_role(
+        self, role: str, n: Optional[int] = None
+    ) -> List[Dict[str, str]]:
         """
         Retrieves facts filtered by role, optionally limited to the most recent 'n',
         formatted for LLM input.
@@ -988,7 +1079,9 @@ class KGMemory(BaseMemory):
         # Use the role from the fact itself
         return {"role": fact["role"], "content": content}
 
-    def extract_and_update_from_text(self, input_text: str, role: str = "user") -> List[Dict[str, str]]:
+    def extract_and_update_from_text(
+        self, input_text: str, role: str = "user"
+    ) -> List[Dict[str, str]]:
         """
         Uses the associated LLM to extract facts from input text and adds them to the KG.
 
@@ -1013,7 +1106,9 @@ class KGMemory(BaseMemory):
         valid_facts_added = 0
         try:
             # Assuming run returns Dict or List[Dict] in json_mode
-            result: Union[Dict, List[Dict], str] = self.model.run(messages=messages, json_mode=True)
+            result: Union[Dict, List[Dict], str] = self.model.run(
+                messages=messages, json_mode=True
+            )
 
             # Parse the result, expecting a list of dicts
             parsed_result: Any
@@ -1021,7 +1116,9 @@ class KGMemory(BaseMemory):
                 try:
                     parsed_result = json.loads(result)
                 except json.JSONDecodeError:
-                    logging.warning(f"KG extraction result was string but not valid JSON: {result}")
+                    logging.warning(
+                        f"KG extraction result was string but not valid JSON: {result}"
+                    )
                     parsed_result = None
             else:
                 parsed_result = result
@@ -1029,7 +1126,7 @@ class KGMemory(BaseMemory):
             if isinstance(parsed_result, list):
                 extracted_facts = parsed_result
             elif parsed_result is not None:
-                 logging.warning(f"KG extraction result was not a list: {parsed_result}")
+                logging.warning(f"KG extraction result was not a list: {parsed_result}")
 
             # Validate and update memory
             for fact in extracted_facts:
@@ -1040,18 +1137,23 @@ class KGMemory(BaseMemory):
                     and "object" in fact
                 ):
                     self.update_memory(
-                        role, str(fact["subject"]), str(fact["predicate"]), str(fact["object"])
+                        role,
+                        str(fact["subject"]),
+                        str(fact["predicate"]),
+                        str(fact["object"]),
                     )
                     valid_facts_added += 1
                 else:
-                     logging.warning(f"Skipping invalid fact format during KG extraction: {fact}")
+                    logging.warning(
+                        f"Skipping invalid fact format during KG extraction: {fact}"
+                    )
             logging.info(f"Extracted and added {valid_facts_added} facts to KG memory.")
 
         except Exception as e:
             logging.error(f"Error during KG fact extraction: {e}")
             # Optionally, store the error or the raw text as a different kind of memory entry
 
-        return extracted_facts # Return the raw extracted list
+        return extracted_facts  # Return the raw extracted list
 
 
 class MemoryManager:
@@ -1080,7 +1182,7 @@ class MemoryManager:
             ValueError: If memory_type is unknown or if 'kg' is chosen without providing a model.
         """
         self.memory_type = memory_type
-        self.memory_module: BaseMemory # Define type hint
+        self.memory_module: BaseMemory  # Define type hint
         if memory_type == "conversation_history":
             self.memory_module = ConversationMemory(system_prompt=system_prompt)
         elif memory_type == "kg":
@@ -1115,20 +1217,22 @@ class MemoryManager:
     def retrieve_by_role(self, *args: Any, **kwargs: Any) -> List[Dict[str, Any]]:
         """Delegates to the underlying memory module's retrieve_by_role if available."""
         # Ensure the method exists on the module before calling
-        if hasattr(self.memory_module, 'retrieve_by_role'):
+        if hasattr(self.memory_module, "retrieve_by_role"):
             return self.memory_module.retrieve_by_role(*args, **kwargs)
         else:
             # Provide a basic fallback implementation if needed, though ideally subclasses implement it
-            logging.warning(f"retrieve_by_role not explicitly implemented for {self.memory_type}, using basic filter.")
+            logging.warning(
+                f"retrieve_by_role not explicitly implemented for {self.memory_type}, using basic filter."
+            )
             all_memory = self.retrieve_all()
-            role_to_match = args[0] if args else kwargs.get('role')
-            n = args[1] if len(args) > 1 else kwargs.get('n')
-            if not role_to_match: return []
+            role_to_match = args[0] if args else kwargs.get("role")
+            n = args[1] if len(args) > 1 else kwargs.get("n")
+            if not role_to_match:
+                return []
             filtered = [m for m in all_memory if m.get("role") == role_to_match]
             # Note: Order might not be guaranteed depending on retrieve_all implementation
             # For ConversationMemory, retrieve_all is ordered. For KGMemory, it might not be unless sorted.
             return filtered[-n:] if n else filtered
-
 
     def reset_memory(self) -> None:
         """Delegates to the underlying memory module's reset_memory."""
@@ -1138,7 +1242,9 @@ class MemoryManager:
         """Delegates to the underlying memory module's to_llm_format."""
         return self.memory_module.to_llm_format()
 
-    def extract_and_update_from_text(self, *args: Any, **kwargs: Any) -> List[Dict[str, str]]:
+    def extract_and_update_from_text(
+        self, *args: Any, **kwargs: Any
+    ) -> List[Dict[str, str]]:
         """
         Delegates to the underlying KGMemory's extract_and_update_from_text.
 
@@ -1155,6 +1261,7 @@ class MemoryManager:
 
 # --- Concrete Agent Implementations ---
 
+
 class LearnableAgent(BaseLearnableAgent):
     """
     An agent implementation that uses a local, potentially learnable (e.g., PEFT) model.
@@ -1162,6 +1269,7 @@ class LearnableAgent(BaseLearnableAgent):
     It utilizes a MemoryManager to handle its internal state and implements the
     `_run` method for core logic execution based on different run modes.
     """
+
     def __init__(
         self,
         model: Union[BaseVLM, BaseLLM],
@@ -1199,24 +1307,26 @@ class LearnableAgent(BaseLearnableAgent):
             max_tokens=max_tokens,
             agent_name=agent_name,
             allowed_peers=allowed_peers,
-            tools=tools, # Pass tools/schema up to BaseAgent via kwargs
+            tools=tools,  # Pass tools/schema up to BaseAgent via kwargs
             tools_schema=tools_schema,
         )
         # Determine the base model for KG memory if PEFT is used
         # self.model might be PeftHead, self.model.model is the base LLM/VLM
         kg_model: Union[BaseVLM, BaseLLM]
         if isinstance(self.model, PeftHead):
-             kg_model = self.model.model # Access the underlying model
+            kg_model = self.model.model  # Access the underlying model
         else:
-             kg_model = self.model
+            kg_model = self.model
         # Initialize the memory manager
         self.memory = MemoryManager(
             memory_type=memory_type or "conversation_history",
-            system_prompt=system_prompt, # Use the agent's base system prompt for memory init
+            system_prompt=system_prompt,  # Use the agent's base system prompt for memory init
             model=kg_model if memory_type == "kg" else None,
         )
 
-    async def _run(self, prompt: Any, request_context: RequestContext, run_mode: str, **kwargs: Any) -> Any:
+    async def _run(
+        self, prompt: Any, request_context: RequestContext, run_mode: str, **kwargs: Any
+    ) -> Any:
         """
         Core execution logic for the LearnableAgent.
 
@@ -1236,7 +1346,7 @@ class LearnableAgent(BaseLearnableAgent):
             Exception: Propagates exceptions from the model's `run` method.
         """
         user_prompt = str(prompt)
-        role = "user" # Assume input prompt is from user context for memory update
+        role = "user"  # Assume input prompt is from user context for memory update
         await self._log_progress(
             request_context,
             LogLevel.DETAILED,
@@ -1248,7 +1358,9 @@ class LearnableAgent(BaseLearnableAgent):
 
         # Select system prompt based on run_mode
         # Allows defining specific prompts like self.system_prompt_plan
-        system_prompt_content = getattr(self, f"system_prompt_{run_mode}", self.system_prompt)
+        system_prompt_content = getattr(
+            self, f"system_prompt_{run_mode}", self.system_prompt
+        )
 
         # Prepare messages for LLM using memory
         llm_messages = self.memory.to_llm_format()
@@ -1262,13 +1374,19 @@ class LearnableAgent(BaseLearnableAgent):
                 system_updated = True
                 break
         if not system_updated:
-            llm_messages_copy.insert(0, {"role": "system", "content": system_prompt_content})
+            llm_messages_copy.insert(
+                0, {"role": "system", "content": system_prompt_content}
+            )
 
         # Determine model parameters for this run
-        json_mode = (run_mode == "plan") # Example: Plan mode might require JSON output
+        json_mode = run_mode == "plan"  # Example: Plan mode might require JSON output
         max_tokens_override = kwargs.get("max_tokens", self.max_tokens)
 
-        await self._log_progress(request_context, LogLevel.DETAILED, f"Calling internal LLM (mode: {run_mode})")
+        await self._log_progress(
+            request_context,
+            LogLevel.DETAILED,
+            f"Calling internal LLM (mode: {run_mode})",
+        )
         try:
             # Call the model (self.model might be PeftHead or the base model)
             # Assuming self.model.run handles potential PEFT wrapping internally
@@ -1279,10 +1397,14 @@ class LearnableAgent(BaseLearnableAgent):
                 max_tokens=max_tokens_override,
                 json_mode=json_mode,
                 tools=self.tools_schema,
-                **model_run_kwargs
+                **model_run_kwargs,
             )
             # Get string representation for logging and memory update
-            output_str = json.dumps(result) if isinstance(result, (dict, list)) and json_mode else str(result)
+            output_str = (
+                json.dumps(result)
+                if isinstance(result, (dict, list)) and json_mode
+                else str(result)
+            )
             await self._log_progress(
                 request_context,
                 LogLevel.DETAILED,
@@ -1290,7 +1412,10 @@ class LearnableAgent(BaseLearnableAgent):
             )
         except Exception as e:
             await self._log_progress(
-                request_context, LogLevel.MINIMAL, f"LLM call failed: {e}", data={"error": str(e)}
+                request_context,
+                LogLevel.MINIMAL,
+                f"LLM call failed: {e}",
+                data={"error": str(e)},
             )
             raise
 
@@ -1302,12 +1427,19 @@ class LearnableAgent(BaseLearnableAgent):
         # This might involve parsing 'result', calling self.invoke_agent(...) or self.tools[...](...)
         # Remember to pass the request_context to invoke_agent.
         if isinstance(result, dict) and result.get("tool_calls"):
-             await self._log_progress(request_context, LogLevel.DEBUG, "Handling tool calls (TODO)", data=result["tool_calls"])
-             # Add tool call handling logic here
-             # e.g., parse calls, execute tools, update memory with results
+            await self._log_progress(
+                request_context,
+                LogLevel.DEBUG,
+                "Handling tool calls (TODO)",
+                data=result["tool_calls"],
+            )
+            # Add tool call handling logic here
+            # e.g., parse calls, execute tools, update memory with results
         # --- End Post-processing ---
 
-        await self._log_progress(request_context, LogLevel.DETAILED, f"_run mode='{run_mode}' finished.")
+        await self._log_progress(
+            request_context, LogLevel.DETAILED, f"_run mode='{run_mode}' finished."
+        )
         return result
 
 
@@ -1318,6 +1450,7 @@ class Agent(BaseAgent):
     It initializes the appropriate model type based on configuration, uses a
     MemoryManager, and implements the `_run` method for core logic.
     """
+
     def __init__(
         self,
         model_config: Dict[str, Any],
@@ -1348,8 +1481,10 @@ class Agent(BaseAgent):
         # Determine max_tokens: use model_config if present, else agent's max_tokens, else default 512
         model_max_tokens = model_config.get("max_tokens", max_tokens)
         # Ensure default_max_tokens has a value for model creation
-        self.model_instance: Union[BaseLLM, BaseVLM, BaseAPIModel] = self._create_model_from_config(
-            model_config, default_max_tokens=model_max_tokens or 512
+        self.model_instance: Union[BaseLLM, BaseVLM, BaseAPIModel] = (
+            self._create_model_from_config(
+                model_config, default_max_tokens=model_max_tokens or 512
+            )
         )
         # Initialize BaseAgent with the created model instance and agent's max_tokens default
         super().__init__(
@@ -1357,7 +1492,7 @@ class Agent(BaseAgent):
             system_prompt=system_prompt,
             tools=tools,
             tools_schema=tools_schema,
-            max_tokens=max_tokens, # Use the agent's max_tokens default here
+            max_tokens=max_tokens,  # Use the agent's max_tokens default here
             agent_name=agent_name,
             allowed_peers=allowed_peers,
         )
@@ -1395,19 +1530,28 @@ class Agent(BaseAgent):
             raise ValueError("Model configuration must include a 'name'.")
 
         # Keys used directly in model constructors or common config
-        known_keys = {"type", "name", "class", "max_tokens", "torch_dtype", "device_map", "api_key", "base_url"}
+        known_keys = {
+            "type",
+            "name",
+            "class",
+            "max_tokens",
+            "torch_dtype",
+            "device_map",
+            "api_key",
+            "base_url",
+        }
         # Extract remaining keys as extra kwargs for the model constructor
         extra_kwargs = {k: v for k, v in config.items() if k not in known_keys}
 
         if model_type == "local":
-            model_class_type = config.get("class", "llm") # Default to llm
+            model_class_type = config.get("class", "llm")  # Default to llm
             torch_dtype = config.get("torch_dtype", "auto")
             device_map = config.get("device_map", "auto")
 
             if model_class_type == "llm":
                 return BaseLLM(
                     model_name=model_name,
-                    max_tokens=max_tokens_cfg, # Use resolved max_tokens for the model instance
+                    max_tokens=max_tokens_cfg,  # Use resolved max_tokens for the model instance
                     torch_dtype=torch_dtype,
                     device_map=device_map,
                     **extra_kwargs,
@@ -1415,7 +1559,7 @@ class Agent(BaseAgent):
             elif model_class_type == "vlm":
                 return BaseVLM(
                     model_name=model_name,
-                    max_tokens=max_tokens_cfg, # Use resolved max_tokens
+                    max_tokens=max_tokens_cfg,  # Use resolved max_tokens
                     torch_dtype=torch_dtype,
                     device_map=device_map,
                     **extra_kwargs,
@@ -1429,8 +1573,8 @@ class Agent(BaseAgent):
                 model_name=model_name,
                 api_key=api_key,
                 base_url=base_url,
-                max_tokens=max_tokens_cfg, # Use resolved max_tokens
-                **extra_kwargs, # Pass remaining kwargs to BaseAPIModel
+                max_tokens=max_tokens_cfg,  # Use resolved max_tokens
+                **extra_kwargs,  # Pass remaining kwargs to BaseAPIModel
             )
         else:
             raise ValueError(
@@ -1448,19 +1592,30 @@ class Agent(BaseAgent):
         if isinstance(self.model_instance, BaseAPIModel):
             # Exclude keys already used in _create_model_from_config or BaseAgent init
             exclude_keys = {
-                "type", "name", "class", "api_key", "base_url", "max_tokens",
-                "torch_dtype", "device_map", # Common local model keys, exclude for safety
-                "system_prompt", "tools", "tools_schema", "memory_type", "agent_name", "allowed_peers" # Agent config keys
+                "type",
+                "name",
+                "class",
+                "api_key",
+                "base_url",
+                "max_tokens",
+                "torch_dtype",
+                "device_map",  # Common local model keys, exclude for safety
+                "system_prompt",
+                "tools",
+                "tools_schema",
+                "memory_type",
+                "agent_name",
+                "allowed_peers",  # Agent config keys
             }
             kwargs = {
-                k: v
-                for k, v in self._model_config.items()
-                if k not in exclude_keys
+                k: v for k, v in self._model_config.items() if k not in exclude_keys
             }
             return kwargs
         return {}
 
-    async def _run(self, prompt: Any, request_context: RequestContext, run_mode: str, **kwargs: Any) -> Any:
+    async def _run(
+        self, prompt: Any, request_context: RequestContext, run_mode: str, **kwargs: Any
+    ) -> Any:
         """
         Core execution logic for the Agent.
 
@@ -1482,7 +1637,7 @@ class Agent(BaseAgent):
             Exception: Propagates exceptions from the model's `run` method.
         """
         user_prompt = str(prompt)
-        role = "user" # Assume input prompt is from user context
+        role = "user"  # Assume input prompt is from user context
         await self._log_progress(
             request_context,
             LogLevel.DETAILED,
@@ -1493,7 +1648,9 @@ class Agent(BaseAgent):
         self.memory.update_memory(role, user_prompt)
 
         # Select system prompt based on run mode
-        system_prompt_content = getattr(self, f"system_prompt_{run_mode}", self.system_prompt)
+        system_prompt_content = getattr(
+            self, f"system_prompt_{run_mode}", self.system_prompt
+        )
 
         # Prepare messages
         llm_messages = self.memory.to_llm_format()
@@ -1505,18 +1662,22 @@ class Agent(BaseAgent):
                 system_updated = True
                 break
         if not system_updated:
-            llm_messages_copy.insert(0, {"role": "system", "content": system_prompt_content})
+            llm_messages_copy.insert(
+                0, {"role": "system", "content": system_prompt_content}
+            )
 
         # Determine model parameters
-        json_mode = (run_mode == "plan")
+        json_mode = run_mode == "plan"
         # Get agent's default max_tokens, allow override via kwargs from invoke_agent/handle_invocation
         max_tokens_override = kwargs.pop("max_tokens", self.max_tokens)
 
         # Get API-specific kwargs from config and merge/override with runtime kwargs
         api_kwargs = self._get_api_kwargs()
-        api_kwargs.update(kwargs) # Runtime kwargs override config kwargs
+        api_kwargs.update(kwargs)  # Runtime kwargs override config kwargs
 
-        await self._log_progress(request_context, LogLevel.DETAILED, f"Calling model/API (mode: {run_mode})")
+        await self._log_progress(
+            request_context, LogLevel.DETAILED, f"Calling model/API (mode: {run_mode})"
+        )
         try:
             # Call the model instance (self.model_instance)
             output: Any = self.model_instance.run(
@@ -1524,7 +1685,7 @@ class Agent(BaseAgent):
                 max_tokens=max_tokens_override,
                 json_mode=json_mode,
                 tools=self.tools_schema,
-                **api_kwargs, # Pass merged kwargs
+                **api_kwargs,  # Pass merged kwargs
             )
             # Get string representation for logging/memory
             output_str = (
@@ -1539,7 +1700,10 @@ class Agent(BaseAgent):
             )
         except Exception as e:
             await self._log_progress(
-                request_context, LogLevel.MINIMAL, f"Model/API call failed: {e}", data={"error": str(e)}
+                request_context,
+                LogLevel.MINIMAL,
+                f"Model/API call failed: {e}",
+                data={"error": str(e)},
             )
             raise
 
@@ -1548,11 +1712,18 @@ class Agent(BaseAgent):
 
         # --- Post-processing Placeholder ---
         if isinstance(output, dict) and output.get("tool_calls"):
-             await self._log_progress(request_context, LogLevel.DEBUG, "Handling tool calls (TODO)", data=output["tool_calls"])
-             # Add tool call handling logic here
+            await self._log_progress(
+                request_context,
+                LogLevel.DEBUG,
+                "Handling tool calls (TODO)",
+                data=output["tool_calls"],
+            )
+            # Add tool call handling logic here
         # --- End Post-processing ---
 
-        await self._log_progress(request_context, LogLevel.DETAILED, f"_run mode='{run_mode}' finished.")
+        await self._log_progress(
+            request_context, LogLevel.DETAILED, f"_run mode='{run_mode}' finished."
+        )
         return output
 
 
@@ -1565,6 +1736,7 @@ class BrowserAgent(Agent):
     Implements the `_run` method for execution logic, including parsing and
     executing browser commands in 'think' mode.
     """
+
     def __init__(
         self,
         model_config: Dict[str, Any],
@@ -1590,13 +1762,15 @@ class BrowserAgent(Agent):
         self.generation_system_prompt: Optional[str] = generation_system_prompt
         self.critic_system_prompt: Optional[str] = critic_system_prompt
         # Use generation prompt as the default system prompt for Agent base class if provided
-        effective_system_prompt = generation_system_prompt or "You are a web browsing assistant."
+        effective_system_prompt = (
+            generation_system_prompt or "You are a web browsing assistant."
+        )
         # Initialize the parent Agent class
         super().__init__(
             model_config=model_config,
-            system_prompt=effective_system_prompt, # Pass effective prompt
-            tools=None, # Browser tools are handled separately via BrowserTool
-            tools_schema=None, # Schema is set later in create methods based on BrowserTool
+            system_prompt=effective_system_prompt,  # Pass effective prompt
+            tools=None,  # Browser tools are handled separately via BrowserTool
+            tools_schema=None,  # Schema is set later in create methods based on BrowserTool
             memory_type=memory_type,
             max_tokens=max_tokens,
             agent_name=agent_name,
@@ -1606,8 +1780,9 @@ class BrowserAgent(Agent):
         self.browser_tool: Optional[BrowserTool] = None
         self.browser_methods: Dict[str, Callable[..., Any]] = {}
 
-
-    async def _run(self, prompt: Any, request_context: RequestContext, run_mode: str, **kwargs: Any) -> Any:
+    async def _run(
+        self, prompt: Any, request_context: RequestContext, run_mode: str, **kwargs: Any
+    ) -> Any:
         """
         Core execution logic for the BrowserAgent.
 
@@ -1630,7 +1805,9 @@ class BrowserAgent(Agent):
             Exception: Propagates exceptions from the model's `run` method or browser actions.
         """
         user_prompt = str(prompt) if prompt else None
-        role = "user" if user_prompt else None # Role for memory update if prompt exists
+        role = (
+            "user" if user_prompt else None
+        )  # Role for memory update if prompt exists
 
         await self._log_progress(
             request_context,
@@ -1643,7 +1820,9 @@ class BrowserAgent(Agent):
             self.memory.update_memory(role, user_prompt)
 
         # Select system prompt based on run_mode
-        system_prompt_content = self.system_prompt # Default is generation_system_prompt
+        system_prompt_content = (
+            self.system_prompt
+        )  # Default is generation_system_prompt
         if run_mode == "think":
             system_prompt_content = self.generation_system_prompt or self.system_prompt
         elif run_mode == "critic":
@@ -1651,7 +1830,7 @@ class BrowserAgent(Agent):
         # If run_mode is 'chat', it will use the default system_prompt (generation_system_prompt)
 
         # Prepare messages for LLM
-        llm_messages = self.memory.retrieve_all() # Get all memory for context
+        llm_messages = self.memory.retrieve_all()  # Get all memory for context
         system_updated = False
         llm_messages_copy = [msg.copy() for msg in llm_messages]
         for msg in llm_messages_copy:
@@ -1660,17 +1839,23 @@ class BrowserAgent(Agent):
                 system_updated = True
                 break
         if not system_updated:
-            llm_messages_copy.insert(0, {"role": "system", "content": system_prompt_content})
+            llm_messages_copy.insert(
+                0, {"role": "system", "content": system_prompt_content}
+            )
 
         # Determine model parameters
-        json_mode = False # Browser actions usually parsed from text, critic is text eval
+        json_mode = (
+            False  # Browser actions usually parsed from text, critic is text eval
+        )
         max_tokens_override = kwargs.pop("max_tokens", self.max_tokens)
 
         # Get API-specific kwargs and merge runtime kwargs
         api_kwargs = self._get_api_kwargs()
         api_kwargs.update(kwargs)
 
-        await self._log_progress(request_context, LogLevel.DETAILED, f"Calling model/API (mode: {run_mode})")
+        await self._log_progress(
+            request_context, LogLevel.DETAILED, f"Calling model/API (mode: {run_mode})"
+        )
         try:
             # Call the model instance
             # Pass tools schema only if in 'think' mode and schema exists
@@ -1679,10 +1864,16 @@ class BrowserAgent(Agent):
                 messages=llm_messages_copy,
                 max_tokens=max_tokens_override,
                 json_mode=json_mode,
-                tools=self.tools_schema if run_mode == "think" and self.tools_schema else None,
+                tools=(
+                    self.tools_schema
+                    if run_mode == "think" and self.tools_schema
+                    else None
+                ),
                 **api_kwargs,
             )
-            output_str = str(result) # Ensure we have a string representation for logging/memory
+            output_str = str(
+                result
+            )  # Ensure we have a string representation for logging/memory
             await self._log_progress(
                 request_context,
                 LogLevel.DETAILED,
@@ -1690,22 +1881,36 @@ class BrowserAgent(Agent):
             )
         except Exception as e:
             await self._log_progress(
-                request_context, LogLevel.MINIMAL, f"Model/API call failed: {e}", data={"error": str(e)}
+                request_context,
+                LogLevel.MINIMAL,
+                f"Model/API call failed: {e}",
+                data={"error": str(e)},
             )
             raise
 
         # Update memory with the LLM's direct response
-        memory_role = "agent" if run_mode == "think" else run_mode # e.g., 'critic', 'assistant' for 'chat'
+        memory_role = (
+            "agent" if run_mode == "think" else run_mode
+        )  # e.g., 'critic', 'assistant' for 'chat'
         self.memory.update_memory(memory_role, output_str)
 
         # --- Browser Action Execution (Think Mode Only) ---
         if run_mode == "think":
             if not self.browser_tool or not self.browser_methods:
-                 await self._log_progress(request_context, LogLevel.ERROR, "Browser tool not initialized, cannot execute actions.")
-                 # Optionally return an error message or raise an exception
-                 # return "Error: Browser tool not available."
+                await self._log_progress(
+                    request_context,
+                    LogLevel.ERROR,
+                    "Browser tool not initialized, cannot execute actions.",
+                )
+                # Optionally return an error message or raise an exception
+                # return "Error: Browser tool not available."
             else:
-                await self._log_progress(request_context, LogLevel.DEBUG, "Parsing/Executing browser actions", data={"llm_output": output_str})
+                await self._log_progress(
+                    request_context,
+                    LogLevel.DEBUG,
+                    "Parsing/Executing browser actions",
+                    data={"llm_output": output_str},
+                )
                 # --- Parsing and Execution Logic ---
                 # This part needs a robust strategy depending on how the LLM is prompted
 
@@ -1713,32 +1918,59 @@ class BrowserAgent(Agent):
                 if isinstance(result, dict) and result.get("tool_calls"):
                     tool_calls = result["tool_calls"]
                     for call in tool_calls:
-                         # Extract tool name and arguments
-                         tool_name = call.get("function", {}).get("name")
-                         tool_args_str = call.get("function", {}).get("arguments")
+                        # Extract tool name and arguments
+                        tool_name = call.get("function", {}).get("name")
+                        tool_args_str = call.get("function", {}).get("arguments")
 
-                         if tool_name in self.browser_methods and tool_args_str:
-                              try:
-                                   # Parse JSON arguments
-                                   tool_args = json.loads(tool_args_str)
-                                   await self._log_progress(request_context, LogLevel.DETAILED, f"Executing browser tool call: {tool_name}({tool_args})")
-                                   # Execute the corresponding browser method
-                                   action_result = await self.browser_methods[tool_name](**tool_args)
-                                   result_str = str(action_result)[:500] # Truncate long results
-                                   await self._log_progress(request_context, LogLevel.DETAILED, f"Browser action result: {result_str}")
-                                   # Update memory with the outcome (using a specific role)
-                                   self.memory.update_memory("tool_result", f"Executed {tool_name}: {result_str}")
-                              except json.JSONDecodeError:
-                                   error_msg = f"Failed to decode JSON arguments for {tool_name}: {tool_args_str}"
-                                   await self._log_progress(request_context, LogLevel.WARNING, error_msg)
-                                   self.memory.update_memory("tool_error", error_msg)
-                              except Exception as exec_e:
-                                   error_msg = f"Error executing browser tool {tool_name}: {exec_e}"
-                                   await self._log_progress(request_context, LogLevel.ERROR, error_msg, data={"error": str(exec_e)})
-                                   self.memory.update_memory("tool_error", error_msg)
-                         else:
-                              await self._log_progress(request_context, LogLevel.WARNING, f"Unknown or invalid tool call received: {call}")
-                              self.memory.update_memory("tool_error", f"Unknown/invalid tool: {tool_name}")
+                        if tool_name in self.browser_methods and tool_args_str:
+                            try:
+                                # Parse JSON arguments
+                                tool_args = json.loads(tool_args_str)
+                                await self._log_progress(
+                                    request_context,
+                                    LogLevel.DETAILED,
+                                    f"Executing browser tool call: {tool_name}({tool_args})",
+                                )
+                                # Execute the corresponding browser method
+                                action_result = await self.browser_methods[tool_name](
+                                    **tool_args
+                                )
+                                result_str = str(action_result)[
+                                    :500
+                                ]  # Truncate long results
+                                await self._log_progress(
+                                    request_context,
+                                    LogLevel.DETAILED,
+                                    f"Browser action result: {result_str}",
+                                )
+                                # Update memory with the outcome (using a specific role)
+                                self.memory.update_memory(
+                                    "tool_result", f"Executed {tool_name}: {result_str}"
+                                )
+                            except json.JSONDecodeError:
+                                error_msg = f"Failed to decode JSON arguments for {tool_name}: {tool_args_str}"
+                                await self._log_progress(
+                                    request_context, LogLevel.WARNING, error_msg
+                                )
+                                self.memory.update_memory("tool_error", error_msg)
+                            except Exception as exec_e:
+                                error_msg = f"Error executing browser tool {tool_name}: {exec_e}"
+                                await self._log_progress(
+                                    request_context,
+                                    LogLevel.ERROR,
+                                    error_msg,
+                                    data={"error": str(exec_e)},
+                                )
+                                self.memory.update_memory("tool_error", error_msg)
+                        else:
+                            await self._log_progress(
+                                request_context,
+                                LogLevel.WARNING,
+                                f"Unknown or invalid tool call received: {call}",
+                            )
+                            self.memory.update_memory(
+                                "tool_error", f"Unknown/invalid tool: {tool_name}"
+                            )
 
                 # Option 2: LLM outputs specific command string (Less reliable fallback)
                 else:
@@ -1756,43 +1988,80 @@ class BrowserAgent(Agent):
                                 # SAFER (but basic) alternative: try simple key=value parsing
                                 action_args = {}
                                 try:
-                                     # Attempt to parse simple key="value" or key=number pairs
-                                     # This is still fragile and needs improvement for complex args
-                                     arg_pairs = re.findall(r'(\w+)\s*=\s*("[^"]*"|\'[^\']*\'|\d+\.?\d*|True|False|None)', args_str)
-                                     for key, val_str in arg_pairs:
-                                          try:
-                                               # Use json.loads for basic types (string, number, bool, None)
-                                               action_args[key] = json.loads(val_str)
-                                          except json.JSONDecodeError:
-                                               # Fallback for unquoted strings? Risky.
-                                               # Maybe treat as string if json.loads fails?
-                                               action_args[key] = val_str.strip("'\"") # Basic string unquoting
+                                    # Attempt to parse simple key="value" or key=number pairs
+                                    # This is still fragile and needs improvement for complex args
+                                    arg_pairs = re.findall(
+                                        r'(\w+)\s*=\s*("[^"]*"|\'[^\']*\'|\d+\.?\d*|True|False|None)',
+                                        args_str,
+                                    )
+                                    for key, val_str in arg_pairs:
+                                        try:
+                                            # Use json.loads for basic types (string, number, bool, None)
+                                            action_args[key] = json.loads(val_str)
+                                        except json.JSONDecodeError:
+                                            # Fallback for unquoted strings? Risky.
+                                            # Maybe treat as string if json.loads fails?
+                                            action_args[key] = val_str.strip(
+                                                "'\""
+                                            )  # Basic string unquoting
                                 except Exception as parse_e:
-                                     logging.warning(f"Basic argument parsing failed for {command}: {parse_e}")
-                                     raise ValueError(f"Cannot parse arguments: {args_str}")
+                                    logging.warning(
+                                        f"Basic argument parsing failed for {command}: {parse_e}"
+                                    )
+                                    raise ValueError(
+                                        f"Cannot parse arguments: {args_str}"
+                                    )
 
-                                await self._log_progress(request_context, LogLevel.DETAILED, f"Executing browser command: {command}({action_args})")
+                                await self._log_progress(
+                                    request_context,
+                                    LogLevel.DETAILED,
+                                    f"Executing browser command: {command}({action_args})",
+                                )
                                 # Execute the browser method with parsed keyword arguments
-                                action_result = await self.browser_methods[command](**action_args)
-                                result_str = str(action_result)[:500] # Truncate long results
-                                await self._log_progress(request_context, LogLevel.DETAILED, f"Browser action result: {result_str}")
+                                action_result = await self.browser_methods[command](
+                                    **action_args
+                                )
+                                result_str = str(action_result)[
+                                    :500
+                                ]  # Truncate long results
+                                await self._log_progress(
+                                    request_context,
+                                    LogLevel.DETAILED,
+                                    f"Browser action result: {result_str}",
+                                )
                                 # Update memory with the outcome
-                                self.memory.update_memory("tool_result", f"Executed {command}: {result_str}")
+                                self.memory.update_memory(
+                                    "tool_result", f"Executed {command}: {result_str}"
+                                )
                             except Exception as parse_exec_e:
                                 error_msg = f"Failed to parse/execute {command} args '{args_str}': {parse_exec_e}"
-                                await self._log_progress(request_context, LogLevel.WARNING, error_msg)
+                                await self._log_progress(
+                                    request_context, LogLevel.WARNING, error_msg
+                                )
                                 self.memory.update_memory("tool_error", error_msg)
                         else:
-                            await self._log_progress(request_context, LogLevel.WARNING, f"Unknown browser command parsed: {command}")
-                            self.memory.update_memory("tool_error", f"Unknown command: {command}")
+                            await self._log_progress(
+                                request_context,
+                                LogLevel.WARNING,
+                                f"Unknown browser command parsed: {command}",
+                            )
+                            self.memory.update_memory(
+                                "tool_error", f"Unknown command: {command}"
+                            )
                     else:
                         # No specific command pattern or tool calls found
-                        await self._log_progress(request_context, LogLevel.DEBUG, "No BROWSER.command or tool_calls found in output.")
+                        await self._log_progress(
+                            request_context,
+                            LogLevel.DEBUG,
+                            "No BROWSER.command or tool_calls found in output.",
+                        )
                         # Avoid cluttering memory if no action was intended/parsed
                         # self.memory.update_memory("tool_result", "No action taken.")
                 # --- End Parsing and Execution Logic ---
 
-        await self._log_progress(request_context, LogLevel.DETAILED, f"_run mode='{run_mode}' finished.")
+        await self._log_progress(
+            request_context, LogLevel.DETAILED, f"_run mode='{run_mode}' finished."
+        )
         # Return the original result from the LLM, which might be structured (tool calls) or just text
         return result
 
@@ -1808,7 +2077,7 @@ class BrowserAgent(Agent):
         headless_browser: bool = True,
         agent_name: Optional[str] = None,
         allowed_peers: Optional[List[str]] = None,
-        **kwargs: Any # Catch any other potential kwargs
+        **kwargs: Any,  # Catch any other potential kwargs
     ) -> "BrowserAgent":
         """
         Asynchronously creates and initializes a BrowserAgent instance.
@@ -1843,7 +2112,7 @@ class BrowserAgent(Agent):
             agent_name=agent_name,
             allowed_peers=allowed_peers,
             # Pass any extra kwargs caught by **kwargs if needed by __init__
-            **kwargs
+            **kwargs,
         )
 
         # Generate tool schema based on BrowserTool methods
@@ -1865,9 +2134,9 @@ class BrowserAgent(Agent):
                 temp_dir=temp_dir, headless=headless_browser
             )
         except Exception as init_e:
-             logging.error(f"Failed to initialize browser tool during create: {init_e}")
-             # Depending on requirements, either raise or allow creation without a working browser
-             raise init_e # Re-raise to indicate failure
+            logging.error(f"Failed to initialize browser tool during create: {init_e}")
+            # Depending on requirements, either raise or allow creation without a working browser
+            raise init_e  # Re-raise to indicate failure
 
         return agent
 
@@ -1881,10 +2150,10 @@ class BrowserAgent(Agent):
         max_tokens: Optional[int] = 512,
         temp_dir: Optional[str] = "./tmp/screenshots",
         headless_browser: bool = True,
-        timeout: Optional[int] = None, # Timeout per attempt
+        timeout: Optional[int] = None,  # Timeout per attempt
         agent_name: Optional[str] = None,
         allowed_peers: Optional[List[str]] = None,
-        **kwargs: Any # Catch any other potential kwargs
+        **kwargs: Any,  # Catch any other potential kwargs
     ) -> "BrowserAgent":
         """
         Asynchronously creates and initializes a BrowserAgent instance with retries and timeout
@@ -1920,7 +2189,7 @@ class BrowserAgent(Agent):
             max_tokens=max_tokens,
             agent_name=agent_name,
             allowed_peers=allowed_peers,
-            **kwargs
+            **kwargs,
         )
 
         # Generate tool schema
@@ -1932,16 +2201,18 @@ class BrowserAgent(Agent):
                 os.makedirs(temp_dir)
                 logging.info(f"Created temporary directory: {temp_dir}")
             except OSError as e:
-                 logging.error(f"Failed to create temp directory {temp_dir}: {e}")
-                 # Consider if this should be fatal
+                logging.error(f"Failed to create temp directory {temp_dir}: {e}")
+                # Consider if this should be fatal
 
         # Initialize browser tool with timeout and retries
-        init_timeout = timeout or 15 # Default timeout per attempt
+        init_timeout = timeout or 15  # Default timeout per attempt
         max_attempts = 3
         last_exception = None
         for attempt in range(max_attempts):
             try:
-                logging.info(f"Attempt {attempt + 1}/{max_attempts} to initialize browser tool...")
+                logging.info(
+                    f"Attempt {attempt + 1}/{max_attempts} to initialize browser tool..."
+                )
                 await asyncio.wait_for(
                     agent.initialize_browser_tool(
                         temp_dir=temp_dir, headless=headless_browser
@@ -1949,29 +2220,35 @@ class BrowserAgent(Agent):
                     timeout=init_timeout,
                 )
                 logging.info("Browser tool initialized successfully.")
-                last_exception = None # Clear last exception on success
-                break # Success
+                last_exception = None  # Clear last exception on success
+                break  # Success
             except asyncio.TimeoutError:
-                logging.warning(f"Browser initialization timed out (attempt {attempt + 1}).")
-                last_exception = TimeoutError(f"Browser initialization timed out after {init_timeout}s on attempt {attempt + 1}")
+                logging.warning(
+                    f"Browser initialization timed out (attempt {attempt + 1})."
+                )
+                last_exception = TimeoutError(
+                    f"Browser initialization timed out after {init_timeout}s on attempt {attempt + 1}"
+                )
                 # Consider adding a small delay before retrying
                 await asyncio.sleep(1)
                 # Close potentially lingering browser process before retrying? Requires BrowserTool method.
                 # await agent.force_close_browser_process() # Hypothetical method
                 if attempt == max_attempts - 1:
-                    raise last_exception # Raise after last attempt
+                    raise last_exception  # Raise after last attempt
             except Exception as e:
-                 logging.error(f"Error during browser initialization (attempt {attempt + 1}): {e}")
-                 last_exception = e
-                 # Close potentially lingering browser process?
-                 # await agent.force_close_browser_process() # Hypothetical method
-                 await asyncio.sleep(1) # Delay before retry on general error
-                 if attempt == max_attempts - 1:
-                      raise last_exception # Raise after last attempt
+                logging.error(
+                    f"Error during browser initialization (attempt {attempt + 1}): {e}"
+                )
+                last_exception = e
+                # Close potentially lingering browser process?
+                # await agent.force_close_browser_process() # Hypothetical method
+                await asyncio.sleep(1)  # Delay before retry on general error
+                if attempt == max_attempts - 1:
+                    raise last_exception  # Raise after last attempt
 
         # This check should technically be redundant due to raises in the loop, but acts as a safeguard.
         if last_exception:
-             raise last_exception
+            raise last_exception
 
         return agent
 
@@ -1984,59 +2261,80 @@ class BrowserAgent(Agent):
 
             # Iterate through attributes of the module to find Pydantic models representing tools
             for name in dir(web_browser_module):
-                 obj = getattr(web_browser_module, name)
-                 # Check if it's a Pydantic BaseModel class (but not BrowserTool itself)
-                 # and likely represents a tool action schema
-                 if (isinstance(obj, type) and
-                     issubclass(obj, BaseModel) and
-                     obj is not BrowserTool and # Exclude the tool class itself
-                     hasattr(obj, 'model_json_schema')): # Check if it has the schema method
-                     try:
-                         # Get the JSON schema from the Pydantic model
-                         schema = obj.model_json_schema()
-                         func_name = name # Use the Pydantic class name as the function name
-                         # Construct the OpenAI tool format
-                         tool_schemas.append({
-                             "type": "function",
-                             "function": {
-                                 "name": func_name,
-                                 "description": schema.get("description", f"Execute {func_name} browser action"),
-                                 "parameters": schema # The Pydantic schema itself defines parameters
-                             }
-                         })
-                     except Exception as e:
-                         logging.warning(f"Could not get/format schema for Pydantic tool {name}: {e}")
+                obj = getattr(web_browser_module, name)
+                # Check if it's a Pydantic BaseModel class (but not BrowserTool itself)
+                # and likely represents a tool action schema
+                if (
+                    isinstance(obj, type)
+                    and issubclass(obj, BaseModel)
+                    and obj is not BrowserTool  # Exclude the tool class itself
+                    and hasattr(obj, "model_json_schema")
+                ):  # Check if it has the schema method
+                    try:
+                        # Get the JSON schema from the Pydantic model
+                        schema = obj.model_json_schema()
+                        func_name = (
+                            name  # Use the Pydantic class name as the function name
+                        )
+                        # Construct the OpenAI tool format
+                        tool_schemas.append(
+                            {
+                                "type": "function",
+                                "function": {
+                                    "name": func_name,
+                                    "description": schema.get(
+                                        "description",
+                                        f"Execute {func_name} browser action",
+                                    ),
+                                    "parameters": schema,  # The Pydantic schema itself defines parameters
+                                },
+                            }
+                        )
+                    except Exception as e:
+                        logging.warning(
+                            f"Could not get/format schema for Pydantic tool {name}: {e}"
+                        )
 
             # Fallback or alternative: Check for specifically named schema variables (e.g., FN_*)
             # This is less preferred than using Pydantic models directly
             if not tool_schemas:
-                 logging.info("No Pydantic tool schemas found, checking for FN_ variables as fallback.")
-                 fn_schemas = [
-                     getattr(web_browser_module, name)
-                     for name in dir(web_browser_module)
-                     if name.startswith("FN_") and isinstance(getattr(web_browser_module, name), dict)
-                 ]
-                 for fn_schema in fn_schemas:
-                      # Basic validation for OpenAI format
-                      if (isinstance(fn_schema, dict) and
-                          fn_schema.get("type") == "function" and
-                          isinstance(fn_schema.get("function"), dict) and
-                          isinstance(fn_schema["function"].get("name"), str) and
-                          isinstance(fn_schema["function"].get("parameters"), dict)):
-                           tool_schemas.append(fn_schema)
-                      else:
-                           logging.warning(f"Skipping invalid FN_ schema format: {fn_schema}")
+                logging.info(
+                    "No Pydantic tool schemas found, checking for FN_ variables as fallback."
+                )
+                fn_schemas = [
+                    getattr(web_browser_module, name)
+                    for name in dir(web_browser_module)
+                    if name.startswith("FN_")
+                    and isinstance(getattr(web_browser_module, name), dict)
+                ]
+                for fn_schema in fn_schemas:
+                    # Basic validation for OpenAI format
+                    if (
+                        isinstance(fn_schema, dict)
+                        and fn_schema.get("type") == "function"
+                        and isinstance(fn_schema.get("function"), dict)
+                        and isinstance(fn_schema["function"].get("name"), str)
+                        and isinstance(fn_schema["function"].get("parameters"), dict)
+                    ):
+                        tool_schemas.append(fn_schema)
+                    else:
+                        logging.warning(
+                            f"Skipping invalid FN_ schema format: {fn_schema}"
+                        )
 
             self.tools_schema = tool_schemas
-            logging.info(f"Generated tools schema for BrowserAgent: {len(tool_schemas)} tools found.")
+            logging.info(
+                f"Generated tools schema for BrowserAgent: {len(tool_schemas)} tools found."
+            )
 
         except ImportError:
-             logging.error("Could not import src.environment.web_browser to generate tool schema.")
-             self.tools_schema = []
+            logging.error(
+                "Could not import src.environment.web_browser to generate tool schema."
+            )
+            self.tools_schema = []
         except Exception as schema_e:
-             logging.error(f"Error generating tool schema: {schema_e}")
-             self.tools_schema = []
-
+            logging.error(f"Error generating tool schema: {schema_e}")
+            self.tools_schema = []
 
     async def initialize_browser_tool(self, **kwargs: Any) -> None:
         """
@@ -2046,9 +2344,9 @@ class BrowserAgent(Agent):
             **kwargs: Arguments passed to BrowserTool.create (e.g., temp_dir, headless).
         """
         if self.browser_tool:
-             logging.warning("Browser tool already initialized. Re-initializing.")
-             # Consider closing the existing one first if necessary
-             # await self.close_browser()
+            logging.warning("Browser tool already initialized. Re-initializing.")
+            # Consider closing the existing one first if necessary
+            # await self.close_browser()
 
         try:
             # Create the BrowserTool instance
@@ -2062,12 +2360,16 @@ class BrowserAgent(Agent):
                     # Ensure it's an async method suitable for direct calling
                     if callable(method) and asyncio.iscoroutinefunction(method):
                         self.browser_methods[attr] = method
-            logging.info(f"Browser methods initialized: {list(self.browser_methods.keys())}")
+            logging.info(
+                f"Browser methods initialized: {list(self.browser_methods.keys())}"
+            )
         except Exception as e:
-             logging.exception("Failed to create or initialize browser tool.") # Log with traceback
-             self.browser_tool = None # Ensure tool is None if creation failed
-             self.browser_methods = {}
-             raise # Re-raise the exception
+            logging.exception(
+                "Failed to create or initialize browser tool."
+            )  # Log with traceback
+            self.browser_tool = None  # Ensure tool is None if creation failed
+            self.browser_methods = {}
+            raise  # Re-raise the exception
 
     async def close_browser(self) -> None:
         """Closes the underlying browser tool gracefully."""
@@ -2079,13 +2381,17 @@ class BrowserAgent(Agent):
                 task_id="cleanup",
                 initial_prompt=None,
                 progress_queue=dummy_queue,
-                log_level=LogLevel.MINIMAL, # Use minimal logging for cleanup
+                log_level=LogLevel.MINIMAL,  # Use minimal logging for cleanup
             )
-            await self._log_progress(dummy_request_context, LogLevel.MINIMAL, "Closing browser tool...")
+            await self._log_progress(
+                dummy_request_context, LogLevel.MINIMAL, "Closing browser tool..."
+            )
             try:
                 # Call the close method on the BrowserTool instance
                 await self.browser_tool.close()
-                await self._log_progress(dummy_request_context, LogLevel.MINIMAL, "Browser tool closed.")
+                await self._log_progress(
+                    dummy_request_context, LogLevel.MINIMAL, "Browser tool closed."
+                )
             except Exception as e:
                 await self._log_progress(
                     dummy_request_context,
@@ -2101,6 +2407,9 @@ class BrowserAgent(Agent):
                 try:
                     # Use put_nowait as we don't need to block if queue is full/closed
                     dummy_queue.put_nowait(None)
-                except Exception: pass # Ignore errors putting sentinel on dummy queue
+                except Exception:
+                    pass  # Ignore errors putting sentinel on dummy queue
         else:
-             logging.info("Attempted to close browser, but no active browser tool found.")
+            logging.info(
+                "Attempted to close browser, but no active browser tool found."
+            )
