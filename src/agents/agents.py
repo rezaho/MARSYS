@@ -1,71 +1,27 @@
 """
-This module defines the essential framework for constructing AI agents that leverage shared large-scale
-language models while allowing for task-specific extensions. The design emphasizes modularity, where the
-base language model (e.g., from the Llama or Qwen families) is managed externally and shared among multiple
-agents, while each agent is responsible for its own customizations.
+This module defines the core framework for AI agents within the multi-agent system.
 
-Key Components:
-
-1. Shared Base Model:
-    - The foundational language processing capabilities are provided by a base model that is instantiated
-      separately and shared across different agents. This separation enables efficient resource usage and
-      consistency in language understanding.
-
-2. Agent-Specific Extensions:
-    - Custom Prompt:
-         * Each agent defines a unique prompt that guides its behavior and tailors its responses to specific
-           contexts or tasks.
-    - Specialized Learning Head:
-         * Agents may incorporate task-specific learning modules (e.g., a LoRA head optimized via GRPO RL for
-           re-writing user queries). Although the core logic of these learning heads is implemented in a
-           separate module (such as models.py), agents are responsible for integrating and managing them.
-    - Memory Module:
-         * A dedicated memory component maintains the agent's internal state. This can include hidden state
-           representations or a history of interactions, enabling context-aware processing across multiple turns.
-
-3. Interaction Layers:
-    - Environment and Tools:
-         * Agents interface with external systems – whether digital platforms, physical devices, or
-           simulation environments – through specialized communication layers.
-    - Inter-Agent Communication:
-         * Designed for networked interactions, this mechanism facilitates communication between multiple agents,
-           organized following a topological structure that is defined in other modules.
-
-4. Methods of Communication:
-    - The module exposes APIs and methods for external invocation by users or other agents, enabling:
-         * Task requests and query processing.
-         * Interaction with diverse environments and collaboration among agents.
-
-Overall Design:
-    - This module’s structure separates the shared base model from agent-specific functionalities, ensuring that
-      while agents leverage a common language foundation, each can exhibit unique behaviors through tailored
-      prompts, learning heads, and memory management.
-    - The clear delineation between shared and specific components encourages extendibility and supports the
-      development of diverse agents capable of performing a wide range of tasks.
-
-This file defines the necessary classes and methods to:
-- Initialize and manage the base model.
-- Interface with environmental tools.
-- Facilitate inter-agent communications.
-- Manage agent-specific prompting, learning adaptations, and memory.
-- Provide a standardized communication channel for invoking agent actions.
-
-Future implementations should extend this module to incorporate concrete classes and methods
-to fully realize the operational capabilities of each agent based on the above specifications.
+It includes base classes for agents, memory management, communication protocols,
+and logging utilities. Agents can be specialized for different tasks and leverage
+shared language models or dedicated API models.
 """
 
 import asyncio
+import dataclasses
+import enum
 import importlib
 import json
+import logging
 import os
 import random
 import re
 import threading
+import time
 import uuid
 import weakref
+from abc import ABC, abstractmethod
 from datetime import datetime
-from queue import Queue
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Set, Tuple, Union, Type, Callable, AsyncGenerator
 from weakref import WeakValueDictionary
 
 from src.agents.memory import MessageMemory
@@ -73,760 +29,526 @@ from src.environment.web_browser import BrowserTool
 from src.models.models import BaseAPIModel, BaseLLM, BaseVLM, PeftHead
 
 
+class LogLevel(enum.IntEnum):
+    """Enumeration for different logging verbosity levels."""
+    NONE = 0
+    MINIMAL = 1
+    SUMMARY = 2
+    DETAILED = 3
+    DEBUG = 4
+
+
+@dataclasses.dataclass
+class ProgressUpdate:
+    """Dataclass representing a single progress update during task execution."""
+    timestamp: float
+    level: LogLevel
+    message: str
+    task_id: str
+    interaction_id: Optional[str] = None
+    agent_name: Optional[str] = None
+    data: Optional[Dict[str, Any]] = None
+
+
+@dataclasses.dataclass
+class RequestContext:
+    """
+    Dataclass holding context information for a specific agent invocation within a task.
+
+    Attributes:
+        task_id: Unique identifier for the overall task.
+        initial_prompt: The initial prompt that started the task.
+        progress_queue: Async queue for sending progress updates.
+        log_level: The minimum log level to report.
+        max_depth: Maximum allowed depth for agent invocations.
+        max_interactions: Maximum allowed number of interactions (invocations) for the task.
+        interaction_id: Unique identifier for the current agent interaction/invocation.
+        depth: Current depth of invocation in the agent call chain.
+        interaction_count: Current count of interactions in the task.
+        caller_agent_name: Name of the agent that invoked the current agent.
+        callee_agent_name: Name of the agent currently being invoked.
+    """
+    task_id: str
+    initial_prompt: Any
+    progress_queue: asyncio.Queue[Optional[ProgressUpdate]]
+    log_level: LogLevel = LogLevel.SUMMARY
+    max_depth: int = 5
+    max_interactions: int = 10
+    interaction_id: Optional[str] = None
+    depth: int = 0
+    interaction_count: int = 0
+    caller_agent_name: Optional[str] = None
+    callee_agent_name: Optional[str] = None
+
+
+class ProgressLogger:
+    """Utility class for logging progress updates."""
+    @staticmethod
+    async def log(
+        request_context: Optional[RequestContext],
+        level: LogLevel,
+        message: str,
+        agent_name: Optional[str] = None,
+        interaction_id: Optional[str] = None,
+        data: Optional[Dict[str, Any]] = None,
+    ) -> None:
+        """
+        Logs a progress message either to the async queue or standard logging.
+
+        Args:
+            request_context: The context of the current request, containing the queue and log level.
+                             Can be None for logging outside a specific task context.
+            level: The severity level of the log message.
+            message: The log message content.
+            agent_name: The name of the agent generating the log.
+            interaction_id: The ID of the specific interaction this log relates to.
+            data: Optional dictionary containing additional structured data.
+        """
+        if request_context and request_context.progress_queue and level <= request_context.log_level:
+            update = ProgressUpdate(
+                timestamp=time.time(),
+                level=level,
+                message=message,
+                task_id=request_context.task_id,
+                interaction_id=interaction_id or request_context.interaction_id,
+                agent_name=agent_name,
+                data=data,
+            )
+            await request_context.progress_queue.put(update)
+        elif level > LogLevel.NONE:
+            log_level_map = {
+                LogLevel.MINIMAL: logging.INFO,
+                LogLevel.SUMMARY: logging.INFO,
+                LogLevel.DETAILED: logging.DEBUG,
+                LogLevel.DEBUG: logging.DEBUG,
+            }
+            std_log_level = log_level_map.get(level, logging.INFO)
+            log_msg = f"[Task:{request_context.task_id if request_context else 'N/A'}]"
+            if interaction_id or (request_context and request_context.interaction_id):
+                log_msg += f"[Interaction:{interaction_id or request_context.interaction_id}]"
+            if agent_name:
+                log_msg += f"[Agent:{agent_name}]"
+            log_msg += f" {message}"
+            if data:
+                log_msg += f" Data: {data}"
+            logging.log(std_log_level, log_msg)
+
+
 class AgentRegistry:
-    _agents = weakref.WeakValueDictionary()
+    """
+    Manages the registration and retrieval of agent instances using weak references.
+
+    Ensures that agents can find and communicate with each other without creating
+    strong circular dependencies that would prevent garbage collection.
+    """
+    _agents: weakref.WeakValueDictionary[str, "BaseAgent"] = weakref.WeakValueDictionary()
     _lock = threading.Lock()
-    _counter = 0
+    _counter: int = 0
 
     @classmethod
-    def register(cls, agent, name=None, prefix="BaseAgent"):
+    def register(cls, agent: "BaseAgent", name: Optional[str] = None, prefix: str = "BaseAgent") -> str:
+        """
+        Registers an agent instance with the registry.
+
+        Args:
+            agent: The agent instance to register.
+            name: Optional specific name for the agent. If None, a unique name is generated.
+            prefix: Prefix used for generating unique names if 'name' is None.
+
+        Returns:
+            The final name under which the agent was registered.
+
+        Raises:
+            ValueError: If the provided name already exists and refers to a different instance.
+        """
         with cls._lock:
             if name is None:
                 cls._counter += 1
                 name = f"{prefix}-{cls._counter}"
-            else:
-                if name in cls._agents:
-                    raise ValueError(f"Agent name '{name}' already exists.")
+            elif name in cls._agents:
+                existing_agent = cls._agents.get(name)
+                if existing_agent is not None and existing_agent is not agent:
+                    raise ValueError(
+                        f"Agent name '{name}' already exists and refers to a different agent instance."
+                    )
             cls._agents[name] = agent
             return name
 
     @classmethod
-    def unregister(cls, name):
+    def unregister(cls, name: str) -> None:
+        """
+        Removes an agent registration.
+
+        Args:
+            name: The name of the agent to unregister.
+        """
         with cls._lock:
             cls._agents.pop(name, None)
 
     @classmethod
-    def get(cls, name):
+    def get(cls, name: str) -> Optional["BaseAgent"]:
+        """
+        Retrieves an agent instance by name.
+
+        Args:
+            name: The name of the agent to retrieve.
+
+        Returns:
+            The agent instance if found and alive, otherwise None.
+        """
         return cls._agents.get(name)
 
     @classmethod
-    def all(cls):
-        return dict(cls._agents)
+    def all(cls) -> Dict[str, "BaseAgent"]:
+        """
+        Returns a dictionary of all currently registered and alive agents.
+
+        Returns:
+            A dictionary mapping agent names to agent instances.
+        """
+        with cls._lock:
+            return dict(cls._agents)
 
 
-class BaseAgent:
+class BaseAgent(ABC):
     """
-    Minimal base class for all agents.
-    Handles agent registration, task queue, and basic properties.
+    Abstract base class for all agents in the system.
+
+    Provides core functionalities like registration, communication logging,
+    inter-agent invocation, progress logging, and basic attribute management.
+
+    Attributes:
+        model: The underlying language model instance (local or API).
+        system_prompt: The base system prompt defining the agent's core behavior.
+        tools: Optional dictionary of available tools (functions).
+        tools_schema: Optional JSON schema describing the available tools for the model.
+        max_tokens: Default maximum number of tokens for model responses.
+        allowed_peers: Set of agent names this agent is allowed to invoke.
+        communication_log: Dictionary storing communication history per task ID.
+        name: Unique name of the agent instance within the registry.
     """
 
     def __init__(
         self,
-        model: BaseVLM | BaseLLM,
+        model: Union[BaseVLM, BaseLLM, BaseAPIModel],
         system_prompt: str,
-        tools: Optional[Dict] = None,
-        tools_schema: Optional[Dict] = None,
+        tools: Optional[Dict[str, Callable[..., Any]]] = None,
+        tools_schema: Optional[List[Dict[str, Any]]] = None,
         max_tokens: Optional[int] = 512,
         agent_name: Optional[str] = None,
-    ):
-        # Check tools/tools_schema consistency
+        allowed_peers: Optional[List[str]] = None,
+    ) -> None:
+        """
+        Initializes the BaseAgent.
+
+        Args:
+            model: The language model instance.
+            system_prompt: The base system prompt.
+            tools: Dictionary mapping tool names to callable functions.
+            tools_schema: JSON schema describing the tools.
+            max_tokens: Default maximum tokens for model generation.
+            agent_name: Optional specific name for registration.
+            allowed_peers: List of agent names this agent can call.
+
+        Raises:
+            ValueError: If tools are provided without schema or vice-versa.
+        """
         if tools and not tools_schema:
             raise ValueError("The tools schema is required if the tools are provided.")
         if tools_schema and not tools:
             raise ValueError("The tools are required if the tools schema is provided.")
+
+        self.model = model
+        self.system_prompt = system_prompt
         self.tools = tools
         self.tools_schema = tools_schema
-        self.system_prompt = system_prompt
-        self.model = model
         self.max_tokens = max_tokens
-        self.tasks = Queue()
+        self.allowed_peers = set(allowed_peers) if allowed_peers else set()
+        self.communication_log: Dict[str, List[Dict[str, Any]]] = {}
         self.name = AgentRegistry.register(
             self, agent_name, prefix=self.__class__.__name__
         )
 
-    def __del__(self):
+    def __del__(self) -> None:
+        """Ensures the agent is unregistered upon deletion."""
         AgentRegistry.unregister(self.name)
 
+    async def _log_progress(self, request_context: RequestContext, level: LogLevel, message: str, **kwargs: Any) -> None:
+        """
+        Helper method to log progress updates using the ProgressLogger.
 
-class BaseLearnableAgent(BaseAgent):
-    """
-    Base class for learnable agents (handles learning head logic).
-    """
+        Args:
+            request_context: The context of the current request.
+            level: The logging level.
+            message: The message to log.
+            **kwargs: Additional arguments passed to ProgressLogger.log.
+        """
+        await ProgressLogger.log(request_context, level, message, agent_name=self.name, **kwargs)
 
-    def __init__(
-        self,
-        model: BaseVLM | BaseLLM,
-        system_prompt: str,
-        learning_head: str = None,
-        learning_head_config: Optional[Dict] = None,
-        max_tokens: Optional[int] = 512,
-        agent_name: Optional[str] = None,
-        **kwargs,
-    ):
-        super().__init__(
-            model=model,
-            system_prompt=system_prompt,
-            tools=kwargs.get("tools"),
-            tools_schema=kwargs.get("tools_schema"),
-            max_tokens=max_tokens,
-            agent_name=agent_name,
+    def _add_interaction_to_log(self, task_id: str, interaction_data: Dict[str, Any]) -> None:
+        """
+        Adds an interaction record to the communication log for a specific task.
+
+        Args:
+            task_id: The ID of the task.
+            interaction_data: Dictionary containing details about the interaction.
+        """
+        if task_id not in self.communication_log:
+            self.communication_log[task_id] = []
+        self.communication_log[task_id].append(interaction_data)
+
+    def get_communication_log(self, task_id: str) -> List[Dict[str, Any]]:
+        """
+        Retrieves the communication log for a specific task.
+
+        Args:
+            task_id: The ID of the task.
+
+        Returns:
+            A list of interaction dictionaries for the task, or an empty list if none exist.
+        """
+        return self.communication_log.get(task_id, [])
+
+    async def invoke_agent(self, target_agent_name: str, request: Any, request_context: RequestContext) -> Any:
+        """
+        Invokes another registered agent asynchronously.
+
+        Handles permission checks, depth/interaction limits, context propagation,
+        and logging.
+
+        Args:
+            target_agent_name: The name of the agent to invoke.
+            request: The request data/prompt to send to the target agent.
+            request_context: The current request context.
+
+        Returns:
+            The response received from the target agent.
+
+        Raises:
+            PermissionError: If the invocation is not allowed based on `allowed_peers`.
+            ValueError: If depth/interaction limits are exceeded or the target agent is not found.
+            Exception: Propagates exceptions raised by the target agent's `handle_invocation`.
+        """
+        interaction_id = str(uuid.uuid4())
+        await self._log_progress(
+            request_context,
+            LogLevel.MINIMAL,
+            f"Attempting to invoke agent: {target_agent_name}",
+            interaction_id=interaction_id,
         )
-        self._learning_head_name = learning_head
-        self._learning_config = learning_head_config
-        if learning_head == "peft":
-            self.model = PeftHead(model=self.model)
-            self.model.prepare_peft_model(**learning_head_config)
 
+        if target_agent_name not in self.allowed_peers:
+            error_msg = f"Agent '{self.name}' is not allowed to call agent '{target_agent_name}'."
+            await self._log_progress(
+                request_context,
+                LogLevel.MINIMAL,
+                f"Permission denied: {error_msg}",
+                interaction_id=interaction_id,
+                data={"error": "PermissionError"},
+            )
+            raise PermissionError(error_msg)
 
-import time
-from abc import ABC, abstractmethod
+        if request_context.depth + 1 > request_context.max_depth:
+            error_msg = f"Maximum invocation depth ({request_context.max_depth}) reached."
+            await self._log_progress(
+                request_context,
+                LogLevel.MINIMAL,
+                f"Limit reached: {error_msg}",
+                interaction_id=interaction_id,
+                data={"error": "DepthLimitExceeded"},
+            )
+            raise ValueError(error_msg)
+        if request_context.interaction_count + 1 > request_context.max_interactions:
+            error_msg = f"Maximum interaction count ({request_context.max_interactions}) reached."
+            await self._log_progress(
+                request_context,
+                LogLevel.MINIMAL,
+                f"Limit reached: {error_msg}",
+                interaction_id=interaction_id,
+                data={"error": "InteractionLimitExceeded"},
+            )
+            raise ValueError(error_msg)
 
+        target_agent = AgentRegistry.get(target_agent_name)
+        if not target_agent:
+            error_msg = f"Target agent '{target_agent_name}' not found."
+            await self._log_progress(
+                request_context,
+                LogLevel.MINIMAL,
+                f"Error: {error_msg}",
+                interaction_id=interaction_id,
+                data={"error": "AgentNotFound"},
+            )
+            raise ValueError(error_msg)
 
-class BaseMemory(ABC):
-    """
-    Abstract base class for memory modules.
-    Defines the interface for memory operations.
-    """
+        new_request_context = dataclasses.replace(
+            request_context,
+            interaction_id=interaction_id,
+            depth=request_context.depth + 1,
+            interaction_count=request_context.interaction_count + 1,
+            caller_agent_name=self.name,
+            callee_agent_name=target_agent_name,
+        )
 
-    def __init__(self, memory_type: str):
-        self.memory_type = memory_type
+        log_entry_caller = {
+            "interaction_id": interaction_id,
+            "timestamp": time.time(),
+            "type": "invoke",
+            "caller": self.name,
+            "callee": target_agent_name,
+            "request": request,
+            "depth": new_request_context.depth,
+            "status": "pending",
+        }
+        self._add_interaction_to_log(request_context.task_id, log_entry_caller)
 
-    @abstractmethod
-    def update_memory(self, *args, **kwargs):
-        raise NotImplementedError("update_memory must be implemented in subclasses.")
-
-    @abstractmethod
-    def replace_memory(self, *args, **kwargs):
-        raise NotImplementedError("replace_memory must be implemented in subclasses.")
-
-    @abstractmethod
-    def delete_memory(self, *args, **kwargs):
-        raise NotImplementedError("delete_memory must be implemented in subclasses.")
-
-    @abstractmethod
-    def retrieve_recent(self, n=1):
-        raise NotImplementedError("retrieve_recent must be implemented in subclasses.")
-
-    @abstractmethod
-    def retrieve_all(self):
-        raise NotImplementedError("retrieve_all must be implemented in subclasses.")
-
-    @abstractmethod
-    def reset_memory(self):
-        raise NotImplementedError("reset_memory must be implemented in subclasses.")
-
-    @abstractmethod
-    def to_llm_format(self, *args, **kwargs):
-        raise NotImplementedError("to_llm_format must be implemented in subclasses.")
-
-
-class ConversationMemory(BaseMemory):
-    """
-    Memory module that stores conversation history.
-    """
-
-    def __init__(self, system_prompt: Optional[str] = None):
-        super().__init__(memory_type="conversation_history")
-        self.memory = []
-        if system_prompt:
-            self.memory.append({"role": "system", "content": system_prompt})
-
-    def update_memory(self, role: str, content: str):
-        self.memory.append({"role": role, "content": content})
-
-    def replace_memory(self, idx: int, role: str, content: str):
-        if 0 <= idx < len(self.memory):
-            self.memory[idx] = {"role": role, "content": content}
-        else:
-            raise IndexError("Memory index out of range.")
-
-    def delete_memory(self, idx: int):
-        if 0 <= idx < len(self.memory):
-            del self.memory[idx]
-        else:
-            raise IndexError("Memory index out of range.")
-
-    def retrieve_recent(self, n=1):
-        return self.memory[-n:] if n > 0 else []
-
-    def retrieve_all(self):
-        return list(self.memory)
-
-    def retrieve_by_role(self, role: str, n=None):
-        filtered = [m for m in self.memory if m["role"] == role]
-        return filtered[-n:] if n else filtered
-
-    def reset_memory(self):
-        self.memory.clear()
-
-    def to_llm_format(self):
-        return list(self.memory)
-
-
-class KGMemory(BaseMemory):
-    """
-    Memory module that stores knowledge as triplets in a knowledge graph.
-    Requires an LLM for fact extraction from text.
-    """
-
-    def __init__(
-        self,
-        model: BaseVLM | BaseLLM | BaseAPIModel,
-        system_prompt: Optional[str] = None,
-    ):
-        super().__init__(memory_type="kg")
-        self.model = model
-        self.kg = []
-        if system_prompt:
-            self.kg.append(
-                {
-                    "role": "system",
-                    "subject": "system",
-                    "predicate": "init",
-                    "object": system_prompt,
-                    "timestamp": time.time(),
-                }
+        await self._log_progress(
+            new_request_context,
+            LogLevel.SUMMARY,
+            f"Invoking agent '{target_agent_name}' (Depth: {new_request_context.depth}, Interaction: {new_request_context.interaction_count})",
+        )
+        if new_request_context.log_level >= LogLevel.DEBUG:
+            await self._log_progress(
+                new_request_context, LogLevel.DEBUG, "Request details", data={"request": request}
             )
 
-    def update_memory(self, role: str, subject: str, predicate: str, obj: str):
-        timestamp = time.time()
-        self.kg.append(
-            {
-                "role": role,
-                "subject": subject,
-                "predicate": predicate,
-                "object": obj,
-                "timestamp": timestamp,
-            }
-        )
-
-    def replace_memory(
-        self, idx: int, role: str, subject: str, predicate: str, obj: str
-    ):
-        if 0 <= idx < len(self.kg):
-            self.kg[idx] = {
-                "role": role,
-                "subject": subject,
-                "predicate": predicate,
-                "object": obj,
-                "timestamp": time.time(),
-            }
-        else:
-            raise IndexError("KG index out of range.")
-
-    def delete_memory(self, idx: int):
-        if 0 <= idx < len(self.kg):
-            del self.kg[idx]
-        else:
-            raise IndexError("KG index out of range.")
-
-    def retrieve_recent(self, n=1):
-        sorted_kg = sorted(self.kg, key=lambda x: x["timestamp"], reverse=True)
-        return [self._kg_to_llm_format(fact) for fact in sorted_kg[:n]] if n > 0 else []
-
-    def retrieve_all(self):
-        return [self._kg_to_llm_format(fact) for fact in self.kg]
-
-    def retrieve_by_role(self, role: str, n=None):
-        filtered = [fact for fact in self.kg if fact["role"] == role]
-        filtered = sorted(filtered, key=lambda x: x["timestamp"], reverse=True)
-        if n:
-            filtered = filtered[:n]
-        return [self._kg_to_llm_format(fact) for fact in filtered]
-
-    def reset_memory(self):
-        self.kg.clear()
-
-    def to_llm_format(self):
-        return [self._kg_to_llm_format(fact) for fact in self.kg]
-
-    def _kg_to_llm_format(self, fact):
-        content = f"{fact['subject']} {fact['predicate']} {fact['object']} (added at {time.strftime('%Y-%m-%d %H:%M:%S', time.localtime(fact['timestamp']))})"
-        return {"role": fact["role"], "content": content}
-
-    def extract_and_update_from_text(self, input_text: str, role: str = "user"):
-        extraction_prompt = (
-            "Extract all knowledge graph facts from the following text. "
-            "Return a JSON list of triplets, where each triplet is a dict with keys: subject, predicate, object. "
-            'Example: [{"subject": "Paris", "predicate": "is the capital of", "object": "France"}, ...]'
-        )
-        messages = [
-            {"role": "system", "content": extraction_prompt},
-            {"role": role, "content": input_text},
-        ]
         try:
-            result = self.model.run(messages=messages, json_mode=True)
-        except Exception:
-            result = self.model.run(messages=messages)
-        if isinstance(result, str):
-            try:
-                facts = json.loads(result)
-            except Exception:
-                facts = []
-        else:
-            facts = result if isinstance(result, list) else []
-        for fact in facts:
-            if (
-                isinstance(fact, dict)
-                and "subject" in fact
-                and "predicate" in fact
-                and "object" in fact
-            ):
-                self.update_memory(
-                    role, fact["subject"], fact["predicate"], fact["object"]
+            response = await target_agent.handle_invocation(request, new_request_context)
+            log_entry_caller["status"] = "success"
+            log_entry_caller["response"] = response
+            await self._log_progress(
+                new_request_context,
+                LogLevel.SUMMARY,
+                f"Received response from '{target_agent_name}'",
+            )
+            if new_request_context.log_level >= LogLevel.DEBUG:
+                await self._log_progress(
+                    new_request_context,
+                    LogLevel.DEBUG,
+                    "Response details",
+                    data={"response": response},
                 )
-        return facts
 
+            return response
+        except Exception as e:
+            log_entry_caller["status"] = "error"
+            log_entry_caller["error"] = str(e)
+            await self._log_progress(
+                new_request_context,
+                LogLevel.MINIMAL,
+                f"Error invoking agent '{target_agent_name}': {e}",
+                data={"error": str(e)},
+            )
+            raise
 
-class MemoryManager:
-    """
-    Factory/manager for memory modules. Instantiates and delegates to the correct memory type.
-    """
+    async def handle_invocation(self, request: Any, request_context: RequestContext) -> Any:
+        """
+        Handles an incoming invocation request from another agent or the user.
 
-    def __init__(
-        self,
-        memory_type: str,
-        system_prompt: Optional[str] = None,
-        model: Optional[BaseVLM | BaseLLM | BaseAPIModel] = None,
-    ):
-        self.memory_type = memory_type
-        if memory_type == "conversation_history":
-            self.memory_module = ConversationMemory(system_prompt=system_prompt)
-        elif memory_type == "kg":
-            if model is None:
-                raise ValueError(
-                    "KGMemory requires a 'model' instance for fact extraction."
-                )
-            self.memory_module = KGMemory(model=model, system_prompt=system_prompt)
-        else:
-            raise ValueError(f"Unknown memory_type: {memory_type}")
+        Determines the appropriate run mode (e.g., 'chat', 'plan', 'think') based
+        on the request structure and agent type, then calls the `_run` method
+        to execute the core logic. Logs the start, end, and any errors.
 
-    def update_memory(self, *args, **kwargs):
-        return self.memory_module.update_memory(*args, **kwargs)
+        Args:
+            request: The incoming request data (can be a simple prompt or a dictionary).
+            request_context: The context associated with this invocation.
 
-    def replace_memory(self, *args, **kwargs):
-        return self.memory_module.replace_memory(*args, **kwargs)
+        Returns:
+            The result produced by the `_run` method.
 
-    def delete_memory(self, *args, **kwargs):
-        return self.memory_module.delete_memory(*args, **kwargs)
-
-    def retrieve_recent(self, *args, **kwargs):
-        return self.memory_module.retrieve_recent(*args, **kwargs)
-
-    def retrieve_all(self):
-        return self.memory_module.retrieve_all()
-
-    def retrieve_by_role(self, *args, **kwargs):
-        return self.memory_module.retrieve_by_role(*args, **kwargs)
-
-    def reset_memory(self):
-        return self.memory_module.reset_memory()
-
-    def to_llm_format(self):
-        return self.memory_module.to_llm_format()
-
-    def extract_and_update_from_text(self, *args, **kwargs):
-        if self.memory_type == "kg":
-            return self.memory_module.extract_and_update_from_text(*args, **kwargs)
-        else:
-            raise NotImplementedError(
-                "extract_and_update_from_text is only available for KGMemory."
+        Raises:
+            NotImplementedError: If the agent cannot determine a run mode or `_run` is not implemented.
+            Exception: Propagates exceptions raised during the execution of `_run`.
+        """
+        await self._log_progress(
+            request_context,
+            LogLevel.MINIMAL,
+            f"Received invocation request from '{request_context.caller_agent_name or 'user'}'",
+        )
+        if request_context.log_level >= LogLevel.DEBUG:
+            await self._log_progress(
+                request_context, LogLevel.DEBUG, "Request details", data={"request": request}
             )
 
+        log_entry_callee = {
+            "interaction_id": request_context.interaction_id,
+            "timestamp": time.time(),
+            "type": "handle",
+            "caller": request_context.caller_agent_name or "user",
+            "callee": self.name,
+            "request": request,
+            "depth": request_context.depth,
+            "status": "processing",
+        }
+        self._add_interaction_to_log(request_context.task_id, log_entry_callee)
 
-class LearnableAgent(BaseLearnableAgent):
-    """
-    A full-featured agent capable of learning (e.g., via PEFT) and utilizing memory.
-    """
+        try:
+            run_mode = "chat"
+            prompt_data = request
 
-    def __init__(
-        self,
-        model: BaseVLM | BaseLLM,
-        system_prompt: str,
-        tools: Optional[Dict] = None,
-        tools_schema: Optional[Dict] = None,
-        learning_head: str = None,
-        learning_head_config: Optional[Dict] = None,
-        memory_type: Optional[str] = "conversation_history",
-        max_tokens: Optional[int] = 512,
-        agent_name: Optional[str] = None,
-    ):
-        super().__init__(
-            model=model,
-            system_prompt=system_prompt,
-            learning_head=learning_head,
-            learning_head_config=learning_head_config,
-            max_tokens=max_tokens,
-            agent_name=agent_name,
-            tools=tools,
-            tools_schema=tools_schema,
-        )
-        kg_model = self.model.model if hasattr(self.model, "peft_head") else self.model
-        self.memory = MemoryManager(
-            memory_type=memory_type,
-            system_prompt=system_prompt,
-            model=kg_model if memory_type == "kg" else None,
-        )
+            if isinstance(request, dict):
+                if "action" in request:
+                    run_mode = request.get("action")
+                if "prompt" in request:
+                    prompt_data = request.get("prompt")
 
-    def plan(self, user_prompt: str, max_tokens: int = None, role: str = "user") -> str:
-        self.memory.update_memory(role, user_prompt)
-        context = self.memory.to_llm_format()
-        system_prompt_planning = getattr(self, "system_prompt_planning", None)
-        if system_prompt_planning:
-            system_updated = False
-            for msg in context:
-                if msg["role"] == "system":
-                    msg["content"] = system_prompt_planning
-                    system_updated = True
-                    break
-            if not system_updated:
-                context.insert(0, {"role": "system", "content": system_prompt_planning})
-        output = self.model.run(
-            messages=context,
-            max_tokens=max_tokens or self.max_tokens,
-            json_mode=True,
-            tools=self.tools_schema,
-        )
-        output_str = json.dumps(output) if isinstance(output, dict) else str(output)
-        self.memory.update_memory("assistant", output_str)
-        return output
+            elif isinstance(self, BrowserAgent):
+                run_mode = "think"
 
-    def execute(
-        self, user_prompt: str, max_tokens: int = None, role: str = "user"
-    ) -> str:
-        self.memory.update_memory(role, user_prompt)
-        context = self.memory.to_llm_format()
-        output = self.model.run(
-            messages=context,
-            max_tokens=max_tokens or self.max_tokens,
-            json_mode=False,
-            tools=self.tools_schema,
-        )
-        output_str = json.dumps(output) if isinstance(output, dict) else str(output)
-        self.memory.update_memory("assistant", output_str)
-        return output
-
-
-class Agent(BaseAgent):
-    """
-    A non-learnable agent that utilizes memory and can interact with local models or external APIs.
-    """
-
-    def __init__(
-        self,
-        model_config: Dict[str, Any],
-        system_prompt: str,
-        tools: Optional[Dict] = None,
-        tools_schema: Optional[Dict] = None,
-        memory_type: Optional[str] = "conversation_history",
-        max_tokens: Optional[int] = 512,
-        agent_name: Optional[str] = None,
-    ):
-        model_max_tokens = model_config.get("max_tokens", max_tokens)
-        self.model_instance = self._create_model_from_config(
-            model_config, default_max_tokens=model_max_tokens
-        )
-        super().__init__(
-            model=self.model_instance,
-            system_prompt=system_prompt,
-            tools=tools,
-            tools_schema=tools_schema,
-            max_tokens=max_tokens,
-            agent_name=agent_name,
-        )
-        self.memory = MemoryManager(
-            memory_type=memory_type,
-            system_prompt=system_prompt,
-            model=self.model_instance if memory_type == "kg" else None,
-        )
-        self._model_config = model_config
-
-    def _create_model_from_config(
-        self, config: Dict[str, Any], default_max_tokens: int
-    ) -> BaseLLM | BaseVLM | BaseAPIModel:
-        model_type = config.get("type")
-        model_name = config.get("name")
-        max_tokens = config.get("max_tokens", default_max_tokens)
-        if not model_name:
-            raise ValueError("Model configuration must include a 'name'.")
-        if model_type == "local":
-            model_class_type = config.get("class", "llm")
-            torch_dtype = config.get("torch_dtype", "auto")
-            device_map = config.get("device_map", "auto")
-            extra_kwargs = {
-                k: v
-                for k, v in config.items()
-                if k
-                not in [
-                    "type",
-                    "name",
-                    "class",
-                    "max_tokens",
-                    "torch_dtype",
-                    "device_map",
-                ]
-            }
-            if model_class_type == "llm":
-                return BaseLLM(
-                    model_name=model_name,
-                    max_tokens=max_tokens,
-                    torch_dtype=torch_dtype,
-                    device_map=device_map,
-                    **extra_kwargs,
-                )
-            elif model_class_type == "vlm":
-                return BaseVLM(
-                    model_name=model_name,
-                    max_tokens=max_tokens,
-                    torch_dtype=torch_dtype,
-                    device_map=device_map,
-                    **extra_kwargs,
-                )
-            else:
-                raise ValueError(f"Unsupported local model class: {model_class_type}")
-        elif model_type == "api":
-            api_key = config.get("api_key")
-            base_url = config.get("base_url")
-            extra_kwargs = {
-                k: v
-                for k, v in config.items()
-                if k not in ["type", "name", "api_key", "base_url", "max_tokens"]
-            }
-            return BaseAPIModel(
-                model_name=model_name,
-                api_key=api_key,
-                base_url=base_url,
-                max_tokens=max_tokens,
-            )
-        else:
-            raise ValueError(
-                f"Unsupported model type in config: {model_type}. Must be 'local' or 'api'."
+            await self._log_progress(
+                request_context, LogLevel.DETAILED, f"Determined run_mode='{run_mode}'."
             )
 
-    def _get_api_kwargs(self) -> Dict[str, Any]:
-        if isinstance(self.model_instance, BaseAPIModel):
-            kwargs = {
-                k: v
-                for k, v in self._model_config.items()
-                if k
-                not in [
-                    "type",
-                    "name",
-                    "class",
-                    "api_key",
-                    "base_url",
-                    "max_tokens",
-                    "torch_dtype",
-                    "device_map",
-                ]
-            }
-            return kwargs
-        return {}
+            result = await self._run(prompt=prompt_data, request_context=request_context, run_mode=run_mode)
 
-    def chat(
-        self,
-        user_prompt: str,
-        max_tokens: Optional[int] = None,
-        role: str = "user",
-        json_mode: bool = False,
-        **kwargs,
-    ) -> str:
-        self.memory.update_memory(role, user_prompt)
-        context = self.memory.to_llm_format()
-        api_kwargs = self._get_api_kwargs()
-        api_kwargs.update(kwargs)
-        output = self.model_instance.run(
-            messages=context,
-            max_tokens=max_tokens or self.max_tokens,
-            json_mode=json_mode,
-            tools=self.tools_schema,
-            **api_kwargs,
-        )
-        output_str = (
-            json.dumps(output)
-            if isinstance(output, dict) and json_mode
-            else str(output)
-        )
-        self.memory.update_memory("assistant", output_str)
-        return output
-
-    def plan(
-        self,
-        user_prompt: str,
-        max_tokens: int = None,
-        role: str = "user",
-        **kwargs,
-    ) -> str:
-        self.memory.update_memory(role, user_prompt)
-        context = self.memory.to_llm_format()
-        system_prompt_planning = getattr(self, "system_prompt_planning", None)
-        if system_prompt_planning:
-            system_updated = False
-            for msg in context:
-                if msg["role"] == "system":
-                    msg["content"] = system_prompt_planning
-                    system_updated = True
-                    break
-            if not system_updated:
-                context.insert(0, {"role": "system", "content": system_prompt_planning})
-        api_kwargs = self._get_api_kwargs()
-        api_kwargs.update(kwargs)
-        output = self.model_instance.run(
-            messages=context,
-            max_tokens=max_tokens or self.max_tokens,
-            json_mode=True,
-            tools=self.tools_schema,
-            **api_kwargs,
-        )
-        output_str = json.dumps(output) if isinstance(output, dict) else str(output)
-        self.memory.update_memory("assistant", output_str)
-        return output
-
-
-class BrowserAgent(Agent):
-    """BrowserAgent is an agent that leverages the Playwright library to automate browser interactions with the web."""
-
-    def __init__(
-        self,
-        model_config: Dict[str, Any],
-        generation_system_prompt: str = None,
-        critic_system_prompt: str = None,
-        memory_type: Optional[str] = "conversation_history",
-        max_tokens: Optional[int] = 512,
-        agent_name: Optional[str] = None,
-    ):
-        self.generation_system_prompt = generation_system_prompt
-        self.critic_system_prompt = critic_system_prompt
-        super().__init__(
-            model_config=model_config,
-            system_prompt=generation_system_prompt,
-            tools=None,
-            tools_schema=None,
-            memory_type=memory_type,
-            max_tokens=max_tokens,
-            agent_name=agent_name,
-        )
-
-    def think(self, user_prompt: str = None, max_tokens: int = None) -> str:
-        if not max_tokens:
-            max_tokens = self.max_tokens
-        if user_prompt:
-            self.memory.update_memory("user", user_prompt)
-        messages = self.memory.retrieve_all()
-        system_updated = False
-        for msg in messages:
-            if msg.get("role") == "system":
-                msg["content"] = self.generation_system_prompt
-                system_updated = True
-                break
-        if not system_updated:
-            messages.insert(
-                0, {"role": "system", "content": self.generation_system_prompt}
+            log_entry_callee["status"] = "success"
+            log_entry_callee["response"] = result
+            await self._log_progress(
+                request_context,
+                LogLevel.SUMMARY,
+                f"Finished processing request from '{request_context.caller_agent_name or 'user'}'",
             )
-        api_kwargs = self._get_api_kwargs()
-        output = self.model_instance.run(
-            messages=messages,
-            role="agent",
-            tools=self.tools_schema,
-            max_tokens=max_tokens or self.max_tokens,
-            json_mode=False,
-            **api_kwargs,
-        )
-        self.memory.update_memory("agent", output)
-        return output
-
-    def critic(self):
-        messages = self.memory.retrieve_all()
-        system_updated = False
-        for msg in messages:
-            if msg.get("role") == "system":
-                msg["content"] = self.critic_system_prompt
-                system_updated = True
-                break
-        if not system_updated:
-            messages.insert(0, {"role": "system", "content": self.critic_system_prompt})
-        api_kwargs = self._get_api_kwargs()
-        output = self.model_instance.run(
-            messages=messages,
-            role="critic",
-            max_tokens=self.max_tokens,
-            json_mode=False,
-            **api_kwargs,
-        )
-        self.memory.update_memory("critic", output)
-        return output
-
-    @classmethod
-    async def create(
-        cls,
-        model_config: Dict[str, Any],
-        generation_system_prompt: str = None,
-        critic_system_prompt: str = None,
-        memory_type: Optional[str] = "conversation_history",
-        max_tokens: Optional[int] = 512,
-        temp_dir: Optional[str] = "./tmp/screenshots",
-        headless_browser: bool = True,
-        agent_name: Optional[str] = None,
-    ):
-        agent = cls(
-            model_config=model_config,
-            generation_system_prompt=generation_system_prompt,
-            critic_system_prompt=critic_system_prompt,
-            memory_type=memory_type,
-            max_tokens=max_tokens,
-            agent_name=agent_name,
-        )
-        web_browser = importlib.import_module("src.environment.web_browser")
-        agent.tools_schema = [
-            getattr(web_browser, name)
-            for name in dir(web_browser)
-            if name.startswith("FN_")
-        ]
-        if not os.path.exists(temp_dir):
-            os.makedirs(temp_dir)
-        await agent.initialize_browser_tool(
-            temp_dir=temp_dir, headless=headless_browser
-        )
-        return agent
-
-    @classmethod
-    async def create_safe(
-        cls,
-        model_config: Dict[str, Any],
-        generation_system_prompt: str = None,
-        critic_system_prompt: str = None,
-        memory_type: Optional[str] = "conversation_history",
-        max_tokens: Optional[int] = 512,
-        temp_dir: Optional[str] = "./tmp/screenshots",
-        headless_browser: bool = True,
-        timeout: Optional[int] = None,
-        agent_name: Optional[str] = None,
-    ) -> "BrowserAgent":
-        agent = cls(
-            model_config=model_config,
-            generation_system_prompt=generation_system_prompt,
-            critic_system_prompt=critic_system_prompt,
-            memory_type=memory_type,
-            max_tokens=max_tokens,
-            agent_name=agent_name,
-        )
-        web_browser = importlib.import_module("src.environment.web_browser")
-        agent.tools_schema = [
-            getattr(web_browser, name)
-            for name in dir(web_browser)
-            if name.startswith("FN_")
-        ]
-        if not os.path.exists(temp_dir):
-            os.makedirs(temp_dir)
-        for attempt in range(3):
-            try:
-                await asyncio.wait_for(
-                    agent.initialize_browser_tool(
-                        temp_dir=temp_dir, headless=headless_browser
-                    ),
-                    timeout=timeout or 5,
+            if request_context.log_level >= LogLevel.DEBUG:
+                await self._log_progress(
+                    request_context,
+                    LogLevel.DEBUG,
+                    "Response details",
+                    data={"response": result},
                 )
-                break
-            except asyncio.TimeoutError:
-                if attempt == 2:
-                    raise TimeoutError("BrowserAgent initialization timed out.")
-        return agent
 
-    async def initialize_browser_tool(self, **kwargs):
-        self.browser_tool = await BrowserTool.create(**kwargs)
-        self.browser_methods = {}
-        for attr in dir(self.browser_tool):
-            if not attr.startswith("_"):
-                method = getattr(self.browser_tool, attr)
-                if callable(method):
-                    self.browser_methods[attr] = method
+            return result
+        except Exception as e:
+            log_entry_callee["status"] = "error"
+            log_entry_callee["error"] = str(e)
+            await self._log_progress(
+                request_context,
+                LogLevel.MINIMAL,
+                f"Error handling invocation from '{request_context.caller_agent_name or 'user'}': {e}",
+                data={"error": str(e)},
+            )
+            raise
+
+    @abstractmethod
+    async def _run(self, prompt: Any, request_context: RequestContext, run_mode: str, **kwargs: Any) -> Any:
+        """
+        Abstract method for the core execution logic of the agent.
+
+        Subclasses MUST implement this method. It should handle:
+        1. Updating memory with the input prompt.
+        2. Selecting the appropriate system prompt based on `run_mode`.
+        3. Preparing messages for the language model.
+        4. Calling the language model with appropriate parameters (e.g., json_mode).
+        5. Updating memory with the model's output.
+        6. Performing any necessary post-processing (e.g., tool calls, agent invocations).
+        7. Logging progress.
+
+        Args:
+            prompt: The input prompt or data for this run step.
+            request_context: The context for this specific run.
+            run_mode: A string indicating the type of operation (e.g., 'chat', 'plan', 'think').
+            **kwargs: Additional keyword arguments specific to the run mode or model call.
+
+        Returns:
+            The result of the agent's execution for this step.
+        """
+        raise NotImplementedError("_run must be implemented in subclasses.")
