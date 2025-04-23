@@ -629,89 +629,578 @@ async def run_multi_agent_task():
 # asyncio.run(run_multi_agent_task())
 ```
 
-## 9. Extending the Framework (Developer Guide)
+### Example 4: Deep Research Multi-Agent System
 
-This section provides guidance for developers looking to extend the agent framework with custom components.
+This example outlines a more complex multi-agent system designed for in-depth research tasks. It involves multiple agents collaborating to gather, validate, and synthesize information from various sources to answer a user's query comprehensively.
 
-*   **Creating New Agent Types:**
+**Goal:** To perform deep research by breaking down a complex query, gathering information from multiple sources (simulated here), critically evaluating the gathered information's relevance and sufficiency, iteratively refining the search based on evaluation, and finally synthesizing a detailed report grounded in the collected evidence.
 
-    Subclass `BaseAgent` or `Agent` and implement the `async def _run(...)` method.
+**Components:**
 
-    **Example: Custom `CodeReviewAgent`**
+1.  **Orchestrator Agent (`Agent` class):**
+    *   **Role:** The central coordinator. It does *not* perform research or synthesis itself.
+    *   **Initialization:** Uses the standard `Agent` class with a specialized system prompt guiding it to plan, delegate, and manage the research process.
+    *   **Responsibilities:**
+        *   Analyzes the user's initial query.
+        *   Generates its own "thesis" or breakdown of the query into specific, answerable research questions.
+        *   Refines the user query into clearer, direct questions for sub-agents.
+        *   Decides which agent to call next based on the current state of the research.
+        *   Calls the `RetrievalAgent` with *specific, targeted questions* derived from its plan (not the raw user query).
+        *   Calls the `ResearcherAgent` to evaluate the information retrieved for a specific question.
+        *   Iteratively calls `RetrievalAgent` again if the `ResearcherAgent` indicates missing information, providing context from the critique.
+        *   Accumulates validated information relevant to the overall query.
+        *   Calls the `SynthesizerAgent` *only* when it determines (based on `ResearcherAgent` feedback and its plan) that sufficient information has been gathered across the necessary sub-questions.
+        *   Passes the original user query and all validated, relevant information to the `SynthesizerAgent`.
+        *   Manages the overall workflow, respecting limits set in `RequestContext`.
+    *   **Constraints:** Should not answer the query directly, hallucinate, assume information, or call the synthesizer prematurely.
 
-    ```python
-    from src.agents.agents import Agent, RequestContext, LogLevel
+2.  **Retrieval Agent (`Agent` class):**
+    *   **Role:** Information gatherer.
+    *   **Initialization:** Uses the `Agent` class, equipped with tools for searching different sources (e.g., web search, academic databases - mocked in this example).
+    *   **Responsibilities:**
+        *   Receives a *specific question* from the `OrchestratorAgent`.
+        *   Uses its tools (potentially multiple times) to find relevant information for that specific question.
+        *   Formats the findings into a structured list of objects, each containing `title`, `content`, `source`, and `url`.
+        *   Returns this list to the `OrchestratorAgent`.
 
-    class CodeReviewAgent(Agent):
-        async def _run(self, prompt, request_context, run_mode, **kwargs):
-            self.memory.update_memory("user", str(prompt))
-            system_prompt_content = getattr(self, f"system_prompt_{run_mode}", self.system_prompt)
-            llm_messages = [
-                {"role": "system", "content": system_prompt_content},
-                {"role": "user", "content": f"Review the following code:\n{prompt}"}
-            ]
+3.  **Researcher Agent (`Agent` class):**
+    *   **Role:** Critical evaluator of retrieved information.
+    *   **Initialization:** Uses the `Agent` class with a prompt focused on critical analysis and sufficiency assessment.
+    *   **Responsibilities:**
+        *   Receives a *specific question* (the one asked to the `RetrievalAgent`) and the `list` of information retrieved for that question from the `OrchestratorAgent`.
+        *   Evaluates if the provided `content` is relevant and sufficient to answer the *specific question* it was given.
+        *   If sufficient, confirms this.
+        *   If insufficient or irrelevant, clearly states *what* is missing or why the information is inadequate for the specific question.
+        *   Returns its assessment (confirmation or critique) to the `OrchestratorAgent`.
+
+4.  **Synthesizer Agent (`Agent` class):**
+    *   **Role:** Report generator.
+    *   **Initialization:** Uses the `Agent` class with a prompt focused on deep reasoning, thesis generation, and structured report writing based on provided evidence.
+    *   **Responsibilities:**
+        *   Receives the *original user query* and a collection of *all relevant, validated information* gathered during the research process from the `OrchestratorAgent`.
+        *   Analyzes the query and the evidence.
+        *   Develops its own thesis or structure for the final report.
+        *   Writes a comprehensive, well-structured report that directly addresses the user's query, citing the provided information (implicitly or explicitly).
+        *   Returns the final report to the `OrchestratorAgent`.
+
+**Interaction Flow:**
+
+The process is iterative and managed by the Orchestrator:
+
+1.  User query -> Orchestrator
+2.  Orchestrator: Analyzes query, generates plan/questions.
+3.  Orchestrator -> RetrievalAgent (with specific question 1)
+4.  RetrievalAgent -> Orchestrator (with retrieved info list 1)
+5.  Orchestrator -> ResearcherAgent (with question 1 + info list 1)
+6.  ResearcherAgent -> Orchestrator (with assessment 1: "Sufficient" or "Needs more info on X")
+7.  Orchestrator:
+    *   If "Sufficient": Stores info 1, moves to next question (go to step 3 with question 2).
+    *   If "Needs more info": Formulates a refined/new question based on feedback -> RetrievalAgent (go to step 3).
+8.  (Repeat steps 3-7 for all necessary questions in the plan)
+9.  Orchestrator (once all info deemed sufficient): -> SynthesizerAgent (with original query + all validated info)
+10. SynthesizerAgent -> Orchestrator (with final report)
+11. Orchestrator -> User (returns final report)
+
+**Managing Limits:**
+
+The `RequestContext` plays a crucial role in preventing runaway processes:
+
+*   `max_depth`: Limits how many nested agent calls can occur (e.g., Orchestrator calls Retrieval).
+*   `max_interactions`: Limits the total number of agent-to-agent calls within the entire task. This is vital for stopping iterative refinement loops (Orchestrator -> Retrieval -> Researcher -> Orchestrator...) if they don't converge.
+*   `max_tokens_soft_limit` / `max_tokens_hard_limit`: Can be used (though not explicitly shown in this example's core logic) to monitor token usage across all agent calls within the task and potentially force an early synthesis or termination if limits are approached.
+
+**Implementation Example:**
+
+The following Python code demonstrates how to set up and run this Deep Research system using the `Agent` class and mock tools.
+
+```python
+# filepath: /home/rezaho/research_projects/Multi-agent_AI_Learning/examples/deep_research_agent_system.py
+"""
+Example implementation of a Deep Research Multi-Agent System.
+
+Demonstrates Orchestrator, Retrieval, Researcher, and Synthesizer agents
+collaborating to answer a complex query. Uses mock tools for retrieval.
+"""
+
+import asyncio
+import json
+import logging
+import os
+import random
+import time
+import uuid
+from typing import Any, Dict, List, Optional
+
+# Assuming agents module is in the path
+from src.agents.agents import Agent, AgentRegistry, LogLevel, RequestContext
+
+# --- Configuration ---
+logging.basicConfig(
+    level=logging.INFO, format="%(asctime)s - %(levelname)s - [%(agent_name)s] %(message)s"
+)
+
+# Add agent_name to log records
+class AgentLogFilter(logging.Filter):
+    def filter(self, record):
+        record.agent_name = getattr(record, 'agent_name', 'System')
+        return True
+
+logger = logging.getLogger()
+logger.addFilter(AgentLogFilter())
+
+
+API_KEY = os.getenv("OPENAI_API_KEY")
+if not API_KEY:
+    raise ValueError("Please set the OPENAI_API_KEY environment variable.")
+
+# Use a more capable model for orchestration and synthesis
+MODEL_CONFIG_CAPABLE = {
+    "type": "api",
+    "name": "gpt-4-turbo-preview", # Or your preferred capable model
+    "api_key": API_KEY,
+    "temperature": 0.3,
+    "max_tokens": 1500, # Allow more tokens for planning/synthesis
+}
+
+# Use a potentially faster/cheaper model for retrieval and research
+MODEL_CONFIG_WORKER = {
+    "type": "api",
+    "name": "gpt-3.5-turbo", # Or your preferred worker model
+    "api_key": API_KEY,
+    "temperature": 0.1,
+    "max_tokens": 500,
+}
+
+# --- Mock Tools for Retrieval Agent ---
+
+def mock_google_search(query: str) -> str:
+    """Mocks a Google search, returning simulated results."""
+    logger.info(f"Mock Google Search for: {query}", extra={"agent_name": "Tool"})
+    # Simulate finding some results with varying relevance
+    results = []
+    num_results = random.randint(2, 5)
+    for i in range(num_results):
+        relevance = random.choice(["high", "medium", "low"])
+        results.append({
+            "title": f"Simulated Google Result {i+1} for '{query}' ({relevance})",
+            "content": f"This is simulated content about '{query}'. Relevance: {relevance}. Source: Google Search simulation.",
+            "source": "Mock Google Search",
+            "url": f"http://mock.google.com/search?q={query.replace(' ', '+')}&result={i+1}"
+        })
+    # Simulate occasional failure
+    if random.random() < 0.05:
+        logger.warning("Mock Google Search failed simulation.", extra={"agent_name": "Tool"})
+        return json.dumps({"error": "Simulated search failure"})
+    return json.dumps(results)
+
+def mock_scholar_search(query: str) -> str:
+    """Mocks a Google Scholar search, returning simulated paper results."""
+    logger.info(f"Mock Scholar Search for: {query}", extra={"agent_name": "Tool"})
+    results = []
+    num_results = random.randint(1, 3)
+    for i in range(num_results):
+        year = random.randint(2018, 2023)
+        results.append({
+            "title": f"Mock Paper {i+1}: Aspects of '{query}' ({year})",
+            "content": f"Simulated abstract discussing '{query}'. Mentions keywords like synthesis, analysis, data. Published in {year}. Source: Google Scholar simulation.",
+            "source": "Mock Google Scholar",
+            "url": f"http://mock.scholar.google.com/citations?view_op=view_citation&citation_for_view=mock{i+1}_{query.replace(' ', '_')}"
+        })
+    return json.dumps(results)
+
+# --- Tool Schemas ---
+google_search_schema = [{
+    "type": "function",
+    "function": {
+        "name": "mock_google_search",
+        "description": "Performs a simulated Google web search for a given query.",
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "query": {"type": "string", "description": "The search query."},
+            },
+            "required": ["query"],
+        },
+    },
+}]
+
+scholar_search_schema = [{
+    "type": "function",
+    "function": {
+        "name": "mock_scholar_search",
+        "description": "Performs a simulated Google Scholar search for academic papers.",
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "query": {"type": "string", "description": "The search query for academic papers."},
+            },
+            "required": ["query"],
+        },
+    },
+}]
+
+# Combine schemas for the Retrieval Agent
+retrieval_tools = {
+    "mock_google_search": mock_google_search,
+    "mock_scholar_search": mock_scholar_search,
+}
+retrieval_tools_schema = google_search_schema + scholar_search_schema
+
+# --- Agent Prompts ---
+
+ORCHESTRATOR_PROMPT = """
+You are a meticulous Research Orchestrator. Your goal is to manage a team of agents (Retrieval, Researcher, Synthesizer) to answer a user's complex query thoroughly.
+
+**Your Process:**
+1.  **Analyze Query:** Understand the user's request, identify key concepts, and determine the scope.
+2.  **Formulate Thesis & Plan:** Break down the query into specific, answerable sub-questions. Create a step-by-step plan outlining which questions to ask and in what order. Think about potential angles and necessary background information.
+3.  **Delegate Retrieval:** For each sub-question, formulate a *precise and targeted* query for the `RetrievalAgent`. Do NOT pass the original user query. Request information needed for *that specific sub-question*.
+4.  **Manage Information:** Keep track of the questions asked and the information received.
+5.  **Delegate Research/Validation:** Pass the specific sub-question and the *corresponding retrieved information* to the `ResearcherAgent` for validation of relevance and sufficiency *for that sub-question*.
+6.  **Iterate based on Feedback:**
+    *   If the `ResearcherAgent` confirms sufficiency, mark the sub-question as complete and move to the next step in your plan.
+    *   If the `ResearcherAgent` identifies gaps, analyze the feedback. Formulate a *new, refined query* for the `RetrievalAgent` to address the gaps for that *same sub-question*. Repeat steps 3-6 for this sub-question.
+7.  **Synthesize:** Once your plan indicates all critical sub-questions have sufficiently validated information, compile *all relevant validated information* gathered across all sub-questions. Pass the *original user query* and this *complete set of information* to the `SynthesizerAgent`.
+8.  **Final Output:** Return the final report received from the `SynthesizerAgent`.
+
+**Constraints:**
+*   NEVER answer the user's query directly. Your role is orchestration.
+*   NEVER call the `SynthesizerAgent` until the `ResearcherAgent` has validated sufficient information for *all* critical parts of your plan.
+*   Be specific when calling other agents. Provide only the necessary context for their task.
+*   Manage the flow and decide the next step. Your output should clearly indicate the next action (e.g., call RetrievalAgent with query X, call ResearcherAgent with question Y and data Z, call SynthesizerAgent with collected data). Structure your response to clearly indicate the next intended action and its parameters. For example: {"next_action": "invoke_agent", "agent_name": "RetrievalAgent", "request": "Specific query for retrieval"} or {"next_action": "synthesize", "data": collected_info}. If the process is complete, respond with {"next_action": "final_response", "response": synthesizer_output}.
+*   If limits (interactions, depth) are reached, attempt to synthesize with the information gathered so far, clearly stating it might be incomplete.
+"""
+
+RETRIEVAL_PROMPT = """
+You are a Retrieval Agent. Your task is to find information relevant to a *specific query* given to you, using the available search tools (mock_google_search, mock_scholar_search).
+
+**Your Process:**
+1.  Analyze the specific query you received.
+2.  Choose the most appropriate tool(s) (Google for general info, Scholar for academic). You might need to use tools multiple times or refine your search based on initial results.
+3.  Execute the tool(s) with precise search terms based on the query.
+4.  Gather the results from the tool calls.
+5.  Format the results as a JSON list of objects, where each object has keys: "title", "content", "source", "url".
+    Example: `[{"title": "...", "content": "...", "source": "Mock Google Search", "url": "..."}, ...]`
+6.  Return ONLY the JSON list. Do not add explanations or summaries outside the JSON structure. If no relevant information is found after searching, return an empty list `[]`. If a tool fails, report the error within the JSON if possible or return an error message.
+"""
+
+RESEARCHER_PROMPT = """
+You are a critical Researcher Agent. Your task is to evaluate if the provided information *sufficiently and relevantly* answers a *specific question* you are given. You are NOT answering the original user query.
+
+**Your Input:**
+1.  A specific question.
+2.  A list of information snippets (dictionaries with 'title', 'content', 'source', 'url') supposedly retrieved to answer that question.
+
+**Your Process:**
+1.  Carefully read the specific question.
+2.  Analyze each information snippet provided. Is the 'content' relevant to the specific question?
+3.  Assess if the *combined* relevant information is *sufficient* to answer the specific question thoroughly.
+4.  Provide a clear assessment:
+    *   **If Sufficient:** Respond with a JSON object: `{"status": "sufficient", "reason": "The provided information adequately addresses the specific question regarding X and Y."}`
+    *   **If Insufficient:** Respond with a JSON object clearly stating *what is missing*. `{"status": "insufficient", "reason": "The information is relevant but lacks details on Z.", "missing_info_request": "Need specific examples of Z implementation."}`
+    *   **If Irrelevant:** Respond with a JSON object: `{"status": "irrelevant", "reason": "The provided information discusses A, but the question was about B."}`
+
+**Constraints:**
+*   Focus *only* on the specific question and the provided information snippets.
+*   Be precise in your reasoning, especially when information is insufficient.
+*   Return ONLY the JSON assessment object.
+"""
+
+SYNTHESIZER_PROMPT = """
+You are a Synthesizer Agent. Your task is to write a comprehensive, well-structured report answering the *original user query*, based *only* on the validated information provided to you.
+
+**Your Input:**
+1.  The original user query.
+2.  A collection of validated information snippets (likely a list of lists or a combined list of dictionaries with 'title', 'content', 'source', 'url').
+
+**Your Process:**
+1.  Deeply analyze the original user query to understand the core requirements.
+2.  Review all the provided information snippets.
+3.  Formulate your own thesis or structure for the report based on the query and the available evidence. Organize the information logically.
+4.  Write a clear, coherent, and comprehensive report that directly addresses the user's query.
+5.  Ground your report *strictly* in the provided information. Do NOT add external knowledge or hallucinate. You can cite sources implicitly by mentioning findings from different sources.
+6.  Ensure the report flows well and is easy to understand.
+7.  Return *only* the final report as a string. Start the report directly, without introductory phrases like "Here is the report:".
+"""
+
+# --- Agent Initialization ---
+
+orchestrator_agent = Agent(
+    agent_name="Orchestrator",
+    model_config=MODEL_CONFIG_CAPABLE,
+    system_prompt=ORCHESTRATOR_PROMPT,
+    allowed_peers=["RetrievalAgent", "ResearcherAgent", "SynthesizerAgent"],
+    memory_type="conversation_history", # Keeps track of the conversation flow
+)
+
+retrieval_agent = Agent(
+    agent_name="RetrievalAgent",
+    model_config=MODEL_CONFIG_WORKER,
+    system_prompt=RETRIEVAL_PROMPT,
+    tools=retrieval_tools,
+    tools_schema=retrieval_tools_schema,
+    allowed_peers=[], # Cannot call other agents
+    memory_type="conversation_history", # Remembers past retrieval attempts in a task if needed
+)
+
+researcher_agent = Agent(
+    agent_name="ResearcherAgent",
+    model_config=MODEL_CONFIG_WORKER,
+    system_prompt=RESEARCHER_PROMPT,
+    allowed_peers=[],
+    memory_type="conversation_history", # Simple memory is likely sufficient
+)
+
+synthesizer_agent = Agent(
+    agent_name="SynthesizerAgent",
+    model_config=MODEL_CONFIG_CAPABLE,
+    system_prompt=SYNTHESIZER_PROMPT,
+    allowed_peers=[],
+    memory_type="conversation_history", # Needs to see the prompt + data
+)
+
+# --- Main Execution Logic ---
+
+async def run_deep_research_task(user_query: str, max_iterations: int = 5):
+    """
+    Runs the deep research multi-agent system.
+
+    Args:
+        user_query: The initial query from the user.
+        max_iterations: Max number of Orchestrator -> Retrieve -> Research cycles.
+    """
+    task_id = f"deep-research-{uuid.uuid4()}"
+    progress_queue = asyncio.Queue()
+    request_context = RequestContext(
+        task_id=task_id,
+        initial_prompt=user_query,
+        progress_queue=progress_queue,
+        log_level=LogLevel.DETAILED,
+        max_depth=4, # Orchestrator -> Worker -> Tool (if applicable)
+        max_interactions=max_iterations * 3 + 2, # Rough estimate: Plan + N*(Retrieve+Research) + Synthesize
+    )
+
+    # Start progress monitor
+    async def progress_monitor(q: asyncio.Queue):
+        while True:
+            update = await q.get()
+            if update is None:
+                q.task_done()
+                break
+            log_data_str = f" Data: {json.dumps(update.data)}" if update.data else ""
+            logger.info(
+                f"[Progress L{update.level.value}] {update.message}{log_data_str}",
+                extra={"agent_name": update.agent_name or "System"}
+            )
+            q.task_done()
+
+    monitor_task = asyncio.create_task(progress_monitor(progress_queue))
+
+    logger.info(f"--- Starting Deep Research Task {task_id} ---", extra={"agent_name": "System"})
+    logger.info(f"User Query: {user_query}", extra={"agent_name": "System"})
+
+    current_orchestrator_request: Any = user_query
+    all_validated_data = {} # Store validated data keyed by sub-question
+    iteration = 0
+    final_report = "Error: Research process did not complete."
+
+    try:
+        while iteration < max_iterations:
+            iteration += 1
+            logger.info(f"--- Orchestrator Iteration {iteration} ---", extra={"agent_name": "System"})
+
+            # 1. Call Orchestrator to decide next step
+            orchestrator_response_raw = await orchestrator_agent.handle_invocation(
+                request=current_orchestrator_request,
+                request_context=request_context
+            )
+
+            # Parse Orchestrator's decision
             try:
-                review_result = await self.model.run(
-                    messages=llm_messages,
-                    max_tokens=kwargs.get("max_tokens", self.max_tokens)
-                )
-                return {"review": review_result}
-            except Exception as e:
-                return {"error": str(e)}
-    ```
+                # Expecting JSON like {"next_action": "invoke_agent", "agent_name": "...", "request": ...}
+                # or {"next_action": "synthesize", "data": ...}
+                # or {"next_action": "final_response", "response": ...}
+                decision = json.loads(orchestrator_response_raw)
+                next_action = decision.get("next_action")
+                logger.info(f"Orchestrator decision: {next_action}", extra={"agent_name": "Orchestrator"})
+            except json.JSONDecodeError:
+                logger.error(f"Orchestrator returned non-JSON response: {orchestrator_response_raw}", extra={"agent_name": "Orchestrator"})
+                final_report = "Error: Orchestrator failed to provide a valid next step."
+                break
 
-*   **Adding New Memory Types:**
+            # --- Execute based on Orchestrator's decision ---
 
-    Subclass `BaseMemory` and implement methods like `update_memory`, `retrieve_all`, and `to_llm_format`.
+            if next_action == "invoke_agent":
+                target_agent_name = decision.get("agent_name")
+                request_payload = decision.get("request")
 
-    **Example: `VectorDBMemory`**
+                if not target_agent_name or request_payload is None:
+                    logger.error(f"Orchestrator invoke decision missing agent_name or request.", extra={"agent_name": "Orchestrator"})
+                    final_report = "Error: Orchestrator provided invalid invocation details."
+                    break
 
-    ```python
-    from src.agents.agents import BaseMemory
+                # --- Call Retrieval Agent ---
+                if target_agent_name == "RetrievalAgent":
+                    if not isinstance(request_payload, str):
+                         logger.error(f"Orchestrator request to RetrievalAgent is not a string query.", extra={"agent_name": "Orchestrator"})
+                         final_report = "Error: Invalid query format for RetrievalAgent."
+                         break
+                    current_question = request_payload # Store the question asked
+                    logger.info(f"Orchestrator requests Retrieval for: {current_question}", extra={"agent_name": "Orchestrator"})
+                    retrieved_data_raw = await orchestrator_agent.invoke_agent(
+                        target_agent_name="RetrievalAgent",
+                        request=current_question, # Pass the specific query string
+                        request_context=request_context,
+                    )
+                    # Prepare for Researcher call
+                    current_orchestrator_request = {
+                        "action": "process_retrieval_result",
+                        "question": current_question,
+                        "retrieved_data": retrieved_data_raw
+                    }
 
-    class VectorDBMemory(BaseMemory):
-        def __init__(self, embedding_model, db_connection_params):
-            super().__init__(memory_type="vector_db")
-            self.embedding_model = embedding_model
+                # --- Call Researcher Agent ---
+                # This happens implicitly when the orchestrator gets the retrieval result back
+                # The orchestrator's *next* call should be to the researcher based on its logic
+                elif target_agent_name == "ResearcherAgent":
+                     if not isinstance(request_payload, dict) or "question" not in request_payload or "data" not in request_payload:
+                         logger.error(f"Orchestrator request to ResearcherAgent has invalid format.", extra={"agent_name": "Orchestrator"})
+                         final_report = "Error: Invalid request format for ResearcherAgent."
+                         break
 
-        def update_memory(self, role, content):
-            pass
+                     question_for_researcher = request_payload["question"]
+                     data_for_researcher = request_payload["data"] # Should be the list from Retrieval
 
-        def to_llm_format(self):
-            pass
-    ```
+                     logger.info(f"Orchestrator requests Researcher to validate info for: {question_for_researcher}", extra={"agent_name": "Orchestrator"})
+                     researcher_assessment_raw = await orchestrator_agent.invoke_agent(
+                         target_agent_name="ResearcherAgent",
+                         request={"question": question_for_researcher, "data": data_for_researcher},
+                         request_context=request_context,
+                     )
+                     # Prepare for Orchestrator's next planning step
+                     current_orchestrator_request = {
+                         "action": "process_researcher_assessment",
+                         "question": question_for_researcher,
+                         "assessment": researcher_assessment_raw,
+                         "retrieved_data": data_for_researcher # Pass back the data that was assessed
+                     }
+                     # Store validated data if assessment is sufficient
+                     try:
+                         assessment_json = json.loads(researcher_assessment_raw)
+                         if assessment_json.get("status") == "sufficient":
+                             logger.info(f"Researcher deemed info sufficient for: {question_for_researcher}", extra={"agent_name": "ResearcherAgent"})
+                             if question_for_researcher not in all_validated_data:
+                                 all_validated_data[question_for_researcher] = []
+                             # Attempt to parse retrieved data if it's a string
+                             parsed_data = []
+                             if isinstance(data_for_researcher, str):
+                                 try:
+                                     parsed_data = json.loads(data_for_researcher)
+                                 except json.JSONDecodeError:
+                                     logger.warning(f"Could not parse retrieved data for storage: {data_for_researcher}", extra={"agent_name": "System"})
+                             elif isinstance(data_for_researcher, list):
+                                 parsed_data = data_for_researcher
 
-*   **Customizing `handle_invocation`:**
+                             if isinstance(parsed_data, list):
+                                all_validated_data[question_for_researcher].extend(parsed_data)
+                             else:
+                                logger.warning(f"Retrieved data was not a list after parsing: {type(parsed_data)}", extra={"agent_name": "System"})
 
-    Override `handle_invocation` for custom request validation or pre/post-processing.
+                     except json.JSONDecodeError:
+                         logger.warning(f"Researcher assessment was not valid JSON: {researcher_assessment_raw}", extra={"agent_name": "ResearcherAgent"})
 
-    **Example: Adding Request Validation**
 
-    ```python
-    from src.agents.agents import Agent, RequestContext
+                # --- Call Synthesizer Agent ---
+                elif target_agent_name == "SynthesizerAgent":
+                    if not isinstance(request_payload, dict) or "user_query" not in request_payload or "validated_data" not in request_payload:
+                         logger.error(f"Orchestrator request to SynthesizerAgent has invalid format.", extra={"agent_name": "Orchestrator"})
+                         final_report = "Error: Invalid request format for SynthesizerAgent."
+                         break
 
-    class ValidatedAgent(Agent):
-        async def handle_invocation(self, request, request_context):
-            if not isinstance(request, dict):
-                return {"error": "Invalid request format."}
-            return await self._run(prompt=request, request_context=request_context, run_mode="default")
-    ```
+                    logger.info(f"Orchestrator requests Synthesizer to generate report.", extra={"agent_name": "Orchestrator"})
+                    final_report_raw = await orchestrator_agent.invoke_agent(
+                        target_agent_name="SynthesizerAgent",
+                        request=request_payload, # Contains user_query and validated_data
+                        request_context=request_context,
+                    )
+                    # Process is complete, set final report
+                    final_report = final_report_raw
+                    logger.info(f"Synthesizer finished report.", extra={"agent_name": "SynthesizerAgent"})
+                    # Tell orchestrator loop to finish
+                    current_orchestrator_request = {"action": "final_response", "response": final_report}
+                    break # Exit loop after synthesis
 
-*   **Model Integration:**
+                else:
+                    logger.error(f"Orchestrator requested unknown agent: {target_agent_name}", extra={"agent_name": "Orchestrator"})
+                    final_report = f"Error: Orchestrator requested unknown agent '{target_agent_name}'."
+                    break
 
-    Subclass `BaseLLM`, `BaseVLM`, or `BaseAPIModel` and implement the `run` method.
+            elif next_action == "synthesize":
+                 # Orchestrator decided to synthesize based on its internal state
+                 data_for_synthesis = decision.get("data", all_validated_data) # Use accumulated data
+                 logger.info(f"Orchestrator requests Synthesizer to generate report.", extra={"agent_name": "Orchestrator"})
+                 final_report_raw = await orchestrator_agent.invoke_agent(
+                     target_agent_name="SynthesizerAgent",
+                     request={"user_query": user_query, "validated_data": data_for_synthesis},
+                     request_context=request_context,
+                 )
+                 final_report = final_report_raw
+                 logger.info(f"Synthesizer finished report.", extra={"agent_name": "SynthesizerAgent"})
+                 break # Exit loop
 
-*   **Tool Implementation:**
+            elif next_action == "final_response":
+                # Orchestrator indicates completion (e.g., after getting report from synthesizer)
+                final_report = decision.get("response", "Error: Orchestrator indicated completion but provided no response.")
+                logger.info(f"Orchestrator indicated final response received.", extra={"agent_name": "Orchestrator"})
+                break # Exit loop
 
-    Define tools as Python functions and provide schemas for integration.
+            else:
+                logger.error(f"Orchestrator returned unknown next_action: {next_action}", extra={"agent_name": "Orchestrator"})
+                final_report = f"Error: Orchestrator returned unknown action '{next_action}'."
+                break
 
-    **Example: Async Tool**
+            # Check interaction limits (safeguard)
+            if request_context.interaction_count >= request_context.max_interactions:
+                logger.warning(f"Max interactions ({request_context.max_interactions}) reached. Attempting synthesis with gathered data.", extra={"agent_name": "System"})
+                try:
+                    final_report_raw = await orchestrator_agent.invoke_agent(
+                         target_agent_name="SynthesizerAgent",
+                         request={"user_query": user_query, "validated_data": all_validated_data},
+                         request_context=request_context,
+                    )
+                    final_report = f"[Warning: Max interactions reached]\n{final_report_raw}"
+                except Exception as synth_error:
+                    logger.error(f"Synthesis attempt after max interactions failed: {synth_error}", extra={"agent_name": "System"})
+                    final_report = "Error: Max interactions reached, and final synthesis failed."
+                break
 
-    ```python
-    import aiohttp
 
-    async def fetch_web_page_summary(url):
-        async with aiohttp.ClientSession() as session:
-            async with session.get(url) as response:
-                return await response.text()
-    ```
+        if iteration >= max_iterations and "Error" in final_report:
+             logger.warning(f"Max iterations ({max_iterations}) reached without successful synthesis.", extra={"agent_name": "System"})
+             final_report = "Error: Research process timed out after maximum iterations."
+
+
+    except Exception as e:
+        logger.error(f"An error occurred during the research task: {e}", exc_info=True, extra={"agent_name": "System"})
+        final_report = f"Error: An unexpected error occurred during the research process: {e}"
+    finally:
+        logger.info(f"--- Deep Research Task {task_id} Finished ---", extra={"agent_name": "System"})
+        # Signal monitor to stop and wait
+        await progress_queue.put(None)
+        await monitor_task
+
+    return final_report
+
+
+# --- Example Usage ---
+if __name__ == "__main__":
+    # Example Query:
+    query = "What are the latest advancements in using synthetic data for training large language models, focusing on efficiency and quality?"
+
+    # Run the task
+    final_result = asyncio.run(run_deep_research_task(query, max_iterations=5))
+
+    print("\n" + "="*30 + " Final Research Report " + "="*30)
+    print(final_result)
+    print("="*80)
+```
