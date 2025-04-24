@@ -25,7 +25,13 @@ from typing import Any, Callable, Dict, List, Optional, Union
 from pydantic import BaseModel
 
 from src.environment.web_browser import BrowserTool
-from src.models.models import BaseAPIModel, BaseLLM, BaseVLM, PeftHead
+from src.models.models import (  # Added ModelConfig
+    BaseAPIModel,
+    BaseLLM,
+    BaseVLM,
+    ModelConfig,
+    PeftHead,
+)
 
 # --- Core Data Structures ---
 
@@ -45,7 +51,7 @@ class ProgressUpdate:
     """Dataclass representing a single progress update during task execution."""
 
     timestamp: float = dataclasses.field(default_factory=time.time)
-    level: LogLevel = LogLevel.INFO
+    level: LogLevel = LogLevel.SUMMARY  # Changed default from LogLevel.INFO
     message: str = ""
     task_id: Optional[str] = None
     interaction_id: Optional[str] = None
@@ -746,9 +752,7 @@ class BaseAgent(ABC):
                         LogLevel.MINIMAL,
                         "Agent requested tool call but has no tools.",
                     )
-                    current_prompt = (
-                        "Error: Tried to use tools but none are available."
-                    )
+                    current_prompt = "Error: Tried to use tools but none are available."
                     continue
 
                 for tool_call in tool_calls_to_make:
@@ -787,9 +791,7 @@ class BaseAgent(ABC):
                                 "content": str(tool_output),
                             }
                         )
-                        self.memory.update_memory(
-                            role="tool", content=str(tool_output)
-                        )
+                        self.memory.update_memory(role="tool", content=str(tool_output))
                     except Exception as e:
                         await self._log_progress(
                             request_context,
@@ -805,7 +807,8 @@ class BaseAgent(ABC):
                             }
                         )
                         self.memory.update_memory(
-                            role="tool", content=f"Error executing tool {tool_name}: {e}"
+                            role="tool",
+                            content=f"Error executing tool {tool_name}: {e}",
                         )
 
                 current_prompt = "Tool execution completed. Decide next step."
@@ -829,7 +832,9 @@ class BaseAgent(ABC):
                         name=agent_to_invoke,
                         content=str(peer_response),
                     )
-                    current_prompt = f"Received response from {agent_to_invoke}. Decide next step."
+                    current_prompt = (
+                        f"Received response from {agent_to_invoke}. Decide next step."
+                    )
                 except Exception as e:
                     await self._log_progress(
                         request_context,
@@ -869,16 +874,16 @@ class BaseAgent(ABC):
         Generates a final response based on the agent's memory when auto_run stops.
         """
         await self._log_progress(
-            request_context, LogLevel.DETAILED, "Synthesizing final response from memory."
+            request_context,
+            LogLevel.DETAILED,
+            "Synthesizing final response from memory.",
         )
         try:
             last_assistant_message = self.memory.retrieve_by_role("assistant", n=1)
             if last_assistant_message:
                 return last_assistant_message[0]["content"]
             else:
-                summary_prompt = (
-                    "Based on our conversation history, provide a final summary or answer."
-                )
+                summary_prompt = "Based on our conversation history, provide a final summary or answer."
                 llm_messages = self.memory.to_llm_format()
                 llm_messages.append({"role": "user", "content": summary_prompt})
 
@@ -1480,7 +1485,6 @@ class LearnableAgent(BaseLearnableAgent):
         tools_schema: Optional[List[Dict[str, Any]]] = None,
         learning_head: Optional[str] = None,
         learning_head_config: Optional[Dict[str, Any]] = None,
-        memory_type: Optional[str] = "conversation_history",
         max_tokens: Optional[int] = 512,
         agent_name: Optional[str] = None,
         allowed_peers: Optional[List[str]] = None,
@@ -1495,7 +1499,6 @@ class LearnableAgent(BaseLearnableAgent):
             tools_schema: Optional JSON schema for tools.
             learning_head: Optional type of learning head ('peft').
             learning_head_config: Optional configuration for the learning head.
-            memory_type: Type of memory module to use ('conversation_history' or 'kg').
             max_tokens: Default maximum tokens for generation.
             agent_name: Optional specific name for registration.
             allowed_peers: List of agent names this agent can call.
@@ -1517,9 +1520,9 @@ class LearnableAgent(BaseLearnableAgent):
         else:
             kg_model = self.model
         self.memory = MemoryManager(
-            memory_type=memory_type or "conversation_history",
+            memory_type="conversation_history",
             system_prompt=system_prompt,
-            model=kg_model if memory_type == "kg" else None,
+            model=kg_model if "kg" else None,
         )
 
     async def _run(
@@ -1633,12 +1636,12 @@ class Agent(BaseAgent):
 
     def __init__(
         self,
-        model_config: Dict[str, Any],
+        model_config: ModelConfig,
         system_prompt: str,
         tools: Optional[Dict[str, Callable[..., Any]]] = None,
         tools_schema: Optional[List[Dict[str, Any]]] = None,
         memory_type: Optional[str] = "conversation_history",
-        max_tokens: Optional[int] = 512,
+        max_tokens: Optional[int] = 512,  # Agent's max_tokens override
         agent_name: Optional[str] = None,
         allowed_peers: Optional[List[str]] = None,
     ) -> None:
@@ -1646,30 +1649,32 @@ class Agent(BaseAgent):
         Initializes the Agent.
 
         Args:
-            model_config: Dictionary containing model configuration (type, name, API keys, etc.).
+            model_config: Configuration object for the model.
             system_prompt: The base system prompt.
             tools: Optional dictionary of tools.
             tools_schema: Optional JSON schema for tools.
             memory_type: Type of memory module to use.
-            max_tokens: Default maximum tokens for generation for this agent instance.
+            max_tokens: Default maximum tokens for generation for this agent instance (overrides model_config default).
             agent_name: Optional specific name for registration.
             allowed_peers: List of agent names this agent can call.
 
         Raises:
             ValueError: If model_config is invalid or required keys are missing.
         """
-        model_max_tokens = model_config.get("max_tokens", max_tokens)
+        # Use agent's max_tokens if provided, otherwise use model_config's default
+        effective_max_tokens = (
+            max_tokens if max_tokens is not None else model_config.max_tokens
+        )
+
         self.model_instance: Union[BaseLLM, BaseVLM, BaseAPIModel] = (
-            self._create_model_from_config(
-                model_config, default_max_tokens=model_max_tokens or 512
-            )
+            self._create_model_from_config(model_config)  # Pass ModelConfig instance
         )
         super().__init__(
             model=self.model_instance,
             system_prompt=system_prompt,
             tools=tools,
             tools_schema=tools_schema,
-            max_tokens=max_tokens,
+            max_tokens=effective_max_tokens,  # Use the determined max_tokens
             agent_name=agent_name,
             allowed_peers=allowed_peers,
         )
@@ -1678,17 +1683,16 @@ class Agent(BaseAgent):
             system_prompt=system_prompt,
             model=self.model_instance if memory_type == "kg" else None,
         )
-        self._model_config = model_config
+        self._model_config = model_config  # Store the ModelConfig instance
 
     def _create_model_from_config(
-        self, config: Dict[str, Any], default_max_tokens: int
+        self, config: ModelConfig  # Changed type hint
     ) -> Union[BaseLLM, BaseVLM, BaseAPIModel]:
         """
-        Factory method to create a model instance from a configuration dictionary.
+        Factory method to create a model instance from a ModelConfig object.
 
         Args:
-            config: The model configuration dictionary.
-            default_max_tokens: The default max_tokens value to use if not in config.
+            config: The model configuration object.
 
         Returns:
             An instance of BaseLLM, BaseVLM, or BaseAPIModel.
@@ -1696,29 +1700,20 @@ class Agent(BaseAgent):
         Raises:
             ValueError: If configuration is invalid or model type/class is unsupported.
         """
-        model_type = config.get("type")
-        model_name = config.get("name")
-        max_tokens_cfg = config.get("max_tokens", default_max_tokens)
+        # Extract relevant fields from ModelConfig
+        model_type = config.type
+        model_name = config.name
+        max_tokens_cfg = config.max_tokens
+        temperature_cfg = config.temperature  # Get temperature
 
-        if not model_name:
-            raise ValueError("Model configuration must include a 'name'.")
-
-        known_keys = {
-            "type",
-            "name",
-            "class",
-            "max_tokens",
-            "torch_dtype",
-            "device_map",
-            "api_key",
-            "base_url",
-        }
-        extra_kwargs = {k: v for k, v in config.items() if k not in known_keys}
+        # Extract extra kwargs from the config, excluding known fields handled explicitly
+        known_keys = set(ModelConfig.__fields__.keys())
+        extra_kwargs = config.dict(exclude_unset=True, exclude=known_keys)
 
         if model_type == "local":
-            model_class_type = config.get("class", "llm")
-            torch_dtype = config.get("torch_dtype", "auto")
-            device_map = config.get("device_map", "auto")
+            model_class_type = config.model_class
+            torch_dtype = config.torch_dtype
+            device_map = config.device_map
 
             if model_class_type == "llm":
                 return BaseLLM(
@@ -1737,40 +1732,51 @@ class Agent(BaseAgent):
                     **extra_kwargs,
                 )
             else:
+                # This case should ideally be caught by ModelConfig validation
                 raise ValueError(f"Unsupported local model class: {model_class_type}")
         elif model_type == "api":
-            api_key: Optional[str] = config.get("api_key")
-            base_url: Optional[str] = config.get("base_url")
+            # API key and base_url are validated and set by ModelConfig
+            api_key = config.api_key
+            base_url = config.base_url
             return BaseAPIModel(
                 model_name=model_name,
                 api_key=api_key,
                 base_url=base_url,
                 max_tokens=max_tokens_cfg,
-                **extra_kwargs,
+                temperature=temperature_cfg,  # Pass temperature
+                **extra_kwargs,  # Pass other extra args
             )
         else:
+            # This case should be caught by ModelConfig validation
             raise ValueError(
                 f"Unsupported model type in config: {model_type}. Must be 'local' or 'api'."
             )
 
     def _get_api_kwargs(self) -> Dict[str, Any]:
         """
-        Extracts extra keyword arguments intended for API model calls from the original model config.
-        Excludes standard config keys and keys handled directly by BaseAPIModel init or BaseAgent init.
+        Extracts extra keyword arguments intended for API model calls from the ModelConfig instance.
+        Excludes standard config keys handled directly by BaseAPIModel init or BaseAgent init.
 
         Returns:
             A dictionary of keyword arguments.
         """
         if isinstance(self.model_instance, BaseAPIModel):
+            # Get all fields from the config instance
+            config_dict = self._model_config.dict(exclude_unset=True)
+
+            # Define keys handled by Agent/BaseAgent/BaseAPIModel initializers or run methods
             exclude_keys = {
                 "type",
                 "name",
-                "class",
-                "api_key",
-                "base_url",
-                "max_tokens",
-                "torch_dtype",
-                "device_map",
+                "provider",  # Handled by ModelConfig validation
+                "base_url",  # Passed to BaseAPIModel init
+                "api_key",  # Passed to BaseAPIModel init
+                "max_tokens",  # Handled by Agent init and run override
+                "temperature",  # Handled by Agent init and run override
+                "model_class",  # Local model specific
+                "torch_dtype",  # Local model specific
+                "device_map",  # Local model specific
+                # Agent specific config, not model config
                 "system_prompt",
                 "tools",
                 "tools_schema",
@@ -1778,9 +1784,8 @@ class Agent(BaseAgent):
                 "agent_name",
                 "allowed_peers",
             }
-            kwargs = {
-                k: v for k, v in self._model_config.items() if k not in exclude_keys
-            }
+            # Filter out the excluded keys
+            kwargs = {k: v for k, v in config_dict.items() if k not in exclude_keys}
             return kwargs
         return {}
 
@@ -1836,12 +1841,19 @@ class Agent(BaseAgent):
                 0, {"role": "system", "content": system_prompt_content}
             )
 
-        json_mode = run_mode == "plan"
         # Use agent's default max_tokens unless overridden in kwargs
         max_tokens_override = kwargs.pop("max_tokens", self.max_tokens)
+        # Use agent's default temperature from model_config unless overridden in kwargs
+        # Note: self.max_tokens already considers the agent's override over model_config
+        default_temperature = self._model_config.temperature
+        temperature_override = kwargs.pop("temperature", default_temperature)
+
+        json_mode = (
+            False  # Browser agent typically uses tool calls, not JSON mode directly
+        )
 
         api_kwargs = self._get_api_kwargs()
-        api_kwargs.update(kwargs) # Allow runtime kwargs to override config kwargs
+        api_kwargs.update(kwargs)  # Allow runtime kwargs to override config kwargs
 
         await self._log_progress(
             request_context, LogLevel.DETAILED, f"Calling model/API (mode: {run_mode})"
@@ -1852,12 +1864,15 @@ class Agent(BaseAgent):
             output: Any = self.model_instance.run(
                 messages=llm_messages_copy,
                 max_tokens=max_tokens_override,
+                temperature=temperature_override,  # Pass temperature override
                 json_mode=json_mode,
                 tools=self.tools_schema if use_tools else None,
                 **api_kwargs,
             )
             # Handle potential string output even if json_mode was True (model error/compliance issue)
-            output_str = json.dumps(output) if isinstance(output, (dict, list)) else str(output)
+            output_str = (
+                json.dumps(output) if isinstance(output, (dict, list)) else str(output)
+            )
 
             await self._log_progress(
                 request_context,
@@ -1900,13 +1915,17 @@ class BrowserAgent(Agent):
 
     def __init__(
         self,
-        model_config: Dict[str, Any],
+        model_config: ModelConfig,  # Changed type hint
         generation_system_prompt: str = None,
         critic_system_prompt: str = None,
         memory_type: Optional[str] = "conversation_history",
         max_tokens: Optional[int] = 512,
+        temp_dir: Optional[
+            str
+        ] = "./tmp/screenshots",  # Removed temp_dir and headless_browser from here
+        headless_browser: bool = True,  # They are used in create/create_safe
         agent_name: Optional[str] = None,
-        allowed_peers: Optional[List[str]] = None, # Added allowed_peers
+        allowed_peers: Optional[List[str]] = None,  # Added allowed_peers
     ):
         """Initializes the BrowserAgent."""
         if not generation_system_prompt:
@@ -2001,19 +2020,19 @@ class BrowserAgent(Agent):
  "The agent should proceed to do XYZ, but it should first validate the user's input to ensure it aligns with the expected format and requirements. This will help prevent errors and ensure a smoother execution of the task".
  
  - IMPORTANT: Remember that you must try to provide a respond. Even when you think the agent is doing everything correctly, you should provide feedback on why you think so."""
-        
-        self.generation_system_prompt = generation_system_prompt 
+
+        self.generation_system_prompt = generation_system_prompt
         self.critic_system_prompt = critic_system_prompt
         # Initialize Agent with generation prompt, but no tools/schema yet
         super().__init__(
-            model_config=model_config,
+            model_config=model_config,  # Pass ModelConfig instance
             system_prompt=self.generation_system_prompt,
-            tools=None, # Tools are added after browser initialization
-            tools_schema=None, # Schema is loaded in create methods
+            tools=None,  # Tools are added after browser initialization
+            tools_schema=None,  # Schema is loaded in create methods
             memory_type=memory_type,
-            max_tokens=max_tokens,
+            max_tokens=max_tokens,  # Pass agent-specific max_tokens override
             agent_name=agent_name,
-            allowed_peers=allowed_peers, # Pass allowed_peers
+            allowed_peers=allowed_peers,  # Pass allowed_peers
         )
         self.browser_tool: Optional[BrowserTool] = None
         self.browser_methods: Dict[str, Callable] = {}
@@ -2041,7 +2060,7 @@ class BrowserAgent(Agent):
             ValueError: If trying to run in 'think' mode without browser tools initialized.
         """
         user_prompt = str(prompt)
-        role = "user" # Default role for prompt update
+        role = "user"  # Default role for prompt update
 
         await self._log_progress(
             request_context,
@@ -2050,28 +2069,32 @@ class BrowserAgent(Agent):
         )
 
         # Determine system prompt and role based on run_mode
-        if run_mode in ["think", "auto_step"]: # Treat auto_step like think
+        if run_mode in ["think", "auto_step"]:  # Treat auto_step like think
             system_prompt_content = self.generation_system_prompt
-            role_for_model = "assistant" # Model generates actions as assistant
+            role_for_model = "assistant"  # Model generates actions as assistant
             use_tools = True
             if not self.tools or not self.tools_schema:
-                 raise ValueError("BrowserAgent cannot 'think' without initialized browser tools and schema.")
+                raise ValueError(
+                    "BrowserAgent cannot 'think' without initialized browser tools and schema."
+                )
         elif run_mode == "critic":
             system_prompt_content = self.critic_system_prompt
             role_for_model = "critic"
             use_tools = False
-        else: # Default to generation prompt for other modes like 'chat'
+        else:  # Default to generation prompt for other modes like 'chat'
             system_prompt_content = self.generation_system_prompt
             role_for_model = "assistant"
-            use_tools = False # No tools for basic chat
+            use_tools = False  # No tools for basic chat
 
         # Update memory only if the prompt is not None or empty
         if user_prompt:
-             self.memory.update_memory(role, user_prompt)
+            # Use the role determined by the caller ('user' usually for initial prompts)
+            self.memory.update_memory(role, user_prompt)
 
         llm_messages = self.memory.to_llm_format()
         system_updated = False
         llm_messages_copy = [msg.copy() for msg in llm_messages]
+        # Find and update or insert the system prompt
         for msg in llm_messages_copy:
             if msg["role"] == "system":
                 msg["content"] = system_prompt_content
@@ -2084,23 +2107,37 @@ class BrowserAgent(Agent):
 
         # Use agent's default max_tokens unless overridden in kwargs
         max_tokens_override = kwargs.pop("max_tokens", self.max_tokens)
-        json_mode = False # Browser agent typically uses tool calls, not JSON mode directly
+        # Use agent's default temperature from model_config unless overridden in kwargs
+        # Note: self.max_tokens already considers the agent's override over model_config
+        default_temperature = self._model_config.temperature
+        temperature_override = kwargs.pop("temperature", default_temperature)
+
+        json_mode = (
+            False  # Browser agent typically uses tool calls, not JSON mode directly
+        )
 
         api_kwargs = self._get_api_kwargs()
-        api_kwargs.update(kwargs) # Allow runtime kwargs to override config kwargs
+        api_kwargs.update(kwargs)  # Allow runtime kwargs to override config kwargs
 
         await self._log_progress(
-            request_context, LogLevel.DETAILED, f"Calling model/API (mode: {run_mode}, role: {role_for_model})"
+            request_context,
+            LogLevel.DETAILED,
+            f"Calling model/API (mode: {run_mode}, role: {role_for_model})",
         )
         try:
+            # Pass the correct tools schema based on use_tools flag
+            current_tools_schema = self.tools_schema if use_tools else None
             output: Any = self.model_instance.run(
                 messages=llm_messages_copy,
                 max_tokens=max_tokens_override,
+                temperature=temperature_override,  # Pass temperature
                 json_mode=json_mode,
-                tools=self.tools_schema if use_tools else None,
+                tools=current_tools_schema,  # Pass potentially None schema
                 **api_kwargs,
             )
-            output_str = json.dumps(output) if isinstance(output, (dict, list)) else str(output)
+            output_str = (
+                json.dumps(output) if isinstance(output, (dict, list)) else str(output)
+            )
 
             await self._log_progress(
                 request_context,
@@ -2117,26 +2154,26 @@ class BrowserAgent(Agent):
             raise
 
         # Update memory with the model's response (using the role determined by run_mode)
+        # Ensure role_for_model is used here
         self.memory.update_memory(role_for_model, output_str)
 
         # Return the raw output, which might contain tool calls for auto_run
         if isinstance(output, dict) and output.get("tool_calls"):
-             await self._log_progress(
-                 request_context,
-                 LogLevel.DEBUG,
-                 "Model requested tool calls",
-                 data=output["tool_calls"],
-             )
+            await self._log_progress(
+                request_context,
+                LogLevel.DEBUG,
+                "Model requested tool calls",
+                data=output["tool_calls"],
+            )
         await self._log_progress(
             request_context, LogLevel.DETAILED, f"_run mode='{run_mode}' finished."
         )
         return output
 
-
     @classmethod
     async def create(
         cls,
-        model_config: Dict[str, Any],
+        model_config: ModelConfig,  # Changed type hint
         generation_system_prompt: str = None,
         critic_system_prompt: str = None,
         memory_type: Optional[str] = "conversation_history",
@@ -2144,24 +2181,33 @@ class BrowserAgent(Agent):
         temp_dir: Optional[str] = "./tmp/screenshots",
         headless_browser: bool = True,
         agent_name: Optional[str] = None,
-        allowed_peers: Optional[List[str]] = None, # Added allowed_peers
+        allowed_peers: Optional[List[str]] = None,  # Added allowed_peers
     ):
         """Creates and initializes a BrowserAgent instance."""
+        # Instantiate ModelConfig if a dict is passed (for backward compatibility if needed, though strictly using ModelConfig is better)
+        if isinstance(model_config, dict):
+            logging.warning(
+                "Received dict for model_config, attempting to parse as ModelConfig."
+            )
+            model_config = ModelConfig(**model_config)
+
         agent = cls(
-            model_config=model_config,
+            model_config=model_config,  # Pass ModelConfig instance
             generation_system_prompt=generation_system_prompt,
             critic_system_prompt=critic_system_prompt,
             memory_type=memory_type,
-            max_tokens=max_tokens,
+            max_tokens=max_tokens,  # Pass agent-specific max_tokens override
             agent_name=agent_name,
-            allowed_peers=allowed_peers, # Pass allowed_peers
+            allowed_peers=allowed_peers,  # Pass allowed_peers
         )
         # Dynamically load browser tool schemas
         web_browser_module = importlib.import_module("src.environment.web_browser")
         agent.tools_schema = [
             getattr(web_browser_module, name).openai_schema
             for name in dir(web_browser_module)
-            if isinstance(getattr(web_browser_module, name), type) and issubclass(getattr(web_browser_module, name), BaseModel) and hasattr(getattr(web_browser_module, name), 'openai_schema')
+            if isinstance(getattr(web_browser_module, name), type)
+            and issubclass(getattr(web_browser_module, name), BaseModel)
+            and hasattr(getattr(web_browser_module, name), "openai_schema")
         ]
         logging.info(f"Loaded {len(agent.tools_schema)} tool schemas for BrowserAgent.")
 
@@ -2176,7 +2222,7 @@ class BrowserAgent(Agent):
     @classmethod
     async def create_safe(
         cls,
-        model_config: Dict[str, Any],
+        model_config: ModelConfig,  # Changed type hint
         generation_system_prompt: str = None,
         critic_system_prompt: str = None,
         memory_type: Optional[str] = "conversation_history",
@@ -2185,24 +2231,33 @@ class BrowserAgent(Agent):
         headless_browser: bool = True,
         timeout: Optional[int] = None,
         agent_name: Optional[str] = None,
-        allowed_peers: Optional[List[str]] = None, # Added allowed_peers
+        allowed_peers: Optional[List[str]] = None,  # Added allowed_peers
     ) -> "BrowserAgent":
         """Creates and initializes a BrowserAgent instance with timeout and retries."""
+        # Instantiate ModelConfig if a dict is passed
+        if isinstance(model_config, dict):
+            logging.warning(
+                "Received dict for model_config, attempting to parse as ModelConfig."
+            )
+            model_config = ModelConfig(**model_config)
+
         agent = cls(
-            model_config=model_config,
+            model_config=model_config,  # Pass ModelConfig instance
             generation_system_prompt=generation_system_prompt,
             critic_system_prompt=critic_system_prompt,
             memory_type=memory_type,
-            max_tokens=max_tokens,
+            max_tokens=max_tokens,  # Pass agent-specific max_tokens override
             agent_name=agent_name,
-            allowed_peers=allowed_peers, # Pass allowed_peers
+            allowed_peers=allowed_peers,  # Pass allowed_peers
         )
         # Dynamically load browser tool schemas
         web_browser_module = importlib.import_module("src.environment.web_browser")
         agent.tools_schema = [
             getattr(web_browser_module, name).openai_schema
             for name in dir(web_browser_module)
-            if isinstance(getattr(web_browser_module, name), type) and issubclass(getattr(web_browser_module, name), BaseModel) and hasattr(getattr(web_browser_module, name), 'openai_schema')
+            if isinstance(getattr(web_browser_module, name), type)
+            and issubclass(getattr(web_browser_module, name), BaseModel)
+            and hasattr(getattr(web_browser_module, name), "openai_schema")
         ]
         logging.info(f"Loaded {len(agent.tools_schema)} tool schemas for BrowserAgent.")
 
@@ -2216,18 +2271,22 @@ class BrowserAgent(Agent):
                     agent.initialize_browser_tool(
                         temp_dir=temp_dir, headless=headless_browser
                     ),
-                    timeout=timeout or 15, # Increased default timeout
+                    timeout=timeout or 15,  # Increased default timeout
                 )
                 logging.info("Browser tool initialized successfully.")
                 break
             except asyncio.TimeoutError:
-                logging.warning(f"BrowserAgent initialization attempt {attempt + 1} timed out.")
+                logging.warning(
+                    f"BrowserAgent initialization attempt {attempt + 1} timed out."
+                )
                 if attempt == 2:
-                    logging.error("BrowserAgent initialization failed after multiple attempts.")
+                    logging.error(
+                        "BrowserAgent initialization failed after multiple attempts."
+                    )
                     raise TimeoutError("BrowserAgent initialization timed out.")
             except Exception as e:
-                 logging.error(f"Error during BrowserAgent initialization: {e}")
-                 raise # Reraise other exceptions immediately
+                logging.error(f"Error during BrowserAgent initialization: {e}")
+                raise  # Reraise other exceptions immediately
         return agent
 
     async def initialize_browser_tool(self, **kwargs):
@@ -2240,30 +2299,44 @@ class BrowserAgent(Agent):
                 method = getattr(self.browser_tool, attr)
                 # Ensure it's a callable method (async or sync)
                 if callable(method):
-                     # Check if it's an instance method bound to the browser_tool instance
-                     if hasattr(method, '__self__') and method.__self__ is self.browser_tool:
-                         self.browser_methods[attr] = method
+                    # Check if it's an instance method bound to the browser_tool instance
+                    if (
+                        hasattr(method, "__self__")
+                        and method.__self__ is self.browser_tool
+                    ):
+                        self.browser_methods[attr] = method
 
-        logging.info(f"Found {len(self.browser_methods)} callable methods on BrowserTool instance.")
+        logging.info(
+            f"Found {len(self.browser_methods)} callable methods on BrowserTool instance."
+        )
 
         # Populate self.tools using the loaded schema and found methods
         self.tools = {}
         if self.tools_schema:
-            schema_func_names = {schema['function']['name'] for schema in self.tools_schema}
+            schema_func_names = {
+                schema["function"]["name"] for schema in self.tools_schema
+            }
             for func_name, method in self.browser_methods.items():
                 if func_name in schema_func_names:
                     self.tools[func_name] = method
                     logging.debug(f"Mapped tool '{func_name}' to BrowserTool method.")
                 else:
-                    logging.warning(f"BrowserTool method '{func_name}' found but no matching schema loaded.")
+                    logging.warning(
+                        f"BrowserTool method '{func_name}' found but no matching schema loaded."
+                    )
 
             # Verify all schemas have a corresponding method
             for schema_name in schema_func_names:
                 if schema_name not in self.tools:
-                    logging.error(f"Tool schema '{schema_name}' loaded but no matching method found in BrowserTool instance!")
+                    logging.error(
+                        f"Tool schema '{schema_name}' loaded but no matching method found in BrowserTool instance!"
+                    )
         else:
-             logging.warning("Cannot populate agent tools as tools_schema is not loaded.")
+            logging.warning(
+                "Cannot populate agent tools as tools_schema is not loaded."
+            )
 
         if not self.tools:
-             logging.warning("BrowserAgent initialized, but no tools were successfully mapped.")
-
+            logging.warning(
+                "BrowserAgent initialized, but no tools were successfully mapped."
+            )
