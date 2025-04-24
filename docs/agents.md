@@ -18,6 +18,7 @@ The agent framework promotes modularity, reusability, and observability. Key des
 *   **Context Management:** Tracks the flow of execution, call depth, and interaction counts within a task using the `RequestContext` dataclass.
 *   **Progress Monitoring & Logging:** Offers a mechanism to observe agent activity and internal state via `ProgressUpdate`s and standard logging.
 *   **Asynchronous Operations:** Built with `asyncio` to handle I/O-bound tasks like API calls or browser interactions efficiently.
+*   **Validated Configuration:** Uses Pydantic's `ModelConfig` schema to ensure model settings are correct and consistent.
 
 ## 2. Core Concepts
 
@@ -40,7 +41,7 @@ The agent framework promotes modularity, reusability, and observability. Key des
         1.  Updating memory with the input `prompt`.
         2.  Selecting the appropriate system prompt based on `run_mode` (e.g., checking for `self.system_prompt_<run_mode>`).
         3.  Preparing messages for the language model using `self.memory.to_llm_format()`.
-        4.  Calling the language model (`self.model.run(...)` or `self.model_instance.run(...)`) with appropriate parameters (messages, tools, `json_mode`, etc.), potentially influenced by `run_mode` and `kwargs`.
+        4.  Calling the language model (`self.model.run(...)` or `self.model_instance.run(...)`) with appropriate parameters (messages, tools, `json_mode`, `temperature`, etc.), potentially influenced by `run_mode` and `kwargs`.
         5.  Updating memory with the model's response.
         6.  Performing post-processing like tool calls (if applicable for the `run_mode`, e.g., 'think') or invoking other agents based on the model's response.
         7.  Returning the final result for this step.
@@ -126,13 +127,77 @@ print("\nMemory after reset:")
 print(memory_manager.retrieve_all())
 ```
 
+### `ModelConfig` (Pydantic Schema)
+
+*   **Purpose:** Defines and validates the configuration for language models used by agents. Ensures required fields are present and sets defaults.
+*   **Location:** Defined in `src/models/models.py`.
+*   **Key Fields:**
+    *   `type`: `'local'` or `'api'`.
+    *   `name`: Model identifier (e.g., `'gpt-4-turbo'`, `'mistralai/Mistral-7B-Instruct-v0.1'`).
+    *   `provider`: Optional API provider name (`'openai'`, `'openrouter'`, `'google'`). Used to determine `base_url` if not explicitly set.
+    *   `base_url`: Specific API endpoint URL. Overrides `provider`.
+    *   `api_key`: API authentication key. Reads from environment variables (`OPENAI_API_KEY`, `OPENROUTER_API_KEY`, `GOOGLE_API_KEY`) if not provided.
+    *   `max_tokens`: Default maximum tokens for generation.
+    *   `temperature`: Default sampling temperature.
+    *   `model_class`: For `type='local'`, specifies `'llm'` or `'vlm'`.
+    *   `torch_dtype`, `device_map`: For `type='local'`.
+*   **Validation:** Automatically determines `base_url` from `provider`, reads `api_key` from environment, and ensures API models have necessary credentials.
+
+**Example: Creating `ModelConfig` Instances**
+
+```python
+# filepath: /path/to/your/scripts/model_config_example.py
+from src.models.models import ModelConfig
+import os
+
+# Example 1: OpenAI API (API key from env)
+config_openai = ModelConfig(
+    type="api",
+    provider="openai",
+    name="gpt-4-turbo",
+    temperature=0.5
+)
+print(f"OpenAI Config Base URL: {config_openai.base_url}")
+# print(f"OpenAI Config API Key: {config_openai.api_key}") # Key is read from env
+
+# Example 2: OpenRouter API (Explicit API key)
+config_openrouter = ModelConfig(
+    type="api",
+    provider="openrouter",
+    name="anthropic/claude-3-haiku",
+    api_key="YOUR_OPENROUTER_KEY_HERE", # Replace with your key
+    max_tokens=2000
+)
+print(f"OpenRouter Config Base URL: {config_openrouter.base_url}")
+
+# Example 3: Local LLM
+config_local = ModelConfig(
+    type="local",
+    name="mistralai/Mistral-7B-Instruct-v0.1",
+    model_class="llm",
+    torch_dtype="bfloat16",
+    device_map="auto"
+)
+print(f"Local Config Name: {config_local.name}")
+
+# Example 4: API with custom base URL
+config_custom_api = ModelConfig(
+    type="api",
+    name="custom-model-name",
+    base_url="http://localhost:8080/v1", # Your custom endpoint
+    api_key="dummy-key-if-needed"
+)
+print(f"Custom API Config Base URL: {config_custom_api.base_url}")
+
+```
+
 ## 3. Agent Types
 
 ### `Agent`
 
 *   **Purpose:** A general-purpose agent using either local models (`BaseLLM`, `BaseVLM`) or API models (`BaseAPIModel`).
-*   **Initialization:** Configured via `model_config` dictionary which specifies model `type` ('local' or 'api'), `name`, and other relevant parameters (API keys, model settings, etc.). May also take `memory_config`. Uses `_create_model_from_config` internally.
-*   **Core Logic (`_run`)**: Implements the basic flow: updates memory, selects system prompt (using `system_prompt_<run_mode>` if available, otherwise `system_prompt`), prepares messages, calls the configured model (`self.model_instance.run`), updates memory with the response, and returns the result. Handles `json_mode` automatically if `run_mode == 'plan'`. Can handle tool calls if the model supports them and `tools_schema` is provided (typically used in 'think' mode or similar). Passes API-specific parameters from `model_config` to the model's `run` method.
+*   **Initialization:** Configured via a `ModelConfig` instance which specifies model `type`, `name`, and other relevant parameters (API keys, model settings, etc.). Uses `_create_model_from_config` internally. An optional `max_tokens` parameter in the `Agent` constructor overrides the default from `ModelConfig`.
+*   **Core Logic (`_run`)**: Implements the basic flow: updates memory, selects system prompt (using `system_prompt_<run_mode>` if available, otherwise `system_prompt`), prepares messages, calls the configured model (`self.model_instance.run`), updates memory with the response, and returns the result. Handles `json_mode` automatically if `run_mode == 'plan'`. Can handle tool calls if the model supports them and `tools_schema` is provided (typically used in 'think' mode or similar). Passes API-specific parameters from `ModelConfig` (and any runtime `kwargs`) to the model's `run` method.
 
 **Example: Basic `Agent` Instantiation and Invocation**
 
@@ -142,22 +207,30 @@ import asyncio
 import os
 import logging
 from src.agents.agents import Agent, RequestContext, LogLevel
+from src.models.models import ModelConfig # Import ModelConfig
 
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 
-model_config_api = {
-    "type": "api",
-    "name": "gpt-3.5-turbo",
-    "api_key": os.getenv("OPENAI_API_KEY"),
-    "temperature": 0.7,
-}
+# Create the ModelConfig instance (reads API key from env)
+try:
+    model_config_api = ModelConfig(
+        type="api",
+        provider="openai", # Specify provider
+        name="gpt-3.5-turbo",
+        temperature=0.7,
+    )
+except ValueError as e:
+     logging.error(f"Failed to create ModelConfig: {e}")
+     # Handle error appropriately, e.g., exit or use a fallback
+     exit()
 
-# Create the agent instance
+
+# Create the agent instance using ModelConfig
 basic_agent = Agent(
     agent_name="EchoBot",
-    model_config=model_config_api,
+    model_config=model_config_api, # Pass the config object
     system_prompt="Repeat the user's message exactly.",
-    max_tokens=50
+    max_tokens=50 # Agent-specific override
 )
 
 async def run_echo_task():
@@ -188,7 +261,7 @@ async def run_echo_task():
 ### `LearnableAgent`
 
 *   **Purpose:** Extends `BaseAgent` for agents using local models (`BaseLLM`, `BaseVLM`) that might have learnable components.
-*   **Initialization:** Takes a `model` instance directly. Can initialize PEFT heads if `learning_head='peft'` and `learning_head_config` are provided, wrapping the base model in a `PeftHead`. May also take `memory_config`.
+*   **Initialization:** Takes a `model` instance directly (not a `ModelConfig`). Can initialize PEFT heads if `learning_head='peft'` and `learning_head_config` are provided, wrapping the base model in a `PeftHead`.
 *   **Core Logic (`_run`)**: Similar to `Agent`, but calls `self.model.run` (which might be the base model or the `PeftHead` wrapper). Requires the actual model instance to be passed during initialization. Selects system prompt based on `run_mode`. Handles `json_mode` if `run_mode == 'plan'`. Passes `kwargs` to the model's `run` method.
 
 **Example: `LearnableAgent` Instantiation (Conceptual)**
@@ -198,6 +271,7 @@ async def run_echo_task():
 from src.agents.agents import LearnableAgent
 from src.models.models import BaseLLM
 
+# Assume BaseLLM is initialized correctly
 local_model_instance = BaseLLM(model_name="mistralai/Mistral-7B-Instruct-v0.1")
 
 peft_config = {
@@ -210,7 +284,7 @@ peft_config = {
 
 learnable_agent = LearnableAgent(
     agent_name="Researcher",
-    model=local_model_instance,
+    model=local_model_instance, # Pass the model instance directly
     system_prompt="You are a research assistant. Summarize the key points.",
     learning_head="peft",
     learning_head_config=peft_config,
@@ -224,7 +298,7 @@ print(f"Learnable Agent '{learnable_agent.name}' created.")
 
 *   **Purpose:** Specialized `Agent` subclass for web browsing tasks. Uses different `run_mode` values ('think', 'critic') for distinct behaviors.
 *   **Initialization:**
-    *   Uses `model_config` like `Agent`.
+    *   Uses `ModelConfig` like `Agent`.
     *   Requires *asynchronous* creation using class methods `create` or `create_safe`. These handle `BrowserTool` initialization.
     *   Takes optional `generation_system_prompt` (used for `run_mode='think'`) and `critic_system_prompt` (used for `run_mode='critic'`).
     *   `create_safe` includes parameters like `temp_dir`, `headless_browser`, `timeout`.
@@ -243,14 +317,21 @@ import asyncio
 import os
 import logging
 from src.agents.agents import BrowserAgent, RequestContext, LogLevel
+from src.models.models import ModelConfig # Import ModelConfig
 
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 
-model_config_browser = {
-    "type": "api",
-    "name": "gpt-4-turbo",
-    "api_key": os.getenv("OPENAI_API_KEY"),
-}
+# Create ModelConfig (reads API key from env)
+try:
+    model_config_browser = ModelConfig(
+        type="api",
+        provider="openai",
+        name="gpt-4-turbo",
+        temperature=0.2,
+    )
+except ValueError as e:
+     logging.error(f"Failed to create ModelConfig: {e}")
+     exit()
 
 async def manage_browser_agent():
     browser_agent = None
@@ -261,7 +342,7 @@ async def manage_browser_agent():
         logging.info("Creating BrowserAgent using create_safe...")
         browser_agent = await BrowserAgent.create_safe(
             agent_name="SafeBrowser",
-            model_config=model_config_browser,
+            model_config=model_config_browser, # Pass ModelConfig instance
             generation_system_prompt="You control a browser. Use tools to navigate.",
             headless_browser=True,
             timeout=45
@@ -278,8 +359,9 @@ async def manage_browser_agent():
         )
 
         logging.info(f"Invoking BrowserAgent for task: {initial_prompt}")
+        # BrowserAgent's handle_invocation implicitly uses 'think' mode if not specified
         response = await browser_agent.handle_invocation(
-            request={"mode": "think", "prompt": initial_prompt},
+            request=initial_prompt,
             request_context=request_context
         )
         logging.info(f"BrowserAgent initial response/action: {response}")
@@ -316,13 +398,18 @@ The `_run` method is the heart of an agent's custom logic. When implementing `_r
 4.  **Prepare Model Input:** Get formatted memory, ensure system prompt is correctly included.
     ```python
     llm_messages = self.memory.to_llm_format()
+    # Ensure system prompt is correctly placed/updated in llm_messages
     ```
-5.  **Determine Model Parameters:** Set parameters based on `run_mode` or `kwargs`.
+5.  **Determine Model Parameters:** Set parameters based on `run_mode` or `kwargs`. Get defaults from `self._model_config` if applicable.
     ```python
     json_mode = (run_mode == "plan")
     use_tools = (run_mode == "think")
-    max_tokens_override = kwargs.get("max_tokens", self.max_tokens)
-    model_params = {"max_tokens": max_tokens_override, "json_mode": json_mode}
+    max_tokens_override = kwargs.get("max_tokens", self.max_tokens) # self.max_tokens already considers agent override
+    temperature_override = kwargs.get("temperature", self._model_config.temperature if hasattr(self, '_model_config') else 0.7)
+    model_params = {"max_tokens": max_tokens_override, "temperature": temperature_override, "json_mode": json_mode}
+    # Add other API specific kwargs from self._get_api_kwargs() if needed
+    api_kwargs = self._get_api_kwargs() if hasattr(self, '_get_api_kwargs') else {}
+    model_params.update(api_kwargs)
     ```
 6.  **Call the Model:** Execute the LLM call.
     ```python
@@ -333,22 +420,24 @@ The `_run` method is the heart of an agent's custom logic. When implementing `_r
              tool_choice="auto" if use_tools and self.tools_schema else None,
              **model_params
         )
+        # Process result (might be string or dict with content/tool_calls)
         output_content = result.get("content") if isinstance(result, dict) else str(result)
         tool_calls = result.get("tool_calls") if isinstance(result, dict) else None
-        await self._log_progress(request_context, LogLevel.DEBUG, f"LLM Output: {output_content[:100]}...", data={"tool_calls": tool_calls})
+        await self._log_progress(request_context, LogLevel.DEBUG, f"LLM Output: {str(result)[:100]}...", data={"tool_calls": tool_calls})
     except Exception as e:
         await self._log_progress(request_context, LogLevel.MINIMAL, f"LLM call failed: {e}", data={"error": str(e)})
         raise
     ```
-7.  **Update Memory (Output):** Store the model's response content.
+7.  **Update Memory (Output):** Store the model's response content or the raw response if it contains tool calls.
     ```python
-    if output_content:
-        self.memory.update_memory("assistant", output_content)
+    # Store the raw response string or JSON string representation
+    output_str = json.dumps(result) if isinstance(result, dict) else str(result)
+    self.memory.update_memory("assistant", output_str)
     ```
 8.  **Post-processing (Tool Calls / Agent Invocation):** Analyze `result`.
-    *   **Tool Calls:** If `tool_calls` exist (and `run_mode` supports tools), parse them, execute functions from `self.tools`, update memory with results using role `tool` (or `tool_error`), and potentially call the LLM again.
-    *   **Agent Invocation:** If delegation is needed, use `await self.invoke_agent(...)`.
-9.  **Return Result:** Return the final processed result.
+    *   **Tool Calls:** If `tool_calls` exist (and `run_mode` supports tools), parse them, execute functions from `self.tools`, update memory with results using role `tool` (or `tool_error`), and potentially call the LLM again. The `Agent` and `BrowserAgent` `_run` methods return the raw `result` containing tool calls, expecting a higher-level loop (like `auto_run`) to handle execution.
+    *   **Agent Invocation:** If delegation is needed based on the `result`, use `await self.invoke_agent(...)`.
+9.  **Return Result:** Return the final processed result (often the raw `result` from the LLM, especially if tool calls are involved).
 
 ## 5. Tool Usage
 
@@ -358,8 +447,14 @@ Agents can be equipped with tools (Python functions) to interact with external s
 2.  **Define Schema:** Create an OpenAI-compatible JSON schema list (`tools_schema`) that describes each function, its purpose, and its parameters. Pydantic models can be helpful here.
 3.  **Provide to Agent:** Pass the dictionary of functions (`tools`) and the schema list (`tools_schema`) during agent initialization.
     ```python
+    # filepath: /path/to/your/scripts/tool_agent_example.py
+    import json
+    from src.agents.agents import Agent
+    from src.models.models import ModelConfig
+
     def get_current_weather(location: str, unit: str = "celsius") -> str:
-        return f"The weather in {location} is..."
+        # In a real scenario, this would call a weather API
+        return json.dumps({"location": location, "temperature": "25", "unit": unit, "condition": "Sunny"})
 
     weather_schema = [{
         "type": "function",
@@ -377,31 +472,40 @@ Agents can be equipped with tools (Python functions) to interact with external s
         },
     }]
 
+    # Assume model_config_api is defined as in previous examples
+    # ...
+
     weather_agent = Agent(
+        agent_name="WeatherBot",
+        model_config=model_config_api, # Use a ModelConfig instance
+        system_prompt="You are a weather bot. Use tools to find the weather.",
         tools={"get_current_weather": get_current_weather},
         tools_schema=weather_schema
     )
+    print(f"Agent {weather_agent.name} created with tools.")
     ```
-4.  **Handle in `_run`:** When the LLM response contains `tool_calls` (and the `run_mode` supports tools):
-    *   Parse the tool name and arguments from each call.
-    *   Find the corresponding function in `self.tools`.
-    *   Execute the function (await if async) with the arguments, handling errors.
-    *   Format the function's return value or error.
-    *   Update the agent's memory with the tool result using the `tool` role (or `tool_error`).
-    *   Typically, call the LLM *again* with the history including the `tool` role message, so it can generate the final user-facing response based on the tool's output.
+4.  **Handle in `_run` or `auto_run`:** When the LLM response contains `tool_calls` (and the `run_mode` supports tools):
+    *   The `_run` method typically returns the raw response containing the `tool_calls`.
+    *   A higher-level method like `auto_run` (or custom orchestration logic) intercepts this response.
+    *   It parses the tool name and arguments from each call.
+    *   Finds the corresponding function in `self.tools`.
+    *   Executes the function (await if async) with the arguments, handling errors.
+    *   Formats the function's return value or error.
+    *   Updates the agent's memory with the tool result using the `tool` role (or `tool_error`).
+    *   Calls the agent's `_run` method *again* with the history including the `tool` role message, so it can generate the final user-facing response based on the tool's output.
 
 ## 6. Logging and Monitoring
 
 *   **Standard Logging:** The framework uses Python's built-in `logging`. Configure the root logger to control the level and format of messages printed to the console/file (e.g., `logging.basicConfig(level=logging.INFO)`).
-*   **Progress Updates:** For real-time monitoring of tasks, especially in UI applications, use the `progress_queue` returned by `BaseCrew.run_task`. Consume `ProgressUpdate` objects from this queue asynchronously. The level of detail is controlled by the `log_level` parameter passed to `run_task`. `LogLevel.DEBUG` provides the most verbose information, including structured data.
+*   **Progress Updates:** For real-time monitoring of tasks, especially in UI applications, use the `progress_queue` in the `RequestContext`. Consume `ProgressUpdate` objects from this queue asynchronously. The level of detail is controlled by the `log_level` parameter in `RequestContext`. `LogLevel.DEBUG` provides the most verbose information, including structured data.
 
 ## 7. Error Handling
 
-*   **Agent Initialization:** Errors during `Agent` or `LearnableAgent` init are typically synchronous. `BrowserAgent.create_safe` handles internal retries/timeouts but will raise exceptions (like `TimeoutError`) on persistent failure.
-*   **Model Calls:** The `_run` method should wrap `self.model.run(...)` in a `try...except` block to catch model errors (API issues, runtime errors) and log them using `_log_progress`.
-*   **Tool Calls:** Execution of tools within `_run` should also be wrapped in `try...except`. Log errors and update memory with a `tool_error` role.
+*   **Agent Initialization:** Errors during `Agent` or `LearnableAgent` init are typically synchronous. `BrowserAgent.create_safe` handles internal retries/timeouts but will raise exceptions (like `TimeoutError`) on persistent failure. `ModelConfig` validation errors will also occur during initialization.
+*   **Model Calls:** The `_run` method should wrap `self.model.run(...)` or `self.model_instance.run(...)` in a `try...except` block to catch model errors (API issues, runtime errors) and log them using `_log_progress`.
+*   **Tool Calls:** Execution of tools within `_run` or `auto_run` should also be wrapped in `try...except`. Log errors and update memory with a `tool_error` role.
 *   **Agent Invocation:** `invoke_agent` handles `PermissionError`, `ValueError` (limits), and `AgentNotFound` errors. Exceptions raised by the *target* agent's `handle_invocation` or `_run` are propagated back to the caller. The caller's `invoke_agent` call should be within a `try...except` block if specific error handling is needed.
-*   **Task Execution:** `BaseCrew.run_task` wraps the initial agent call in `try...except`, logs task failures, puts `None` on the progress queue, and re-raises the exception.
+*   **Task Execution:** The initial `handle_invocation` call (or a wrapper like `BaseCrew.run_task`) should wrap the call in `try...except`, log task failures, potentially put `None` on the progress queue, and handle or re-raise the exception.
 
 ## 8. Usage Examples (Revised & Expanded)
 
@@ -413,51 +517,55 @@ import asyncio
 import logging
 import os
 from src.agents.agents import Agent, RequestContext, LogLevel
+from src.models.models import ModelConfig # Import ModelConfig
 
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 
-api_key = os.getenv("OPENAI_API_KEY")
-if not api_key:
-    raise ValueError("Please set the OPENAI_API_KEY environment variable.")
+# Create the ModelConfig instance (reads API key from env)
+try:
+    model_config_api = ModelConfig(
+        type="api",
+        provider="openai", # Specify provider
+        name="gpt-3.5-turbo",
+        temperature=0.7,
+    )
+except ValueError as e:
+     logging.error(f"Failed to create ModelConfig: {e}")
+     # Handle error appropriately, e.g., exit or use a fallback
+     exit()
 
-model_config_gpt4 = {
-    "type": "api",
-    "name": "gpt-4-turbo-preview",
-    "api_key": api_key,
-    "temperature": 0.7,
-}
 
-responder_agent = Agent(
-    agent_name="HelpfulResponder",
-    model_config=model_config_gpt4,
-    system_prompt="You are a concise and helpful assistant.",
-    max_tokens=150
+# Create the agent instance using ModelConfig
+basic_agent = Agent(
+    agent_name="EchoBot",
+    model_config=model_config_api, # Pass the config object
+    system_prompt="Repeat the user's message exactly.",
+    max_tokens=50 # Agent-specific override
 )
 
-async def run_responder_task():
+async def run_echo_task():
     progress_queue = asyncio.Queue()
     request_context = RequestContext(
-        task_id="responder-task-01",
-        initial_prompt="What is the capital of Canada?",
+        task_id="echo-01",
+        initial_prompt="Hello Agent!",
         progress_queue=progress_queue,
-        log_level=LogLevel.DEBUG,
+        log_level=LogLevel.SUMMARY,
     )
 
-    logging.info(f"Starting task {request_context.task_id}...")
     try:
-        response = await responder_agent.handle_invocation(
-            request="What is the capital of Canada?",
+        logging.info(f"Invoking agent {basic_agent.name}")
+        response = await basic_agent.handle_invocation(
+            request="Hello Agent!",
             request_context=request_context
         )
-        logging.info(f"Task {request_context.task_id} completed. Final Response: {response}")
-
+        logging.info(f"\nAgent Response: {response}")
     except Exception as e:
-        logging.error(f"Task {request_context.task_id} failed: {e}", exc_info=True)
+        logging.error(f"\nError: {e}", exc_info=True)
     finally:
         await progress_queue.put(None)
         await progress_queue.join()
 
-# asyncio.run(run_responder_task())
+# asyncio.run(run_echo_task())
 ```
 
 ### Example 2: Browser Agent Task
@@ -468,19 +576,21 @@ import asyncio
 import logging
 import os
 from src.agents.agents import BrowserAgent, RequestContext, LogLevel
+from src.models.models import ModelConfig # Import ModelConfig
 
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 
-api_key = os.getenv("OPENAI_API_KEY")
-if not api_key:
-    raise ValueError("Please set the OPENAI_API_KEY environment variable.")
-
-model_config_browser = {
-    "type": "api",
-    "name": "gpt-4-turbo",
-    "api_key": api_key,
-    "temperature": 0.2,
-}
+# Create ModelConfig (reads API key from env)
+try:
+    model_config_browser = ModelConfig(
+        type="api",
+        provider="openai",
+        name="gpt-4-turbo",
+        temperature=0.2,
+    )
+except ValueError as e:
+    logging.error(f"Failed to create ModelConfig: {e}")
+    exit()
 
 async def run_browser_task():
     browser_agent = None
@@ -490,7 +600,7 @@ async def run_browser_task():
     try:
         browser_agent = await BrowserAgent.create_safe(
             agent_name="WebNavigator",
-            model_config=model_config_browser,
+            model_config=model_config_browser, # Pass ModelConfig instance
             generation_system_prompt="You are a web browsing assistant.",
             headless_browser=True,
             timeout=45,
@@ -506,6 +616,7 @@ async def run_browser_task():
             max_interactions=5
         )
 
+        # BrowserAgent's handle_invocation uses 'think' mode by default for string prompts
         response = await browser_agent.handle_invocation(
             request=initial_prompt,
             request_context=request_context
@@ -532,212 +643,9 @@ import logging
 import os
 import json
 from src.agents.agents import Agent, RequestContext, LogLevel
+from src.models.models import ModelConfig # Import ModelConfig
 
-logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
-
-api_key = os.getenv("OPENAI_API_KEY")
-if not api_key:
-    raise ValueError("Please set the OPENAI_API_KEY environment variable.")
-
-model_config_shared = {
-    "type": "api",
-    "name": "gpt-4-turbo-preview",
-    "api_key": api_key,
-    "temperature": 0.5,
-}
-
-executor_agent = Agent(
-    agent_name="Executor",
-    model_config=model_config_shared,
-    system_prompt="You are an expert in executing specific tasks.",
-    allowed_peers=[]
-)
-
-class PlannerAgent(Agent):
-    async def _run(self, prompt, request_context, run_mode, **kwargs):
-        self.memory.update_memory("user", str(prompt))
-        system_prompt_content = getattr(self, f"system_prompt_{run_mode}", self.system_prompt)
-        llm_messages = self.memory.to_llm_format()
-        llm_messages_copy = [msg.copy() for msg in llm_messages]
-        if not any(m['role'] == 'system' for m in llm_messages_copy):
-            llm_messages_copy.insert(0, {"role": "system", "content": system_prompt_content})
-
-        plan_steps = []
-        try:
-            plan_result_raw = await self.model.run(
-                messages=llm_messages_copy,
-                max_tokens=kwargs.get("max_tokens", self.max_tokens),
-                json_mode=True
-            )
-            parsed_plan = json.loads(plan_result_raw) if isinstance(plan_result_raw, str) else plan_result_raw
-            if isinstance(parsed_plan, list) and all(isinstance(step, str) for step in parsed_plan):
-                plan_steps = parsed_plan
-                self.memory.update_memory("assistant", f"Generated Plan: {plan_steps}")
-            else:
-                raise ValueError("Invalid plan format.")
-        except Exception as e:
-            return {"error": "Planning failed.", "details": str(e)}
-
-        execution_results = []
-        for i, step in enumerate(plan_steps):
-            step_request = f"Execute this step: {step}"
-            try:
-                step_result = await self.invoke_agent(
-                    target_agent_name="Executor",
-                    request=step_request,
-                    request_context=request_context
-                )
-                execution_results.append({"step": step, "status": "success", "result": step_result})
-            except Exception as e:
-                execution_results.append({"step": step, "status": "error", "error": str(e)})
-                break
-
-        return {"final_results": execution_results}
-
-planner_agent = PlannerAgent(
-    agent_name="Planner",
-    model_config=model_config_shared,
-    system_prompt="You are a meticulous planner.",
-    allowed_peers=["Executor"]
-)
-
-async def run_multi_agent_task():
-    progress_queue = asyncio.Queue()
-    task_id = "plan-exec-task-01"
-    initial_prompt = "Research the company 'NVIDIA', find their latest stock price, and summarize their main business areas."
-
-    request_context = RequestContext(
-        task_id=task_id,
-        initial_prompt=initial_prompt,
-        progress_queue=progress_queue,
-        log_level=LogLevel.SUMMARY,
-        max_depth=3,
-        max_interactions=15
-    )
-
-    try:
-        final_result = await planner_agent.handle_invocation(
-            request=initial_prompt,
-            request_context=request_context
-        )
-        logging.info(f"Task {task_id} completed. Result: {final_result}")
-    except Exception as e:
-        logging.error(f"Task {task_id} failed: {e}", exc_info=True)
-    finally:
-        await progress_queue.join()
-
-# asyncio.run(run_multi_agent_task())
-```
-
-### Example 4: Deep Research Multi-Agent System
-
-This example outlines a more complex multi-agent system designed for in-depth research tasks. It involves multiple agents collaborating to gather, validate, and synthesize information from various sources to answer a user's query comprehensively.
-
-**Goal:** To perform deep research by breaking down a complex query, gathering information from multiple sources (simulated here), critically evaluating the gathered information's relevance and sufficiency, iteratively refining the search based on evaluation, and finally synthesizing a detailed report grounded in the collected evidence.
-
-**Components:**
-
-1.  **Orchestrator Agent (`Agent` class):**
-    *   **Role:** The central coordinator. It does *not* perform research or synthesis itself.
-    *   **Initialization:** Uses the standard `Agent` class with a specialized system prompt guiding it to plan, delegate, and manage the research process.
-    *   **Responsibilities:**
-        *   Analyzes the user's initial query.
-        *   Generates its own "thesis" or breakdown of the query into specific, answerable research questions.
-        *   Refines the user query into clearer, direct questions for sub-agents.
-        *   Decides which agent to call next based on the current state of the research.
-        *   Calls the `RetrievalAgent` with *specific, targeted questions* derived from its plan (not the raw user query).
-        *   Calls the `ResearcherAgent` to evaluate the information retrieved for a specific question.
-        *   Iteratively calls `RetrievalAgent` again if the `ResearcherAgent` indicates missing information, providing context from the critique.
-        *   Accumulates validated information relevant to the overall query.
-        *   Calls the `SynthesizerAgent` *only* when it determines (based on `ResearcherAgent` feedback and its plan) that sufficient information has been gathered across the necessary sub-questions.
-        *   Passes the original user query and all validated, relevant information to the `SynthesizerAgent`.
-        *   Manages the overall workflow, respecting limits set in `RequestContext`.
-    *   **Constraints:** Should not answer the query directly, hallucinate, assume information, or call the synthesizer prematurely.
-
-2.  **Retrieval Agent (`Agent` class):**
-    *   **Role:** Information gatherer.
-    *   **Initialization:** Uses the `Agent` class, equipped with tools for searching different sources (e.g., web search, academic databases - mocked in this example).
-    *   **Responsibilities:**
-        *   Receives a *specific question* from the `OrchestratorAgent`.
-        *   Uses its tools (potentially multiple times) to find relevant information for that specific question.
-        *   Formats the findings into a structured list of objects, each containing `title`, `content`, `source`, and `url`.
-        *   Returns this list to the `OrchestratorAgent`.
-
-3.  **Researcher Agent (`Agent` class):**
-    *   **Role:** Critical evaluator of retrieved information.
-    *   **Initialization:** Uses the `Agent` class with a prompt focused on critical analysis and sufficiency assessment.
-    *   **Responsibilities:**
-        *   Receives a *specific question* (the one asked to the `RetrievalAgent`) and the `list` of information retrieved for that question from the `OrchestratorAgent`.
-        *   Evaluates if the provided `content` is relevant and sufficient to answer the *specific question* it was given.
-        *   If sufficient, confirms this.
-        *   If insufficient or irrelevant, clearly states *what* is missing or why the information is inadequate for the specific question.
-        *   Returns its assessment (confirmation or critique) to the `OrchestratorAgent`.
-
-4.  **Synthesizer Agent (`Agent` class):**
-    *   **Role:** Report generator.
-    *   **Initialization:** Uses the `Agent` class with a prompt focused on deep reasoning, thesis generation, and structured report writing based on provided evidence.
-    *   **Responsibilities:**
-        *   Receives the *original user query* and a collection of *all relevant, validated information* gathered during the research process from the `OrchestratorAgent`.
-        *   Analyzes the query and the evidence.
-        *   Develops its own thesis or structure for the final report.
-        *   Writes a comprehensive, well-structured report that directly addresses the user's query, citing the provided information (implicitly or explicitly).
-        *   Returns the final report to the `OrchestratorAgent`.
-
-**Interaction Flow:**
-
-The process is iterative and managed by the Orchestrator:
-
-1.  User query -> Orchestrator
-2.  Orchestrator: Analyzes query, generates plan/questions.
-3.  Orchestrator -> RetrievalAgent (with specific question 1)
-4.  RetrievalAgent -> Orchestrator (with retrieved info list 1)
-5.  Orchestrator -> ResearcherAgent (with question 1 + info list 1)
-6.  ResearcherAgent -> Orchestrator (with assessment 1: "Sufficient" or "Needs more info on X")
-7.  Orchestrator:
-    *   If "Sufficient": Stores info 1, moves to next question (go to step 3 with question 2).
-    *   If "Needs more info": Formulates a refined/new question based on feedback -> RetrievalAgent (go to step 3).
-8.  (Repeat steps 3-7 for all necessary questions in the plan)
-9.  Orchestrator (once all info deemed sufficient): -> SynthesizerAgent (with original query + all validated info)
-10. SynthesizerAgent -> Orchestrator (with final report)
-11. Orchestrator -> User (returns final report)
-
-**Managing Limits:**
-
-The `RequestContext` plays a crucial role in preventing runaway processes:
-
-*   `max_depth`: Limits how many nested agent calls can occur (e.g., Orchestrator calls Retrieval).
-*   `max_interactions`: Limits the total number of agent-to-agent calls within the entire task. This is vital for stopping iterative refinement loops (Orchestrator -> Retrieval -> Researcher -> Orchestrator...) if they don't converge.
-*   `max_tokens_soft_limit` / `max_tokens_hard_limit`: Can be used (though not explicitly shown in this example's core logic) to monitor token usage across all agent calls within the task and potentially force an early synthesis or termination if limits are approached.
-
-**Implementation Example:**
-
-The following Python code demonstrates how to set up and run this Deep Research system using the `Agent` class and mock tools.
-
-```python
-# filepath: /home/rezaho/research_projects/Multi-agent_AI_Learning/examples/deep_research_agent_system.py
-"""
-Example implementation of a Deep Research Multi-Agent System.
-
-Demonstrates Orchestrator, Retrieval, Researcher, and Synthesizer agents
-collaborating to answer a complex query. Uses mock tools for retrieval.
-"""
-
-import asyncio
-import json
-import logging
-import os
-import random
-import time
-import uuid
-from typing import Any, Dict, List, Optional
-
-# Assuming agents module is in the path
-from src.agents.agents import Agent, AgentRegistry, LogLevel, RequestContext
-
-# --- Configuration ---
-logging.basicConfig(
-    level=logging.INFO, format="%(asctime)s - %(levelname)s - [%(agent_name)s] %(message)s"
-)
+logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - [%(agent_name)s] %(message)s')
 
 # Add agent_name to log records
 class AgentLogFilter(logging.Filter):
@@ -749,27 +657,31 @@ logger = logging.getLogger()
 logger.addFilter(AgentLogFilter())
 
 
-API_KEY = os.getenv("OPENAI_API_KEY")
-if not API_KEY:
-    raise ValueError("Please set the OPENAI_API_KEY environment variable.")
+# --- Model Configurations using ModelConfig ---
+try:
+    # Use a more capable model for orchestration and synthesis
+    model_config_capable = ModelConfig(
+        type="api",
+        provider="openai",
+        name="gpt-4.1", # Use specified capable model name
+        temperature=0.3,
+        max_tokens=1500, # Allow more tokens for planning/synthesis
+        # API key is read from env by ModelConfig
+    )
 
-# Use a more capable model for orchestration and synthesis
-MODEL_CONFIG_CAPABLE = {
-    "type": "api",
-    "name": "gpt-4-turbo-preview", # Or your preferred capable model
-    "api_key": API_KEY,
-    "temperature": 0.3,
-    "max_tokens": 1500, # Allow more tokens for planning/synthesis
-}
+    # Use a potentially faster/cheaper model for retrieval and research
+    model_config_worker = ModelConfig(
+        type="api",
+        provider="openai",
+        name="gpt-4.1-mini", # Use specified worker model name
+        temperature=0.1,
+        max_tokens=500,
+        # API key is read from env by ModelConfig
+    )
+except ValueError as e:
+    logger.error(f"Failed to create ModelConfig: {e}. Ensure API keys are set in environment.")
+    exit()
 
-# Use a potentially faster/cheaper model for retrieval and research
-MODEL_CONFIG_WORKER = {
-    "type": "api",
-    "name": "gpt-3.5-turbo", # Or your preferred worker model
-    "api_key": API_KEY,
-    "temperature": 0.1,
-    "max_tokens": 500,
-}
 
 # --- Mock Tools for Retrieval Agent ---
 
@@ -927,7 +839,7 @@ You are a Synthesizer Agent. Your task is to write a comprehensive, well-structu
 
 orchestrator_agent = Agent(
     agent_name="Orchestrator",
-    model_config=MODEL_CONFIG_CAPABLE,
+    model_config=model_config_capable, # Use capable model config
     system_prompt=ORCHESTRATOR_PROMPT,
     allowed_peers=["RetrievalAgent", "ResearcherAgent", "SynthesizerAgent"],
     memory_type="conversation_history", # Keeps track of the conversation flow
@@ -935,7 +847,7 @@ orchestrator_agent = Agent(
 
 retrieval_agent = Agent(
     agent_name="RetrievalAgent",
-    model_config=MODEL_CONFIG_WORKER,
+    model_config=model_config_worker, # Use worker model config
     system_prompt=RETRIEVAL_PROMPT,
     tools=retrieval_tools,
     tools_schema=retrieval_tools_schema,
@@ -945,7 +857,7 @@ retrieval_agent = Agent(
 
 researcher_agent = Agent(
     agent_name="ResearcherAgent",
-    model_config=MODEL_CONFIG_WORKER,
+    model_config=model_config_worker, # Use worker model config
     system_prompt=RESEARCHER_PROMPT,
     allowed_peers=[],
     memory_type="conversation_history", # Simple memory is likely sufficient
@@ -953,7 +865,7 @@ researcher_agent = Agent(
 
 synthesizer_agent = Agent(
     agent_name="SynthesizerAgent",
-    model_config=MODEL_CONFIG_CAPABLE,
+    model_config=model_config_capable, # Use capable model config
     system_prompt=SYNTHESIZER_PROMPT,
     allowed_peers=[],
     memory_type="conversation_history", # Needs to see the prompt + data
@@ -1052,7 +964,7 @@ async def run_deep_research_task(user_query: str, max_iterations: int = 5):
                         request=current_question, # Pass the specific query string
                         request_context=request_context,
                     )
-                    # Prepare for Researcher call
+                    # Prepare for Orchestrator's next step (which should involve calling Researcher)
                     current_orchestrator_request = {
                         "action": "process_retrieval_result",
                         "question": current_question,
