@@ -1,22 +1,198 @@
 import base64
 import io
 import json
+import logging
 import os
-from typing import Dict, List, Optional
+import warnings
+from abc import ABC, abstractmethod
+from typing import Any, Dict, List, Literal, Optional, Union
 
 import requests
-from peft import LoraConfig, PeftModel, TaskType, get_peft_model
+
+# Ensure other necessary imports are present
 from PIL import Image
-from pydantic import BaseModel
+
+# Ensure necessary Pydantic imports are present
+from pydantic import model_validator  # Keep model_validator
+from pydantic import (  # root_validator, # Ensure root_validator is removed or commented out
+    BaseModel,
+    Field,
+    ValidationError,
+    ValidationInfo,
+    field_validator,
+)
 from transformers import (
     AutoModelForCausalLM,
     AutoModelForVision2Seq,
     AutoProcessor,
     AutoTokenizer,
+    BitsAndBytesConfig,
+    GenerationConfig,
+    pipeline,
 )
 
 from src.models.processors import process_vision_info
 from src.models.utils import apply_tools_template
+
+# PEFT imports if used later in the file
+try:
+    from peft import LoraConfig, PeftModel, TaskType, get_peft_model
+except ImportError:
+    logging.warning("PEFT library not found. PEFT features will be unavailable.")
+    LoraConfig, TaskType, get_peft_model, PeftModel = None, None, None, None
+
+
+# --- Model Configuration Schema ---
+
+# Define the provider base URLs dictionary
+PROVIDER_BASE_URLS = {
+    "openai": "https://api.openai.com/v1/",
+    "openrouter": "https://openrouter.ai/api/v1",
+    "google": "https://generativelanguage.googleapis.com/v1beta/models",  # Assuming Gemini API
+    "anthropic": "https://api.anthropic.com/v1",
+    "groq": "https://api.groq.com/openai/v1",
+}
+
+
+class ModelConfig(BaseModel):
+    """
+    Pydantic schema for validating language model configurations.
+
+    Handles both local models (loaded via transformers) and API-based models.
+    Reads API keys from environment variables if not provided directly.
+    """
+
+    type: Literal["local", "api"] = Field(
+        ..., description="Type of model: 'local' or 'api'"
+    )
+    name: str = Field(
+        ...,
+        description="Model identifier (e.g., 'gpt-4-turbo', 'mistralai/Mistral-7B-Instruct-v0.1')",
+    )
+    provider: Optional[
+        Literal["openai", "openrouter", "google", "anthropic", "groq"]
+    ] = Field(
+        None, description="API provider name (used to determine base_url if not set)"
+    )
+    base_url: Optional[str] = Field(
+        None, description="Specific API endpoint URL (overrides provider)"
+    )
+    api_key: Optional[str] = Field(
+        None, description="API authentication key (reads from env if None)"
+    )
+    max_tokens: int = Field(1024, description="Default maximum tokens for generation")
+    temperature: float = Field(
+        0.7, ge=0.0, le=2.0, description="Default sampling temperature"
+    )
+
+    # Local model specific fields
+    model_class: Optional[Literal["llm", "vlm"]] = Field(
+        None, description="For type='local', specifies 'llm' or 'vlm'"
+    )
+    torch_dtype: Optional[str] = Field(
+        "auto", description="PyTorch dtype for local models (e.g., 'bfloat16', 'auto')"
+    )
+    device_map: Optional[str] = Field(
+        "auto", description="Device map for local models (e.g., 'auto', 'cuda:0')"
+    )
+    quantization_config: Optional[Dict[str, Any]] = Field(
+        None, description="Quantization config dict for local models"
+    )
+
+    # Allow extra fields for flexibility with different APIs/models
+    class Config:
+        extra = "allow"
+
+    @model_validator(mode="before")
+    @classmethod
+    def _set_base_url_from_provider(cls, data: Any) -> Any:
+        """Sets base_url based on provider using PROVIDER_BASE_URLS if base_url is not explicitly provided."""
+        if not isinstance(data, dict):
+            return data  # Pydantic handles non-dict initialization
+
+        if data.get("type") == "api" and not data.get("base_url"):
+            provider = data.get("provider")
+            if provider:
+                # Look up base_url from the dictionary
+                base_url = PROVIDER_BASE_URLS.get(provider)
+                if base_url:
+                    data["base_url"] = base_url
+                else:
+                    # Provider specified but not in our known dictionary
+                    warnings.warn(
+                        f"Unknown API provider '{provider}'. 'base_url' must be set explicitly if needed."
+                    )
+            else:
+                # Raise error only if type is API and neither provider nor base_url is set
+                raise ValueError(
+                    "For API models, either 'provider' or 'base_url' must be specified."
+                )
+        return data
+
+    @model_validator(mode="after")
+    def _validate_api_key(self) -> "ModelConfig":
+        """Reads API key from environment if not provided and validates presence for API models."""
+        if self.type == "api":
+            # Check if api_key is already set (either directly or by previous validator)
+            if self.api_key is not None:
+                return self  # API key is already provided, no need to check env
+
+            # If api_key is None, try to read from environment based on provider
+            env_var_map = {
+                "openai": "OPENAI_API_KEY",
+                "openrouter": "OPENROUTER_API_KEY",
+                "google": "GOOGLE_API_KEY",
+                "anthropic": "ANTHROPIC_API_KEY",
+                "groq": "GROQ_API_KEY",
+            }
+            env_var = env_var_map.get(self.provider) if self.provider else None
+
+            if env_var:
+                env_api_key = os.getenv(env_var)
+                if env_api_key:
+                    # Use object.__setattr__ to modify the field after initial validation
+                    # This is the correct way for 'after' validators in Pydantic v2
+                    object.__setattr__(self, "api_key", env_api_key)
+                    logging.debug(
+                        f"Read API key for provider '{self.provider}' from env var '{env_var}'."
+                    )
+                else:
+                    # API key is required but not provided and not found in env
+                    raise ValueError(
+                        f"API key for provider '{self.provider}' not found. "
+                        f"Set the '{env_var}' environment variable or provide 'api_key' directly."
+                    )
+            elif self.provider:
+                # Provider specified, but no known env var and no key provided
+                warnings.warn(
+                    f"No known environment variable for provider '{self.provider}'. "
+                    f"Ensure 'api_key' is provided if required by the API at '{self.base_url}'."
+                )
+            else:
+                # No provider specified and no API key provided
+                warnings.warn(
+                    f"No provider specified and no API key provided. "
+                    f"Ensure authentication is handled if required by the API at '{self.base_url}'."
+                )
+            # If api_key is still None after checks, it means it wasn't required or couldn't be found (warning issued)
+
+        return self  # Always return self in 'after' validators
+
+    @field_validator("model_class")
+    @classmethod
+    def _check_model_class_for_local(
+        cls, v: Optional[str], info: ValidationInfo
+    ) -> Optional[str]:
+        """Ensures model_class is set if type is 'local'."""
+        # info.data contains the raw input data before validation of this field
+        if info.data.get("type") == "local" and v is None:
+            raise ValueError(
+                "'model_class' must be set to 'llm' or 'vlm' for type='local'"
+            )
+        return v
+
+
+# --- Model Implementations ---
 
 
 class BaseLLM:
@@ -237,38 +413,29 @@ class BaseAPIModel:
     def __init__(
         self,
         model_name: str,
-        api_key: Optional[str] = None,
-        base_url: Optional[str] = None,
+        api_key: str,  # Changed to required
+        base_url: str,  # Changed to required
         max_tokens: int = 1024,
+        temperature: float = 0.7,  # Added temperature parameter
     ) -> None:
         """
         Initializes the API client.
 
         Args:
             model_name: The name of the model to use (e.g., "openai/gpt-4o").
-            api_key: The API key for authentication. Reads from OPENROUTER_API_KEY, OPENAI_API_KEY, or GEMINI_API_KEY env vars if not provided.
-            base_url: The base URL of the API endpoint. Defaults to OpenRouter if not provided.
+            api_key: The API key for authentication.
+            base_url: The base URL of the API endpoint (should include /chat/completions).
             max_tokens: The default maximum number of tokens to generate.
+            temperature: The default sampling temperature.
         """
         self.model_name = model_name
-        self.api_key = (
-            api_key
-            or os.getenv("OPENROUTER_API_KEY")
-            or os.getenv("OPENAI_API_KEY")
-            or os.getenv("GEMINI_API_KEY")
-        )
-        if not self.api_key:
-            raise ValueError(
-                "API key must be provided either as an argument or set in environment variables (OPENROUTER_API_KEY, OPENAI_API_KEY, GEMINI_API_KEY)."
-            )
+        self.api_key = api_key  # Use provided key directly
+        self.base_url = base_url  # Use provided URL directly
 
-        # Default to OpenRouter URL if not specified
-        self.base_url = base_url or "https://openrouter.ai/api/v1"
-        # Ensure the base URL ends with /chat/completions
-        if not self.base_url.endswith("/chat/completions"):
-            self.base_url = self.base_url.rstrip("/") + "/chat/completions"
+        # Removed API key env var reading and base_url defaulting logic - handled by ModelConfig now
 
         self._max_tokens = max_tokens
+        self._temperature = temperature  # Store default temperature
         self._headers = {
             "Authorization": f"Bearer {self.api_key}",
             "Content-Type": "application/json",
@@ -279,6 +446,7 @@ class BaseAPIModel:
         messages: List[Dict[str, str]],
         json_mode: bool = False,
         max_tokens: Optional[int] = None,
+        temperature: Optional[float] = None,  # Added temperature parameter
         **kwargs,  # Allow passing additional API parameters
     ) -> str:
         """
@@ -288,15 +456,22 @@ class BaseAPIModel:
             messages: A list of message dictionaries, following the OpenAI format.
             json_mode: If True, requests JSON output from the model.
             max_tokens: Overrides the default max_tokens for this specific call.
-            **kwargs: Additional parameters to pass to the API (e.g., temperature, top_p).
+            temperature: Overrides the default temperature for this specific call.
+            **kwargs: Additional parameters to pass to the API (e.g., top_p).
 
         Returns:
             The generated text content from the model.
         """
+        # Determine the temperature to use: override > instance default
+        current_temperature = (
+            temperature if temperature is not None else self._temperature
+        )
+
         payload = {
             "model": self.model_name,
             "messages": messages,
             "max_tokens": max_tokens if max_tokens is not None else self._max_tokens,
+            "temperature": current_temperature,  # Include temperature in payload
             **kwargs,  # Add any extra parameters
         }
 
@@ -306,9 +481,16 @@ class BaseAPIModel:
             # Note: Gemini API might use a different mechanism for JSON mode.
             # This implementation primarily targets OpenAI/OpenRouter compatibility.
 
+        # Construct the full URL, assuming a standard /chat/completions endpoint
+        # This covers OpenAI, OpenRouter, Groq based on their base URLs.
+        # Note: Other providers like Google or Anthropic might need different endpoint logic.
+        chat_endpoint = "/chat/completions"
+        # Ensure base_url doesn't have a trailing slash and endpoint starts with one
+        full_url = self.base_url.rstrip("/") + chat_endpoint
+
         try:
             response = requests.post(
-                self.base_url,
+                full_url,  # Use the constructed full URL
                 headers=self._headers,
                 json=payload,
                 timeout=180,  # Added timeout
@@ -375,6 +557,11 @@ class PeftHead:
             config=peft_config,
             is_trainable=is_trainable,
         )
+
+    def save_pretrained(self, path: str) -> None:
+        # To-DO: Save the PEFT model to the path
+        self.peft_head.save_pretrained(path)
+        self.peft_head.save_pretrained(path)
 
     def save_pretrained(self, path: str) -> None:
         # To-DO: Save the PEFT model to the path
