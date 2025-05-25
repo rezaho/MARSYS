@@ -87,23 +87,23 @@ class BaseAgent(ABC):
         )
 
     def __del__(self) -> None:
-        """Ensures the agent is unregistered upon deletion."""
-        agent_display_name = "UnknownAgent"  # Default in case self.name is not set
-        if hasattr(self, "name") and self.name:
-            agent_display_name = self.name
-            try:
-                AgentRegistry.unregister(self.name)
-            except Exception as e:
-                logging.debug(
-                    f"Error during agent '{agent_display_name}' unregistration in __del__: {e}",
-                    extra={"agent_name": agent_display_name},
-                )
-        # else:
-        # This case might occur if __init__ failed before self.name was set
-        # logging.debug(
-        #     f"Agent __del__ called, but 'name' attribute was not present or was None.",
-        #     extra={'agent_name': agent_display_name}
-        # )
+        """Safely unregister the agent, even during interpreter shutdown."""
+        agent_display_name = getattr(self, "name", "UnknownAgent")
+
+        # All globals may already be None at shutdown – guard every access.
+        try:
+            registry_cls = globals().get("AgentRegistry")  # type: ignore[arg-type]
+            unregister_fn = getattr(registry_cls, "unregister", None) if registry_cls else None
+            if agent_display_name and callable(unregister_fn):
+                try:
+                    unregister_fn(agent_display_name)
+                except Exception:  # pragma: no cover
+                    pass  # Silently ignore any error on final cleanup
+        except Exception as e:  # pragma: no cover
+            logging.debug(
+                f"__del__ cleanup for agent '{agent_display_name}' failed: {e}",
+                extra={"agent_name": agent_display_name},
+            )
 
     def _get_tool_instructions(
         self, current_tools_schema: Optional[List[Dict[str, Any]]]
