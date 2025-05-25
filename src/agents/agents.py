@@ -8,344 +8,19 @@ shared language models or dedicated API models.
 
 import asyncio
 import dataclasses
-import enum
-import importlib
 import json
 import logging
-import os
 import re
-import threading
 import time
 import uuid
-import weakref
 from abc import ABC, abstractmethod
 from typing import Any, Callable, Dict, List, Optional, Union
 
-# Assuming BaseModel is imported correctly for BrowserAgent schema generation
-from pydantic import BaseModel
+from src.models.models import BaseAPIModel, BaseLLM, BaseVLM, ModelConfig, PeftHead
 
-from src.agents.memory import ConversationMemory, MemoryManager, Message
-from src.environment.web_browser import BrowserTool
-from src.models.models import (
-    BaseAPIModel,
-    BaseLLM,  # Added ModelConfig
-    BaseVLM,
-    ModelConfig,
-    PeftHead,
-)
-
-
-class LogLevel(enum.IntEnum):
-    """Enumeration for different logging verbosity levels."""
-
-    NONE = 0
-    MINIMAL = 1
-    SUMMARY = 2
-    DETAILED = 3
-    DEBUG = 4
-
-
-# --- Custom Logging Filter ---
-# This filter ensures that all log records have an 'agent_name' and a normalized 'name' (logger name)
-# attribute before being processed by the formatter. This is crucial for consistent log output,
-# especially when logs originate from different parts of the application or third-party libraries.
-class AgentLogFilter(logging.Filter):
-    """
-    A logging filter that ensures 'agent_name' and a normalized 'name'
-    are present on log records for consistent formatting.
-    """
-
-    def filter(self, record: logging.LogRecord) -> bool:
-        # Ensure 'agent_name' is always set on the record and is a string.
-        # If 'agent_name' is already an attribute (e.g., passed via `extra={'agent_name': ...}`),
-        # use it; otherwise, default to "System". This is important for logs from external
-        # libraries like httpx that won't have `agent_name` by default.
-        current_agent_name = getattr(record, "agent_name", None)
-        if current_agent_name is None:
-            record.agent_name = "System"
-        else:
-            record.agent_name = str(current_agent_name)
-
-        # Ensure 'name' (logger name) is always set, is a string,
-        # and the 'root' logger's name is replaced by 'DefaultLogger' for cleaner logs.
-        current_logger_name = getattr(record, "name", None)
-        if not current_logger_name or current_logger_name == "root":
-            record.name = "DefaultLogger"
-        else:
-            record.name = str(current_logger_name)
-
-        return True
-
-
-# --- Logging Setup Utility ---
-def init_agent_logging(
-    level: int = logging.INFO, clear_existing_handlers: bool = True
-) -> None:
-    """
-    Sets up a standardized console logging configuration for agent-based systems.
-
-    Includes a custom filter to ensure 'agent_name' is available in log records.
-
-    Args:
-        level: The desired logging level for the root logger (e.g., logging.INFO, logging.DEBUG).
-        clear_existing_handlers: If True, removes any handlers already attached to the
-                                 root logger. This is useful in interactive environments
-                                 (like Jupyter notebooks) to prevent duplicate log outputs
-                                 when re-running setup code.
-    """
-    root_logger = logging.getLogger()
-
-    if clear_existing_handlers:
-        for handler in root_logger.handlers[:]:
-            root_logger.removeHandler(handler)
-            handler.close()  # Important to close handlers before removing
-
-    # Create a StreamHandler to output log messages to the console.
-    stream_handler = logging.StreamHandler()
-
-    # Define the log message format.
-    formatter = logging.Formatter(
-        "%(asctime)s - %(levelname)s - [%(name)s] [%(agent_name)s] %(message)s"
-    )
-    stream_handler.setFormatter(formatter)
-
-    # Add the custom AgentLogFilter to the stream_handler.
-    stream_handler.addFilter(AgentLogFilter())
-
-    # Add the configured stream_handler to the root logger.
-    root_logger.addHandler(stream_handler)
-
-    # Set the logging level for the root logger.
-    root_logger.setLevel(level)
-
-    logging.getLogger(__name__).info(
-        f"Agent logging setup complete. Root logger level set to {logging.getLevelName(level)}."
-    )
-
-
-@dataclasses.dataclass
-class ProgressUpdate:
-    """Dataclass representing a single progress update during task execution."""
-
-    timestamp: float = dataclasses.field(default_factory=time.time)
-    level: LogLevel = LogLevel.SUMMARY  # Changed default from LogLevel.INFO
-    message: str = ""
-    task_id: Optional[str] = None
-    interaction_id: Optional[str] = None
-    agent_name: Optional[str] = None
-    data: Optional[Dict[str, Any]] = None
-
-
-@dataclasses.dataclass
-class RequestContext:
-    """
-    Dataclass holding context information for a specific agent invocation within a task.
-
-    Attributes:
-        task_id: Unique identifier for the overall task.
-        initial_prompt: The initial prompt that started the task.
-        progress_queue: Async queue for sending progress updates.
-        log_level: The minimum log level to report.
-        max_depth: Maximum allowed depth for agent invocations.
-        max_interactions: Maximum allowed number of interactions (invocations) for the task.
-        interaction_id: Unique identifier for the current agent interaction/invocation.
-        depth: Current depth of invocation in the agent call chain.
-        interaction_count: Current count of interactions in the task.
-        caller_agent_name: Name of the agent that invoked the current agent.
-        callee_agent_name: Name of the agent currently being invoked.
-        current_tokens_used: Current number of tokens used in the task.
-        max_tokens_soft_limit: Soft limit for tokens, suggesting the agent should wrap up.
-        max_tokens_hard_limit: Hard limit for tokens, forcing the agent to stop.
-    """
-
-    progress_queue: asyncio.Queue[Optional[ProgressUpdate]]
-    log_level: LogLevel = LogLevel.SUMMARY
-    max_depth: int = 5
-    max_interactions: int = 10
-    task_id: str = dataclasses.field(default_factory=lambda: str(uuid.uuid4()))
-    initial_prompt: Optional[Any] = None
-    interaction_id: Optional[str] = None
-    depth: int = 0
-    interaction_count: int = 0
-    caller_agent_name: Optional[str] = None
-    callee_agent_name: Optional[str] = None
-    current_tokens_used: int = 0
-    max_tokens_soft_limit: Optional[int] = None
-    max_tokens_hard_limit: Optional[int] = None
-
-
-# --- Logging Utility ---
-
-
-class ProgressLogger:
-    """Utility class for logging progress updates."""
-
-    @staticmethod
-    async def log(
-        request_context: Optional[RequestContext],
-        level: LogLevel,
-        message: str,
-        agent_name: Optional[str] = None,
-        interaction_id: Optional[str] = None,
-        data: Optional[Dict[str, Any]] = None,
-    ) -> None:
-        """
-        Logs a progress message either to the async queue or standard logging.
-
-        Args:
-            request_context: The context of the current request, containing the queue and log level.
-                             Can be None for logging outside a specific task context.
-            level: The severity level of the log message.
-            message: The log message content.
-            agent_name: The name of the agent generating the log.
-            interaction_id: The ID of the specific interaction this log relates to.
-            data: Optional dictionary containing additional structured data.
-        """
-        if (
-            request_context
-            and request_context.progress_queue
-            and level <= request_context.log_level
-        ):
-            update = ProgressUpdate(
-                timestamp=time.time(),
-                level=level,
-                message=message,
-                task_id=request_context.task_id,
-                interaction_id=interaction_id or request_context.interaction_id,
-                agent_name=agent_name,
-                data=data,
-            )
-            try:
-                await request_context.progress_queue.put(update)
-                return  # <<<--- Exit after successfully putting on queue to prevent double logging
-            except Exception as e:
-                # Fallback to standard logging if queue put fails
-                logging.error(
-                    f"Failed to put log message on queue: {e}. Falling back to standard log."
-                )
-
-        # Standard logging fallback (if no queue, level too low, or queue put failed)
-        if level > LogLevel.NONE:  # Check level *before* formatting/logging
-            log_level_map = {
-                LogLevel.MINIMAL: logging.INFO,
-                LogLevel.SUMMARY: logging.INFO,
-                LogLevel.DETAILED: logging.DEBUG,
-                LogLevel.DEBUG: logging.DEBUG,
-            }
-            std_log_level = log_level_map.get(level, logging.INFO)
-            log_msg = f"[Task:{request_context.task_id if request_context else 'N/A'}]"
-            current_interaction_id = interaction_id or (
-                request_context.interaction_id if request_context else None
-            )
-            if current_interaction_id:
-                log_msg += f" [Interaction:{current_interaction_id}]"
-            if agent_name:
-                log_msg += f" [{agent_name}]"
-            log_msg += f" {message}"
-            if data:
-                try:
-                    log_msg += f" Data: {json.dumps(data)}"
-                except TypeError:
-                    log_msg += f" Data: (Unserializable data)"
-            logging.log(std_log_level, log_msg)
-
-
-# --- Agent Registry ---
-
-
-class AgentRegistry:
-    """
-    Manages the registration and retrieval of agent instances using weak references.
-
-    Ensures that agents can find and communicate with each other without creating
-    strong circular dependencies that would prevent garbage collection.
-    """
-
-    _agents: weakref.WeakValueDictionary[str, "BaseAgent"] = (
-        weakref.WeakValueDictionary()
-    )
-    _lock = threading.Lock()
-    _counter: int = 0
-
-    @classmethod
-    def register(
-        cls, agent: "BaseAgent", name: Optional[str] = None, prefix: str = "BaseAgent"
-    ) -> str:
-        """
-        Registers an agent instance with the registry.
-
-        Args:
-            agent: The agent instance to register.
-            name: Optional specific name for the agent. If None, a unique name is generated.
-            prefix: Prefix used for generating unique names if 'name' is None.
-
-        Returns:
-            The final name under which the agent was registered.
-
-        Raises:
-            ValueError: If the provided name already exists and refers to a different instance.
-        """
-        with cls._lock:
-            final_name: str
-            if name is None:
-                cls._counter += 1
-                final_name = f"{prefix}-{cls._counter}"
-            else:
-                final_name = name  # Use the provided name directly
-
-            if final_name in cls._agents:
-                existing_agent = cls._agents.get(final_name)
-                if existing_agent is not None and existing_agent is not agent:
-                    raise ValueError(
-                        f"Agent name '{final_name}' already exists and refers to a different agent instance."
-                    )
-            cls._agents[final_name] = agent
-            # Pass the agent's final_name as 'agent_name' in the extra dict for logging
-            logging.info(
-                f"Agent registered: {final_name} (Class: {agent.__class__.__name__})",
-                extra={"agent_name": final_name},
-            )
-            return final_name
-
-    @classmethod
-    def unregister(cls, name: str) -> None:
-        """
-        Removes an agent registration.
-
-        Args:
-            name: The name of the agent to unregister.
-        """
-        with cls._lock:
-            if name in cls._agents:
-                cls._agents.pop(name, None)
-                logging.info(f"Agent unregistered: {name}", extra={"agent_name": name})
-            # else:
-            # logging.debug(f"Attempted to unregister non-existent agent: {name}", extra={'agent_name': 'Registry'}) # Optional: log if not found
-
-    @classmethod
-    def get(cls, name: str) -> Optional["BaseAgent"]:
-        """
-        Retrieves an agent instance by name.
-
-        Args:
-            name: The name of the agent to retrieve.
-
-        Returns:
-            The agent instance if found and alive, otherwise None.
-        """
-        return cls._agents.get(name)
-
-    @classmethod
-    def all(cls) -> Dict[str, "BaseAgent"]:
-        """
-        Returns a dictionary of all currently registered and alive agents.
-
-        Returns:
-            A dictionary mapping agent names to agent instances.
-        """
-        with cls._lock:
-            return dict(cls._agents)
-
+from .memory import ConversationMemory, MemoryManager, Message
+from .registry import AgentRegistry
+from .utils import LogLevel, ProgressLogger, RequestContext
 
 # --- Base Agent Class ---
 
@@ -684,9 +359,7 @@ class BaseAgent(ABC):
             raw_prompt = prompt.get("prompt")
             if raw_prompt is None:
                 raw_prompt = {
-                    k: v
-                    for k, v in prompt.items()
-                    if k != "passed_referenced_context"
+                    k: v for k, v in prompt.items() if k != "passed_referenced_context"
                 }
             if isinstance(raw_prompt, dict):
                 raw_prompt = json.dumps(raw_prompt, ensure_ascii=False, indent=2)
@@ -2459,11 +2132,8 @@ class MemoryManager:
                 "extract_and_update_from_text is only available for KGMemory."
             )
 
-
     ### Helper Extract Prompt Method
-    def _extract_prompt_and_context(
-        self, prompt: Any
-    ) -> tuple[str, List[Message]]:
+    def _extract_prompt_and_context(self, prompt: Any) -> tuple[str, List[Message]]:
         """
         Returns (prompt_text, passed_context_messages).
 
@@ -2484,6 +2154,8 @@ class MemoryManager:
                 raw = json.dumps(raw, ensure_ascii=False, indent=2)
             return str(raw), context
         return str(prompt), []
+
+
 # --- Concrete Agent Implementations ---
 
 
@@ -2601,7 +2273,9 @@ class LearnableAgent(BaseLearnableAgent):
         prompt_sender_name = request_context.caller_agent_name or "user"
 
         # --- use common helper ---
-        user_actual_prompt_content, passed_context_messages = self._extract_prompt_and_context(prompt)
+        user_actual_prompt_content, passed_context_messages = (
+            self._extract_prompt_and_context(prompt)
+        )
         # --------------------------
 
         await self._log_progress(
@@ -2958,7 +2632,9 @@ class Agent(BaseAgent):
         prompt_sender_name = request_context.caller_agent_name or "user"
 
         # --- use common helper ---
-        user_actual_prompt_content, passed_context_messages = self._extract_prompt_and_context(prompt)
+        user_actual_prompt_content, passed_context_messages = (
+            self._extract_prompt_and_context(prompt)
+        )
         # -
         await self._log_progress(
             request_context,
