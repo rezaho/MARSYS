@@ -1,10 +1,8 @@
 import json
-from typing import Dict, List
-
-from src.agents.memory import MessageMemory
+from typing import Any, Dict, List
 
 
-def apply_tools_template(messages: MessageMemory, tools: List[str | Dict]):
+def apply_tools_template(messages: List[Dict[str, Any]], tools: List[str | Dict]):
     if not isinstance(tools, list):
         raise ValueError("tools must be a list of strings or dictionaries")
 
