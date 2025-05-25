@@ -21,8 +21,8 @@ from src.agents.agents import (  # Added setup_agent_logging
     Agent,
     LogLevel,
     RequestContext,
-    init_agent_logging,
 )
+from src.agents.utils import init_agent_logging
 from src.models.models import ModelConfig
 
 # from typing import Any, Dict, List, Optional
@@ -648,7 +648,7 @@ if __name__ == "__main__":
         agent_name="ResearcherAgent",
         model_config=model_config_worker,
         description=RESEARCHER_DESCRIPTION,
-        allowed_peers=["RetrievalAgent"],            # ← now allowed
+        allowed_peers=["RetrievalAgent"],  # ← now allowed
         memory_type="conversation_history",
     )
 
