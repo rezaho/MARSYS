@@ -11,16 +11,30 @@ import dataclasses
 import json
 import logging
 import re
-import time
+import time  # Ensure time is imported if not already
 import uuid
 from abc import ABC, abstractmethod
-from typing import Any, Callable, Dict, List, Optional, Union
+from typing import (
+    Any,
+    Callable,
+    Coroutine,
+    Dict,
+    List,  # Added Coroutine
+    Optional,
+    Union,
+)
 
 from src.models.models import BaseAPIModel, BaseLLM, BaseVLM, ModelConfig, PeftHead
+
+# --- New Imports ---
+from environment.utils import generate_openai_tool_schema
+from src.utils.monitoring import default_progress_monitor
 
 from .memory import ConversationMemory, MemoryManager, Message
 from .registry import AgentRegistry
 from .utils import LogLevel, ProgressLogger, RequestContext
+
+# --- End New Imports ---
 
 # --- Base Agent Class ---
 
@@ -48,7 +62,7 @@ class BaseAgent(ABC):
         model: Union[BaseVLM, BaseLLM, BaseAPIModel],
         description: str,
         tools: Optional[Dict[str, Callable[..., Any]]] = None,
-        tools_schema: Optional[List[Dict[str, Any]]] = None,
+        # tools_schema: Optional[List[Dict[str, Any]]] = None, # Removed parameter
         max_tokens: Optional[int] = 512,
         agent_name: Optional[str] = None,
         allowed_peers: Optional[List[str]] = None,
@@ -60,7 +74,6 @@ class BaseAgent(ABC):
             model: The language model instance.
             description: The base description of the agent's role and purpose.
             tools: Dictionary mapping tool names to callable functions.
-            tools_schema: JSON schema describing the tools.
             max_tokens: Default maximum tokens for model generation.
             agent_name: Optional specific name for registration.
             allowed_peers: List of agent names this agent can call.
@@ -68,15 +81,32 @@ class BaseAgent(ABC):
         Raises:
             ValueError: If tools are provided without schema or vice-versa.
         """
-        if tools and not tools_schema:
-            raise ValueError("The tools schema is required if the tools are provided.")
-        if tools_schema and not tools:
-            raise ValueError("The tools are required if the tools schema is provided.")
+        # if tools and not tools_schema: # Removed check
+        #     raise ValueError("The tools schema is required if the tools are provided.")
+        # if tools_schema and not tools: # Removed check
+        #     raise ValueError("The tools are required if the tools schema is provided.")
 
         self.model = model
-        self.description = description  # Renamed from system_prompt
-        self.tools = tools
-        self.tools_schema = tools_schema
+        self.description = description
+        self.tools = tools or {}  # Ensure self.tools is a dict
+        self.tools_schema: List[Dict[str, Any]] = []  # Initialize as empty list
+
+        # Initialize logger for the agent instance early
+        self.logger = logging.getLogger(
+            f"Agent.{agent_name or self.__class__.__name__}"
+        )
+
+        if self.tools:
+            for tool_name, tool_func in self.tools.items():
+                try:
+                    schema = generate_openai_tool_schema(tool_func, tool_name)
+                    self.tools_schema.append(schema)
+                except Exception as e:
+                    self.logger.error(
+                        f"Failed to generate schema for tool {tool_name}: {e}",
+                        exc_info=True,
+                    )
+
         self.max_tokens = max_tokens
         self.allowed_peers = set(allowed_peers) if allowed_peers else set()
         self.communication_log: Dict[str, List[Dict[str, Any]]] = (
@@ -85,6 +115,8 @@ class BaseAgent(ABC):
         self.name = AgentRegistry.register(
             self, agent_name, prefix=self.__class__.__name__
         )
+        # Initialize logger for the agent instance
+        self.logger = logging.getLogger(f"Agent.{self.name}")
 
     def __del__(self) -> None:
         """Safely unregister the agent, even during interpreter shutdown."""
@@ -93,7 +125,9 @@ class BaseAgent(ABC):
         # All globals may already be None at shutdown – guard every access.
         try:
             registry_cls = globals().get("AgentRegistry")  # type: ignore[arg-type]
-            unregister_fn = getattr(registry_cls, "unregister", None) if registry_cls else None
+            unregister_fn = (
+                getattr(registry_cls, "unregister", None) if registry_cls else None
+            )
             if agent_display_name and callable(unregister_fn):
                 try:
                     unregister_fn(agent_display_name)
@@ -106,10 +140,10 @@ class BaseAgent(ABC):
             )
 
     def _get_tool_instructions(
-        self, current_tools_schema: Optional[List[Dict[str, Any]]]
+        self,  # current_tools_schema: Optional[List[Dict[str, Any]]] # Parameter removed
     ) -> str:
         """Generates the tool usage instructions part of the system prompt."""
-        if not current_tools_schema:
+        if not self.tools_schema:  # Use self.tools_schema
             return ""
 
         prompt_lines = ["\n\n--- AVAILABLE TOOLS ---"]
@@ -141,7 +175,7 @@ class BaseAgent(ABC):
 ```"""
         )
         prompt_lines.append("Available tools are:")
-        for tool_def in current_tools_schema:
+        for tool_def in self.tools_schema:  # Use self.tools_schema
             func_spec = tool_def.get("function", {})
             name = func_spec.get("name", "Unknown tool")
             description = func_spec.get("description", "No description.")
@@ -271,7 +305,7 @@ class BaseAgent(ABC):
     def _construct_full_system_prompt(
         self,
         base_description: str,
-        current_tools_schema: Optional[List[Dict[str, Any]]],
+        # current_tools_schema: Optional[List[Dict[str, Any]]], # Parameter removed
         json_mode_for_output: bool = False,
     ) -> str:
         """
@@ -296,7 +330,7 @@ class BaseAgent(ABC):
         ]
 
         tool_instructions = self._get_tool_instructions(
-            current_tools_schema=current_tools_schema
+            # current_tools_schema=current_tools_schema # Argument removed
         )
         if tool_instructions:
             full_prompt_parts.append(tool_instructions)
@@ -793,12 +827,52 @@ class BaseAgent(ABC):
     async def auto_run(
         self,
         initial_request: Any,
-        request_context: RequestContext,
+        # request_context: RequestContext, # Made optional
+        request_context: Optional[RequestContext] = None,
         max_steps: int = 10,
         max_re_prompts: int = 2,
+        progress_monitor_func: Optional[
+            Callable[
+                [asyncio.Queue, Optional[logging.Logger]], Coroutine[Any, Any, None]
+            ]
+        ] = None,  # New parameter
     ) -> str:
         current_task_steps = 0
         final_answer_str: Optional[str] = None
+
+        # --- RequestContext and Progress Monitor Handling ---
+        # _request_context: RequestContext # Variable will be named request_context
+        monitor_task: Optional[asyncio.Task] = None
+        created_new_context = False
+
+        if request_context is None:
+            created_new_context = True
+            task_id = f"agent-task-{self.name}-{uuid.uuid4()}"
+            progress_queue = asyncio.Queue()
+
+            initial_prompt_for_context, _ = self._extract_prompt_and_context(
+                initial_request
+            )
+
+            request_context = RequestContext(  # Assign to request_context
+                task_id=task_id,
+                initial_prompt=initial_prompt_for_context,
+                progress_queue=progress_queue,
+                log_level=LogLevel.SUMMARY,  # Corrected to a valid LogLevel member
+                max_depth=3,
+                max_interactions=max_steps * 2 + 5,
+            )
+
+            monitor_to_use = progress_monitor_func or default_progress_monitor
+            monitor_task = asyncio.create_task(
+                monitor_to_use(progress_queue, self.logger)
+            )
+            self.logger.info(
+                f"Created new RequestContext (ID: {task_id}) and started progress monitor for agent {self.name}."
+            )
+        # else: # request_context is already populated if provided
+        # self.logger.info(f"Using provided RequestContext (ID: {request_context.task_id}) for agent {self.name}.")
+        # --- End RequestContext and Progress Monitor Handling ---
 
         if isinstance(initial_request, str):
             current_request_payload: Union[str, Dict[str, Any]] = {
@@ -819,7 +893,7 @@ class BaseAgent(ABC):
         raw_llm_response_message: Optional[Message] = None
 
         await self._log_progress(
-            request_context,
+            request_context,  # Use the now-guaranteed-to-be-set request_context
             LogLevel.SUMMARY,
             f"Agent '{self.name}' starting auto_run for task '{request_context.task_id}'. Max steps: {max_steps}, Max re-prompts: {max_re_prompts}.",
             data={"initial_request_preview": str(current_request_payload)[:200]},
@@ -830,7 +904,7 @@ class BaseAgent(ABC):
                 uuid.uuid4()
             )  # TO-DO: why are we creating a new interaction_id for each step? Shouldn't we use the same interaction_id for the entire task? or do we need to create a new interaction_id for each step? where do we use the interaction_id from the request_context?
             current_step_request_context = dataclasses.replace(
-                request_context,
+                request_context,  # Use the now-guaranteed-to-be-set request_context
                 interaction_id=step_interaction_id,
             )
 
@@ -1279,7 +1353,8 @@ class BaseAgent(ABC):
                     LogLevel.MINIMAL,
                     f"Agent '{self.name}' reached max_steps ({max_steps}) in auto_run without a final answer.",
                 )
-                final_answer_str = f"Max steps ({max_steps}) reached. Agent '{self.name}' did not produce a final answer for the current sub-task."
+                final_answer_str = f"Error: Agent '{self.name}' did not produce a final answer for the current sub-task."
+                break
 
         if final_answer_str is not None:
             await self._log_progress(
@@ -1287,19 +1362,77 @@ class BaseAgent(ABC):
                 LogLevel.SUMMARY,
                 f"Agent '{self.name}' auto_run finished. Final Answer: '{final_answer_str[:100]}...'",
             )
+            # Cleanup monitor task if it was created by this auto_run instance
+            # TO-DO: the logic needs to be checked. Also, we should ensure that we need this cleanup logic here.
+            if created_new_context and monitor_task:
+                self.logger.info(
+                    f"Agent {self.name} auto_run (completed with answer) signaling progress monitor to stop."
+                )
+                if (
+                    hasattr(request_context, "progress_queue")
+                    and request_context.progress_queue
+                ):
+                    await request_context.progress_queue.put(None)
+                    try:
+                        await asyncio.wait_for(monitor_task, timeout=5.0)
+                    except asyncio.TimeoutError:
+                        self.logger.warning(
+                            f"Timeout waiting for progress monitor of agent {self.name} to stop."
+                        )
+                        monitor_task.cancel()
+                    except Exception as e_monitor_stop:
+                        self.logger.error(
+                            f"Error stopping/waiting for monitor task: {e_monitor_stop}",
+                            exc_info=True,
+                        )
             return final_answer_str
         else:
+            # This block is reached if max_steps is hit without a final_answer_str
+            # Simplified logging: request_context is guaranteed to be set here.
             await self._log_progress(
                 request_context,
                 LogLevel.MINIMAL,
-                f"Agent '{self.name}' auto_run completed without an explicit final answer.",
+                f"Agent '{self.name}' auto_run completed after {current_task_steps} steps without providing an explicit final answer.",
             )
             # Try to synthesize a response based on the last known state if necessary, or return a generic message.
             # For this implementation, we return a message indicating no explicit final answer.
-            # A more sophisticated approach might call a _synthesize_final_response method here.
             # last_message = self.memory.retrieve_recent(1)
             # fallback_answer = f"Agent '{self.name}' concluded its auto_run process. No explicit final answer was provided. Last message: {str(last_message[0].content)[:200] if last_message else 'None'}"
             # return fallback_answer
+            # Ensure logging uses the final request_context # Comment removed as logic simplified
+            # final_log_context = request_context # Removed
+            # if final_log_context: # Removed
+            #     await self._log_progress(
+            #         final_log_context,
+            #         LogLevel.MINIMAL,
+            #         f"Agent '{self.name}' auto_run completed after {current_task_steps} steps without providing an explicit final answer.",
+            #     )
+            # else: # Should not happen if logic is correct # Removed
+            #     self.logger.warning(f"Agent '{self.name}' auto_run completed but request_context was not available for final logging.")
+
+            # Cleanup monitor task if it was created by this auto_run instance
+            if created_new_context and monitor_task:
+                self.logger.info(
+                    f"Agent {self.name} auto_run (max steps reached) signaling progress monitor to stop."
+                )
+                if (
+                    hasattr(request_context, "progress_queue")
+                    and request_context.progress_queue
+                ):
+                    await request_context.progress_queue.put(None)
+                    try:
+                        await asyncio.wait_for(monitor_task, timeout=5.0)
+                    except asyncio.TimeoutError:
+                        self.logger.warning(
+                            f"Timeout waiting for progress monitor of agent {self.name} to stop."
+                        )
+                        monitor_task.cancel()
+                    except Exception as e_monitor_stop:
+                        self.logger.error(
+                            f"Error stopping/waiting for monitor task: {e_monitor_stop}",
+                            exc_info=True,
+                        )
+
             return f"Agent '{self.name}' auto_run finished after {current_task_steps} steps without providing an explicit final answer."
 
     async def _execute_tool_calls(
@@ -1470,7 +1603,7 @@ class BaseLearnableAgent(BaseAgent):
             model=model,
             description=description,  # Renamed
             tools=kwargs.get("tools"),
-            tools_schema=kwargs.get("tools_schema"),
+            # tools_schema=kwargs.get("tools_schema"), # Removed as BaseAgent.__init__ no longer takes it
             max_tokens=max_tokens,
             agent_name=agent_name,
             allowed_peers=allowed_peers,
@@ -1524,641 +1657,6 @@ class BaseLearnableAgent(BaseAgent):
         raise ValueError("Could not extract valid JSON from model response.")
 
 
-# --- Memory Classes ---
-
-
-class BaseMemory(ABC):
-    """Abstract base class for agent memory modules."""
-
-    def __init__(self, memory_type: str) -> None:
-        """
-        Initializes BaseMemory.
-
-        Args:
-            memory_type: String identifier for the type of memory (e.g., 'conversation_history').
-        """
-        self.memory_type = memory_type
-
-    @abstractmethod
-    def update_memory(
-        self,
-        message: Optional[Message] = None,
-        *,  # Make subsequent arguments keyword-only if message is not None
-        role: Optional[str] = None,
-        content: Optional[str] = None,
-        message_id: Optional[str] = None,
-        name: Optional[str] = None,
-        tool_calls: Optional[List[Dict[str, Any]]] = None,
-        tool_call_id: Optional[str] = None,
-    ) -> None:
-        """Adds information to the memory. Can accept a Message object or individual components."""
-        raise NotImplementedError("update_memory must be implemented in subclasses.")
-
-    @abstractmethod
-    def replace_memory(
-        self,
-        idx: int,
-        message: Optional[Message] = None,
-        *,  # Make subsequent arguments keyword-only if message is not None
-        role: Optional[str] = None,
-        content: Optional[str] = None,
-        message_id: Optional[str] = None,
-        name: Optional[str] = None,
-        tool_calls: Optional[List[Dict[str, Any]]] = None,
-        tool_call_id: Optional[str] = None,
-    ) -> None:
-        """Replaces existing information in the memory at a given index."""
-        raise NotImplementedError("replace_memory must be implemented in subclasses.")
-
-    @abstractmethod
-    def delete_memory(self, idx: int) -> None:
-        """Deletes information from the memory by index."""
-        raise NotImplementedError("delete_memory must be implemented in subclasses.")
-
-    @abstractmethod
-    def retrieve_recent(self, n: int = 1) -> List[Message]:
-        """Retrieves the 'n' most recent Message objects."""
-        raise NotImplementedError("retrieve_recent must be implemented in subclasses.")
-
-    @abstractmethod
-    def retrieve_all(self) -> List[Message]:
-        """Retrieves all Message objects."""
-        raise NotImplementedError("retrieve_all must be implemented in subclasses.")
-
-    @abstractmethod
-    def retrieve_by_id(self, message_id: str) -> Optional[Message]:
-        """Retrieves a specific Message object by its ID."""
-        raise NotImplementedError("retrieve_by_id must be implemented in subclasses.")
-
-    @abstractmethod
-    def retrieve_by_role(self, role: str, n: Optional[int] = None) -> List[Message]:
-        """Retrieves Message objects filtered by role."""
-        raise NotImplementedError("retrieve_by_role must be implemented in subclasses.")
-
-    @abstractmethod
-    def reset_memory(self) -> None:
-        """Clears all entries from the memory."""
-        raise NotImplementedError("reset_memory must be implemented in subclasses.")
-
-    @abstractmethod
-    def to_llm_format(self) -> List[Dict[str, Any]]:
-        """Formats the memory content into a list of dictionaries suitable for LLM input."""
-        raise NotImplementedError("to_llm_format must be implemented in subclasses.")
-
-
-class ConversationMemory(BaseMemory):
-    """
-    Memory module that stores conversation history as a list of Message objects.
-    """
-
-    def __init__(
-        self, description: Optional[str] = None
-    ) -> None:  # Renamed system_prompt to description
-        """
-        Initializes ConversationMemory.
-
-        Args:
-            description: Optional content for an initial system message.
-        """
-        super().__init__(memory_type="conversation_history")
-        self.memory: List[Message] = []
-        if description:
-            self.memory.append(Message(role="system", content=description))
-
-    def update_memory(
-        self,
-        message: Optional[Message] = None,
-        *,
-        role: Optional[str] = None,
-        content: Optional[str] = None,
-        message_id: Optional[str] = None,
-        name: Optional[str] = None,
-        tool_calls: Optional[List[Dict[str, Any]]] = None,
-        tool_call_id: Optional[str] = None,
-    ) -> None:
-        """
-        Appends a message to the conversation history.
-        If `message` object is provided, it's used directly.
-        Otherwise, a new Message is created from `role` and `content`, etc.
-        `message_id` can be provided to use an existing ID, otherwise a new one is generated.
-        """
-        if message:
-            # If a full Message object is provided, ensure its ID is unique if not already set
-            # or if we want to enforce new IDs for additions. For now, trust the provided ID.
-            self.memory.append(message)
-        elif (
-            role is not None
-        ):  # content can be None for assistant messages with tool_calls
-            new_message = Message(
-                role=role,
-                content=content,
-                message_id=message_id
-                or str(uuid.uuid4()),  # Use provided or generate new
-                name=name,
-                tool_calls=tool_calls,
-                tool_call_id=tool_call_id,
-            )
-            self.memory.append(new_message)
-        else:
-            raise ValueError(
-                "Either a Message object or role must be provided to update_memory."
-            )
-
-    def replace_memory(
-        self,
-        idx: int,
-        message: Optional[Message] = None,
-        *,
-        role: Optional[str] = None,
-        content: Optional[str] = None,
-        message_id: Optional[str] = None,
-        name: Optional[str] = None,
-        tool_calls: Optional[List[Dict[str, Any]]] = None,
-        tool_call_id: Optional[str] = None,
-    ) -> None:
-        """
-        Replaces the message at the specified index.
-        """
-        if not (0 <= idx < len(self.memory)):
-            raise IndexError("Memory index out of range.")
-
-        if message:
-            self.memory[idx] = message
-        elif role is not None:
-            # If message_id is not provided, it defaults to a new UUID,
-            # effectively giving the replaced message a new ID.
-            # If an ID is provided, it uses that.
-            self.memory[idx] = Message(
-                role=role,
-                content=content,
-                message_id=message_id or str(uuid.uuid4()),
-                name=name,
-                tool_calls=tool_calls,
-                tool_call_id=tool_call_id,
-            )
-        else:
-            raise ValueError(
-                "Either a Message object or role must be provided to replace_memory."
-            )
-
-    def delete_memory(self, idx: int) -> None:
-        """
-        Deletes the message at the specified index.
-        """
-        if 0 <= idx < len(self.memory):
-            del self.memory[idx]
-        else:
-            raise IndexError("Memory index out of range.")
-
-    def retrieve_recent(self, n: int = 1) -> List[Message]:
-        """
-        Retrieves the 'n' most recent Message objects.
-        """
-        return self.memory[-n:] if n > 0 else []
-
-    def retrieve_all(self) -> List[Message]:
-        """Retrieves all Message objects in the history."""
-        return list(self.memory)  # Return a copy
-
-    def retrieve_by_id(self, message_id: str) -> Optional[Message]:
-        """Retrieves a specific Message object by its ID."""
-        for msg in self.memory:
-            if msg.message_id == message_id:
-                return msg
-        return None
-
-    def retrieve_by_role(self, role: str, n: Optional[int] = None) -> List[Message]:
-        """
-        Retrieves Message objects filtered by role, optionally limited to the most recent 'n'.
-        """
-        filtered = [m for m in self.memory if m.role == role]
-        return filtered[-n:] if n else filtered
-
-    def reset_memory(self) -> None:
-        """Clears the conversation history, keeping the system prompt Message object if it exists."""
-        system_message: Optional[Message] = None
-        if self.memory and self.memory[0].role == "system":
-            system_message = self.memory[0]
-        self.memory.clear()
-        if system_message:
-            self.memory.append(system_message)
-
-    def to_llm_format(self) -> List[Dict[str, Any]]:
-        """
-        Converts stored Message objects to a list of dictionaries suitable for LLM input.
-        """
-        return [msg.to_llm_dict() for msg in self.memory]
-
-
-class KGMemory(BaseMemory):
-    """
-    Memory module storing knowledge as timestamped (Subject, Predicate, Object) triplets.
-    Requires a language model instance to extract facts from text.
-    Facts are converted to Message objects upon retrieval.
-    """
-
-    def __init__(
-        self,
-        model: Union[BaseVLM, BaseLLM, BaseAPIModel],
-        description: Optional[str] = None,  # Renamed system_prompt to description
-    ) -> None:
-        super().__init__(memory_type="kg")
-        self.model = model
-        self.kg: List[Dict[str, Any]] = (
-            []
-        )  # Stores raw fact dicts: {role, subject, predicate, object, timestamp}
-        if description:
-            # Store description as an initial fact-like entry if desired
-            self.add_fact(
-                role="system",
-                subject="system_configuration",
-                predicate="has_initial_description",  # Renamed
-                obj=description,
-            )
-
-    def add_fact(self, role: str, subject: str, predicate: str, obj: str) -> None:
-        """
-        Adds a new fact (triplet) to the knowledge graph.
-        This is the primary method for adding structured KG data.
-        """
-        timestamp = time.time()
-        self.kg.append(
-            {
-                "role": role,  # Role associated with the source/reason for this fact
-                "subject": subject,
-                "predicate": predicate,
-                "object": obj,
-                "timestamp": timestamp,
-                "message_id": str(
-                    uuid.uuid4()
-                ),  # Assign a unique ID to each fact entry
-            }
-        )
-
-    def update_memory(
-        self,
-        message: Optional[Message] = None,
-        *,
-        role: Optional[str] = None,
-        content: Optional[str] = None,
-        message_id: Optional[str] = None,  # Ignored for new facts, new ID generated
-        name: Optional[
-            str
-        ] = None,  # Can be used as part of the fact's role or metadata
-        tool_calls: Optional[
-            List[Dict[str, Any]]
-        ] = None,  # Generally not applicable to KG facts
-        tool_call_id: Optional[str] = None,  # Generally not applicable
-    ) -> None:
-        """
-        Adds information to KG memory. If Message object or role/content is provided,
-        it attempts to extract facts from the content.
-        """
-        text_to_extract_from = None
-        origin_role = "user"  # Default role for extracted facts if not specified
-
-        if message:
-            text_to_extract_from = message.content
-            origin_role = message.role
-        elif role and content:
-            text_to_extract_from = content
-            origin_role = role
-
-        if text_to_extract_from:
-            logging.info(
-                f"KGMemory attempting to extract facts from text (role: {origin_role}): {text_to_extract_from[:100]}..."
-            )
-            # This is an async call, but update_memory is sync.
-            # For simplicity here, we'll log and skip async extraction.
-            # In a real scenario, this might need to be handled differently,
-            # e.g., by making update_memory async or queueing extraction.
-            # For now, we'll rely on explicit calls to extract_and_update_from_text.
-            asyncio.create_task(
-                self.extract_and_update_from_text(
-                    text_to_extract_from, role=origin_role
-                )
-            )
-            logging.debug("Fact extraction from Message content scheduled.")
-        else:
-            logging.warning(
-                "KGMemory.update_memory called without Message object or role/content for fact extraction."
-            )
-
-    def replace_memory(
-        self,
-        idx: int,
-        message: Optional[Message] = None,
-        *,
-        role: Optional[str] = None,
-        content: Optional[str] = None,
-        message_id: Optional[str] = None,
-        name: Optional[str] = None,
-        tool_calls: Optional[List[Dict[str, Any]]] = None,
-        tool_call_id: Optional[str] = None,
-    ) -> None:
-        """
-        Replaces a fact at a given index. If Message or role/content is provided,
-        it attempts to extract new fact(s) and replace the old one.
-        This is a simplified implementation; replacing one fact with potentially multiple
-        extracted facts is complex. For now, it will log a warning.
-        A more robust implementation would delete the old fact and add new ones.
-        """
-        if not (0 <= idx < len(self.kg)):
-            raise IndexError("KG index out of range.")
-
-        logging.warning(
-            f"KGMemory.replace_memory called for index {idx}. "
-            "This operation is complex for KG. Consider delete and add_fact/extract_and_update."
-        )
-        # Simplified: delete and then try to update (which might extract)
-        del self.kg[idx]
-        self.update_memory(message=message, role=role, content=content, name=name)
-
-    def delete_memory(self, idx: int) -> None:
-        if 0 <= idx < len(self.kg):
-            del self.kg[idx]
-        else:
-            raise IndexError("KG index out of range.")
-
-    def _fact_to_message(self, fact_dict: Dict[str, Any]) -> Message:
-        """Converts a raw KG fact dictionary to a Message object."""
-        content = f"Fact ({fact_dict['role']}): {fact_dict['subject']} {fact_dict['predicate']} {fact_dict['object']}."
-        return Message(
-            role=fact_dict["role"],  # Or a generic "knowledge" role
-            content=content,
-            message_id=fact_dict.get(
-                "message_id", str(uuid.uuid4())
-            ),  # Use stored ID or generate
-        )
-
-    def retrieve_recent(self, n: int = 1) -> List[Message]:
-        if n <= 0:
-            return []
-        sorted_kg = sorted(self.kg, key=lambda x: x["timestamp"], reverse=True)
-        return [self._fact_to_message(fact) for fact in sorted_kg[:n]]
-
-    def retrieve_all(self) -> List[Message]:
-        # Sort by timestamp before converting to ensure order if needed, though not strictly required by BaseMemory
-        sorted_kg = sorted(self.kg, key=lambda x: x["timestamp"])
-        return [self._fact_to_message(fact) for fact in sorted_kg]
-
-    def retrieve_by_id(self, message_id: str) -> Optional[Message]:
-        """Retrieves a specific KG fact Message by its stored message_id."""
-        for fact_dict in self.kg:
-            if fact_dict.get("message_id") == message_id:
-                return self._fact_to_message(fact_dict)
-        logging.debug(f"KGMemory: Fact with message_id '{message_id}' not found.")
-        return None
-
-    def retrieve_by_role(self, role: str, n: Optional[int] = None) -> List[Message]:
-        filtered = [fact for fact in self.kg if fact["role"] == role]
-        filtered = sorted(
-            filtered, key=lambda x: x["timestamp"], reverse=True
-        )  # Most recent first
-        if n is not None and n > 0:
-            filtered = filtered[:n]
-        return [self._fact_to_message(fact) for fact in filtered]
-
-    def reset_memory(self) -> None:
-        self.kg.clear()
-        # Re-add system prompt if it was part of the initial setup logic
-        # This depends on how system_prompt was handled in __init__
-        # For now, simple clear. If system_prompt was stored as a fact, it's gone.
-
-    def to_llm_format(self) -> List[Dict[str, Any]]:
-        """Formats all facts in the KG into LLM message dictionaries."""
-        messages = self.retrieve_all()  # Gets List[Message]
-        return [msg.to_llm_dict() for msg in messages]
-
-    async def extract_and_update_from_text(
-        self, input_text: str, role: str = "user"
-    ) -> List[Dict[str, str]]:  # Returns raw extracted fact dicts
-        """
-        Uses the associated LLM to extract facts from input text and adds them to the KG.
-
-        Args:
-            input_text: The text to extract facts from.
-            role: The role to associate with the extracted facts (default: 'user').
-
-        Returns:
-            A list of the raw fact dictionaries extracted by the LLM.
-        """
-        extraction_prompt = (
-            "Extract all knowledge graph facts from the following text. "
-            "Return a JSON list of triplets, where each triplet is a dict with keys: subject, predicate, object. "
-            'Example: [{"subject": "Paris", "predicate": "is the capital of", "object": "France"}, ...]'
-            " If no facts are found, return an empty list []."
-        )
-        messages = [
-            {"role": "system", "content": extraction_prompt},
-            {"role": role, "content": input_text},
-        ]
-        extracted_facts: List[Dict[str, str]] = []
-        valid_facts_added = 0
-        try:
-            result: Union[Dict, List[Dict], str] = self.model.run(
-                messages=messages, json_mode=True
-            )
-
-            parsed_result: Any
-            if isinstance(result, str):
-                try:
-                    parsed_result = json.loads(result)
-                except json.JSONDecodeError:
-                    logging.warning(
-                        f"KG extraction result was string but not valid JSON: {result}"
-                    )
-                    parsed_result = None
-            else:
-                parsed_result = result
-
-            if isinstance(parsed_result, list):
-                extracted_facts = parsed_result
-            elif parsed_result is not None:
-                logging.warning(f"KG extraction result was not a list: {parsed_result}")
-
-            for fact in extracted_facts:
-                if (
-                    isinstance(fact, dict)
-                    and "subject" in fact
-                    and "predicate" in fact
-                    and "object" in fact
-                ):
-                    self.update_memory(
-                        role,
-                        str(fact["subject"]),
-                        str(fact["predicate"]),
-                        str(fact["object"]),
-                    )
-                    valid_facts_added += 1
-                else:
-                    logging.warning(
-                        f"Skipping invalid fact format during KG extraction: {fact}"
-                    )
-            logging.info(f"Extracted and added {valid_facts_added} facts to KG memory.")
-
-        except Exception as e:
-            logging.error(f"Error during KG fact extraction: {e}")
-
-        return extracted_facts
-
-
-class MemoryManager:
-    """
-    Factory and manager for creating and interacting with memory modules.
-
-    Delegates operations to the appropriate underlying memory module instance
-    (e.g., ConversationMemory, KGMemory) based on the specified `memory_type`.
-    """
-
-    def __init__(
-        self,
-        memory_type: str,
-        description: Optional[str] = None,  # Renamed system_prompt to description
-        model: Optional[Union[BaseVLM, BaseLLM, BaseAPIModel]] = None,
-    ) -> None:
-        """
-        Initializes the MemoryManager and creates the appropriate memory module.
-
-        Args:
-            memory_type: The type of memory to create ('conversation_history' or 'kg').
-            description: Optional content for an initial system message in the memory module.
-            model: Optional language model instance, required if memory_type is 'kg'.
-
-        Raises:
-            ValueError: If memory_type is unknown or if 'kg' is chosen without providing a model.
-        """
-        self.memory_type = memory_type
-        self.memory_module: BaseMemory
-        if memory_type == "conversation_history":
-            self.memory_module = ConversationMemory(description=description)
-        elif memory_type == "kg":
-            if model is None:
-                raise ValueError(
-                    "KGMemory requires a 'model' instance for fact extraction."
-                )
-            self.memory_module = KGMemory(model=model, description=description)
-        else:
-            raise ValueError(f"Unknown memory_type: {memory_type}")
-
-    def update_memory(
-        self,
-        message: Optional[Message] = None,
-        *,
-        role: Optional[str] = None,
-        content: Optional[str] = None,
-        message_id: Optional[str] = None,
-        name: Optional[str] = None,
-        tool_calls: Optional[List[Dict[str, Any]]] = None,
-        tool_call_id: Optional[str] = None,
-    ) -> None:
-        """Delegates to the underlying memory module's update_memory."""
-        self.memory_module.update_memory(
-            message=message,
-            role=role,
-            content=content,
-            message_id=message_id,
-            name=name,
-            tool_calls=tool_calls,
-            tool_call_id=tool_call_id,
-        )
-
-    def replace_memory(
-        self,
-        idx: int,
-        message: Optional[Message] = None,
-        *,
-        role: Optional[str] = None,
-        content: Optional[str] = None,
-        message_id: Optional[str] = None,
-        name: Optional[str] = None,
-        tool_calls: Optional[List[Dict[str, Any]]] = None,
-        tool_call_id: Optional[str] = None,
-    ) -> None:
-        """Delegates to the underlying memory module's replace_memory."""
-        self.memory_module.replace_memory(
-            idx=idx,
-            message=message,
-            role=role,
-            content=content,
-            message_id=message_id,
-            name=name,
-            tool_calls=tool_calls,
-            tool_call_id=tool_call_id,
-        )
-
-    def delete_memory(self, idx: int) -> None:
-        """Delegates to the underlying memory module's delete_memory."""
-        self.memory_module.delete_memory(idx)
-
-    def retrieve_recent(self, n: int = 1) -> List[Message]:
-        """Delegates to the underlying memory module's retrieve_recent."""
-        return self.memory_module.retrieve_recent(n)
-
-    def retrieve_all(self) -> List[Message]:
-        """Delegates to the underlying memory module's retrieve_all."""
-        return self.memory_module.retrieve_all()
-
-    def retrieve_by_id(self, message_id: str) -> Optional[Message]:
-        """Delegates to the underlying memory module's retrieve_by_id."""
-        return self.memory_module.retrieve_by_id(message_id)
-
-    def retrieve_by_role(self, role: str, n: Optional[int] = None) -> List[Message]:
-        """Delegates to the underlying memory module's retrieve_by_role."""
-        # All BaseMemory implementations should now have retrieve_by_role
-        return self.memory_module.retrieve_by_role(role, n)
-
-    def reset_memory(self) -> None:
-        """Delegates to the underlying memory module's reset_memory."""
-        return self.memory_module.reset_memory()
-
-    def to_llm_format(self) -> List[Dict[str, Any]]:
-        """Delegates to the underlying memory module's to_llm_format."""
-        return self.memory_module.to_llm_format()
-
-    def extract_and_update_from_text(
-        self, *args: Any, **kwargs: Any
-    ) -> List[Dict[str, str]]:
-        """
-        Delegates to the underlying KGMemory's extract_and_update_from_text.
-
-        Raises:
-            NotImplementedError: If the memory type is not 'kg'.
-        """
-        if isinstance(self.memory_module, KGMemory):
-            return self.memory_module.extract_and_update_from_text(*args, **kwargs)
-        else:
-            raise NotImplementedError(
-                "extract_and_update_from_text is only available for KGMemory."
-            )
-
-    ### Helper Extract Prompt Method
-    def _extract_prompt_and_context(self, prompt: Any) -> tuple[str, List[Message]]:
-        """
-        Returns (prompt_text, passed_context_messages).
-
-        • If `prompt` is a dict:
-            – take 'passed_referenced_context' list if present;
-            – use the 'prompt' value (JSON-dump it if it is itself a dict);
-            – if 'prompt' missing stringify the dict minus 'passed_referenced_context'.
-        • Otherwise cast `prompt` to str and return an empty context list.
-        """
-        if isinstance(prompt, dict):
-            context = prompt.get("passed_referenced_context", []) or []
-            raw = prompt.get("prompt")
-            if raw is None:
-                raw = {
-                    k: v for k, v in prompt.items() if k != "passed_referenced_context"
-                }
-            if isinstance(raw, dict):
-                raw = json.dumps(raw, ensure_ascii=False, indent=2)
-            return str(raw), context
-        return str(prompt), []
-
-
-# --- Concrete Agent Implementations ---
-
-
 class LearnableAgent(BaseLearnableAgent):
     """
     An agent implementation that uses a local, potentially learnable (e.g., PEFT) model.
@@ -2172,13 +1670,13 @@ class LearnableAgent(BaseLearnableAgent):
         model: Union[BaseVLM, BaseLLM],
         description: str,  # Renamed from system_prompt
         tools: Optional[Dict[str, Callable[..., Any]]] = None,
-        tools_schema: Optional[List[Dict[str, Any]]] = None,
+        # tools_schema: Optional[List[Dict[str, Any]]] = None, # Removed from signature
         learning_head: Optional[str] = None,
         learning_head_config: Optional[Dict[str, Any]] = None,
         max_tokens: Optional[int] = 512,
         agent_name: Optional[str] = None,
         allowed_peers: Optional[List[str]] = None,
-        **kwargs: Any,
+        **kwargs: Any,  # Keep kwargs for other potential BaseAgent args if any in future
     ) -> None:
         """
         Initializes the LearnableAgent.
@@ -2203,8 +1701,9 @@ class LearnableAgent(BaseLearnableAgent):
             max_tokens=max_tokens,
             agent_name=agent_name,
             allowed_peers=allowed_peers,
-            tools=tools,
-            tools_schema=tools_schema,
+            tools=tools,  # Pass tools
+            # tools_schema is not passed as BaseLearnableAgent's super call to BaseAgent handles it
+            **kwargs,
         )
         kg_model: Union[BaseVLM, BaseLLM]
         if isinstance(self.model, PeftHead):
@@ -2319,7 +1818,7 @@ class LearnableAgent(BaseLearnableAgent):
 
         operational_system_prompt = self._construct_full_system_prompt(
             base_description=base_description_for_run,
-            current_tools_schema=current_tools_schema,
+            # current_tools_schema=current_tools_schema, # This was already correct or removed
             json_mode_for_output=json_mode_for_guidelines,
         )
 
@@ -2418,7 +1917,7 @@ class Agent(BaseAgent):
         model_config: ModelConfig,
         description: str,
         tools: Optional[Dict[str, Callable[..., Any]]] = None,
-        tools_schema: Optional[List[Dict[str, Any]]] = None,
+        # tools_schema: Optional[List[Dict[str, Any]]] = None, # Removed from signature
         memory_type: Optional[str] = "conversation_history",
         max_tokens: Optional[int] = None,  # Explicit override; None ⇒ use ModelConfig
         agent_name: Optional[str] = None,
@@ -2452,7 +1951,7 @@ class Agent(BaseAgent):
             model=self.model_instance,
             description=description,  # Renamed
             tools=tools,
-            tools_schema=tools_schema,
+            # tools_schema=tools_schema, # Removed as BaseAgent.__init__ no longer takes it
             max_tokens=effective_max_tokens,  # Use the determined max_tokens
             agent_name=agent_name,
             allowed_peers=allowed_peers,  # Pass allowed_peers
@@ -2683,7 +2182,7 @@ class Agent(BaseAgent):
 
         operational_system_prompt = self._construct_full_system_prompt(
             base_description=base_description_for_run,
-            current_tools_schema=current_tools_schema,  # Pass the schema relevant for this call
+            # current_tools_schema=current_tools_schema,  # Argument removed
             json_mode_for_output=json_mode_for_output,
         )
 
