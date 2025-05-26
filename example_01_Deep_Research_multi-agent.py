@@ -5,27 +5,22 @@ import asyncio
 import json
 import logging
 import os
-import uuid
 
-import pandas as pd  # For timestamp formatting in progress_monitor
-import requests
-from bs4 import BeautifulSoup
-
-# NEW IMPORTS for real search tools
-from googlesearch import search as google_search_lib  # Alias to avoid conflict
-from semanticscholar import (
-    SemanticScholar as S2API,  # Renaming to avoid conflict if 'scholarly' is also imported
-)
-
-from src.agents.agents import (  # Added setup_agent_logging
+from src.agents.agents import (
     Agent,
     LogLevel,
-    RequestContext,
+    RequestContext,  # Still potentially useful for type hinting or advanced direct use
 )
 from src.agents.utils import init_agent_logging
 from src.models.models import ModelConfig
 
-# from typing import Any, Dict, List, Optional
+# --- New/Adjusted Imports ---
+from environment.tools import (
+    tool_google_search_api,
+    tool_google_search_community,
+)
+from src.utils.monitoring import default_progress_monitor  # For explicit use if needed
+# --- End New/Adjusted Imports ---
 
 
 # --- Logging Configuration ---
@@ -50,352 +45,24 @@ notebook_logger = logging.getLogger("DeepResearchNotebook")
 
 
 # --- Search Tools ---
+# Tool functions are now imported from src.environment.tool_lib
+# Their definitions (tool_google_search_api, etc.) are removed from here.
 
-
-def tool_google_search_api(query: str, num_results: int = 10, lang: str = "en") -> str:
-    notebook_logger.info(
-        f"Tool Google Custom Search API for: {query}", extra={"agent_name": "Tool"}
-    )
-
-    api_key = os.getenv("GOOGLE_SEARCH_API_KEY")
-    cse_id = os.getenv("GOOGLE_CSE_ID_GENERIC")  # Make sure this env var is set
-
-    if not api_key:
-        notebook_logger.error(
-            "GOOGLE_SEARCH_API_KEY not found in environment variables.",
-            extra={"agent_name": "Tool"},
-        )
-        return json.dumps({"error": "Google Search API key not configured."})
-    if not cse_id:
-        notebook_logger.error(
-            "GOOGLE_CSE_ID_GENERIC not found in environment variables.",
-            extra={"agent_name": "Tool"},
-        )
-        return json.dumps(
-            {"error": "Google Custom Search Engine ID (CX) not configured."}
-        )
-
-    results = []
-    response_obj = None
-    try:
-        url = "https://www.googleapis.com/customsearch/v1"
-        params = {
-            "key": api_key,
-            "cx": cse_id,
-            "q": query,
-            "num": num_results,
-            "hl": lang,  # ← replaced lr=lang_xx with hl
-            # "lr": f"lang_{lang}",   # ← removed – causes 400 error
-        }
-
-        response_obj = requests.get(url, params=params, timeout=10)
-        response_obj.raise_for_status()
-
-        search_data = response_obj.json()
-
-        if "items" not in search_data:
-            notebook_logger.info(
-                f"Tool Google Custom Search API for '{query}' returned no items.",
-                extra={"agent_name": "Tool"},
-            )
-            return json.dumps([])
-
-        for item in search_data.get("items", []):
-            title = item.get("title", "N/A")
-            link = item.get("link", "N/A")
-            snippet = item.get("snippet", "No snippet available.")
-
-            results.append(
-                {
-                    "title": title,
-                    "content": snippet,
-                    "source": "Google Custom Search API",
-                    "url": link,
-                }
-            )
-            if len(results) >= num_results:
-                break
-
-    except requests.exceptions.HTTPError as http_err:
-        error_details = "No response object"
-        if response_obj is not None:
-            try:
-                error_details = response_obj.json()
-            except json.JSONDecodeError:
-                error_details = response_obj.text
-        notebook_logger.error(
-            f"Google Custom Search API HTTP error: {http_err} - Response: {error_details}",
-            extra={"agent_name": "Tool"},
-        )
-        return json.dumps(
-            {
-                "error": f"Google Custom Search API HTTP error: {http_err}",
-                "details": error_details,
-            }
-        )
-    except requests.exceptions.RequestException as e:
-        notebook_logger.error(
-            f"Tool Google Custom Search API request failed: {e}",
-            extra={"agent_name": "Tool"},
-        )
-        return json.dumps(
-            {"error": f"Tool Google Custom Search API request failed: {str(e)}"}
-        )
-    except Exception as e:
-        notebook_logger.error(
-            f"Tool Google Custom Search API failed: {e}",
-            exc_info=True,
-            extra={"agent_name": "Tool"},
-        )
-        return json.dumps({"error": f"Tool Google Custom Search API failed: {str(e)}"})
-
-    if not results:
-        notebook_logger.info(
-            f"Tool Google Custom Search API for '{query}' returned no results after processing.",
-            extra={"agent_name": "Tool"},
-        )
-        return json.dumps([])
-
-    return json.dumps(results)
-
-
-def tool_google_search_community(
-    query: str, num_results: int = 10, lang: str = "en"  # ← default 10
-) -> str:
-    notebook_logger.info(
-        f"Tool Google Search (Community Library) for: {query}",
-        extra={"agent_name": "Tool"},
-    )
-    results = []
-    try:
-        search_results = list(
-            google_search_lib(
-                query, num_results=num_results, lang=lang, sleep_interval=1
-            )
-        )
-        for url_item in search_results:
-            title = "N/A"
-            content_snippet = "Could not retrieve content."
-            try:
-                headers = {
-                    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36"
-                }
-                page = requests.get(url_item, headers=headers, timeout=10)
-                page.raise_for_status()
-                soup = BeautifulSoup(page.content, "html.parser")
-
-                title_tag = soup.find("title")
-                if title_tag and title_tag.string:
-                    title = title_tag.string.strip()
-
-                meta_description = soup.find("meta", attrs={"name": "description"})
-                if meta_description and meta_description.get("content"):
-                    content_snippet = meta_description.get("content").strip()
-                else:
-                    paragraphs = soup.find_all("p")
-                    text_content = " ".join(
-                        [p.get_text().strip() for p in paragraphs[:3]]
-                    )
-                    if text_content:
-                        content_snippet = text_content[:500] + (
-                            "..." if len(text_content) > 500 else ""
-                        )
-                    elif soup.body:
-                        content_snippet = soup.body.get_text(separator=" ", strip=True)[
-                            :500
-                        ] + (
-                            "..."
-                            if len(soup.body.get_text(separator=" ", strip=True)) > 500
-                            else ""
-                        )
-
-                results.append(
-                    {
-                        "title": title,
-                        "content": content_snippet,
-                        "source": "Google Search (Community Library)",
-                        "url": url_item,
-                    }
-                )
-            except requests.exceptions.RequestException as e:
-                notebook_logger.warning(
-                    f"Failed to fetch URL {url_item}: {e}", extra={"agent_name": "Tool"}
-                )
-                results.append(
-                    {
-                        "title": f"Error fetching {url_item}",
-                        "content": str(e),
-                        "source": "Google Search (Community Library)",
-                        "url": url_item,
-                        "error": True,
-                    }
-                )
-            except Exception as e_parse:
-                notebook_logger.warning(
-                    f"Failed to parse content from {url_item}: {e_parse}",
-                    extra={"agent_name": "Tool"},
-                )
-                results.append(
-                    {
-                        "title": f"Error parsing {url_item}",
-                        "content": str(e_parse),
-                        "source": "Google Search (Community Library)",
-                        "url": url_item,
-                        "error": True,
-                    }
-                )
-            if len(results) >= num_results:
-                break
-    except Exception as e:
-        notebook_logger.error(
-            f"Tool Google Search (Community Library) failed: {e}",
-            exc_info=True,
-            extra={"agent_name": "Tool"},
-        )
-        return json.dumps(
-            {"error": f"Tool Google Search (Community Library) failed: {str(e)}"}
-        )
-
-    if not results:
-        notebook_logger.info(
-            f"Tool Google Search (Community Library) for '{query}' returned no results.",
-            extra={"agent_name": "Tool"},
-        )
-        return json.dumps([])
-    return json.dumps(results)
-
-    # def tool_semantic_scholar_search(query: str, limit: int = 5) -> str:
-    #     """
-    #     Performs a search for academic papers using the Semantic Scholar API.
-
-    #     Args:
-    #         query: The search query string.
-    #         limit: The maximum number of results to return.
-
-    #     Returns:
-    #         A JSON string representing a list of search results,
-    #         where each result is a dictionary with 'title', 'content' (abstract), 'source', and 'url'.
-    #         Returns an empty JSON list '[]' if no results are found or a JSON string with an error message if an error occurs.
-    #     """
-    #     from semanticscholar import SemanticScholar
-    #     sch = SemanticScholar()
-    #     results = []
-    #     try:
-    #         print(f"Searching Semantic Scholar for: {query} (limit: {limit})")
-    #         papers = sch.search_paper(query, limit=limit)
-
-    #         count = 0
-    #         for paper in papers:
-    #             if count >= limit:
-    #                 break
-
-    #             title = paper.title if hasattr(paper, 'title') else "N/A"
-    #             content = paper.abstract if hasattr(paper, 'abstract') and paper.abstract else "Abstract not available."
-    #             url = paper.url if hasattr(paper, 'url') else "URL not available"
-
-    #             results.append({
-    #                 "title": title,
-    #                 "content": content,
-    #                 "source": "Semantic Scholar Search Tool",
-    #                 "url": url
-    #             })
-    #             count += 1
-
-    #         print(f"Found {len(results)} results from Semantic Scholar.")
-    #         return json.dumps(results)
-    #     except Exception as e:
-    #         error_message = f"Error during Semantic Scholar search: {str(e)}"
-    #         print(error_message)
-    #         return json.dumps({"error": error_message, "source": "Semantic Scholar Search Tool"})
+# Define the tools dictionary for the RetrievalAgent
+retrieval_tools = {
+    "tool_google_search_api": tool_google_search_api,
+    "tool_google_search_community": tool_google_search_community,
+}
 
 
 # Cell 3: Main Execution Logic
-async def run_deep_research_task(user_query: str, max_orchestrator_steps: int = 15):
-    task_id = f"deep-research-{uuid.uuid4()}"
-    progress_queue = asyncio.Queue()
-
-    request_context = RequestContext(
-        task_id=task_id,
-        initial_prompt=user_query,
-        progress_queue=progress_queue,
-        log_level=LogLevel.DETAILED,
-        max_depth=3,
-        max_interactions=(max_orchestrator_steps * 3) + 5,
-    )
-
-    _notebook_logger = logging.getLogger(
-        "DeepResearchNotebook"
-    )  # Use the notebook's logger
-
-    async def progress_monitor(q: asyncio.Queue):
-        while True:
-            update = await q.get()
-            if update is None:
-                q.task_done()
-                break
-
-            log_message_parts = [
-                f"{pd.Timestamp(update.timestamp, unit='s')}",
-                f"LVL {update.level.value}",
-                f"[{update.agent_name or 'System'}]",
-                update.message,
-            ]
-            if update.data:
-                try:
-                    log_message_parts.append(f"Data: {json.dumps(update.data)}")
-                except TypeError:
-                    log_message_parts.append(
-                        f"Data: (Unserializable data: {type(update.data)})"
-                    )
-
-            print(" - ".join(log_message_parts))
-            q.task_done()
-
-    monitor_task = asyncio.create_task(progress_monitor(progress_queue))
-
-    _notebook_logger.info(
-        f"--- Starting Deep Research Task {task_id} (Orchestrator auto_run) ---",
-        extra={"agent_name": "System"},
-    )
-    _notebook_logger.info(f"User Query: {user_query}", extra={"agent_name": "System"})
-
-    final_report = "Error: Research process did not complete via Orchestrator auto_run."
-
-    try:
-        final_report_message = await orchestrator_agent.auto_run(
-            initial_request=user_query,
-            request_context=request_context,
-            max_steps=max_orchestrator_steps,
-            max_re_prompts=3,
-        )
-        final_report = str(final_report_message)  # auto_run returns a string
-        _notebook_logger.info(
-            f"Orchestrator auto_run completed. Final report preview: {final_report[:200]}...",
-            extra={"agent_name": "System"},
-        )
-
-    except Exception as e:
-        _notebook_logger.error(
-            f"An error occurred during the orchestrator's auto_run: {e}",
-            exc_info=True,
-            extra={"agent_name": "System"},
-        )
-        final_report = (
-            f"Error: An unexpected error occurred during the research process: {e}"
-        )
-    finally:
-        _notebook_logger.info(
-            f"--- Deep Research Task {task_id} Finished (Orchestrator auto_run) ---",
-            extra={"agent_name": "System"},
-        )
-        await progress_queue.put(None)
-        await monitor_task
-
-    return str(final_report)
+# The run_deep_research_task function is removed.
+# The main logic will now directly use orchestrator_agent.auto_run().
+# The progress_monitor async def is also removed as it's handled by Agent/default_progress_monitor.
 
 
 if __name__ == "__main__":
-    # Cell 2: Configurations, Tool Definitions, Agent Descriptions & Initialization
+    # Cell 2: Configurations, Agent Descriptions & Initialization
 
     # --- Model Configurations using ModelConfig ---
     try:
@@ -419,78 +86,7 @@ if __name__ == "__main__":
         )
         raise
 
-    # --- Tool Schemas ---
-    google_search_api_schema = [
-        {
-            "type": "function",
-            "function": {
-                "name": "tool_google_search_api",
-                "description": "Performs a Google web search using the official Custom Search API for a given query and returns top results with snippets.",
-                "parameters": {
-                    "type": "object",
-                    "properties": {
-                        "query": {"type": "string", "description": "The search query."},
-                        "num_results": {
-                            "type": "integer",
-                            "description": "Number of results to return (default 3).",
-                        },
-                        "lang": {
-                            "type": "string",
-                            "description": "Language for search (e.g., 'en', 'es', default 'en').",
-                        },
-                    },
-                    "required": ["query"],
-                },
-            },
-        }
-    ]
-
-    google_search_community_schema = [
-        {
-            "type": "function",
-            "function": {
-                "name": "tool_google_search_community",
-                "description": "Performs a Google web search using a community library for a given query and returns top results with snippets by scraping/parsing.",
-                "parameters": {
-                    "type": "object",
-                    "properties": {
-                        "query": {"type": "string", "description": "The search query."},
-                        "num_results": {
-                            "type": "integer",
-                            "description": "Number of results to return (default 3).",
-                        },
-                        "lang": {
-                            "type": "string",
-                            "description": "Language for search (e.g., 'en', 'es', default 'en').",
-                        },
-                    },
-                    "required": ["query"],
-                },
-            },
-        }
-    ]
-
-    # semantic_scholar_search_schema = [
-    #     {"type": "function", "function": {
-    #         "name": "tool_semantic_scholar_search",
-    #         "description": "Performs an academic paper search using the Semantic Scholar API and returns top results with abstracts and metadata.",
-    #         "parameters": {"type": "object", "properties": {
-    #             "query": {"type": "string", "description": "The search query for academic papers."},
-    #             "num_results": {"type": "integer", "description": "Number of results to return (default 3)."}
-    #         }, "required": ["query"]}
-    #     }}
-    # ]
-
-    retrieval_tools = {
-        "tool_google_search_api": tool_google_search_api,
-        "tool_google_search_community": tool_google_search_community,
-        # "tool_semantic_scholar_search": tool_semantic_scholar_search
-    }
-    retrieval_tools_schema = (
-        google_search_api_schema + google_search_community_schema
-    )  # + semantic_scholar_search_schema
-
-    # --- Agent Descriptions ---
+    # --- Agent Descriptions (Kept inline for now) ---
     ORCHESTRATOR_DESCRIPTION = """
     You are a meticulous Deep Research Orchestrator. Your goal is to manage a team of agents (RetrievalAgent, ResearcherAgent, SynthesizerAgent) to answer a user's complex query thoroughly. Remember that for a deep research job you must collect more than 100 sources and iterate with different queries.
     You will decide on a `next_action` (from 'invoke_agent', 'call_tool', 'final_response') and provide necessary input for it. The system will guide you on the exact JSON structure for your decisions.
@@ -632,24 +228,27 @@ if __name__ == "__main__":
         description=ORCHESTRATOR_DESCRIPTION,
         allowed_peers=["RetrievalAgent", "ResearcherAgent", "SynthesizerAgent"],
         memory_type="conversation_history",
+        # logger=notebook_logger,  # Removed: Agent handles its logger internally
     )
 
     retrieval_agent = Agent(
         agent_name="RetrievalAgent",
         model_config=model_config_worker,
         description=RETRIEVAL_DESCRIPTION,
-        tools=retrieval_tools,
-        tools_schema=retrieval_tools_schema,
+        tools=retrieval_tools,  # Agent will generate schemas internally
+        # tools_schema parameter is removed
         allowed_peers=[],
         memory_type="conversation_history",
+        # logger=notebook_logger, # Removed: Agent handles its logger internally
     )
 
     researcher_agent = Agent(
         agent_name="ResearcherAgent",
         model_config=model_config_worker,
         description=RESEARCHER_DESCRIPTION,
-        allowed_peers=["RetrievalAgent"],  # ← now allowed
+        allowed_peers=["RetrievalAgent"],
         memory_type="conversation_history",
+        # logger=notebook_logger, # Removed: Agent handles its logger internally
     )
 
     synthesizer_agent = Agent(
@@ -658,13 +257,31 @@ if __name__ == "__main__":
         description=SYNTHESIZER_DESCRIPTION,
         allowed_peers=[],
         memory_type="conversation_history",
+        # logger=notebook_logger, # Removed: Agent handles its logger internally
     )
     notebook_logger.info("All agents initialized.", extra={"agent_name": "System"})
 
     async def main():
         query = "What are the latest advancements in using synthetic data for training large language models, focusing on efficiency and quality?"
-        # Run the task
-        final_result = await run_deep_research_task(query, max_orchestrator_steps=20)
+        max_orchestrator_steps = 20
+
+        notebook_logger.info(f"--- Starting Deep Research Task (Orchestrator auto_run directly) ---")
+        notebook_logger.info(f"User Query: {query}")
+
+        # The orchestrator_agent.auto_run will now handle RequestContext creation
+        # and use a default progress monitor if not specified.
+        # The default monitor will use the agent's logger (which we set to notebook_logger).
+        final_result = await orchestrator_agent.auto_run(
+            initial_request=query,
+            max_steps=max_orchestrator_steps,
+            max_re_prompts=3,
+            # request_context is now optional and will be created by auto_run if None
+            # progress_monitor_func is also optional; uses default_progress_monitor if None
+            # and if a new context is created.
+            # Since orchestrator_agent has notebook_logger, default_progress_monitor will use it.
+        )
+
+        notebook_logger.info(f"--- Deep Research Task Finished (Orchestrator auto_run directly) ---")
 
         print("\n" + "=" * 30 + " Final Research Report " + "=" * 30)
         print(final_result)
