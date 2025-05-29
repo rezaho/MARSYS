@@ -25,7 +25,6 @@ jobs:
         run: |
           pip install mkdocs-material
           pip install mkdocs-mermaid2-plugin
-          pip install mkdocs-exclude
       
       - name: Deploy to GitHub Pages
         run: mkdocs gh-deploy --force
