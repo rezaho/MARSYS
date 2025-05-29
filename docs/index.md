@@ -5,7 +5,7 @@
   <p>A modern Python framework for creating, orchestrating, and training multiple AI agents that work together to solve complex tasks.</p>
   <div class="hero-buttons">
     <a href="getting-started/installation/" class="md-button md-button--primary">Get Started</a>
-    <a href="https://github.com/yourusername/Multi-agent_AI_Learning" class="md-button">View on GitHub</a>
+    <a href="https://github.com/yourusername/MARSYS" class="md-button">View on GitHub</a>
   </div>
 </div>
 

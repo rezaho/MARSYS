@@ -12,8 +12,8 @@ Set up your development environment for contributing to the framework.
 
 1. **Fork and Clone**
    ```bash
-   git clone https://github.com/yourusername/Multi-agent_AI_Learning.git
-   cd Multi-agent_AI_Learning
+   git clone https://github.com/yourusername/MARSYS.git
+   cd MARSYS
    ```
 
 2. **Create Virtual Environment**

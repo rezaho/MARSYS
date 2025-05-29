@@ -11,8 +11,8 @@
 ### 1. Clone the Repository
 
 ```bash
-git clone https://github.com/yourusername/Multi-agent_AI_Learning.git
-cd Multi-agent_AI_Learning
+git clone https://github.com/yourusername/MARSYS.git
+cd MARSYS
 ```
 
 ### 2. Create Virtual Environment
@@ -111,5 +111,5 @@ docker-compose up
 ### Getting Help
 
 - Check the [FAQ](../project/faq.md)
-- Open an issue on [GitHub](https://github.com/yourusername/Multi-agent_AI_Learning/issues)
+- Open an issue on [GitHub](https://github.com/yourusername/MARSYS/issues)
 - Join our [Discord community](https://discord.gg/yourinvite)

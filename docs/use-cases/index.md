@@ -64,7 +64,7 @@ export OPENAI_API_KEY="your-key-here"
 
 3. Clone examples:
 ```bash
-git clone https://github.com/yourusername/Multi-agent_AI_Learning
+git clone https://github.com/yourusername/MARSYS
 cd examples
 ```
 

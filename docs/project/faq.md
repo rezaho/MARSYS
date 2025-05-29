@@ -286,8 +286,8 @@ export LOG_LEVEL=DEBUG
 ### Where can I get help?
 
 1. Check the [documentation](../index.md)
-2. Search [existing issues](https://github.com/yourusername/Multi-agent_AI_Learning/issues)
-3. Ask in [discussions](https://github.com/yourusername/Multi-agent_AI_Learning/discussions)
+2. Search [existing issues](https://github.com/yourusername/MARSYS/issues)
+3. Ask in [discussions](https://github.com/yourusername/MARSYS/discussions)
 4. Join our [Discord community](https://discord.gg/yourinvite)
 
 ## Advanced Topics
@@ -345,4 +345,4 @@ The project is maintained by [Your Organization] with contributions from the com
 
 ---
 
-Still have questions? [Open an issue](https://github.com/yourusername/Multi-agent_AI_Learning/issues/new) or ask in our [Discord community](https://discord.gg/yourinvite)!
+Still have questions? [Open an issue](https://github.com/yourusername/MARSYS/issues/new) or ask in our [Discord community](https://discord.gg/yourinvite)!
