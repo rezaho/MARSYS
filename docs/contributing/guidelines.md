@@ -16,11 +16,11 @@ By participating in this project, you agree to abide by our Code of Conduct:
 
 ```bash
 # Fork the repository on GitHub, then:
-git clone https://github.com/YOUR_USERNAME/Multi-agent_AI_Learning.git
-cd Multi-agent_AI_Learning
+git clone https://github.com/YOUR_USERNAME/MARSYS.git
+cd MARSYS
 
 # Add upstream remote
-git remote add upstream https://github.com/ORIGINAL_OWNER/Multi-agent_AI_Learning.git
+git remote add upstream https://github.com/ORIGINAL_OWNER/MARSYS.git
 ```
 
 ### 2. Set Up Development Environment
@@ -154,7 +154,7 @@ cd docs && mkdocs build
 ## Areas for Contribution
 
 ### 🐛 Bug Fixes
-- Check the [issue tracker](https://github.com/yourusername/Multi-agent_AI_Learning/issues)
+- Check the [issue tracker](https://github.com/yourusername/MARSYS/issues)
 - Look for "good first issue" labels
 - Reproduce the bug and write a test
 - Submit a fix with the test
@@ -377,9 +377,9 @@ def complex_function(
 
 ### Resources
 
-- [Documentation](https://yourusername.github.io/Multi-agent_AI_Learning/)
-- [Issue Tracker](https://github.com/yourusername/Multi-agent_AI_Learning/issues)
-- [Discussions](https://github.com/yourusername/Multi-agent_AI_Learning/discussions)
+- [Documentation](https://yourusername.github.io/MARSYS/)
+- [Issue Tracker](https://github.com/yourusername/MARSYS/issues)
+- [Discussions](https://github.com/yourusername/MARSYS/discussions)
 - [Discord Community](https://discord.gg/yourinvite)
 
 ### Questions?
