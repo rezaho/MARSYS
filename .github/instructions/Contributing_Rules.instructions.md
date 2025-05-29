@@ -2,7 +2,7 @@
 applyTo: '**'
 ---
 
-# Multi-Agent AI Learning – Contributing Rules (Machine-Readable Extract)
+# Multi-Agent Reasoning Systems (MARSYS) – Contributing Rules (Machine-Readable Extract)
 
 The following MUST be respected by any automated change-generator (AI agent, Copilot, etc.) operating on this repo.  Violation is considered a CI-blocking error.
 

@@ -1,0 +1,545 @@
+/* Base glassmorphism styles */
+:root {
+  --glass-bg: rgba(255, 255, 255, 0.1);
+  --glass-border: rgba(255, 255, 255, 0.2);
+  --blur-amount: 20px;
+  --shadow-color: rgba(0, 0, 0, 0.1);
+}
+
+[data-md-color-scheme="slate"] {
+  --glass-bg: rgba(255, 255, 255, 0.05);
+  --glass-border: rgba(255, 255, 255, 0.1);
+}
+
+/* Main content glassmorphism */
+.md-content {
+  background: var(--glass-bg) !important;
+  backdrop-filter: blur(var(--blur-amount));
+  -webkit-backdrop-filter: blur(var(--blur-amount));
+  border: 1px solid var(--glass-border);
+  border-radius: 1rem;
+  box-shadow: 0 8px 32px var(--shadow-color);
+  padding: 2rem;
+  margin: 1rem;
+}
+
+/* Navigation glassmorphism */
+.md-nav {
+  background: var(--glass-bg) !important;
+  backdrop-filter: blur(var(--blur-amount));
+  -webkit-backdrop-filter: blur(var(--blur-amount));
+  border-right: 1px solid var(--glass-border);
+}
+
+.md-nav__item--active > .md-nav__link {
+  background: rgba(var(--md-primary-fg-color--rgb), 0.1);
+  border-radius: 0.5rem;
+}
+
+/* Header glassmorphism */
+.md-header {
+  /* LIGHT-MODE pastel gradient (blue-violet) */
+  background: linear-gradient(
+      135deg,
+      rgba(173, 197, 255, 0.70) 0%,      /* #adc5ff */
+      rgba(212, 206, 255, 0.70) 50%,     /* #d4ceff */
+      rgba(255, 255, 255, 0.70) 100%
+  ) !important;
+  backdrop-filter: blur(var(--blur-amount));
+  -webkit-backdrop-filter: blur(var(--blur-amount));
+  border: 1px solid var(--glass-border);
+  border-bottom: none;                    /* seamless with tabs below */
+  box-shadow: 0 4px 20px var(--shadow-color);
+  margin: 0;                              /* no margins - full width */
+  border-radius: 0;                       /* no rounding at all */
+  overflow: visible;                      /* for search dropdown */
+  height: auto !important;                /* allow multi-row */
+  padding-block: 0;
+}
+
+/* flex row */
+.md-header__inner {
+  height: 100%;
+  display: flex;
+  align-items: center;
+  gap: 1rem;
+  padding: 0 1rem;
+  min-height: 3.6rem;  /* Ensure minimum height for proper alignment */
+}
+
+/* Hide breadcrumbs */           /* <- REMOVE or override */
+.md-header__topic {              /*  THIS block was disabling breadcrumbs */
+    /* display: none !important; */  /* comment-out or delete */
+}
+
+/* Bring breadcrumbs back & keep styling */
+.md-header__topic {
+    display: flex !important;   /* Use flex for better alignment */
+    align-items: center;        /* Center vertically */
+    font-size: .75rem;
+    line-height: 1.2;
+    margin-left: 1rem;
+    color: var(--md-default-fg-color);      /* dark text for light mode */
+    height: 100%;               /* Match parent height */
+}
+[data-md-color-scheme="slate"] .md-header__topic{
+    color:#fff;                                  /* white text in dark mode */
+}
+
+/* DARK-MODE header gradient */
+[data-md-color-scheme="slate"] .md-header {
+  background: linear-gradient(
+      135deg,
+      rgba(40, 52, 104, 0.95) 0%,        /* deep navy */
+      rgba(71, 91, 208, 0.85) 50%,       /* accent blue */
+      rgba(40, 52, 104, 0.95) 100%
+  ) !important;
+}
+
+/* ensure dark text on light gradient / white text on dark */
+.md-header__title,
+.md-header__nav,
+.md-header__button,
+.md-header__button svg      { color: var(--md-default-fg-color) !important; fill: currentColor !important; }
+[data-md-color-scheme="slate"] .md-header__title,
+[data-md-color-scheme="slate"] .md-header__nav,
+[data-md_color_sheme="slate"] .md-header__button,
+[data-md_color_sheme="slate"] .md-header__button svg { color: #fff !important; fill: #fff !important; }
+
+/* ---------- COLOURS ------------------------------------------------- */
+.md-header__title,
+.md-header__nav,
+.md-header__button,
+.md-header__button svg,
+.md-search__form,
+.md-search__icon,
+.md-source,
+.md-source__repository {
+  color: var(--md-default-fg-color) !important;
+  fill: var(--md-default-fg-color) !important;
+}
+[data-md-color-scheme="slate"] .md-header__title,
+[data-md-color-scheme="slate"] .md-header__nav,
+[data-md-color-scheme="slate"] .md-header__button,
+[data-md-color-scheme="slate"] .md-header__button svg,
+[data-md-color-scheme="slate"] .md-search__form,
+[data-md-color-scheme="slate"] .md-search__icon,
+[data-md-color-scheme="slate"] .md-source,
+[data-md-color-scheme="slate"] .md-source__repository {
+  color: #fff !important;
+  fill: #fff !important;
+}
+
+/* search input field */
+.md-search__input {
+  background: rgba(0, 0, 0, 0.05) !important;
+  border: 1px solid rgba(0, 0, 0, 0.15) !important;
+  color: var(--md-default-fg-color) !important;
+}
+[data-md-color-scheme="slate"] .md-search__input {
+  background: rgba(255, 255, 255, 0.10) !important;
+  border: 1px solid rgba(255, 255, 255, 0.25) !important;
+  color: #fff !important;
+}
+
+/* ─── Tabs – match header in both modes ──────────────────────────── */
+.md-tabs {
+  /* LIGHT */
+  background: linear-gradient(
+      135deg,
+      rgba(173, 197, 255, 0.55) 0%,
+      rgba(212, 206, 255, 0.45) 50%,
+      rgba(255, 255, 255, 0.55) 100%
+  ) !important;
+  /* ...existing code (blur, border, radius)... */
+}
+
+[data-md-color-scheme="slate"] .md-tabs {
+  background: linear-gradient(
+      135deg,
+      rgba(40, 52, 104, 0.85) 0%,
+      rgba(71, 91, 208, 0.70) 50%,
+      rgba(40, 52, 104, 0.85) 100%
+  ) !important;
+}
+
+.md-tabs__link             { color: var(--md-default-fg-color) !important; }
+[data-md-color-scheme="slate"] .md-tabs__link { color: #fff !important; }
+/* active tab */
+.md-tabs__link--active             { font-weight: 600; color: var(--md-default-fg-color) !important; }
+[data-md-color-scheme="slate"] .md-tabs__link--active { color: #fff !important; }
+
+/* Code blocks glassmorphism */
+.highlight {
+  background: var(--glass-bg) !important;
+  backdrop-filter: blur(10px);
+  -webkit-backdrop-filter: blur(10px);
+  border: 1px solid var(--glass-border);
+  border-radius: 0.5rem;
+  box-shadow: 0 4px 20px var(--shadow-color);
+  overflow: hidden;  /* ensure content doesn't spill out */
+}
+
+/* Override any default highlight padding/background */
+.highlight pre {
+  background: transparent !important;
+  margin: 0 !important;
+  padding: 1rem !important;
+}
+
+/* Ensure code blocks inside highlight don't have their own background */
+.highlight code {
+  background: transparent !important;
+}
+
+/* Fix for Material theme's code block wrapper */
+.md-typeset .highlight {
+  background: var(--glass-bg) !important;
+}
+
+/* Remove any table-based code block backgrounds */
+.md-typeset .highlighttable {
+  background: transparent !important;
+}
+
+.md-typeset .highlighttable .code,
+.md-typeset .highlighttable .linenos {
+  background: transparent !important;
+}
+
+/* Hero section */
+.hero-section {
+  text-align: center;
+  padding: 4rem 2rem;
+  background: linear-gradient(135deg, rgba(99, 102, 241, 0.1) 0%, rgba(219, 39, 119, 0.1) 100%);
+  backdrop-filter: blur(var(--blur-amount));
+  -webkit-backdrop-filter: blur(var(--blur-amount));
+  border-radius: 1rem;
+  margin-bottom: 3rem;
+  border: 1px solid var(--glass-border);
+  box-shadow: 0 8px 32px var(--shadow-color);
+}
+
+.hero-title {
+  font-size: 3rem;
+  font-weight: 700;
+  margin-bottom: 1rem;
+  background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+  -webkit-background-clip: text;
+  -webkit-text-fill-color: transparent;
+  background-clip: text;
+}
+
+.hero-subtitle {
+  font-size: 1.25rem;
+  opacity: 0.8;
+  margin-bottom: 2rem;
+}
+
+.hero-buttons {
+  display: flex;
+  gap: 1rem;
+  justify-content: center;
+  flex-wrap: wrap;
+}
+
+/* Feature grid */
+.feature-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(300px, 1fr));
+  gap: 2rem;
+  margin: 2rem 0;
+}
+
+.feature-card {
+  background: var(--glass-bg);
+  backdrop-filter: blur(var(--blur-amount));
+  -webkit-backdrop-filter: blur(var(--blur-amount));
+  border: 1px solid var(--glass-border);
+  border-radius: 1rem;
+  padding: 2rem;
+  box-shadow: 0 4px 20px var(--shadow-color);
+  transition: transform 0.3s ease, box-shadow 0.3s ease;
+}
+
+.feature-card:hover {
+  transform: translateY(-5px);
+  box-shadow: 0 8px 30px var(--shadow-color);
+}
+
+.feature-card h3 {
+  margin-top: 0;
+  color: var(--md-primary-fg-color);
+}
+
+/* Concept grid */
+.concept-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(250px, 1fr));
+  gap: 1.5rem;
+  margin: 2rem 0;
+}
+
+.concept-card {
+  background: var(--glass-bg);
+  backdrop-filter: blur(var(--blur-amount));
+  -webkit-backdrop-filter: blur(var(--blur-amount));
+  border: 1px solid var(--glass-border);
+  border-radius: 0.75rem;
+  padding: 1.5rem;
+  text-decoration: none;
+  color: inherit;
+  transition: all 0.3s ease;
+  display: block;
+  box-shadow: 0 4px 20px var(--shadow-color);
+}
+
+.concept-card:hover {
+  transform: translateY(-3px);
+  box-shadow: 0 6px 25px var(--shadow-color);
+  border-color: var(--md-primary-fg-color);
+}
+
+/* Getting started cards */
+.getting-started-cards {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+  gap: 1.5rem;
+  margin: 2rem 0;
+}
+
+.start-card {
+  background: var(--glass-bg);
+  backdrop-filter: blur(var(--blur-amount));
+  -webkit-backdrop-filter: blur(var(--blur-amount));
+  border: 1px solid var(--glass-border);
+  border-radius: 0.75rem;
+  padding: 1.5rem;
+  text-align: center;
+  text-decoration: none;
+  color: inherit;
+  transition: all 0.3s ease;
+  box-shadow: 0 4px 20px var(--shadow-color);
+}
+
+.start-card:hover {
+  transform: scale(1.05);
+  box-shadow: 0 6px 25px var(--shadow-color);
+}
+
+/* Tabs glassmorphism */
+.md-tabs {
+  background: var(--glass-bg) !important;
+  backdrop-filter: blur(var(--blur-amount));
+  -webkit-backdrop-filter: blur(var(--blur-amount));
+  border-bottom: 1px solid var(--glass-border);
+}
+
+/* Search glassmorphism */
+.md-search__form {
+  background: var(--glass-bg) !important;
+  backdrop-filter: blur(var(--blur-amount));
+  -webkit-backdrop-filter: blur(var(--blur-amount));
+  border: 1px solid var(--glass-border);
+  border-radius: 0.5rem;
+}
+
+/* Admonitions glassmorphism */
+.admonition {
+  background: var(--glass-bg) !important;
+  backdrop-filter: blur(10px);
+  -webkit-backdrop-filter: blur(10px);
+  border: 1px solid var(--glass-border);
+  border-radius: 0.5rem;
+  box-shadow: 0 4px 20px var(--shadow-color);
+}
+
+/* Tables glassmorphism */
+.md-typeset table:not([class]) {
+  background: var(--glass-bg);
+  backdrop-filter: blur(10px);
+  -webkit-backdrop-filter: blur(10px);
+  border: 1px solid var(--glass-border);
+  border-radius: 0.5rem;
+  overflow: hidden;
+  box-shadow: 0 4px 20px var(--shadow-color);
+}
+
+.md-typeset table:not([class]) th {
+  background: rgba(var(--md-primary-fg-color--rgb), 0.1);
+}
+
+/* Footer glassmorphism */
+.md-footer {
+  background: var(--glass-bg) !important;
+  backdrop-filter: blur(var(--blur-amount));
+  -webkit-backdrop-filter: blur(var(--blur-amount));
+  border-top: 1px solid var(--glass-border);
+}
+
+/* Background pattern */
+body::before {
+  content: "";
+  position: fixed;
+  top: 0;
+  left: 0;
+  width: 100%;
+  height: 100%;
+  background: 
+    radial-gradient(circle at 20% 80%, rgba(99, 102, 241, 0.05) 0%, transparent 50%),
+    radial-gradient(circle at 80% 20%, rgba(219, 39, 119, 0.05) 0%, transparent 50%),
+    radial-gradient(circle at 40% 40%, rgba(34, 211, 238, 0.05) 0%, transparent 50%);
+  z-index: -1;
+}
+
+/* Responsive adjustments */
+@media (max-width: 768px) {
+  .hero-title {
+    font-size: 2rem;
+  }
+  
+  .feature-grid,
+  .concept-grid {
+    grid-template-columns: 1fr;
+  }
+  
+  .md-content {
+    margin: 0.5rem;
+    padding: 1rem;
+  }
+}
+
+/* Print styles */
+@media print {
+  .md-content,
+  .md-nav,
+  .md-header,
+  .md-footer {
+    background: white !important;
+    backdrop-filter: none !important;
+    -webkit-backdrop-filter: none !important;
+    border: none !important;
+    box-shadow: none !important;
+  }
+}
+
+/* Navigation Consistency Fixes */
+/* Ensure navigation displays consistently across all pages */
+.md-sidebar--primary .md-sidebar__scrollwrap {
+    display: block !important;
+}
+
+/* Fix homepage navigation visibility */
+body[data-md-color-scheme] .md-nav--primary,
+body .md-nav--primary {
+    display: block !important;
+    opacity: 1 !important;
+    visibility: visible !important;
+}
+
+/* Ensure navigation items are visible on homepage */
+.md-nav__list,
+.md-nav__item {
+    display: block !important;
+}
+
+/* Remove any homepage-specific navigation hiding */
+.md-content__inner .md-nav--primary,
+.homepage .md-nav--primary {
+    display: block !important;
+}
+
+/* Force navigation to use mkdocs.yml structure */
+.md-nav--primary > .md-nav__list > .md-nav__item {
+    display: block !important;
+}
+
+
+/* Sidebar Navigation Fixes *//* Fix 1: Separate click areas for section toggle and link *//* Make the entire label clickable as a link */.md-nav__item--section > .md-nav__link {    pointer-events: auto !important;    cursor: pointer !important;}/* Ensure toggle arrow is separate and clickable */.md-nav__item--section > .md-nav__toggle {    pointer-events: auto !important;    cursor: pointer !important;    z-index: 2; /* Increased z-index */    position: relative;}/* Fix the toggle arrow positioning and make it block clicks to the link underneath */.md-nav__toggle {    position: absolute;    right: 0.4rem;    top: 0.2rem;    width: 2rem; /* Increased width for better click target */    height: 2rem; /* Increased height for better click target */}/* Ensure proper click targets */.md-nav__item--section {    position: relative;}/* Fix 2: Add vertical spacing between sections */.md-nav__item--section {    margin-top: 0.6rem !important;    margin-bottom: 0.2rem !important;}/* Add extra spacing for active sections */.md-nav__item--active.md-nav__item--section {    margin-top: 0.8rem !important;    padding-top: 0.4rem !important;}/* Ensure first section doesn't have extra top margin */.md-nav__list > .md-nav__item--section:first-child {    margin-top: 0 !important;}/* Fix spacing for nested items */.md-nav__item--section .md-nav__list {    margin-top: 0.2rem;}/* Improve visual hierarchy with subtle borders */.md-nav__item--section > .md-nav__link {    border-top: 1px solid rgba(0, 0, 0, 0.05);    padding-top: 0.6rem;    margin-top: 0.2rem;}/* Dark mode border adjustment */[data-md-color-scheme="slate"] .md-nav__item--section > .md-nav__link {    border-top-color: rgba(255, 255, 255, 0.05);}/* Ensure section links have proper padding */.md-nav--primary .md-nav__item--section > .md-nav__link {    padding: 0.6rem 0.8rem;}/* Fix hover states to not interfere with toggle */.md-nav__item--section > .md-nav__link:hover {    background-color: var(--md-default-bg-color--light);}/* Make sure the toggle arrow doesn't get covered */.md-nav__item--section > .md-nav__toggle:hover {    background-color: var(--md-default-bg-color--lighter);    border-radius: 50%;}/* FIX: Remove excessive left padding for active section titles */.md-nav__item--active > .md-nav__link {    padding-left: 0.8rem !important; /* Reset to normal padding */}/* Ensure active sections don't get centered */.md-nav--primary .md-nav__item--active.md-nav__item--section > .md-nav__link {    padding-left: 0.8rem !important;    text-align: left !important;}/* Fix toggle input to prevent navigation */.md-nav__toggle > input[type="checkbox"] {    position: absolute;    width: 100%;    height: 100%;    opacity: 0;    cursor: pointer;    z-index: 3;}/* Ensure toggle label doesn't trigger navigation */.md-nav__toggle > label {    pointer-events: none;}/* Make the toggle area larger and prevent link activation in that area */.md-nav__item--section > .md-nav__link {    padding-right: 2.5rem !important; /* Leave space for toggle */}/* Fix for active/selected section title alignment - more targeted approach */.md-nav--primary .md-nav__item--active.md-nav__item--section > .md-nav__link .md-ellipsis {    text-align: left !important;    margin: 0 !important;    padding: 0 !important;    display: inline !important;    width: auto !important;    position: relative !important;    transform: none !important;}/* Ensure active section has visual distinction without breaking layout */.md-nav--primary .md-nav__item--active.md-nav__item--section > .md-nav__link {    background-color: rgba(var(--md-primary-fg-color--rgb), 0.15) !important;    border-left: 3px solid var(--md-primary-fg-color);    margin-left: -3px;} /* ───────────────────────── HEADER TWEAKS ───────────────────────── */
+
+/* allow header to expand for breadcrumbs + dropdowns */
+.md-header {
+    /* ...existing gradient, margin, radius... */
+    overflow: visible;              /* was hidden → keeps breadcrumbs & search list visible */
+    height: auto !important;        /* let it grow when breadcrumbs appear */
+    padding-block: .25rem;          /* compact vertical padding */
+}
+
+/* keep inner row compact yet flexible */
+.md-header__inner {
+    min-height: 3.6rem;             /* Increased to accommodate breadcrumbs */
+    display: flex;
+    align-items: center;
+    gap: 1rem;
+}
+
+/* breadcrumbs (Material emits `.md-header__topic` when navigation.path is on) */
+/* REMOVED DUPLICATE - This was causing the misalignment issue */
+
+/* search suggestions must float over header */
+.md-search__suggestions {    z-index: 2000;                  /* higher than header */}/* header search input: small, fits single row */.md-search__form {    max-width: 11rem;}/* ---------- REMOVE TABS ROW (keeps navbar single-row) -------------- */.md-tabs {  display: none !important;} /* 1️⃣  Restore header height so two rows fit */
+.md-header {
+    /* ...existing gradient, margin, radius... */
+    height: auto !important;              /* allow header + tabs rows */
+}
+
+/* 2️⃣  Re-enable the tabs row (was previously hidden) */
+.md-tabs {
+    display: flex !important;             /* override old display:none */
+    background: linear-gradient(          /* same pastel as header    */
+        135deg,
+        rgba(173, 197, 255, 0.70) 0%,     /* #adc5ff */
+        rgba(212, 206, 255, 0.70) 50%,    /* #d4ceff */
+        rgba(255, 255, 255, 0.70) 100%
+    ) !important;
+    backdrop-filter: blur(var(--blur-amount));
+    -webkit-backdrop-filter: blur(var(--blur-amount));
+    border: 1px solid var(--glass-border);
+    border-top: none;                     /* seamless with header     */
+    border-radius: 0 0 0.75rem 0.75rem;   /* continue pill shape      */
+    margin: 0 1rem;                       /* align with header edges  */
+    height: 2.5rem;
+}
+
+/* Dark-mode variant of tabs */
+[data-md-color-scheme="slate"] .md-tabs {
+    background: linear-gradient(
+        135deg,
+        rgba(40, 52, 104, 0.95) 0%,
+        rgba(71, 91, 208, 0.85) 50%,
+        rgba(40, 52, 104, 0.95) 100%
+    ) !important;
+    border: 1px solid rgba(255, 255, 255, 0.15);
+    border-top: none;
+}
+
+/* 3️⃣  Tabs link colours (light vs dark) */
+.md-tabs__link { color: var(--md-default-fg-color) !important; }
+.md-tabs__link--active { font-weight: 600; }
+
+[data-md-color-scheme="slate"] .md-tabs__link,
+[data-md_color_sheme="slate"] .md-tabs__link--active {
+    color: #fff !important;
+}
+
+/* 4️⃣  Search input/icon + GitHub button dark in light, white in dark */
+.md-search__input,
+.md-header__button svg,
+.md-header__button,
+.md-source,
+.md-source__icon,
+.md-source__repository {
+    color: var(--md-default-fg-color) !important;
+    fill:  var(--md-default-fg-color) !important;
+}
+[data-md-color-scheme="slate"] .md-search__input,
+[data-md-color-scheme="slate"] .md-header__button svg,
+[data-md_color_sheme="slate"] .md-header__button,
+[data-md_color_sheme="slate"] .md-source,
+[data-md_color_sheme="slate"] .md-source__icon,
+[data-md_color_sheme="slate"] .md-source__repository {
+    color: #fff !important;
+    fill:  #fff !important;
+}
+
+/* 5️⃣  Remove previous rule that hid breadcrumbs row (tabs) *//* (.md-tabs { display:none!important; }) — ensure it no longer exists *//* ─── FINAL HEADER GRADIENT OVERRIDE ─────────────────────────────── *//* keeps the pastel blue-violet in light-mode and deep blue in dark-mode */:root .md-header {                 /* higher specificity overrides earlier duplicates */  background: linear-gradient(      135deg,      rgba(173, 197, 255, 0.70) 0%,      rgba(212, 206, 255, 0.70) 50%,      rgba(255, 255, 255, 0.70) 100%  ) !important;}[data-md-color-scheme="slate"] .md-header {  background: linear-gradient(      135deg,      rgba(40, 52, 104, 0.95) 0%,      rgba(71, 91, 208, 0.85) 50%,      rgba(40, 52, 104, 0.95) 100%  ) !important;}/* ─── Breadcrumbs / Tabs row (glass style) ────────────────────────── */.md-tabs {    /* use the generic glass background instead of an opaque gradient */    background: var(--glass-bg) !important;          /* light & transparent */    backdrop-filter: blur(var(--blur-amount));    -webkit-backdrop-filter: blur(var(--blur-amount));    border: 1px solid var(--glass-border);    border-top: none;                                /* seamless with header */    border-radius: 0;                                /* no rounding - clean rectangle */    margin: 0 1rem;                                  /* side margins match content */    height: 2.5rem;    display: flex !important;                        /* ensure it is visible */    align-items: center;}[data-md-color-scheme="slate"] .md-tabs {    background: rgba(40, 52, 104, 0.40) !important;  /* semi-transparent for dark mode */    backdrop-filter: blur(var(--blur-amount));    -webkit-backdrop-filter: blur(var(--blur-amount));    border: 1px solid rgba(255, 255, 255, 0.15);    border-top: none;}/* tab link colours remain */.md-tabs__link { color: var(--md-default-fg-color) !important; }.md-tabs__link--active { font-weight: 600; }[data-md_color_scheme="slate"] .md-tabs__link,[data-md_color_scheme="slate"] .md-tabs__link--active { color: #fff !important; }/* ────────────────────────────────────────────────────────────────── */ --glass-bg: rgba(255, 255, 255, 0.05);  --glass-border: rgba(255, 255, 255, 0.1);
