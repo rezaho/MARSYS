@@ -1,9 +1,9 @@
 site_name: MARSYS - Multi-Agent Reasoning Systems
-site_description: A powerful framework for creating, orchestrating, and training AI agents
+site_description: A powerful framework for creating, orchestrating, and training collaborative AI agents
 site_author: Your Name
 site_url: https://marsys.io
 repo_url: https://github.com/rezaho/MARS
-repo_name: Multi-agent_Reasoning_Systems
+repo_name: MARSYS
 
 theme:
   name: material
