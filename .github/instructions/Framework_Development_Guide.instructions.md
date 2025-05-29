@@ -2,7 +2,7 @@
 applyTo: '**'
 ---
 
-# Multi-Agent AI Learning – Framework Development Guide (AI Instruction Set)
+# Multi-Agent Reasoning Systems (MARSYS) – Framework Development Guide (AI Instruction Set)
 
 This file provides domain knowledge, coding standards, and project preferences that every AI agent / Copilot must **always** follow when editing this repository.
 
