@@ -498,24 +498,74 @@ class BaseAPIModel:
             response.raise_for_status()  # Raise an exception for bad status codes (4xx or 5xx)
             result = response.json()
 
-            # Extract content based on typical API response structure
-            content = (
-                result.get("choices", [{}])[0].get("message", {}).get("content", "")
-            )
-
-            if not content:
-                # Handle potential variations in response structure or errors
+            message_obj = result.get("choices", [{}])[0].get("message", {})
+            if not message_obj:
                 print(
                     f"Warning: Received empty content or unexpected response format: {result}"
                 )
-                return ""  # Or raise an error
+                return ""
 
-            # If json_mode was requested, the content should already be a JSON string.
-            # No need for manual stripping of ```json like in local models.
-            # If the API doesn't strictly adhere and adds backticks, add parsing here.
-            # For now, assume the API returns a valid JSON string in the content field when json_mode is enabled.
+            # Handle tool calls when in JSON mode - synthesize the expected JSON structure
+            if json_mode and message_obj.get("tool_calls") and not message_obj.get("content"):
+                # When API returns tool_calls with null content, create the expected JSON structure
+                tool_calls = message_obj["tool_calls"]
+                synthesized_json = {
+                    "thought": "I need to use a tool to complete this task.",
+                    "next_action": "call_tool",
+                    "action_input": {
+                        "tool_calls": tool_calls
+                    }
+                }
+                message_role = message_obj.get("role", "assistant")
+                # Replace the message object with content containing the JSON
+                # Remove separate tool_calls key - everything is now in the content
+                message_obj = {
+                    "role": message_role,
+                    "content": json.dumps(synthesized_json),
+                    "tool_calls": tool_calls  # Preserve original tool_calls for compatibility
+                }
+            elif json_mode and message_obj.get("tool_calls") and message_obj.get("content"):
+                # If both tool_calls and content are present, we can use them
+                tool_calls = message_obj["tool_calls"]
+                content = message_obj["content"]
+                message_role = message_obj.get("role", "assistant")
+                # Create a new message object with the combined information
+                message_obj = {
+                    "role": message_role,
+                    "content": content,
+                    "tool_calls": tool_calls
+                }
+            elif json_mode and message_obj.get("content"):
+                # If only content is present, we can return it directly
+                content = message_obj["content"]
+                message_role = message_obj.get("role", "assistant")
+                # Create a new message object with the content
+                message_obj = {
+                    "role": message_role,
+                    "content": content,
+                    "tool_calls": []  # No tool calls in this case
+                }
+            elif not json_mode and message_obj.get("content"):
+                # If not in JSON mode and content is present, return it as is
+                content = message_obj["content"]
+                message_role = message_obj.get("role", "assistant")
+                # Create a new message object with the content
+                message_obj = {
+                    "role": message_role,
+                    "content": content,
+                    "tool_calls": []  # No tool calls in this case
+                }
+            else:
+                # If no tool calls or content, return the message as is
+                # This handles cases where the API response doesn't match expected formats
+                message_obj = {
+                    "role": "error",
+                    "content": "Unexpected response format or no content provided.",
+                    "tool_calls": [],
+                }
 
-            return content
+            # Return full message dict so upper layers can inspect content *and* tool_calls
+            return message_obj
 
         except requests.exceptions.RequestException as e:
             print(f"API request failed: {e}")

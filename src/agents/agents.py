@@ -14,20 +14,13 @@ import re
 import time  # Ensure time is imported if not already
 import uuid
 from abc import ABC, abstractmethod
-from typing import (
-    Any,
-    Callable,
-    Coroutine,
-    Dict,
-    List,  # Added Coroutine
-    Optional,
-    Union,
-)
-
-from src.models.models import BaseAPIModel, BaseLLM, BaseVLM, ModelConfig, PeftHead
+from typing import Callable
+from typing import List  # Added Coroutine
+from typing import Any, Coroutine, Dict, Optional, Union
 
 # --- New Imports ---
-from environment.utils import generate_openai_tool_schema
+from src.environment.utils import generate_openai_tool_schema
+from src.models.models import BaseAPIModel, BaseLLM, BaseVLM, ModelConfig, PeftHead
 from src.utils.monitoring import default_progress_monitor
 
 from .memory import ConversationMemory, MemoryManager, Message
@@ -56,6 +49,29 @@ class BaseAgent(ABC):
         communication_log: Dictionary storing communication history per task ID.
         name: Unique name of the agent instance within the registry.
     """
+
+    # ------------------------------------------------------------------
+    # Helper: drop duplicate JSON-schema instructions from descriptions
+    # ------------------------------------------------------------------
+    _SCHEMA_HINT_PATTERNS = re.compile(
+        r"(next_action|action_input|tool_calls|JSON\s*object|Response Structure)",
+        re.IGNORECASE,
+    )
+
+    @staticmethod
+    def _strip_schema_hints(text: str) -> str:
+        """
+        Remove lines that try to re-explain the standard JSON output contract.
+        The official schema will be appended later by `_get_response_guidelines`.
+        """
+        lines = [
+            ln
+            for ln in text.splitlines()
+            if not BaseAgent._SCHEMA_HINT_PATTERNS.search(ln)
+        ]
+        # Collapse consecutive blank lines that can appear after stripping
+        cleaned = re.sub(r"\n{3,}", "\n\n", "\n".join(lines)).strip()
+        return cleaned
 
     def __init__(
         self,
@@ -312,20 +328,22 @@ class BaseAgent(ABC):
         Constructs the full system prompt for the agent by combining its base description,
         tool instructions, peer agent instructions (if any), and response format guidelines.
         """
-        # Add JSON enforcement at the beginning if in JSON mode
+        # --- 1) Enforce native-JSON (when requested) --------------------
         json_enforcement = ""
         if json_mode_for_output:
-            # no more code-block requirement → fewer tokens & less chance of truncation
             json_enforcement = (
                 "CRITICAL: Your ENTIRE response MUST be a SINGLE valid JSON object. "
                 "Do NOT add any prose or markdown fencing before or after the JSON.\n\n"
             )
 
+        # --- 2) Strip user-supplied schema hints; keep role description --
+        cleaned_description = self._strip_schema_hints(base_description)
+
         full_prompt_parts = [
             (
-                json_enforcement + base_description
+                json_enforcement + cleaned_description
                 if json_enforcement
-                else base_description
+                else cleaned_description
             )
         ]
 
@@ -920,21 +938,6 @@ class BaseAgent(ABC):
                 run_mode="auto_step",
             )
 
-            if raw_llm_response_message.role == "error":
-                error_content = (
-                    raw_llm_response_message.content or "Unknown error from _run."
-                )
-                await self._log_progress(
-                    current_step_request_context,
-                    LogLevel.MINIMAL,
-                    f"Agent '{self.name}' _run method returned an error: {error_content}",
-                    data={"error_details": error_content},
-                )
-                final_answer_str = (
-                    f"Error: Agent internal processing failed: {error_content}"
-                )
-                break
-
             # Handle tool-only responses (content is None but tool_calls exist)
             if (
                 raw_llm_response_message.content is None
@@ -1122,6 +1125,21 @@ class BaseAgent(ABC):
                 )
 
             except (json.JSONDecodeError, ValueError) as e:
+                # ----------------------------------------------------------
+                # Fallback: if we still have a *non-empty* textual response
+                # answer instead of re-prompting / overriding.
+                # ----------------------------------------------------------
+                if isinstance(raw_content_str, str) and raw_content_str.strip():
+                    await self._log_progress(
+                        current_step_request_context,
+                        LogLevel.SUMMARY,
+                        "No valid JSON detected, but non-empty content found – "
+                        "treating it as the final_response.",
+                    )
+                    final_answer_str = raw_content_str.strip()
+                    break
+
+                # Otherwise keep the previous re-prompt behaviour
                 error_feedback = (
                     f"Your previous response had a JSON formatting or structural issue: {str(e)}\n"
                     "Reminder: Your *entire* response MUST be a single JSON object. Do NOT add any prose or markdown fencing before or after the JSON.\n"
@@ -1151,7 +1169,10 @@ class BaseAgent(ABC):
                     }
                     continue
                 else:
-                    final_answer_str = f"Error: Agent '{self.name}' failed to produce valid JSON output after {max_re_prompts + 1} attempts. Last error: {e}"
+                    final_answer_str = (
+                        f"Error: Agent '{self.name}' failed to produce valid JSON "
+                        f"output after {max_re_prompts + 1} attempts. Last error: {e}"
+                    )
                     await self._log_progress(
                         current_step_request_context, LogLevel.MINIMAL, final_answer_str
                     )
@@ -1222,10 +1243,19 @@ class BaseAgent(ABC):
                                 "thought"
                             )  # Extract thought from the parsed JSON
 
+                            # Determine if this is an agent call
+                            agent_call_info = None
+                            if next_action_val == "invoke_agent" and action_input_val:
+                                agent_call_info = {
+                                    "agent_name": action_input_val.get("agent_name"),
+                                    "request": action_input_val.get("request"),
+                                }
+
                             updated_assistant_message = Message(
                                 role="assistant",
                                 content=thought_content,
-                                tool_calls=tool_calls_to_make,  # Use the SANITIZED tool_calls
+                                tool_calls=tool_calls_to_make if next_action_val == "call_tool" else None,  # Only set tool_calls for tool actions
+                                agent_call=agent_call_info,  # Set agent_call for invoke_agent actions
                                 message_id=original_message_to_update.message_id,
                                 name=original_message_to_update.name,
                             )
@@ -1235,7 +1265,7 @@ class BaseAgent(ABC):
                             await self._log_progress(
                                 current_step_request_context,
                                 LogLevel.DEBUG,
-                                f"Updated assistant message {target_message_id_to_update} in memory with SANITIZED tool_calls for API compatibility.",
+                                f"Updated assistant message {target_message_id_to_update} in memory with {'tool_calls' if next_action_val == 'call_tool' else 'agent_call'} for tracking.",
                             )
                         else:
                             await self._log_progress(
@@ -1561,355 +1591,25 @@ class BaseAgent(ABC):
         return tool_results_payload
 
 
-# --- Learnable Agent Base Class ---
-
-
-class BaseLearnableAgent(BaseAgent):
-    """
-    Base class for agents that can incorporate learnable components (e.g., PEFT heads).
-
-    Inherits from BaseAgent and adds handling for learning head initialization.
-
-    Attributes:
-        _learning_head_name: Name of the learning head type (e.g., 'peft').
-        _learning_config: Configuration dictionary for the learning head.
-    """
-
-    def __init__(
-        self,
-        model: Union[BaseVLM, BaseLLM],
-        description: str,  # Renamed from system_prompt
-        learning_head: Optional[str] = None,
-        learning_head_config: Optional[Dict[str, Any]] = None,
-        max_tokens: Optional[int] = 512,
-        agent_name: Optional[str] = None,
-        allowed_peers: Optional[List[str]] = None,
-        **kwargs: Any,
-    ) -> None:
-        """
-        Initializes the BaseLearnableAgent.
-
-        Args:
-            model: The base language model instance (typically local).
-            description: The base description of the agent's role and purpose.
-            learning_head: Optional name of the learning head type (e.g., 'peft').
-            learning_head_config: Optional configuration for the learning head.
-            max_tokens: Default maximum tokens for model generation.
-            agent_name: Optional specific name for registration.
-            allowed_peers: List of agent names this agent can call.
-            **kwargs: Additional arguments passed to BaseAgent.__init__ (e.g., tools).
-        """
-        super().__init__(
-            model=model,
-            description=description,  # Renamed
-            tools=kwargs.get("tools"),
-            # tools_schema=kwargs.get("tools_schema"), # Removed as BaseAgent.__init__ no longer takes it
-            max_tokens=max_tokens,
-            agent_name=agent_name,
-            allowed_peers=allowed_peers,
-        )
-        self._learning_head_name = learning_head
-        self._learning_config = learning_head_config
-        if learning_head == "peft":
-            if not learning_head_config:
-                raise ValueError(
-                    "learning_head_config is required when learning_head is 'peft'"
-                )
-            if not isinstance(model, (BaseLLM, BaseVLM)):
-                raise TypeError(
-                    f"Base model for PEFT must be BaseLLM or BaseVLM, got {type(model)}"
-                )
-            self.model = PeftHead(model=self.model)
-            self.model.prepare_peft_model(**learning_head_config)
-
-    def _parse_model_response(self, response: str) -> Dict[str, Any]:
-        """
-        Extract and return a single JSON object from `response`.
-
-        Order of extraction attempts:
-        1. First fenced ```json … ``` block.
-        2. Whole response if it already begins with '{' or '['.
-        3. Text between the first '{' and the last '}'.
-
-        Raises:
-            ValueError: if no valid JSON object can be decoded.
-        """
-        # 1. fenced code-block
-        block = re.search(r"```json\s*(.*?)\s*```", response, re.I | re.S)
-        candidates = [block.group(1)] if block else []
-
-        # 2. whole response
-        stripped = response.strip()
-        if stripped.startswith(("{", "[")):
-            candidates.append(stripped)
-
-        # 3. slice between braces
-        first, last = response.find("{"), response.rfind("}")
-        if 0 <= first < last:
-            candidates.append(response[first : last + 1])
-
-        for candidate in candidates:
-            try:
-                return json.loads(candidate)
-            except json.JSONDecodeError:
-                continue
-
-        raise ValueError("Could not extract valid JSON from model response.")
-
-
-class LearnableAgent(BaseLearnableAgent):
-    """
-    An agent implementation that uses a local, potentially learnable (e.g., PEFT) model.
-
-    It utilizes a MemoryManager to handle its internal state and implements the
-    `_run` method for core logic execution based on different run modes.
-    """
-
-    def __init__(
-        self,
-        model: Union[BaseVLM, BaseLLM],
-        description: str,  # Renamed from system_prompt
-        tools: Optional[Dict[str, Callable[..., Any]]] = None,
-        # tools_schema: Optional[List[Dict[str, Any]]] = None, # Removed from signature
-        learning_head: Optional[str] = None,
-        learning_head_config: Optional[Dict[str, Any]] = None,
-        max_tokens: Optional[int] = 512,
-        agent_name: Optional[str] = None,
-        allowed_peers: Optional[List[str]] = None,
-        **kwargs: Any,  # Keep kwargs for other potential BaseAgent args if any in future
-    ) -> None:
-        """
-        Initializes the LearnableAgent.
-
-        Args:
-            model: The local language model instance (potentially wrapped by PeftHead).
-            description: The base description of the agent's role and purpose.
-            tools: Optional dictionary of tools.
-            tools_schema: Optional JSON schema for tools.
-            learning_head: Optional type of learning head ('peft').
-            learning_head_config: Optional configuration for the learning head.
-            max_tokens: Default maximum tokens for model generation.
-            agent_name: Optional specific name for registration.
-            allowed_peers: List of agent names this agent can call.
-            **kwargs: Additional arguments passed to BaseAgent.__init__ (e.g., tools).
-        """
-        super().__init__(
-            model=model,
-            description=description,  # Renamed
-            learning_head=learning_head,
-            learning_head_config=learning_head_config,
-            max_tokens=max_tokens,
-            agent_name=agent_name,
-            allowed_peers=allowed_peers,
-            tools=tools,  # Pass tools
-            # tools_schema is not passed as BaseLearnableAgent's super call to BaseAgent handles it
-            **kwargs,
-        )
-        kg_model: Union[BaseVLM, BaseLLM]
-        if isinstance(self.model, PeftHead):
-            kg_model = self.model.model
-        else:
-            kg_model = self.model
-        self.memory = MemoryManager(
-            memory_type="conversation_history",  # Default memory type
-            description=self.description,  # Pass agent's description for initial system message
-            model=None,  # kg_model is not needed since memory_type is "conversation_history"
-        )
-
-    def _parse_model_response(self, response: str) -> Dict[str, Any]:
-        """
-        Extract and return a single JSON object from `response`.
-
-        Order of extraction attempts:
-        1. First fenced ```json … ``` block.
-        2. Whole response if it already begins with '{' or '['.
-        3. Text between the first '{' and the last '}'.
-
-        Raises:
-            ValueError: if no valid JSON object can be decoded.
-        """
-        # 1. fenced code-block
-        block = re.search(r"```json\s*(.*?)\s*```", response, re.I | re.S)
-        candidates = [block.group(1)] if block else []
-
-        # 2. whole response
-        stripped = response.strip()
-        if stripped.startswith(("{", "[")):
-            candidates.append(stripped)
-
-        # 3. slice between braces
-        first, last = response.find("{"), response.rfind("}")
-        if 0 <= first < last:
-            candidates.append(response[first : last + 1])
-
-        for candidate in candidates:
-            try:
-                return json.loads(candidate)
-            except json.JSONDecodeError:
-                continue
-
-        raise ValueError("Could not extract valid JSON from model response.")
-
-    async def _run(
-        self, prompt: Any, request_context: RequestContext, run_mode: str, **kwargs: Any
-    ) -> Message:  # Changed return type
-        """
-        Core execution logic for the LearnableAgent.
-        Processes input prompt, interacts with the model, updates memory, and returns a Message.
-
-        Args:
-            prompt: The input prompt or data for this run step.
-            request_context: The context for this specific run.
-            run_mode: A string indicating the type of operation.
-            **kwargs: Additional keyword arguments.
-
-        Returns:
-            A `Message` object representing the agent's response.
-        """
-        user_actual_prompt_content: Optional[str] = None
-        passed_context_messages: List[Message] = []
-        # Use standard OpenAI role, store agent name separately
-        prompt_sender_name = request_context.caller_agent_name or "user"
-
-        # --- use common helper ---
-        user_actual_prompt_content, passed_context_messages = (
-            self._extract_prompt_and_context(prompt)
-        )
-        # --------------------------
-
-        await self._log_progress(
-            request_context,
-            LogLevel.DETAILED,
-            f"LearnableAgent executing _run with mode='{run_mode}'. Actual prompt: {str(user_actual_prompt_content)[:100]}...",
-            data={"has_passed_context": bool(passed_context_messages)},
-        )
-
-        # 1. Add passed_referenced_context to memory first
-        for ref_msg in passed_context_messages:
-            # These messages come with their original IDs and content
-            self.memory.update_memory(message=ref_msg)
-            await self._log_progress(
-                request_context,
-                LogLevel.DEBUG,
-                f"LearnableAgent added referenced message ID {ref_msg.message_id} (Role: {ref_msg.role}) to memory.",
-            )
-
-        # 2. Add the current user prompt to memory
-        if (
-            user_actual_prompt_content
-        ):  # TO-DO: when an agent invoke another agent, inside the _run() method we add the response from the callee agent to the memory. And here again we pass a summary of that response as a user message when we call the model. This is duplicate.
-            self.memory.update_memory(
-                role="user",  # Always use standard role "user" for incoming prompt
-                content=user_actual_prompt_content,
-                name=prompt_sender_name,  # Add sender's name
-            )
-
-        base_description_for_run = getattr(
-            self,
-            f"description_{run_mode}",
-            self.description,  # Use mode-specific or default description
-        )
-
-        is_auto_step = run_mode == "auto_step"
-        json_mode_for_guidelines = is_auto_step
-        json_mode_for_llm_native = is_auto_step or (run_mode == "plan")
-
-        current_tools_schema = self.tools_schema
-
-        operational_system_prompt = self._construct_full_system_prompt(
-            base_description=base_description_for_run,
-            # current_tools_schema=current_tools_schema, # This was already correct or removed
-            json_mode_for_output=json_mode_for_guidelines,
-        )
-
-        llm_messages_for_model = self.memory.to_llm_format()
-        system_message_found_and_updated = False
-        for i, msg_dict in enumerate(llm_messages_for_model):
-            if msg_dict["role"] == "system":
-                llm_messages_for_model[i] = Message(
-                    role="system", content=operational_system_prompt
-                ).to_llm_dict()
-                system_message_found_and_updated = True
-                break
-        if not system_message_found_and_updated:
-            llm_messages_for_model.insert(
-                0,
-                Message(role="system", content=operational_system_prompt).to_llm_dict(),
-            )
-
-        max_tokens_override = kwargs.pop("max_tokens", self.max_tokens)
-        model_specific_kwargs = {k: v for k, v in kwargs.items()}
-
-        await self._log_progress(
-            request_context,
-            LogLevel.DETAILED,
-            f"LearnableAgent calling internal LLM (mode: {run_mode}, LLM_JSON_mode: {json_mode_for_llm_native})",
-            data={"system_prompt_length": len(operational_system_prompt)},
-        )
-        try:
-            # Assuming self.model is BaseLLM or BaseVLM which has a run method
-            raw_model_output: Any = self.model.run(  # type: ignore
-                messages=llm_messages_for_model,
-                max_tokens=max_tokens_override,
-                json_mode=json_mode_for_llm_native,
-                tools=current_tools_schema,
-                **model_specific_kwargs,
-            )
-            assistant_message: Message
-            # Always use "assistant" role for model responses, name is self.name
-            role_for_model_output = "assistant"
-            if isinstance(raw_model_output, dict) and "role" in raw_model_output:
-                # Ensure Message.from_model_response_dict sets name=self.name if not present
-                assistant_message = Message.from_model_response_dict(raw_model_output)
-                assistant_message.role = role_for_model_output  # Enforce role
-                if (
-                    not assistant_message.name
-                ):  # Set name if not already set by model output
-                    assistant_message.name = self.name
-            elif isinstance(raw_model_output, str):
-                assistant_message = Message(
-                    role=role_for_model_output, content=raw_model_output, name=self.name
-                )
-            else:
-                assistant_message = Message(
-                    role=role_for_model_output,
-                    content=str(raw_model_output),
-                    name=self.name,
-                )
-
-            await self._log_progress(
-                request_context,
-                LogLevel.DETAILED,
-                f"LearnableAgent LLM call successful. Output content: {str(assistant_message.content)[:100]}...",
-                data={"tool_calls": assistant_message.tool_calls},
-            )
-        except Exception as e:
-            await self._log_progress(
-                request_context,
-                LogLevel.MINIMAL,
-                f"LearnableAgent LLM call failed: {e}",
-                data={"error": str(e)},
-            )
-            return Message(
-                role="error", content=f"LLM call failed: {e}", name=self.name
-            )
-
-        self.memory.update_memory(message=assistant_message)
-
-        await self._log_progress(
-            request_context,
-            LogLevel.DETAILED,
-            f"LearnableAgent _run mode='{run_mode}' finished.",
-        )
-        return assistant_message
-
-
 class Agent(BaseAgent):
     """
     A general-purpose agent implementation that can use either local models or API-based models.
 
     It initializes the appropriate model type based on configuration, uses a
     MemoryManager, and implements the `_run` method for core logic.
+    
+    **Key Distinction**: Agent is designed to work with LLM/VLM API providers (OpenAI, Google AI Studio,
+    Anthropic, OpenRouter, etc.) where you don't have access to model weights. These are cloud-based
+    services where you send prompts and receive responses via API calls. Unlike LearnableAgent,
+    you cannot add learning heads or train these models yourself - you can only control prompts,
+    message context, and model parameters (temperature, max_tokens, etc.).
+    
+    Use Agent when:
+    - You want to use commercial API-based models (GPT-4, Claude, Gemini, etc.)
+    - You don't need to customize model behavior through training
+    - You prefer not to manage local compute resources
+    - You need access to the latest, most capable models
+    - You want to quickly prototype without model setup
     """
 
     def __init__(
@@ -1930,7 +1630,6 @@ class Agent(BaseAgent):
             model_config: Configuration for the language model.
             description: The base description of the agent's role and purpose.
             tools: Optional dictionary of tools.
-            tools_schema: Optional JSON schema for tools.
             memory_type: Type of memory module to use.
             max_tokens: Default maximum tokens for generation for this agent instance (overrides model_config default).
             agent_name: Optional specific name for registration.
@@ -1960,6 +1659,8 @@ class Agent(BaseAgent):
             memory_type=memory_type or "conversation_history",
             description=self.description,  # Pass agent's description for initial system message
             model=self.model_instance if memory_type == "kg" else None,
+            input_processor=self._input_message_processor(),
+            output_processor=self._output_message_processor(),
         )
         self._model_config = model_config  # Store the ModelConfig instance
 
@@ -2013,16 +1714,17 @@ class Agent(BaseAgent):
                 # This case should ideally be caught by ModelConfig validation
                 raise ValueError(f"Unsupported local model class: {model_class_type}")
         elif model_type == "api":
-            # API key and base_url are validated and set by ModelConfig
+            provider = config.provider
             api_key = config.api_key
             base_url = config.base_url
             return BaseAPIModel(
                 model_name=model_name,
+                provider=provider,
                 api_key=api_key,
                 base_url=base_url,
                 max_tokens=max_tokens_cfg,
-                temperature=temperature_cfg,  # Pass temperature
-                **extra_kwargs,  # Pass other extra args
+                temperature=temperature_cfg,
+                **extra_kwargs,
             )
         else:
             # This case should be caught by ModelConfig validation
@@ -2101,9 +1803,73 @@ class Agent(BaseAgent):
 
         raise ValueError("Could not extract valid JSON from model response.")
 
+    def _input_message_processor(self) -> Callable[[Dict[str, Any]], Dict[str, Any]]:
+        """
+        Creates a processor function that converts LLM JSON responses to Message-compatible format.
+        Extracts agent_call information from JSON content when present.
+        """
+        def transform_from_llm(data: Dict[str, Any]) -> Dict[str, Any]:
+            # Start with a copy of the original data
+            result = data.copy()
+            
+            # Check if content contains agent call info in JSON
+            content = data.get("content")
+            if data.get("role") == "assistant" and content and isinstance(content, str):
+                try:
+                    parsed_content = json.loads(content)
+                    if isinstance(parsed_content, dict) and parsed_content.get("next_action") == "invoke_agent":
+                        # Extract agent_call information
+                        action_input = parsed_content.get("action_input", {})
+                        if isinstance(action_input, dict) and "agent_name" in action_input:
+                            result["agent_call"] = action_input
+                            
+                            # Keep only thought in content if present
+                            thought = parsed_content.get("thought")
+                            if thought:
+                                result["content"] = thought
+                            else:
+                                result["content"] = None
+                except (json.JSONDecodeError, TypeError):
+                    # Content is not JSON or parsing failed, keep as is
+                    pass
+            
+            return result
+        
+        return transform_from_llm
+
+    def _output_message_processor(self) -> Callable[[Dict[str, Any]], Dict[str, Any]]:
+        """
+        Creates a processor function that converts Message dicts to LLM-compatible format.
+        Synthesizes JSON content when agent_call is present.
+        """
+        def transform_to_llm(msg_dict: Dict[str, Any]) -> Dict[str, Any]:
+            # Start with a copy
+            result = msg_dict.copy()
+            
+            # If agent_call is present and role is assistant, synthesize JSON content
+            if msg_dict.get("role") == "assistant" and msg_dict.get("agent_call"):
+                agent_call = msg_dict["agent_call"]
+                thought = msg_dict.get("content", "I need to invoke another agent.")
+                
+                synthesized_content = {
+                    "thought": thought,
+                    "next_action": "invoke_agent",
+                    "action_input": agent_call
+                }
+                result["content"] = json.dumps(synthesized_content)
+                # Remove agent_call from result as it's not part of OpenAI API
+                result.pop("agent_call", None)
+            else:
+                # Remove agent_call if present (not part of OpenAI API)
+                result.pop("agent_call", None)
+            
+            return result
+        
+        return transform_to_llm
+
     async def _run(
         self, prompt: Any, request_context: RequestContext, run_mode: str, **kwargs: Any
-    ) -> Message:  # Changed return type
+    ) -> Message:
         """
         Core execution logic for the Agent.
         Processes input prompt (which may include passed context), interacts with the model,
@@ -2168,24 +1934,23 @@ class Agent(BaseAgent):
             self.description,  # Use mode-specific or default description
         )
 
-        json_mode_for_output = (
-            True  # run_mode in ["plan"] # Determine if JSON output is expected
-        )
+        # FIX: Separate JSON guidelines (shown in prompt) from native JSON mode (API feature)
+        # json_mode_for_guidelines: True only for auto_step mode (to show JSON format instructions)
+        # json_mode_for_llm_native: True only when we want JSON AND have no tools (to avoid OpenAI's tool-calling envelope)
+        json_mode_for_output = run_mode == "auto_step"
+        has_tools = bool(self.tools_schema)
+        json_mode_for_llm_native = (json_mode_for_output or run_mode == "plan") and not has_tools
 
-        # Determine which tools_schema to use for this specific run
-        # For Agent class, it's generally self.tools_schema if tools are intended for the mode
-        current_tools_schema = (
-            self.tools_schema
-            if run_mode in ["think", "auto_step"] and self.tools_schema
-            else None
-        )
+        # FIX: Only pass tools_schema when tools are actually available
+        current_tools_schema = self.tools_schema if has_tools else None
 
         operational_system_prompt = self._construct_full_system_prompt(
             base_description=base_description_for_run,
-            # current_tools_schema=current_tools_schema,  # Argument removed
+            # current_tools_schema: Optional[List[Dict[str, Any]]], # Parameter removed
             json_mode_for_output=json_mode_for_output,
         )
 
+        # Get messages in LLM format with transformer applied
         llm_messages_for_model = self.memory.to_llm_format()
         system_message_found_and_updated = False
         for i, msg_dict in enumerate(llm_messages_for_model):
@@ -2208,14 +1973,14 @@ class Agent(BaseAgent):
         api_model_kwargs = self._get_api_kwargs()
         api_model_kwargs.update(kwargs)
 
-        # ---- add: guarantee native JSON from OpenAI when json_mode is requested ----
+        # FIX: Only request native JSON format when json_mode_for_llm_native is True
         if (
-            json_mode_for_output
+            json_mode_for_llm_native
             and isinstance(self.model_instance, BaseAPIModel)
             and getattr(self._model_config, "provider", "") == "openai"
         ):
             api_model_kwargs["response_format"] = {"type": "json_object"}
-        # ---------------------------------------------------------------------------
+        # --------------------------------------------------------------------------
 
         await self._log_progress(
             request_context,
@@ -2228,46 +1993,55 @@ class Agent(BaseAgent):
                 messages=llm_messages_for_model,
                 max_tokens=max_tokens_override,
                 temperature=temperature_override,
-                json_mode=json_mode_for_output,
+                # FIX: Use json_mode_for_llm_native instead of json_mode_for_output
+                json_mode=json_mode_for_llm_native,
                 tools=current_tools_schema,  # Pass the determined tools_schema
                 **api_model_kwargs,
             )
-            assistant_message: Message
-            # Always use "assistant" role for model responses, name is self.name
-            role_for_model_output = "assistant"
+            
+            # Handle the response based on its type
+            new_message_id = str(uuid.uuid4())
+            
+            # Check if response is a properly formatted dict from BaseAPIModel
             if isinstance(raw_model_output, dict) and "role" in raw_model_output:
-                # If model returns a dict like OpenAI's, ensure its role matches role_for_model_output
-                # This is important if the model itself dictates the role in its output.
-                # However, we typically define the role of the *response* based on our agent's logic.
-                # For BrowserAgent, 'assistant' or 'critic' are expected.
-                if raw_model_output["role"] != role_for_model_output:
-                    logging.warning(
-                        f"Model output role '{raw_model_output['role']}' differs from expected '{role_for_model_output}'. Using expected role."
+                # BaseAPIModel returns a dict with role, content, and tool_calls
+                # Use the new method that handles transformations
+                self.memory.update_from_response(
+                    raw_model_output,
+                    message_id=new_message_id,
+                    default_role="assistant",
+                    default_name=self.name
+                )
+                # Retrieve the stored message to return
+                assistant_message = self.memory.retrieve_by_id(new_message_id)
+                if not assistant_message:
+                    # Fallback if retrieval fails
+                    assistant_message = Message.from_response_dict(
+                        raw_model_output,
+                        default_id=new_message_id,
+                        default_role="assistant",
+                        default_name=self.name,
+                        processor=self._input_message_processor()
                     )
-
-                # Create message using our defined role, but take content/tool_calls from model output
-                assistant_message = Message(
-                    role=role_for_model_output,
-                    content=raw_model_output.get("content"),
-                    tool_calls=raw_model_output.get("tool_calls"),
-                    name=self.name,
-                )
-            elif isinstance(raw_model_output, str):
-                assistant_message = Message(
-                    role=role_for_model_output, content=raw_model_output, name=self.name
-                )
             else:
+                # String response or other format - create message directly
+                content = str(raw_model_output) if raw_model_output else ""
                 assistant_message = Message(
-                    role=role_for_model_output,
-                    content=str(raw_model_output),
+                    role="assistant",
+                    content=content,
                     name=self.name,
+                    message_id=new_message_id
                 )
+                self.memory.update_memory(message=assistant_message)
 
             await self._log_progress(
                 request_context,
                 LogLevel.DETAILED,
                 f"Model/API call successful. Output content: {str(assistant_message.content)[:100]}...",
-                data={"tool_calls": assistant_message.tool_calls},
+                data={
+                    "tool_calls": assistant_message.tool_calls if hasattr(assistant_message, 'tool_calls') else None,
+                    "message_id": assistant_message.message_id
+                },
             )
         except Exception as e:
             await self._log_progress(
@@ -2279,8 +2053,6 @@ class Agent(BaseAgent):
             return Message(
                 role="error", content=f"LLM call failed: {e}", name=self.name
             )
-
-        self.memory.update_memory(message=assistant_message)
 
         await self._log_progress(
             request_context, LogLevel.DETAILED, f"_run mode='{run_mode}' finished."
