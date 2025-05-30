@@ -28,6 +28,8 @@ graph LR
 Agents can register automatically or manually:
 
 ```python
+from src.agents import Agent
+
 # Automatic registration
 agent = Agent(
     name="data_processor",
@@ -63,6 +65,8 @@ print(f"Registered agents: {all_agents}")
 Agents discover each other through the registry:
 
 ```python
+from src.agents.memory import Message
+
 # Inside an agent's code
 async def collaborate_with_expert(self, topic: str):
     # Look up expert agent
@@ -136,6 +140,9 @@ class BaseAgent:
 Discover agents by capability:
 
 ```python
+from typing import Dict, List
+from src.agents.registry import AgentRegistry
+
 class CapabilityRegistry(AgentRegistry):
     _capabilities: Dict[str, List[str]] = {}
     
@@ -152,6 +159,7 @@ class CapabilityRegistry(AgentRegistry):
         return cls._capabilities.get(capability, [])
 
 # Usage
+from src.agents import Agent
 agent = Agent(name="translator", ...)
 CapabilityRegistry.register_capability("translator", "translation")
 
@@ -164,6 +172,9 @@ translators = CapabilityRegistry.find_by_capability("translation")
 Distribute work across multiple agents:
 
 ```python
+from typing import Optional
+from src.agents import BaseAgent
+
 class LoadBalancedRegistry(AgentRegistry):
     _invocation_counts: Dict[str, int] = {}
     

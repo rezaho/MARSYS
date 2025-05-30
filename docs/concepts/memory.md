@@ -21,7 +21,7 @@ graph TD
 The `MemoryManager` class handles all memory operations:
 
 ```python
-from src.models.memory import MemoryManager
+from src.agents.memory import MemoryManager
 
 # Create memory manager
 memory = MemoryManager(
@@ -285,6 +285,76 @@ class CoordinatedAgent(Agent):
             content=insight,
             name=self.name
         ))
+```
+
+## Working with Memory
+
+```python
+from src.agents import Agent
+from src.models.models import ModelConfig
+from src.agents.memory import Message
+import asyncio
+
+async def memory_example():
+    agent = Agent(
+        name="memory_agent",
+        model_config=ModelConfig(
+            type="api",
+            provider="openai",
+            name="gpt-4"
+        )
+    )
+    
+    # First interaction
+    response1 = await agent.auto_run(
+        task="Remember that my favorite color is blue",
+        max_steps=1
+    )
+    
+    # Second interaction - agent should remember
+    response2 = await agent.auto_run(
+        task="What is my favorite color?",
+        max_steps=1
+    )
+    
+    print(response2.content)  # Should mention blue
+
+asyncio.run(memory_example())
+```
+
+### Custom Memory Processors
+
+```python
+from typing import Dict, Any, Optional
+from src.agents import Agent
+from src.models.models import ModelConfig
+from src.agents.memory import Message
+
+class CustomMemoryAgent(Agent):
+    def _input_message_processor(self) -> Optional[callable]:
+        """Transform LLM responses to Message format"""
+        def processor(response_dict: Dict[str, Any]) -> Dict[str, Any]:
+            # Custom transformation logic
+            if "function_call" in response_dict:
+                # Handle function calls specially
+                return {
+                    "role": "assistant",
+                    "content": response_dict.get("content", ""),
+                    "tool_calls": [{
+                        "function": response_dict["function_call"]
+                    }]
+                }
+            return response_dict
+        return processor
+    
+    def _output_message_processor(self) -> Optional[callable]:
+        """Transform Messages to LLM format"""
+        def processor(message: Message) -> Dict[str, Any]:
+            # Custom transformation for LLM
+            llm_dict = message.to_llm_dict()
+            # Add custom fields if needed
+            return llm_dict
+        return processor
 ```
 
 ## Next Steps

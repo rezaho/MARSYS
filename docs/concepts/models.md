@@ -28,21 +28,17 @@ graph TD
 Standard text-based models:
 
 ```python
-from src.models.openai_models import OpenAIModel
-from src.utils.config import ModelConfig
+from src.models.models import BaseLLM, ModelConfig
 
 # Create OpenAI model
-model = OpenAIModel(
-    config=ModelConfig(
-        provider="openai",
-        model_name="gpt-4",
-        temperature=0.7,
-        max_tokens=2000
-    )
+model_config = ModelConfig(
+    provider="openai",
+    model_name="gpt-4",
+    temperature=0.7,
+    max_tokens=2000
 )
 
-# Run the model
-response = await model.run(messages)
+# Model is created internally by Agent
 ```
 
 ### Vision-Language Models (VLM)
@@ -50,15 +46,14 @@ response = await model.run(messages)
 Models that can process both text and images:
 
 ```python
-from src.models.openai_models import OpenAIVisionModel
+from src.models.models import ModelConfig
+from src.agents.memory import Message
 
-# Create vision model
-vlm = OpenAIVisionModel(
-    config=ModelConfig(
-        provider="openai",
-        model_name="gpt-4-vision-preview",
-        max_tokens=4096
-    )
+# Create vision model config
+vlm_config = ModelConfig(
+    provider="openai",
+    model_name="gpt-4-vision-preview",
+    max_tokens=4096
 )
 
 # Include image in message
@@ -71,8 +66,6 @@ messages = [
         ]
     )
 ]
-
-response = await vlm.run(messages)
 ```
 
 ### API Models
@@ -80,7 +73,7 @@ response = await vlm.run(messages)
 Custom model endpoints:
 
 ```python
-from src.models.base_models import BaseAPIModel
+from src.models.models import BaseAPIModel
 
 class CustomModel(BaseAPIModel):
     async def run(
@@ -218,8 +211,12 @@ async for chunk in model.stream(messages):
 ### Performance Considerations
 
 ```python
+from src.agents import Agent
+from src.models.models import ModelConfig
+
 # Fast model for simple tasks
 fast_agent = Agent(
+    name="fast_assistant",
     model_config=ModelConfig(
         provider="openai",
         model_name="gpt-3.5-turbo",
@@ -229,6 +226,7 @@ fast_agent = Agent(
 
 # Powerful model for complex tasks
 smart_agent = Agent(
+    name="smart_assistant",
     model_config=ModelConfig(
         provider="openai",
         model_name="gpt-4-turbo-preview",
@@ -242,6 +240,8 @@ smart_agent = Agent(
 Models handle errors gracefully:
 
 ```python
+from src.agents.memory import Message
+
 try:
     response = await model.run(messages)
 except RateLimitError as e:
@@ -270,7 +270,7 @@ except APIError as e:
 ### Custom Model Wrapper
 
 ```python
-from src.models.base_models import BaseLLM
+from src.models.models import BaseLLM, ModelConfig
 
 class CustomLLM(BaseLLM):
     def __init__(self, config: ModelConfig):

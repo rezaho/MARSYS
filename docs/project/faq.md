@@ -68,8 +68,8 @@ Yes! The framework supports local models through the model abstraction layer. Yo
 
 Basic agent creation:
 ```python
-from src.agents.agent import Agent
-from src.utils.config import ModelConfig
+from src.agents import Agent
+from src.models.models import ModelConfig
 
 agent = Agent(
     name="my_agent",
@@ -103,6 +103,8 @@ response = await agent_a.invoke_agent(
 
 Agents have individual memory by default, but you can implement shared memory patterns:
 ```python
+from src.agents.memory import MemoryManager
+
 shared_memory = MemoryManager()
 
 # Both agents use the same memory
@@ -202,6 +204,8 @@ for msg in recent:
 
 Messages follow this structure:
 ```python
+from src.agents.memory import Message
+
 Message(
     role="assistant",
     content="The response text",
@@ -296,7 +300,7 @@ export LOG_LEVEL=DEBUG
 
 Yes! Implement the model interface:
 ```python
-from src.models.base_models import BaseLLM
+from src.models.models import BaseLLM
 
 class CustomModel(BaseLLM):
     async def run(self, messages, tools=None, output_json=False):
@@ -308,6 +312,8 @@ class CustomModel(BaseLLM):
 
 Use the LearnableAgent class or implement learning in a custom agent:
 ```python
+from src.agents import Agent
+
 class MyLearningAgent(Agent):
     def learn_from_feedback(self, feedback: str):
         # Update agent behavior based on feedback

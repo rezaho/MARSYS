@@ -7,6 +7,10 @@
 Establish communication between agents:
 
 ```python
+from src.agents import Agent
+from src.agents.memory import Message
+from src.agents.utils import RequestContext
+
 class HandshakeProtocol:
     async def initiate_handshake(
         self,
@@ -30,7 +34,8 @@ class HandshakeProtocol:
             to_agent_name,
             handshake_msg.content,
             context=RequestContext(
-                request_id=f"handshake_{from_agent.name}_{to_agent_name}"
+                request_id=f"handshake_{from_agent.name}_{to_agent_name}",
+                agent_name=from_agent.name
             )
         )
         
@@ -45,6 +50,11 @@ class HandshakeProtocol:
 Structured request-reply communication:
 
 ```python
+import asyncio
+import uuid
+import json
+from typing import Any, Callable, Dict, List, Optional
+
 class RequestReplyProtocol:
     def __init__(self):
         self.pending_requests = {}

@@ -22,7 +22,7 @@ The agents module provides the foundation for all agent implementations.
 #### BaseAgent
 
 ```python
-from src.agents.base_agent import BaseAgent
+from src.agents import BaseAgent
 
 class BaseAgent(ABC):
     """Abstract base class for all agents."""
@@ -51,7 +51,7 @@ class BaseAgent(ABC):
 #### Agent
 
 ```python
-from src.agents.agent import Agent
+from src.agents import Agent
 
 class Agent(BaseAgent):
     """Standard agent implementation with memory and model integration."""
@@ -84,7 +84,7 @@ class Agent(BaseAgent):
 #### BrowserAgent
 
 ```python
-from src.agents.browser_agent import BrowserAgent
+from src.agents import BrowserAgent
 
 class BrowserAgent(Agent):
     """Agent with browser automation capabilities."""
@@ -117,7 +117,7 @@ class BrowserAgent(Agent):
 #### LearnableAgent
 
 ```python
-from src.agents.learnable_agent import LearnableAgent
+from src.agents import LearnableAgent
 
 class LearnableAgent(Agent):
     """Agent capable of learning from feedback."""
@@ -149,7 +149,7 @@ class LearnableAgent(Agent):
 #### ModelConfig
 
 ```python
-from src.utils.config import ModelConfig
+from src.models.models import ModelConfig
 
 @dataclass
 class ModelConfig:
@@ -167,7 +167,7 @@ class ModelConfig:
 #### BaseLLM
 
 ```python
-from src.models.base_models import BaseLLM
+from src.models.models import BaseLLM
 
 class BaseLLM(ABC):
     """Abstract base class for language models."""
@@ -187,7 +187,7 @@ class BaseLLM(ABC):
 #### Message
 
 ```python
-from src.models.message import Message
+from src.agents.memory import Message
 
 @dataclass
 class Message:
@@ -217,7 +217,7 @@ class Message:
 #### MemoryManager
 
 ```python
-from src.models.memory import MemoryManager
+from src.agents.memory import MemoryManager
 
 class MemoryManager:
     """Manages agent conversation memory."""
@@ -311,7 +311,7 @@ AVAILABLE_TOOLS = {
 #### RequestContext
 
 ```python
-from src.utils.types import RequestContext
+from src.agents.utils import RequestContext
 
 @dataclass
 class RequestContext:
@@ -329,7 +329,7 @@ class RequestContext:
 #### LogLevel
 
 ```python
-from src.utils.types import LogLevel
+from src.agents.utils import LogLevel
 
 class LogLevel(IntEnum):
     """Logging levels for agent operations."""
@@ -345,8 +345,8 @@ class LogLevel(IntEnum):
 ### Creating an Agent
 
 ```python
-from src.agents.agent import Agent
-from src.utils.config import ModelConfig
+from src.agents import Agent
+from src.models.models import ModelConfig
 
 # Configure model
 config = ModelConfig(
@@ -490,6 +490,6 @@ config = ModelConfig(
 
 ## Next Steps
 
-- Explore [Examples](../use-cases/ for practical usage
+- Explore [Examples](../use-cases/) for practical usage
 - Read [Contributing Guide](../contributing/guidelines.md) to extend the framework
 - Check [FAQ](../project/faq.md) for common questions

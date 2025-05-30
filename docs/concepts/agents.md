@@ -83,6 +83,32 @@ agent = Agent(
 )
 ```
 
+## Creating Custom Agents
+
+```python
+from src.agents.agents import BaseAgent
+from src.models.models import ModelConfig
+from src.utils.types import Message, RequestContext
+
+class CustomAgent(BaseAgent):
+    def __init__(self, agent_name: str, model_config: ModelConfig, **kwargs):
+        super().__init__(agent_name=agent_name, model_config=model_config, **kwargs)
+        # Custom initialization
+    
+    async def _run(self, request_context: RequestContext, input_message: Message) -> Message:
+        # Custom agent logic
+        response = await self.model.run(
+            messages=self.memory.to_llm_format(),
+            tools=self.tool_schemas
+        )
+        
+        # Process response and return Message
+        return Message.from_response_dict(
+            response,
+            processor=self._input_message_processor()
+        )
+```
+
 ## Agent Capabilities
 
 ### 1. **Autonomous Execution**

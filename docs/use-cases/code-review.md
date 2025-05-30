@@ -14,8 +14,8 @@ This example shows how to build a comprehensive code review system:
 
 ```python
 import asyncio
-from src.agents.agent import Agent
-from src.utils.config import ModelConfig
+from src.agents import Agent
+from src.models.models import ModelConfig
 
 async def create_code_review_team():
     # Security Reviewer
