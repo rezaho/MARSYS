@@ -1,4 +1,4 @@
-# Customer Support Use Case
+# Customer Support System
 
 Build an intelligent customer support system with automatic escalation.
 
@@ -13,49 +13,72 @@ This example demonstrates a tiered support system:
 
 ```python
 import asyncio
-from src.agents.agent import Agent
-from src.utils.config import ModelConfig
+from src.agents.agents import Agent
+from src.models.models import ModelConfig
+from src.environment.tools import AVAILABLE_TOOLS
+
+# Custom tool for ticket lookup
+async def lookup_ticket(ticket_id: str) -> dict:
+    """Look up customer support ticket by ID"""
+    # Simulate database lookup
+    await asyncio.sleep(0.1)
+    return {
+        "ticket_id": ticket_id,
+        "status": "open",
+        "issue": "Product not working as expected",
+        "customer": "John Doe"
+    }
 
 async def create_support_system():
-    # Level 1 Support
-    level1 = Agent(
-        name="level1_support",
-        model_config=ModelConfig(provider="openai", model_name="gpt-3.5-turbo"),
-        instructions="""You are a Level 1 support agent. Handle basic queries about:
-        - Account access
-        - Billing questions
-        - Product features
-        If the issue is complex, say 'ESCALATE' in your response."""
+    # Create ticket handler agent
+    ticket_agent = Agent(
+        agent_name="ticket_handler",
+        model_config=ModelConfig(
+            type="api",
+            provider="openai",
+            name="gpt-4"
+        ),
+        description="You handle support tickets and look up ticket information",
+        tools={"lookup_ticket": lookup_ticket}
     )
     
-    # Level 2 Support
-    level2 = Agent(
-        name="level2_support",
-        model_config=ModelConfig(provider="openai", model_name="gpt-4"),
-        instructions="""You are a Level 2 support specialist. Handle complex technical issues.
-        You have access to internal documentation and can make system changes."""
+    # Create customer service agent
+    service_agent = Agent(
+        agent_name="customer_service",
+        model_config=ModelConfig(
+            type="api",
+            provider="openai",
+            name="gpt-4"
+        ),
+        description="You are a friendly customer service representative",
+        allowed_peers=["ticket_handler", "technical_support"]
     )
     
-    # Escalation Manager
-    manager = Agent(
-        name="support_manager",
-        model_config=ModelConfig(provider="openai", model_name="gpt-4"),
-        instructions="""You manage customer support. 
-        First try level1_support. If they say ESCALATE, use level2_support.
-        Always maintain a professional and helpful tone."""
+    # Create technical support agent
+    tech_agent = Agent(
+        agent_name="technical_support",
+        model_config=ModelConfig(
+            type="api",
+            provider="openai",
+            name="gpt-4"
+        ),
+        description="You provide technical solutions and troubleshooting"
     )
     
-    # Handle a support ticket
-    result = await manager.auto_run(
-        task="Customer says: I've been charged twice for my subscription and can't access premium features",
+    return service_agent
+
+async def main():
+    service_agent = await create_support_system()
+    
+    # Handle a customer inquiry
+    response = await service_agent.auto_run(
+        initial_request="I need help with ticket #12345. My product isn't working.",
         max_steps=5
     )
     
-    return result
+    print(response)
 
-# Run the support system
-result = asyncio.run(create_support_system())
-print(result.content)
+asyncio.run(main())
 ```
 
 ## Key Features

@@ -47,6 +47,7 @@ from src.environment.tools import AVAILABLE_TOOLS
 AVAILABLE_TOOLS["get_weather"] = get_weather
 
 # Or provide to specific agent
+from src.agents import Agent
 agent = Agent(
     name="weather_bot",
     model_config=config,
@@ -426,3 +427,76 @@ class OptimizedTool:
 - Explore [Models](models.md) - How agents use models
 - Learn about [Advanced Tool Patterns](../concepts/tools.md) - Complex tool scenarios
 - See [Browser Automation](../concepts/browser-automation.md) - Web interaction tools
+
+## Creating Custom Tools
+
+```python
+from typing import Dict, Any
+import asyncio
+
+async def my_custom_tool(param1: str, param2: int = 10) -> Dict[str, Any]:
+    """
+    Custom tool description that will appear in the schema.
+    
+    Args:
+        param1: Description of param1
+        param2: Description of param2 (default: 10)
+    
+    Returns:
+        Dict containing the result
+    """
+    # Tool implementation
+    await asyncio.sleep(0.1)  # Simulate async operation
+    return {
+        "result": f"Processed {param1} with value {param2}",
+        "status": "success"
+    }
+
+# Add to agent
+from src.agents import Agent
+from src.models.models import ModelConfig
+
+agent = Agent(
+    name="tool_user",
+    model_config=ModelConfig(
+        type="api",
+        provider="openai",
+        name="gpt-4"
+    ),
+    tools={"my_custom_tool": my_custom_tool}
+)
+```
+
+## Using Tools in Agents
+
+```python
+import asyncio
+from src.agents.agents import Agent
+from src.models.models import ModelConfig
+from src.environment.tools import AVAILABLE_TOOLS
+
+async def main():
+    # Create agent with multiple tools
+    agent = Agent(
+        agent_name="multi_tool_agent",
+        model_config=ModelConfig(
+            type="api",
+            provider="openai",
+            name="gpt-4"
+        ),
+        tools={
+            "calculate": AVAILABLE_TOOLS["calculate"],
+            "search_web": AVAILABLE_TOOLS["search_web"],
+            "my_custom_tool": my_custom_tool
+        }
+    )
+    
+    response = await agent.auto_run(
+        initial_request="Calculate 25 * 4, then search for information about the result",
+        max_steps=3
+    )
+    
+    print(response)
+
+asyncio.run(main())
+```

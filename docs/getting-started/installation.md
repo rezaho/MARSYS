@@ -11,7 +11,7 @@
 ### 1. Clone the Repository
 
 ```bash
-git clone https://github.com/yourusername/MARSYS.git
+git clone https://github.com/rezaho/MARSYS.git
 cd MARSYS
 ```
 
@@ -70,8 +70,8 @@ pip install torch transformers
 Verify your installation:
 
 ```python
-from src.agents.agent import Agent
-from src.utils.config import ModelConfig
+from src.agents import Agent
+from src.models.models import ModelConfig
 
 # This should not raise any import errors
 print("Installation successful!")

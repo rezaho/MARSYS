@@ -100,8 +100,8 @@ Concepts: [Key concepts illustrated]
 """
 
 import asyncio
-from src.agents.agent import Agent
-from src.utils.config import ModelConfig
+from src.agents import Agent
+from src.models.models import ModelConfig
 
 async def main():
     # Example implementation
@@ -156,6 +156,8 @@ except Exception as e:
 
 ### Agent Coordination Pattern
 ```python
+from src.agents import Agent
+
 coordinator = Agent(name="coordinator", ...)
 workers = [Agent(name=f"worker_{i}", ...) for i in range(3)]
 

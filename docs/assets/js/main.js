@@ -1,7 +1,9 @@
 // Main JavaScript file for Multi-Agent Reasoning Systems (MARSYS) documentation
 
-// Add smooth scrolling for anchor links
+// Add any custom JavaScript functionality here
 document.addEventListener('DOMContentLoaded', function() {
+    console.log('DOM loaded - MARSYS ready');
+
     // Smooth scrolling for internal links
     document.querySelectorAll('a[href^="#"]').forEach(anchor => {
         anchor.addEventListener('click', function (e) {
@@ -134,3 +136,24 @@ document.addEventListener('DOMContentLoaded', function() {
         }
     }
 });
+
+// Add loading animation for page transitions
+document.addEventListener('turbo:load', function() {
+    document.body.classList.add('loaded');
+});
+
+// Mermaid diagram initialization (if needed)
+if (typeof mermaid !== 'undefined') {
+    mermaid.initialize({ 
+        startOnLoad: true,
+        theme: 'default',
+        themeVariables: {
+            primaryColor: '#6366f1',
+            primaryTextColor: '#1f2937',
+            primaryBorderColor: '#e5e7eb',
+            lineColor: '#9ca3af',
+            secondaryColor: '#f3f4f6',
+            tertiaryColor: '#fef3c7'
+        }
+    });
+}

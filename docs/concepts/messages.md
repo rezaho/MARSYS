@@ -36,7 +36,7 @@ The framework supports standard and extended roles:
 ### Basic Messages
 
 ```python
-from src.models.message import Message
+from src.agents.memory import Message
 
 # User message
 user_msg = Message(
