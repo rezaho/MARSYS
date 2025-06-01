@@ -15,7 +15,7 @@ graph TD
     C --> G[Anthropic]
     C --> H[Google]
     
-    D --> I[GPT-4V]
+    D --> I[GPT-4o]
     D --> J[Claude-3]
     
     E --> K[Custom APIs]
@@ -28,12 +28,13 @@ graph TD
 Standard text-based models:
 
 ```python
-from src.models.models import BaseLLM, ModelConfig
+from src.models.models import ModelConfig
 
-# Create OpenAI model
+# Create model config
 model_config = ModelConfig(
+    type="api",
     provider="openai",
-    model_name="gpt-4",
+    name="gpt-4",
     temperature=0.7,
     max_tokens=2000
 )
@@ -51,8 +52,9 @@ from src.agents.memory import Message
 
 # Create vision model config
 vlm_config = ModelConfig(
+    type="api",
     provider="openai",
-    model_name="gpt-4-vision-preview",
+    name="gpt-4-vision-preview",
     max_tokens=4096
 )
 
@@ -76,14 +78,16 @@ Custom model endpoints:
 from src.models.models import BaseAPIModel
 
 class CustomModel(BaseAPIModel):
-    async def run(
+    def run(
         self,
-        messages: List[Message],
-        tools: Optional[List[Dict]] = None,
-        output_json: bool = False
+        messages: List[Dict[str, str]],
+        json_mode: bool = False,
+        max_tokens: Optional[int] = None,
+        temperature: Optional[float] = None,
+        **kwargs
     ) -> Dict[str, Any]:
         # Custom API implementation
-        response = await self._call_api(messages)
+        response = self._call_api(messages)
         return self._format_response(response)
 ```
 
@@ -94,20 +98,23 @@ class CustomModel(BaseAPIModel):
 Central configuration for all models:
 
 ```python
-@dataclass
-class ModelConfig:
-    provider: str                    # "openai", "anthropic", "google"
-    model_name: str                  # Specific model identifier
-    api_key: Optional[str] = None    # API key (defaults to env var)
-    temperature: float = 0.7         # Creativity level
-    max_tokens: int = 2000          # Maximum response length
-    base_url: Optional[str] = None   # Custom endpoint
-    timeout: int = 120              # Request timeout
+from pydantic import BaseModel, Field
+from typing import Literal, Optional, Dict, Any
+
+class ModelConfig(BaseModel):
+    type: Literal["local", "api"]                           # Required: model type
+    name: str                                               # Model identifier  
+    provider: Optional[str] = None                          # "openai", "anthropic", "google", "groq"
+    api_key: Optional[str] = None                          # Auto-loaded from env if None
+    base_url: Optional[str] = None                         # Auto-set from provider if None
+    max_tokens: int = 1024                                 # Default maximum tokens
+    temperature: float = 0.7                               # Sampling temperature (0.0-2.0)
     
-    def __post_init__(self):
-        # Auto-load API key from environment
-        if not self.api_key:
-            self.api_key = os.getenv(f"{self.provider.upper()}_API_KEY")
+    # Local model specific fields
+    model_class: Optional[Literal["llm", "vlm"]] = None   # Required for local models
+    torch_dtype: Optional[str] = "auto"                   # PyTorch dtype
+    device_map: Optional[str] = "auto"                    # Device mapping
+    quantization_config: Optional[Dict[str, Any]] = None  # Quantization settings
 ```
 
 ### Provider-Specific Configs
@@ -115,26 +122,37 @@ class ModelConfig:
 ```python
 # OpenAI
 openai_config = ModelConfig(
+    type="api",
     provider="openai",
-    model_name="gpt-4-turbo-preview",
+    name="gpt-4-turbo-preview",
     temperature=0.7,
     max_tokens=4096
 )
 
 # Anthropic
 anthropic_config = ModelConfig(
+    type="api",
     provider="anthropic",
-    model_name="claude-3-opus-20240229",
+    name="claude-3-opus-20240229",
     temperature=0.5,
     max_tokens=4096
 )
 
 # Google
 google_config = ModelConfig(
+    type="api",
     provider="google",
-    model_name="gemini-pro",
+    name="gemini-pro",
     temperature=0.8,
     max_tokens=2048
+)
+
+# Local model
+local_config = ModelConfig(
+    type="local",
+    model_class="llm",
+    name="mistralai/Mistral-7B-Instruct-v0.2",
+    max_tokens=1024
 )
 ```
 
@@ -145,7 +163,8 @@ google_config = ModelConfig(
 Models support OpenAI-compatible function calling:
 
 ```python
-tools = [
+# Tools are passed as schemas via agent.tools_schema
+tools_schema = [
     {
         "type": "function",
         "function": {
@@ -162,13 +181,14 @@ tools = [
     }
 ]
 
-response = await model.run(messages, tools=tools)
+# BaseAPIModel.run() can receive tools via kwargs
+response = model.run(messages, tools=tools_schema)
 
-# Check for tool calls
-if "tool_calls" in response:
+# Check for tool calls in response
+if isinstance(response, dict) and "tool_calls" in response:
     for tool_call in response["tool_calls"]:
         # Execute tool
-        result = await execute_tool(tool_call)
+        result = execute_tool(tool_call)
 ```
 
 ### JSON Mode
@@ -176,24 +196,34 @@ if "tool_calls" in response:
 Force structured output:
 
 ```python
-response = await model.run(
+response = model.run(
     messages,
-    output_json=True,
-    system_message="Respond with valid JSON only"
+    json_mode=True  # Note: parameter name is json_mode, not output_json
 )
 
-# Response will be valid JSON
-data = json.loads(response["content"])
+# Response will contain JSON content
+if isinstance(response, dict):
+    content = response.get("content")
+    data = json.loads(content) if content else {}
 ```
 
-### Streaming
+### Response Handling
 
-Stream responses for real-time output:
+Models return structured responses:
 
 ```python
-async for chunk in model.stream(messages):
-    if chunk.get("content"):
-        print(chunk["content"], end="", flush=True)
+# For synchronous models (BaseAPIModel, BaseLLM, BaseVLM)
+response = model.run(messages)
+
+# BaseAPIModel returns dict with role, content, tool_calls
+if isinstance(response, dict):
+    role = response.get("role", "assistant")
+    content = response.get("content", "")
+    tool_calls = response.get("tool_calls", [])
+    
+# Local models (BaseLLM, BaseVLM) return string content
+elif isinstance(response, str):
+    content = response
 ```
 
 ## Model Selection
@@ -204,32 +234,34 @@ async for chunk in model.stream(messages):
 |----------|-------------------|-----------|
 | General conversation | GPT-4 | Best overall performance |
 | Code generation | Claude-3 | Strong coding abilities |
-| Quick responses | GPT-3.5-turbo | Fast and cost-effective |
-| Image analysis | GPT-4V | Vision capabilities |
+| Quick responses | gpt-4.1-mini | Fast and cost-effective |
+| Image analysis | GPT-4o | Vision capabilities |
 | Long context | Claude-3 (100k) | Extended context window |
 
 ### Performance Considerations
 
 ```python
-from src.agents import Agent
+from src.agents.agents import Agent
 from src.models.models import ModelConfig
 
 # Fast model for simple tasks
 fast_agent = Agent(
-    name="fast_assistant",
+    agent_name="fast_assistant",
     model_config=ModelConfig(
+        type="api",
         provider="openai",
-        model_name="gpt-3.5-turbo",
+        name="gpt-4.1-mini",
         temperature=0.3
     )
 )
 
 # Powerful model for complex tasks
 smart_agent = Agent(
-    name="smart_assistant",
+    agent_name="smart_assistant",
     model_config=ModelConfig(
-        provider="openai",
-        model_name="gpt-4-turbo-preview",
+        type="api",
+        provider="openai", 
+        name="gpt-4-turbo-preview",
         temperature=0.7
     )
 )
@@ -237,23 +269,27 @@ smart_agent = Agent(
 
 ## Error Handling
 
-Models handle errors gracefully:
+Models handle errors at the framework level:
 
 ```python
 from src.agents.memory import Message
+import requests
 
 try:
-    response = await model.run(messages)
-except RateLimitError as e:
-    # Handle rate limiting
-    await asyncio.sleep(e.retry_after)
-    response = await model.run(messages)
-except APIError as e:
-    # Return error as Message
+    response = model.run(messages)
+except requests.exceptions.Timeout:
+    # Handle timeout (BaseAPIModel uses 180s timeout)
+    return Message(
+        role="error", 
+        content="Request timed out",
+        name="model_error"
+    )
+except requests.exceptions.RequestException as e:
+    # Handle API errors
     return Message(
         role="error",
         content=f"API Error: {str(e)}",
-        name=model.config.model_name
+        name="model_error"  
     )
 ```
 
@@ -273,47 +309,48 @@ except APIError as e:
 from src.models.models import BaseLLM, ModelConfig
 
 class CustomLLM(BaseLLM):
-    def __init__(self, config: ModelConfig):
-        super().__init__(config)
-        self.client = self._init_client()
+    def __init__(self, model_name: str, max_tokens: int = 1024, **kwargs):
+        super().__init__(model_name, max_tokens, **kwargs)
+        self.custom_client = self._init_custom_client()
     
-    async def run(
+    def run(
         self,
-        messages: List[Message],
-        tools: Optional[List[Dict]] = None,
-        output_json: bool = False
-    ) -> Dict[str, Any]:
-        # Convert messages to provider format
+        messages: List[Dict[str, str]],
+        json_mode: bool = False,
+        max_tokens: Optional[int] = None
+    ) -> str:
+        # Convert messages to custom format
         formatted_messages = self._format_messages(messages)
         
-        # Make API call
-        response = await self.client.chat(
+        # Make custom call
+        response = self.custom_client.generate(
             messages=formatted_messages,
-            model=self.config.model_name,
-            temperature=self.config.temperature
+            max_tokens=max_tokens or self._max_tokens
         )
         
-        # Convert to standard format
-        return self._standardize_response(response)
+        return response.text
 ```
 
 ### Model Pooling
 
 ```python
+from src.models.models import ModelConfig
+
 class ModelPool:
     def __init__(self, configs: List[ModelConfig]):
+        from src.agents.agents import Agent
         self.models = [
-            self._create_model(config) 
-            for config in configs
+            Agent(agent_name=f"pool_{i}", model_config=config)._create_model_from_config(config)
+            for i, config in enumerate(configs)
         ]
         self.current = 0
     
-    async def run(self, messages: List[Message]) -> Dict[str, Any]:
+    def run(self, messages: List[Dict[str, str]]) -> Dict[str, Any]:
         """Round-robin through models."""
         model = self.models[self.current]
         self.current = (self.current + 1) % len(self.models)
         
-        return await model.run(messages)
+        return model.run(messages)
 ```
 
 ### Model Caching
@@ -321,13 +358,15 @@ class ModelPool:
 ```python
 from functools import lru_cache
 import hashlib
+import json
 
-class CachedModel(BaseLLM):
-    def __init__(self, base_model: BaseLLM, cache_size: int = 128):
+class CachedModel:
+    def __init__(self, base_model, cache_size: int = 128):
         self.base_model = base_model
         self.cache = {}
+        self.max_cache_size = cache_size
     
-    async def run(self, messages: List[Message], **kwargs) -> Dict[str, Any]:
+    def run(self, messages: List[Dict[str, str]], **kwargs) -> Dict[str, Any]:
         # Create cache key
         cache_key = self._create_cache_key(messages, kwargs)
         
@@ -336,14 +375,19 @@ class CachedModel(BaseLLM):
             return self.cache[cache_key]
         
         # Run model
-        response = await self.base_model.run(messages, **kwargs)
+        response = self.base_model.run(messages, **kwargs)
         
-        # Cache response
+        # Cache response (with size limit)
+        if len(self.cache) >= self.max_cache_size:
+            # Remove oldest entry
+            oldest_key = next(iter(self.cache))
+            del self.cache[oldest_key]
+            
         self.cache[cache_key] = response
         return response
     
-    def _create_cache_key(self, messages: List[Message], kwargs: Dict) -> str:
-        content = json.dumps([m.to_llm_dict() for m in messages])
+    def _create_cache_key(self, messages: List[Dict[str, str]], kwargs: Dict) -> str:
+        content = json.dumps(messages, sort_keys=True)
         content += json.dumps(kwargs, sort_keys=True)
         return hashlib.sha256(content.encode()).hexdigest()
 ```
@@ -351,13 +395,14 @@ class CachedModel(BaseLLM):
 ## Best Practices
 
 1. **Choose Appropriate Models**: Use powerful models only when needed
-2. **Set Reasonable Timeouts**: Prevent hanging on slow responses
-3. **Handle Rate Limits**: Implement exponential backoff
+2. **Set Reasonable Limits**: Configure appropriate max_tokens for your use case
+3. **Handle API Errors**: Implement proper error handling for network issues
 4. **Monitor Costs**: Track token usage across models
-5. **Test Fallbacks**: Have backup models for critical paths
+5. **Use Type Validation**: Let ModelConfig validate your configurations
+6. **Environment Variables**: Store API keys securely in environment variables
 
 ## Next Steps
 
-- Learn about [Registry](registry.md) - How agents discover models
-- Explore [Tools](tools.md) - Extending model capabilities
-- See [Advanced Patterns](../ - Complex model usage
+- Learn about [Registry](registry.md) - How agents discover and communicate
+- Explore [Tools](tools.md) - Extending model capabilities with tools
+- See [Agent Implementation](../api/index.md) - How agents use models

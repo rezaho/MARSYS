@@ -165,7 +165,7 @@ def safe_tool(param: str) -> str:
 Memory is append-only and chronological:
 ```python
 # Messages are automatically stored
-response = await agent.auto_run(task="...")
+response = await agent.auto_run(initial_request="...")
 
 # Retrieve all messages
 all_messages = agent.memory.retrieve_all()
@@ -202,17 +202,16 @@ for msg in recent:
 
 ### What's the message format?
 
-Messages follow this structure:
+Messages follow this structure (see `src/agents/memory.py` for the full definition):
 ```python
 from src.agents.memory import Message
 
-Message(
+# Example:
+new_message = Message(
     role="assistant",
-    content="The response text",
-    name="agent_name",
-    message_id="unique_id",
-    tool_calls=[...],  # Optional
-    metadata={...}     # Optional
+    content="This is the assistant's response.",
+    # message_id is generated automatically if not provided
+    # Other optional fields: name, tool_calls, tool_call_id, agent_call
 )
 ```
 
@@ -227,7 +226,7 @@ The framework can handle dozens of agents simultaneously. Limiting factors:
 
 ### How do I optimize performance?
 
-1. Use appropriate models for tasks (GPT-3.5 for simple, GPT-4 for complex)
+1. Use appropriate models for tasks (GPT-4.1-MINI for simple, GPT-4 for complex)
 2. Implement caching for repeated operations
 3. Batch requests when possible
 4. Use async operations throughout
@@ -242,16 +241,8 @@ The current implementation is designed for single-server deployment. For distrib
 
 ### How do I handle rate limits?
 
-The framework includes automatic retry logic. You can also implement custom rate limiting:
-```python
-from src.utils.rate_limiter import RateLimiter
-
-limiter = RateLimiter(calls=10, period=60)
-
-async def rate_limited_operation():
-    await limiter.acquire()
-    # Perform operation
-```
+The framework includes automatic retry logic in some API model interactions. For custom rate limiting, you would typically implement it around your API calls.
+(The previously mentioned `RateLimiter` class example has been removed as `src/utils/rate_limiter.py` was not found.)
 
 ## Troubleshooting
 
@@ -290,34 +281,64 @@ export LOG_LEVEL=DEBUG
 ### Where can I get help?
 
 1. Check the [documentation](../index.md)
-2. Search [existing issues](https://github.com/yourusername/MARSYS/issues)
-3. Ask in [discussions](https://github.com/yourusername/MARSYS/discussions)
-4. Join our [Discord community](https://discord.gg/yourinvite)
+2. Search [existing issues](https://github.com/yourusername/MARSYS/issues) <!-- TODO: Update placeholder URL -->
+3. Ask in [discussions](https://github.com/yourusername/MARSYS/discussions) <!-- TODO: Update placeholder URL -->
+4. Join our [Discord community](https://discord.gg/yourinvite) <!-- TODO: Update placeholder URL -->
 
 ## Advanced Topics
 
 ### Can I use custom model providers?
 
-Yes! Implement the model interface:
+Yes! Implement the required model interface. For example, for a custom LLM, you might inherit from `BaseLLM` (see `src/models/models.py`):
 ```python
 from src.models.models import BaseLLM
+from typing import List, Dict, Optional
 
 class CustomModel(BaseLLM):
-    async def run(self, messages, tools=None, output_json=False):
-        # Your implementation
+    def run(
+        self,
+        messages: List[Dict[str, str]],
+        json_mode: bool = False,
+        max_tokens: Optional[int] = None,
+        # Add other parameters as per BaseLLM.run or your custom needs
+    ) -> str:
+        # Your implementation to interact with the custom model
+        # This method should be synchronous as per BaseLLM.run
         pass
 ```
+Ensure your implementation matches the method signature of the base class you choose (e.g., `BaseLLM`, `BaseVLM`, `BaseAPIModel`).
 
 ### How do I implement learning agents?
 
-Use the LearnableAgent class or implement learning in a custom agent:
+Use the `LearnableAgent` class from `src/agents/learnable_agents.py` or implement learning in a custom agent inheriting from `BaseLearnableAgent`.
 ```python
-from src.agents import Agent
+from src.agents.learnable_agents import LearnableAgent # Or BaseLearnableAgent
+from typing import Dict, Any
 
-class MyLearningAgent(Agent):
-    def learn_from_feedback(self, feedback: str):
-        # Update agent behavior based on feedback
+class MyLearningAgent(LearnableAgent): # Inherit from LearnableAgent
+    def __init__(self, model, description, **kwargs): # Ensure constructor matches
+        super().__init__(model=model, description=description, **kwargs)
+        # Custom initialization for learning
+
+    def learn_from_feedback(self, feedback: str, training_data: Any):
+        # Example method: Update agent behavior based on feedback
+        # This might involve updating PEFT heads or other learnable parameters
+        # (Actual learning mechanisms need to be implemented based on your strategy)
+        print(f"Learning from feedback: {feedback}")
+        # Example: self.model.train_on_data(training_data) # Hypothetical
         pass
+
+# Example usage (simplified):
+# from src.models.models import BaseLLM
+# my_local_model = BaseLLM(model_name="path/to/your/local/model")
+# learning_agent = MyLearningAgent(
+#     model=my_local_model,
+#     description="An agent that learns from feedback",
+#     learning_head="peft", # If using PEFT
+#     learning_head_config={...} # PEFT config
+# )
+# learning_agent.learn_from_feedback("Good job!", example_data)
+
 ```
 
 ### Can agents modify their own code?
@@ -343,12 +364,12 @@ See our [Contributing Guide](../contributing/guidelines.md) for details on:
 
 ### Can I use this commercially?
 
-Check the LICENSE file for terms. Generally, the framework is open source and can be used commercially with attribution.
+Check the LICENSE file for terms. Generally, the framework is open source and can be used commercially with attribution (verify this against the actual LICENSE).
 
 ### Who maintains this project?
 
-The project is maintained by [Your Organization] with contributions from the community. See CONTRIBUTORS.md for the full list.
+The project is maintained by [Your Organization] <!-- TODO: Update placeholder --> with contributions from the community. See `CONTRIBUTORS.md` (if available) for the full list.
 
 ---
 
-Still have questions? [Open an issue](https://github.com/yourusername/MARSYS/issues/new) or ask in our [Discord community](https://discord.gg/yourinvite)!
+Still have questions? [Open an issue](https://github.com/yourusername/MARSYS/issues/new) <!-- TODO: Update placeholder URL --> or ask in our [Discord community](https://discord.gg/yourinvite) <!-- TODO: Update placeholder URL -->!

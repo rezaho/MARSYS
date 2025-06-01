@@ -148,7 +148,7 @@ Submit examples via pull request to the `examples/` directory.
 ### Error Handling Pattern
 ```python
 try:
-    response = await agent.auto_run(task="...")
+    response = await agent.auto_run(initial_request="...")
 except Exception as e:
     logger.error(f"Agent failed: {e}")
     # Fallback logic
@@ -158,8 +158,8 @@ except Exception as e:
 ```python
 from src.agents import Agent
 
-coordinator = Agent(name="coordinator", ...)
-workers = [Agent(name=f"worker_{i}", ...) for i in range(3)]
+coordinator = Agent(model_config=..., description="...", agent_name="coordinator")
+workers = [Agent(model_config=..., description="...", agent_name=f"worker_{i}") for i in range(3)]
 
 # Coordinate work
 results = await coordinator.coordinate(workers, tasks)
@@ -172,7 +172,7 @@ def custom_tool(param: str) -> str:
     # Implementation
     return result
 
-agent = Agent(tools={"custom_tool": custom_tool}, ...)
+agent = Agent(tools={"custom_tool": custom_tool}, model_config=..., description="...", agent_name="tool_agent")
 ```
 
 ## Troubleshooting Examples

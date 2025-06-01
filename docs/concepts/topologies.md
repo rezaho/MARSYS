@@ -18,22 +18,22 @@ class StarTopology:
     
     def __init__(self):
         self.coordinator = Agent(
-            name="coordinator",
-            model_config=ModelConfig(provider="openai", model_name="gpt-4"),
-            instructions="You coordinate tasks among specialized agents",
+            model_config=ModelConfig(type="api", provider="openai", name="gpt-4"),
+            description="You coordinate tasks among specialized agents",
+            agent_name="coordinator",
             register=True
         )
         
         self.specialists = {
-            "researcher": Agent(name="researcher", ...),
-            "analyst": Agent(name="analyst", ...),
-            "writer": Agent(name="writer", ...)
+            "researcher": Agent(model_config=..., description="...", agent_name="researcher"),
+            "analyst": Agent(model_config=..., description="...", agent_name="analyst"),
+            "writer": Agent(model_config=..., description="...", agent_name="writer")
         }
     
     async def execute_task(self, task: str) -> Message:
         """Coordinator delegates to specialists."""
         return await self.coordinator.auto_run(
-            task=f"Complete this task using available agents: {task}",
+            initial_request=f"Complete this task using available agents: {task}",
             max_steps=10
         )
 ```
@@ -58,10 +58,10 @@ class PipelineTopology:
     
     def __init__(self):
         self.stages = [
-            Agent(name="ingestion", instructions="Process raw input"),
-            Agent(name="validation", instructions="Validate data"),
-            Agent(name="transformation", instructions="Transform data"),
-            Agent(name="output", instructions="Format final output")
+            Agent(model_config=ModelConfig(type="api", provider="openai", name="gpt-4.1-mini"), description="Process raw input", agent_name="ingestion"),
+            Agent(model_config=ModelConfig(type="api", provider="openai", name="gpt-4.1-mini"), description="Validate data", agent_name="validation"),
+            Agent(model_config=ModelConfig(type="api", provider="openai", name="gpt-4.1-mini"), description="Transform data", agent_name="transformation"),
+            Agent(model_config=ModelConfig(type="api", provider="openai", name="gpt-4.1-mini"), description="Format final output", agent_name="output")
         ]
     
     async def process(self, data: str) -> Message:
@@ -70,10 +70,10 @@ class PipelineTopology:
         
         for stage in self.stages:
             response = await stage.auto_run(
-                task=f"Process this: {result}",
+                initial_request=f"Process this: {result}",
                 max_steps=2
             )
-            result = response.content
+            result = response
         
         return Message(
             role="assistant",
@@ -105,9 +105,9 @@ class MeshTopology:
         
         for i in range(num_agents):
             agent = Agent(
-                name=f"agent_{i}",
-                model_config=ModelConfig(provider="openai", model_name="gpt-3.5-turbo"),
-                instructions=f"You are agent {i} in a collaborative network",
+                model_config=ModelConfig(type="api", provider="openai", name="gpt-4.1-mini"),
+                description=f"You are agent {i} in a collaborative network",
+                agent_name=f"agent_{i}",
                 register=True
             )
             self.agents.append(agent)
@@ -118,7 +118,7 @@ class MeshTopology:
         initiator = self.agents[0]
         
         return await initiator.auto_run(
-            task=f"Collaborate with other agents to solve: {problem}",
+            initial_request=f"Collaborate with other agents to solve: {problem}",
             max_steps=15
         )
 ```
@@ -143,13 +143,17 @@ class HierarchicalTopology:
     
     def __init__(self):
         # Executive level
-        self.ceo = Agent(name="ceo", instructions="High-level strategy")
+        self.ceo = Agent(
+            model_config=ModelConfig(type="api", provider="openai", name="gpt-4"),
+            description="High-level strategy",
+            agent_name="ceo"
+        )
         
         # Management level
         self.managers = {
-            "engineering": Agent(name="eng_manager", ...),
-            "research": Agent(name="research_manager", ...),
-            "operations": Agent(name="ops_manager", ...)
+            "engineering": Agent(model_config=..., description="...", agent_name="eng_manager"),
+            "research": Agent(model_config=..., description="...", agent_name="research_manager"),
+            "operations": Agent(model_config=..., description="...", agent_name="ops_manager")
         }
         
         # Worker level
@@ -163,7 +167,7 @@ class HierarchicalTopology:
         """Top-down execution of strategy."""
         # CEO creates plan
         plan = await self.ceo.auto_run(
-            task=f"Create execution plan for: {strategy}",
+            initial_request=f"Create execution plan for: {strategy}",
             max_steps=3
         )
         
@@ -194,9 +198,9 @@ class RingTopology:
         
         for i in range(num_agents):
             agent = Agent(
-                name=f"node_{i}",
-                model_config=ModelConfig(provider="openai", model_name="gpt-3.5-turbo"),
-                instructions=f"You are node {i}. Pass messages to node_{(i+1)%num_agents}",
+                model_config=ModelConfig(type="api", provider="openai", name="gpt-4.1-mini"),
+                description=f"You are node {i}. Pass messages to node_{(i+1)%num_agents}",
+                agent_name=f"node_{i}",
                 register=True
             )
             self.agents.append(agent)
@@ -210,10 +214,10 @@ class RingTopology:
                 next_agent = f"node_{(i+1)%len(self.agents)}"
                 
                 response = await agent.auto_run(
-                    task=f"Process '{current_message}' and pass to {next_agent}",
+                    initial_request=f"Process '{current_message}' and pass to {next_agent}",
                     max_steps=2
                 )
-                current_message = response.content
+                current_message = response
         
         return Message(
             role="assistant",

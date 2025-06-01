@@ -47,10 +47,17 @@ from src.environment.tools import AVAILABLE_TOOLS
 AVAILABLE_TOOLS["get_weather"] = get_weather
 
 # Or provide to specific agent
-from src.agents import Agent
+from src.agents.agents import Agent
+from src.models.models import ModelConfig
+
 agent = Agent(
-    name="weather_bot",
-    model_config=config,
+    agent_name="weather_bot",
+    model_config=ModelConfig(
+        type="api",
+        provider="openai",
+        name="gpt-4"
+    ),
+    description="A weather assistant agent",
     tools={"get_weather": get_weather}
 )
 ```
@@ -89,70 +96,86 @@ The framework automatically generates OpenAI-compatible schemas:
 
 The framework includes several built-in tools:
 
-### Calculation Tool
+### Web Search Tools
 
 ```python
-def calculate(expression: str) -> str:
-    """
-    Evaluate a mathematical expression.
-    
+async def web_search(
+    query: str,
+    max_results: int = 5,
+    search_engine: Literal["google", "bing", "duckduckgo"] = "google",
+) -> List[Dict[str, str]]:
+    """Search the web for information using various search engines.
+
     Args:
-        expression: Mathematical expression to evaluate
-    
+        query: The search query string
+        max_results: Maximum number of results to return
+        search_engine: Which search engine to use
+
     Returns:
-        Result of the calculation
+        List of search results, each containing title, url, and snippet
     """
-    import ast
-    import operator as op
-    
-    # Safe evaluation of math expressions
-    allowed_ops = {
-        ast.Add: op.add, ast.Sub: op.sub,
-        ast.Mult: op.mul, ast.Div: op.truediv,
-        ast.Pow: op.pow, ast.Mod: op.mod
-    }
-    # ... implementation
+    # Implementation uses existing Google search tools
 ```
 
-### Time Tool
+### Mathematical Calculation Tool
 
 ```python
-def get_time(timezone: str = "UTC") -> str:
-    """
-    Get current time in specified timezone.
-    
+def calculate_math(
+    expression: str, precision: int = 2, return_steps: bool = False
+) -> Dict[str, Any]:
+    """Safely evaluate mathematical expressions.
+
     Args:
-        timezone: Timezone name (e.g., 'UTC', 'US/Pacific')
-    
+        expression: Mathematical expression to evaluate
+        precision: Decimal places for rounding
+        return_steps: Whether to return calculation steps
+
     Returns:
-        Current time as formatted string
+        Dictionary containing result and optionally steps
     """
-    from datetime import datetime
-    import pytz
-    
-    tz = pytz.timezone(timezone)
-    current_time = datetime.now(tz)
-    return current_time.strftime("%Y-%m-%d %H:%M:%S %Z")
+    # Safe evaluation with allowed operations only
+```
+
+### URL Content Fetching
+
+```python
+async def fetch_url_content(
+    url: str, timeout: int = 30, include_metadata: bool = True
+) -> Dict[str, Any]:
+    """Fetch and extract content from a URL.
+
+    Args:
+        url: The URL to fetch
+        timeout: Request timeout in seconds
+        include_metadata: Whether to include metadata like title, description
+
+    Returns:
+        Dictionary containing content and optionally metadata
+    """
+    # Async implementation with aiohttp
 ```
 
 ### File Operations
 
 ```python
-async def read_file(file_path: str) -> str:
-    """
-    Read contents of a file.
-    
+async def file_operations(
+    operation: Literal["read", "write", "list", "info"],
+    path: str,
+    content: Optional[str] = None,
+    encoding: str = "utf-8",
+) -> Dict[str, Any]:
+    """Perform file system operations.
+
     Args:
-        file_path: Path to the file
-    
+        operation: Type of operation to perform
+        path: File or directory path
+        content: Content for write operations
+        encoding: File encoding
+
     Returns:
-        File contents as string
+        Operation result with status and data
     """
-    import aiofiles
-    
-    async with aiofiles.open(file_path, 'r') as f:
-        content = await f.read()
-    return content
+    # Security-restricted to safe workspace directory
 ```
 
 ## Tool Execution Flow
@@ -179,7 +202,7 @@ sequenceDiagram
 ### Async Tools
 
 ```python
-async def fetch_data(url: str, timeout: int = 30) -> str:
+async def fetch_data(url: str, timeout: int = 30) -> Dict[str, Any]:
     """
     Fetch data from a URL asynchronously.
     
@@ -188,13 +211,22 @@ async def fetch_data(url: str, timeout: int = 30) -> str:
         timeout: Request timeout in seconds
     
     Returns:
-        Response content
+        Dictionary containing response data and metadata
     """
     import aiohttp
     
-    async with aiohttp.ClientSession() as session:
-        async with session.get(url, timeout=timeout) as response:
-            return await response.text()
+    try:
+        async with aiohttp.ClientSession() as session:
+            async with session.get(url, timeout=timeout) as response:
+                content = await response.text()
+                return {
+                    "url": url,
+                    "status_code": response.status,
+                    "content": content,
+                    "content_type": response.content_type
+                }
+    except Exception as e:
+        return {"error": f"Failed to fetch URL: {str(e)}"}
 ```
 
 ### Stateful Tools
@@ -204,7 +236,7 @@ class DatabaseTool:
     def __init__(self, connection_string: str):
         self.conn = self._connect(connection_string)
     
-    async def query_database(self, query: str) -> str:
+    async def query_database(self, query: str) -> Dict[str, Any]:
         """
         Execute a database query.
         
@@ -212,11 +244,19 @@ class DatabaseTool:
             query: SQL query to execute
         
         Returns:
-            Query results as JSON string
+            Dictionary containing query results and metadata
         """
-        cursor = await self.conn.execute(query)
-        results = await cursor.fetchall()
-        return json.dumps(results, default=str)
+        try:
+            cursor = await self.conn.execute(query)
+            results = await cursor.fetchall()
+            return {
+                "query": query,
+                "results": results,
+                "row_count": len(results),
+                "status": "success"
+            }
+        except Exception as e:
+            return {"error": f"Database query failed: {str(e)}"}
     
     def get_tool(self):
         return self.query_database
@@ -229,7 +269,7 @@ async def research_topic(
     topic: str,
     max_sources: int = 5,
     include_academic: bool = True
-) -> str:
+) -> Dict[str, Any]:
     """
     Research a topic from multiple sources.
     
@@ -239,22 +279,25 @@ async def research_topic(
         include_academic: Include academic sources
     
     Returns:
-        Comprehensive research summary
+        Dictionary containing comprehensive research summary
     """
     results = []
     
-    # Search web
-    web_results = await search_web(topic, max_sources)
+    # Use actual framework tools
+    web_results = await web_search(topic, max_sources)
     results.extend(web_results)
     
-    # Search academic sources if requested
+    # Additional processing would go here
     if include_academic:
-        academic_results = await search_academic(topic)
-        results.extend(academic_results)
+        # Academic search implementation
+        pass
     
-    # Synthesize results
-    summary = await synthesize_research(results)
-    return summary
+    return {
+        "topic": topic,
+        "sources": results,
+        "source_count": len(results),
+        "summary": f"Research completed for: {topic}"
+    }
 ```
 
 ## Tool Error Handling

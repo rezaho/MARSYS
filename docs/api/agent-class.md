@@ -9,14 +9,14 @@ from src.models.models import ModelConfig
 
 async def main():
     agent = Agent(
-        agent_name="assistant",
         model_config=ModelConfig(
             type="api",
             provider="openai",
             name="gpt-4",
             temperature=0.7
         ),
-        description="You are a helpful assistant"
+        description="You are a helpful assistant",
+        agent_name="assistant"
     )
     
     response = await agent.auto_run(
@@ -39,7 +39,6 @@ from src.environment.tools import AVAILABLE_TOOLS
 async def advanced_example():
     # Create specialized agents
     researcher = Agent(
-        agent_name="researcher",
         model_config=ModelConfig(
             type="api",
             provider="openai",
@@ -47,11 +46,11 @@ async def advanced_example():
             temperature=0.3  # Lower temperature for accuracy
         ),
         description="You are a thorough researcher",
-        tools={"search_web": AVAILABLE_TOOLS["search_web"]}
+        tools={"search_web": AVAILABLE_TOOLS["search_web"]},
+        agent_name="researcher"
     )
     
     writer = Agent(
-        agent_name="writer", 
         model_config=ModelConfig(
             type="api",
             provider="openai",
@@ -59,7 +58,8 @@ async def advanced_example():
             temperature=0.8  # Higher temperature for creativity
         ),
         description="You are a creative writer",
-        allowed_peers=["researcher"]
+        allowed_peers=["researcher"],
+        agent_name="writer"
     )
     
     # Use the multi-agent system

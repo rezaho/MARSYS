@@ -29,23 +29,29 @@ class BaseAgent(ABC):
     
     def __init__(
         self,
-        name: str,
-        register: bool = True,
-        tools: Optional[Dict[str, Callable]] = None
+        model: Union[BaseVLM, BaseLLM, BaseAPIModel],
+        description: str,
+        tools: Optional[Dict[str, Callable]] = None,
+        max_tokens: Optional[int] = 512,
+        agent_name: Optional[str] = None,
+        allowed_peers: Optional[List[str]] = None
     ):
         """
         Initialize base agent.
         
         Args:
-            name: Unique agent identifier
-            register: Whether to register with AgentRegistry
+            model: The language model instance (local or API)
+            description: Agent's role and purpose description
             tools: Dictionary of tool functions
+            max_tokens: Default maximum tokens for generation
+            agent_name: Optional specific name for registration
+            allowed_peers: List of agent names this agent can invoke
         """
 ```
 
 **Key Methods:**
-- `register()` - Register agent with the registry
-- `unregister()` - Remove agent from registry
+- `auto_run(initial_request, max_steps=10) -> str` - Execute multi-step autonomous task
+- `invoke_agent(target_agent_name, request, request_context) -> Message` - Call another agent
 - `_log_progress()` - Log agent activity
 
 #### Agent
@@ -58,21 +64,25 @@ class Agent(BaseAgent):
     
     def __init__(
         self,
-        name: str,
         model_config: ModelConfig,
-        instructions: str = "",
+        description: str,
         tools: Optional[Dict[str, Callable]] = None,
-        register: bool = True
+        memory_type: Optional[str] = "conversation_history",
+        max_tokens: Optional[int] = None,
+        agent_name: Optional[str] = None,
+        allowed_peers: Optional[List[str]] = None
     ):
         """
         Initialize agent with model and memory.
         
         Args:
-            name: Unique agent identifier
-            model_config: Model configuration
-            instructions: System instructions for the agent
-            tools: Available tools
-            register: Auto-register with registry
+            model_config: Configuration for the language model
+            description: The base description of the agent's role and purpose
+            tools: Optional dictionary of tools
+            memory_type: Type of memory module to use
+            max_tokens: Default maximum tokens for generation (overrides model_config default)
+            agent_name: Optional specific name for registration
+            allowed_peers: List of agent names this agent can call
         """
 ```
 
@@ -91,19 +101,25 @@ class BrowserAgent(Agent):
     
     def __init__(
         self,
-        name: str,
         model_config: ModelConfig,
-        headless: bool = True,
-        **kwargs
+        generation_description: Optional[str] = None,
+        critic_description: Optional[str] = None,
+        memory_type: Optional[str] = "conversation_history",
+        max_tokens: Optional[int] = 512,
+        agent_name: Optional[str] = None,
+        allowed_peers: Optional[List[str]] = None
     ):
         """
         Initialize browser agent.
         
         Args:
-            name: Agent identifier
-            model_config: Model configuration
-            headless: Run browser in headless mode
-            **kwargs: Additional agent parameters
+            model_config: Configuration for the language model
+            generation_description: Base description for the agent's generation/thinking mode
+            critic_description: Base description for the agent's critic mode
+            memory_type: Type of memory to use
+            max_tokens: Max tokens for model generation
+            agent_name: Optional specific name for registration
+            allowed_peers: List of allowed peer agents
         """
 ```
 
@@ -114,29 +130,48 @@ class BrowserAgent(Agent):
 - `get_text(selector: str)` - Extract text content
 - `screenshot(path: str)` - Take screenshot
 
+**Note:** BrowserAgent is typically created using the `create()` class method which handles browser tool initialization:
+```python
+browser_agent = await BrowserAgent.create(
+    model_config=config,
+    temp_dir="./tmp/screenshots",
+    headless_browser=True
+)
+```
+
 #### LearnableAgent
 
 ```python
 from src.agents import LearnableAgent
 
-class LearnableAgent(Agent):
+class LearnableAgent(BaseLearnableAgent):
     """Agent capable of learning from feedback."""
     
     def __init__(
         self,
-        name: str,
-        model_config: ModelConfig,
-        learning_rate: float = 0.1,
+        model: Union[BaseVLM, BaseLLM],
+        description: str,
+        tools: Optional[Dict[str, Callable]] = None,
+        learning_head: Optional[str] = None,
+        learning_head_config: Optional[Dict[str, Any]] = None,
+        max_tokens: Optional[int] = 512,
+        agent_name: Optional[str] = None,
+        allowed_peers: Optional[List[str]] = None,
         **kwargs
     ):
         """
         Initialize learning agent.
         
         Args:
-            name: Agent identifier
-            model_config: Model configuration
-            learning_rate: Learning rate for updates
-            **kwargs: Additional parameters
+            model: The local language model instance (BaseLLM or BaseVLM)
+            description: The base description of the agent's role and purpose
+            tools: Optional dictionary of tools
+            learning_head: Optional type of learning head ('peft')
+            learning_head_config: Optional configuration for the learning head
+            max_tokens: Default maximum tokens for model generation
+            agent_name: Optional specific name for registration
+            allowed_peers: List of agent names this agent can call
+            **kwargs: Additional arguments passed to BaseAgent.__init__
         """
 ```
 
@@ -365,7 +400,7 @@ agent = Agent(
 
 # Run task
 response = await agent.auto_run(
-    task="Calculate the sum of 15 and 27",
+    initial_request="Calculate the sum of 15 and 27",
     max_steps=3
 )
 ```
@@ -376,7 +411,7 @@ response = await agent.auto_run(
 # Agent A invokes Agent B
 response = await agent_a.invoke_agent(
     agent_name="agent_b",
-    task="Analyze this data: ..."
+    initial_request="Analyze this data: ..."
 )
 ```
 

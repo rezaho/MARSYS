@@ -6,20 +6,20 @@ Learn how to build intelligent web scraping agents.
 
 ```python
 import asyncio
-from src.agents.browser_agent import BrowserAgent
-from src.utils.config import ModelConfig
+from src.agents import BrowserAgent
+from src.models.models import ModelConfig
 
 async def basic_scraper():
-    scraper = BrowserAgent(
-        name="web_scraper",
-        model_config=ModelConfig(provider="openai", model_name="gpt-4"),
-        headless=True,  # No visible browser
-        instructions="""You are a web scraping expert.
-        Extract data accurately and handle errors gracefully."""
+    scraper = await BrowserAgent.create(
+        model_config=ModelConfig(type="api", provider="openai", name="gpt-4"),
+        generation_description="""You are a web scraping expert.
+        Extract data accurately and handle errors gracefully.""",
+        agent_name="web_scraper",
+        headless_browser=True  # No visible browser
     )
     
     result = await scraper.auto_run(
-        task="""
+        initial_request="""
         1. Go to https://quotes.toscrape.com/
         2. Extract all quotes and their authors
         3. Format as a list
@@ -27,7 +27,7 @@ async def basic_scraper():
         max_steps=5
     )
     
-    print(result.content)
+    print(result)
 
 asyncio.run(basic_scraper())
 ```
@@ -37,14 +37,14 @@ asyncio.run(basic_scraper())
 ### 1. Pagination Handling
 ```python
 async def scrape_with_pagination():
-    scraper = BrowserAgent(
-        name="pagination_scraper",
-        model_config=ModelConfig(provider="openai", model_name="gpt-4"),
-        instructions="""Navigate through multiple pages and collect all data."""
+    scraper = await BrowserAgent.create(
+        model_config=ModelConfig(type="api", provider="openai", name="gpt-4"),
+        generation_description="""Navigate through multiple pages and collect all data.""",
+        agent_name="pagination_scraper"
     )
     
     result = await scraper.auto_run(
-        task="""
+        initial_request="""
         1. Go to https://quotes.toscrape.com/
         2. Extract quotes from the first 3 pages
         3. Click 'Next' to navigate between pages
@@ -59,15 +59,15 @@ async def scrape_with_pagination():
 ### 2. Dynamic Content
 ```python
 async def scrape_dynamic_content():
-    scraper = BrowserAgent(
-        name="dynamic_scraper",
-        model_config=ModelConfig(provider="openai", model_name="gpt-4"),
-        instructions="""Handle JavaScript-rendered content.
-        Wait for elements to load before extracting."""
+    scraper = await BrowserAgent.create(
+        model_config=ModelConfig(type="api", provider="openai", name="gpt-4"),
+        generation_description="""Handle JavaScript-rendered content.
+        Wait for elements to load before extracting.""",
+        agent_name="dynamic_scraper"
     )
     
     result = await scraper.auto_run(
-        task="""
+        initial_request="""
         1. Navigate to a site with dynamic content
         2. Wait for the content to fully load
         3. Extract data after JavaScript execution
@@ -82,14 +82,14 @@ async def scrape_dynamic_content():
 ### 3. Form Interaction
 ```python
 async def scrape_with_search():
-    scraper = BrowserAgent(
-        name="search_scraper",
-        model_config=ModelConfig(provider="openai", model_name="gpt-4"),
-        instructions="Interact with forms to access data."
+    scraper = await BrowserAgent.create(
+        model_config=ModelConfig(type="api", provider="openai", name="gpt-4"),
+        generation_description="Interact with forms to access data.",
+        agent_name="search_scraper"
     )
     
     result = await scraper.auto_run(
-        task="""
+        initial_request="""
         1. Go to an e-commerce site
         2. Search for 'laptops'
         3. Filter by price range $500-$1000
@@ -107,14 +107,14 @@ async def scrape_with_search():
 ### 1. Structured Data
 ```python
 async def extract_structured_data():
-    scraper = BrowserAgent(
-        name="table_scraper",
-        model_config=ModelConfig(provider="openai", model_name="gpt-4"),
-        instructions="Extract data from tables and structured layouts."
+    scraper = await BrowserAgent.create(
+        model_config=ModelConfig(type="api", provider="openai", name="gpt-4"),
+        generation_description="Extract data from tables and structured layouts.",
+        agent_name="table_scraper"
     )
     
     result = await scraper.auto_run(
-        task="""
+        initial_request="""
         1. Find all tables on the page
         2. Extract headers and rows
         3. Convert to CSV format
@@ -129,18 +129,18 @@ async def extract_structured_data():
 ### 2. Pattern Recognition
 ```python
 async def pattern_based_extraction():
-    scraper = BrowserAgent(
-        name="pattern_scraper",
-        model_config=ModelConfig(provider="openai", model_name="gpt-4"),
-        instructions="""Identify and extract data patterns:
+    scraper = await BrowserAgent.create(
+        model_config=ModelConfig(type="api", provider="openai", name="gpt-4"),
+        generation_description="""Identify and extract data patterns:
         - Email addresses
         - Phone numbers
         - Prices
-        - Dates"""
+        - Dates""",
+        agent_name="pattern_scraper"
     )
     
     result = await scraper.auto_run(
-        task="Extract all contact information from the company directory page",
+        initial_request="Extract all contact information from the company directory page",
         max_steps=6
     )
     
@@ -151,18 +151,18 @@ async def pattern_based_extraction():
 
 ```python
 async def robust_scraper():
-    scraper = BrowserAgent(
-        name="robust_scraper",
-        model_config=ModelConfig(provider="openai", model_name="gpt-4"),
-        instructions="""Handle errors gracefully:
+    scraper = await BrowserAgent.create(
+        model_config=ModelConfig(type="api", provider="openai", name="gpt-4"),
+        generation_description="""Handle errors gracefully:
         - Retry failed requests
         - Skip broken elements
         - Report partial results
-        - Identify anti-scraping measures"""
+        - Identify anti-scraping measures""",
+        agent_name="robust_scraper"
     )
     
     result = await scraper.auto_run(
-        task="""
+        initial_request="""
         Scrape product data with error handling:
         1. If page fails to load, retry up to 3 times
         2. If element not found, note it and continue
@@ -180,24 +180,26 @@ async def robust_scraper():
 ### 1. Parallel Scraping
 ```python
 async def parallel_scraping():
+    from src.agents import Agent
+    
     # Create multiple scrapers
     scrapers = []
     for i in range(3):
-        scraper = BrowserAgent(
-            name=f"scraper_{i}",
-            model_config=ModelConfig(provider="openai", model_name="gpt-3.5-turbo"),
-            headless=True
+        scraper = await BrowserAgent.create(
+            model_config=ModelConfig(type="api", provider="openai", name="gpt-4.1-mini"),
+            agent_name=f"scraper_{i}",
+            headless_browser=True
         )
         scrapers.append(scraper)
     
     # Coordinate parallel scraping
     coordinator = Agent(
-        name="scrape_coordinator",
-        model_config=ModelConfig(provider="openai", model_name="gpt-4"),
-        instructions="""Coordinate multiple scrapers:
+        model_config=ModelConfig(type="api", provider="openai", name="gpt-4"),
+        description="""Coordinate multiple scrapers:
         - Distribute URLs among scrapers
         - Collect and merge results
-        - Handle failures"""
+        - Handle failures""",
+        agent_name="scrape_coordinator"
     )
     
     urls = [
@@ -207,7 +209,7 @@ async def parallel_scraping():
     ]
     
     result = await coordinator.auto_run(
-        task=f"Scrape these URLs in parallel: {urls}",
+        initial_request=f"Scrape these URLs in parallel: {urls}",
         max_steps=10
     )
     
