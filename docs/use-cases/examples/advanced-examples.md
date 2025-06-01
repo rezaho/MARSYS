@@ -22,7 +22,7 @@ class ResearchTeam:
     def __init__(self):
         # Create specialized agents
         self.coordinator = Agent(
-            model_config=ModelConfig(type="api", provider="openai", name="gpt-4"),
+            model_config=ModelConfig(type="api", provider="openai", name="gpt-4.1-mini),
             description="""You coordinate research projects. Your responsibilities:
             1. Break down research questions into subtasks
             2. Delegate tasks to appropriate specialists
@@ -33,7 +33,7 @@ class ResearchTeam:
         )
         
         self.data_analyst = Agent(
-            model_config=ModelConfig(type="api", provider="openai", name="gpt-4"),
+            model_config=ModelConfig(type="api", provider="openai", name="gpt-4.1-mini),
             description="""You are a data analysis expert. You:
             1. Analyze quantitative data and statistics
             2. Identify trends and patterns
@@ -44,7 +44,7 @@ class ResearchTeam:
         )
         
         self.literature_reviewer = Agent(
-            model_config=ModelConfig(type="api", provider="openai", name="gpt-4"),
+            model_config=ModelConfig(type="api", provider="openai", name="gpt-4.1-mini),
             description="""You are a literature review specialist. You:
             1. Find and summarize relevant research papers
             2. Identify research gaps
@@ -55,7 +55,7 @@ class ResearchTeam:
         )
         
         self.subject_expert = Agent(
-            model_config=ModelConfig(type="api", provider="openai", name="gpt-4"),
+            model_config=ModelConfig(type="api", provider="openai", name="gpt-4.1-mini),
             description="""You are a domain expert. You:
             1. Provide deep domain knowledge
             2. Explain complex concepts clearly
@@ -118,7 +118,7 @@ from src.models.models import ModelConfig
 class CodeReviewSystem:
     def __init__(self):
         self.security_reviewer = Agent(
-            model_config=ModelConfig(type="api", provider="openai", name="gpt-4"),
+            model_config=ModelConfig(type="api", provider="openai", name="gpt-4.1-mini),
             description="""You are a security-focused code reviewer. Check for:
             1. SQL injection vulnerabilities
             2. XSS vulnerabilities
@@ -130,7 +130,7 @@ class CodeReviewSystem:
         )
         
         self.performance_reviewer = Agent(
-            model_config=ModelConfig(type="api", provider="openai", name="gpt-4"),
+            model_config=ModelConfig(type="api", provider="openai", name="gpt-4.1-mini),
             description="""You review code for performance. Focus on:
             1. Algorithm complexity (Big O)
             2. Database query optimization
@@ -142,7 +142,7 @@ class CodeReviewSystem:
         )
         
         self.style_reviewer = Agent(
-            model_config=ModelConfig(type="api", provider="openai", name="gpt-4"),
+            model_config=ModelConfig(type="api", provider="openai", name="gpt-4.1-mini),
             description="""You review code style and maintainability. Check:
             1. Naming conventions
             2. Code organization
@@ -154,7 +154,7 @@ class CodeReviewSystem:
         )
         
         self.lead_reviewer = Agent(
-            model_config=ModelConfig(type="api", provider="openai", name="gpt-4"),
+            model_config=ModelConfig(type="api", provider="openai", name="gpt-4.1-mini),
             description="""You are the lead code reviewer. You:
             1. Coordinate other reviewers
             2. Synthesize all feedback
@@ -273,7 +273,7 @@ class CustomerSupportSystem:
         
         # Level 2: Technical support
         self.level2_support = Agent(
-            model_config=ModelConfig(type="api", provider="openai", name="gpt-4"),
+            model_config=ModelConfig(type="api", provider="openai", name="gpt-4.1-mini),
             description="""You are a Level 2 technical support specialist. Handle:
             1. Complex technical issues
             2. Bug investigations
@@ -287,7 +287,7 @@ class CustomerSupportSystem:
         
         # Level 3: Engineering support
         self.level3_support = Agent(
-            model_config=ModelConfig(type="api", provider="openai", name="gpt-4"),
+            model_config=ModelConfig(type="api", provider="openai", name="gpt-4.1-mini),
             description="""You are a Level 3 engineering support expert. Handle:
             1. Critical system issues
             2. Bug fixes and workarounds
@@ -301,7 +301,7 @@ class CustomerSupportSystem:
         
         # Support coordinator
         self.coordinator = Agent(
-            model_config=ModelConfig(type="api", provider="openai", name="gpt-4"),
+            model_config=ModelConfig(type="api", provider="openai", name="gpt-4.1-mini),
             description="""You coordinate customer support. You:
             1. Route tickets to appropriate support levels
             2. Monitor escalations
@@ -464,7 +464,7 @@ class DataPipeline:
         
         # Pipeline coordinator
         self.coordinator = Agent(
-            model_config=ModelConfig(type="api", provider="openai", name="gpt-4"),
+            model_config=ModelConfig(type="api", provider="openai", name="gpt-4.1-mini),
             description="""You coordinate the data pipeline. Ensure:
             1. Data flows through extraction, transformation, and quality checking
             2. Each stage completes successfully
@@ -681,7 +681,7 @@ async def main():
     
     # For demo purposes, we'll create a simple scraper example
     scraper = await BrowserAgent.create(
-        model_config=ModelConfig(type="api", provider="openai", name="gpt-4"),
+        model_config=ModelConfig(type="api", provider="openai", name="gpt-4.1-mini),
         generation_description="Web scraping demo agent",
         critic_description="Validate scraped content",
         agent_name="demo_scraper",
@@ -937,7 +937,7 @@ class WorkflowOrchestrator:
         
         # Create orchestrator agent
         self.orchestrator = Agent(
-            model_config=ModelConfig(type="api", provider="openai", name="gpt-4"),
+            model_config=ModelConfig(type="api", provider="openai", name="gpt-4.1-mini),
             description="""You orchestrate complex workflows. You:
             1. Execute steps in the correct order
             2. Handle dependencies between steps
@@ -1077,13 +1077,13 @@ async def main():
     
     analyzer = Agent(
         name="analyzer",
-        model_config=ModelConfig(type="api", provider="openai", name="gpt-4"),
+        model_config=ModelConfig(type="api", provider="openai", name="gpt-4.1-mini),
         instructions="You analyze data and identify patterns."
     )
     
     report_writer = Agent(
         name="report_writer",
-        model_config=ModelConfig(type="api", provider="openai", name="gpt-4"),
+        model_config=ModelConfig(type="api", provider="openai", name="gpt-4.1-mini),
         instructions="You write comprehensive reports."
     )
     

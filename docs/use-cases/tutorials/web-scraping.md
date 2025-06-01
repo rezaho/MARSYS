@@ -11,7 +11,7 @@ from src.models.models import ModelConfig
 
 async def basic_scraper():
     scraper = await BrowserAgent.create(
-        model_config=ModelConfig(type="api", provider="openai", name="gpt-4"),
+        model_config=ModelConfig(type="api", provider="openai", name="gpt-4.1-mini),
         generation_description="""You are a web scraping expert.
         Extract data accurately and handle errors gracefully.""",
         agent_name="web_scraper",
@@ -38,7 +38,7 @@ asyncio.run(basic_scraper())
 ```python
 async def scrape_with_pagination():
     scraper = await BrowserAgent.create(
-        model_config=ModelConfig(type="api", provider="openai", name="gpt-4"),
+        model_config=ModelConfig(type="api", provider="openai", name="gpt-4.1-mini),
         generation_description="""Navigate through multiple pages and collect all data.""",
         agent_name="pagination_scraper"
     )
@@ -60,7 +60,7 @@ async def scrape_with_pagination():
 ```python
 async def scrape_dynamic_content():
     scraper = await BrowserAgent.create(
-        model_config=ModelConfig(type="api", provider="openai", name="gpt-4"),
+        model_config=ModelConfig(type="api", provider="openai", name="gpt-4.1-mini),
         generation_description="""Handle JavaScript-rendered content.
         Wait for elements to load before extracting.""",
         agent_name="dynamic_scraper"
@@ -83,7 +83,7 @@ async def scrape_dynamic_content():
 ```python
 async def scrape_with_search():
     scraper = await BrowserAgent.create(
-        model_config=ModelConfig(type="api", provider="openai", name="gpt-4"),
+        model_config=ModelConfig(type="api", provider="openai", name="gpt-4.1-mini),
         generation_description="Interact with forms to access data.",
         agent_name="search_scraper"
     )
@@ -108,7 +108,7 @@ async def scrape_with_search():
 ```python
 async def extract_structured_data():
     scraper = await BrowserAgent.create(
-        model_config=ModelConfig(type="api", provider="openai", name="gpt-4"),
+        model_config=ModelConfig(type="api", provider="openai", name="gpt-4.1-mini),
         generation_description="Extract data from tables and structured layouts.",
         agent_name="table_scraper"
     )
@@ -130,7 +130,7 @@ async def extract_structured_data():
 ```python
 async def pattern_based_extraction():
     scraper = await BrowserAgent.create(
-        model_config=ModelConfig(type="api", provider="openai", name="gpt-4"),
+        model_config=ModelConfig(type="api", provider="openai", name="gpt-4.1-mini),
         generation_description="""Identify and extract data patterns:
         - Email addresses
         - Phone numbers
@@ -152,7 +152,7 @@ async def pattern_based_extraction():
 ```python
 async def robust_scraper():
     scraper = await BrowserAgent.create(
-        model_config=ModelConfig(type="api", provider="openai", name="gpt-4"),
+        model_config=ModelConfig(type="api", provider="openai", name="gpt-4.1-mini),
         generation_description="""Handle errors gracefully:
         - Retry failed requests
         - Skip broken elements
@@ -194,7 +194,7 @@ async def parallel_scraping():
     
     # Coordinate parallel scraping
     coordinator = Agent(
-        model_config=ModelConfig(type="api", provider="openai", name="gpt-4"),
+        model_config=ModelConfig(type="api", provider="openai", name="gpt-4.1-mini),
         description="""Coordinate multiple scrapers:
         - Distribute URLs among scrapers
         - Collect and merge results

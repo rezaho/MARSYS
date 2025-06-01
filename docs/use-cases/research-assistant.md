@@ -23,7 +23,7 @@ async def create_research_system():
         model_config=ModelConfig(
             type="api",
             provider="openai",
-            name="gpt-4"
+            name="gpt-4.1-mini
         ),
         agent_name="web_researcher",
         headless_browser=True
@@ -35,7 +35,7 @@ async def create_research_system():
         model_config=ModelConfig(
             type="api",
             provider="openai",
-            name="gpt-4"
+            name="gpt-4.1-mini
         ),
         description="You analyze data and extract insights",
         tools={
@@ -50,7 +50,7 @@ async def create_research_system():
         model_config=ModelConfig(
             type="api",
             provider="openai",
-            name="gpt-4"
+            name="gpt-4.1-mini
         ),
         description="You write comprehensive research reports",
         allowed_peers=["web_researcher", "data_analyst"]

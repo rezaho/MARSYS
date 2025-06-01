@@ -18,7 +18,7 @@ class StarTopology:
     
     def __init__(self):
         self.coordinator = Agent(
-            model_config=ModelConfig(type="api", provider="openai", name="gpt-4"),
+            model_config=ModelConfig(type="api", provider="openai", name="gpt-4.1-mini),
             description="You coordinate tasks among specialized agents",
             agent_name="coordinator",
             register=True
@@ -144,7 +144,7 @@ class HierarchicalTopology:
     def __init__(self):
         # Executive level
         self.ceo = Agent(
-            model_config=ModelConfig(type="api", provider="openai", name="gpt-4"),
+            model_config=ModelConfig(type="api", provider="openai", name="gpt-4.1-mini),
             description="High-level strategy",
             agent_name="ceo"
         )

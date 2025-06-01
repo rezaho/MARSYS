@@ -18,7 +18,7 @@ async def main():
         model_config=ModelConfig(
             type="api",  # Specify whether using API or local model
             provider="openai",
-            name="gpt-4",
+            name="gpt-4.1-mini,
             temperature=0.7
         ),
         description="You are a helpful AI assistant"
@@ -48,7 +48,7 @@ async def create_agent_with_tools():
         model_config=ModelConfig(
             type="api",
             provider="openai", 
-            name="gpt-4"
+            name="gpt-4.1-mini
         ),
         description="You are a math assistant. Use tools for calculations.",
         tools={
@@ -85,7 +85,7 @@ async def multi_agent_example():
         model_config=ModelConfig(
             type="api",
             provider="openai", 
-            name="gpt-4"
+            name="gpt-4.1-mini
         ),
         description="You research topics thoroughly"
         # Agents are automatically registered in the AgentRegistry
@@ -97,7 +97,7 @@ async def multi_agent_example():
         model_config=ModelConfig(
             type="api",
             provider="openai", 
-            name="gpt-4"
+            name="gpt-4.1-mini
         ),
         description="You write engaging content based on research",
         allowed_peers=["researcher"]  # Explicitly allow invoking the researcher
@@ -129,7 +129,7 @@ async def browser_example():
         model_config=ModelConfig(
             type="api",
             provider="openai", 
-            name="gpt-4"
+            name="gpt-4.1-mini
         ),
         headless=True  # Run browser in background without UI
     )

@@ -32,7 +32,7 @@ async def basic_multi_agent():
     
     # Coordinator agent
     coordinator = Agent(
-        model_config=ModelConfig(type="api", provider="openai", name="gpt-4"),
+        model_config=ModelConfig(type="api", provider="openai", name="gpt-4.1-mini),
         description="""You coordinate other agents:
         1. Use 'researcher' to gather information
         2. Use 'summarizer' to create concise summaries""",

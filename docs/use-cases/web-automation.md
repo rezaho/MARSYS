@@ -22,7 +22,7 @@ async def web_automation_example():
         model_config=ModelConfig(
             type="api",
             provider="openai", 
-            name="gpt-4"
+            name="gpt-4.1-mini
         ),
         generation_description="""You are a web automation expert. 
         Extract data efficiently and handle dynamic content.""",
@@ -115,7 +115,7 @@ async def extract_data_pipeline():
         model_config=ModelConfig(
             type="api",
             provider="openai", 
-            name="gpt-4"
+            name="gpt-4.1-mini
         ),
         description="""Coordinate web data extraction:
         1. Use browser agents to scrape data

@@ -22,7 +22,7 @@ async def create_research_team():
         model_config=ModelConfig(
             type="api",
             provider="openai", 
-            name="gpt-4"
+            name="gpt-4.1-mini
         ),
         description="You are a research specialist. Find comprehensive information on topics.",
         agent_name="researcher"
@@ -42,7 +42,7 @@ async def create_research_team():
         model_config=ModelConfig(
             type="api",
             provider="openai", 
-            name="gpt-4"
+            name="gpt-4.1-mini
         ),
         description="You are a technical writer. Create clear, well-structured reports.",
         agent_name="writer"
@@ -53,7 +53,7 @@ async def create_research_team():
         model_config=ModelConfig(
             type="api",
             provider="openai", 
-            name="gpt-4"
+            name="gpt-4.1-mini
         ),
         description="""You coordinate a research team. 
         Use the researcher to gather information,

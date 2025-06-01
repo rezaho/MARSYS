@@ -34,7 +34,7 @@ from src.models.models import ModelConfig
 model_config = ModelConfig(
     type="api",
     provider="openai",
-    name="gpt-4",
+    name="gpt-4.1-mini,
     temperature=0.7,
     max_tokens=2000
 )

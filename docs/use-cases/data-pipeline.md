@@ -23,7 +23,7 @@ async def create_data_pipeline():
         model_config=ModelConfig(
             type="api",
             provider="openai", 
-            name="gpt-4"
+            name="gpt-4.1-mini
         ),
         description="""You extract data from various sources:
         - APIs (parse JSON responses)
@@ -68,7 +68,7 @@ async def create_data_pipeline():
         model_config=ModelConfig(
             type="api",
             provider="openai", 
-            name="gpt-4"
+            name="gpt-4.1-mini
         ),
         description="""You manage the data pipeline:
         1. Use data_extractor to get raw data
@@ -107,7 +107,7 @@ async def stream_processing_pipeline():
         model_config=ModelConfig(
             type="api",
             provider="openai", 
-            name="gpt-4"
+            name="gpt-4.1-mini
         ),
         description="""Process real-time data streams:
         - Handle high-velocity data
@@ -128,7 +128,7 @@ async def stream_processing_pipeline():
 async def quality_monitoring():
     quality_monitor = Agent(
         name="quality_monitor",
-        model_config=ModelConfig(type="api", provider="openai", name="gpt-4"),
+        model_config=ModelConfig(type="api", provider="openai", name="gpt-4.1-mini),
         instructions="""Monitor data quality metrics:
         - Completeness
         - Accuracy

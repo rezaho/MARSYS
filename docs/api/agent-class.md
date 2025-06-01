@@ -12,7 +12,7 @@ async def main():
         model_config=ModelConfig(
             type="api",
             provider="openai",
-            name="gpt-4",
+            name="gpt-4.1-mini,
             temperature=0.7
         ),
         description="You are a helpful assistant",
@@ -42,7 +42,7 @@ async def advanced_example():
         model_config=ModelConfig(
             type="api",
             provider="openai",
-            name="gpt-4",
+            name="gpt-4.1-mini,
             temperature=0.3  # Lower temperature for accuracy
         ),
         description="You are a thorough researcher",
@@ -54,7 +54,7 @@ async def advanced_example():
         model_config=ModelConfig(
             type="api",
             provider="openai",
-            name="gpt-4",
+            name="gpt-4.1-mini,
             temperature=0.8  # Higher temperature for creativity
         ),
         description="You are a creative writer",

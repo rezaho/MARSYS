@@ -301,7 +301,7 @@ async def memory_example():
         model_config=ModelConfig(
             type="api",
             provider="openai",
-            name="gpt-4"
+            name="gpt-4.1-mini
         )
     )
     
