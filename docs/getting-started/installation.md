@@ -14,7 +14,7 @@
 
 ```bash
 git clone https://github.com/rezaho/MARSys.git 
-cd YOUR_REPOSITORY <!-- TODO: Update with actual repository directory name -->
+cd Marsys <!-- TODO: Update with actual repository directory name -->
 ```
 
 ### 2. Create Virtual Environment
