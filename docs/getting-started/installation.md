@@ -14,7 +14,7 @@
 
 ```bash
 git clone https://github.com/rezaho/MARSys.git 
-cd Marsys 
+cd MARSys 
 ```
 
 ### 2. Create Virtual Environment
