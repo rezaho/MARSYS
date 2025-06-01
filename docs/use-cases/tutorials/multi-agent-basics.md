@@ -13,39 +13,40 @@ Multi-agent systems allow you to:
 
 ```python
 import asyncio
-from src.agents.agent import Agent
-from src.utils.config import ModelConfig
+from src.agents import Agent
+from src.models.models import ModelConfig
 
 async def basic_multi_agent():
     # Create two agents with different specialties
     researcher = Agent(
-        name="researcher",
-        model_config=ModelConfig(provider="openai", model_name="gpt-3.5-turbo"),
-        instructions="You are great at finding information and explaining concepts."
+        model_config=ModelConfig(type="api", provider="openai", name="gpt-4.1-mini"),
+        description="You are great at finding information and explaining concepts.",
+        agent_name="researcher"
     )
     
     summarizer = Agent(
-        name="summarizer",
-        model_config=ModelConfig(provider="openai", model_name="gpt-3.5-turbo"),
-        instructions="You create concise summaries of complex information."
+        model_config=ModelConfig(type="api", provider="openai", name="gpt-4.1-mini"),
+        description="You create concise summaries of complex information.",
+        agent_name="summarizer"
     )
     
     # Coordinator agent
     coordinator = Agent(
-        name="coordinator",
-        model_config=ModelConfig(provider="openai", model_name="gpt-4"),
-        instructions="""You coordinate other agents:
+        model_config=ModelConfig(type="api", provider="openai", name="gpt-4"),
+        description="""You coordinate other agents:
         1. Use 'researcher' to gather information
-        2. Use 'summarizer' to create concise summaries"""
+        2. Use 'summarizer' to create concise summaries""",
+        agent_name="coordinator",
+        allowed_peers=["researcher", "summarizer"]
     )
     
     # Run a coordinated task
     result = await coordinator.auto_run(
-        task="Research machine learning basics and provide a summary for beginners",
+        initial_request="Research machine learning basics and provide a summary for beginners",
         max_steps=5
     )
     
-    print(f"Final result:\n{result.content}")
+    print(f"Final result:\n{result}")
 
 # Run the system
 asyncio.run(basic_multi_agent())
@@ -57,16 +58,18 @@ asyncio.run(basic_multi_agent())
 ```python
 async def sequential_pattern():
     # Agent A → Agent B → Agent C
-    agent_a = Agent(name="agent_a", ...)
-    agent_b = Agent(name="agent_b", ...)
-    agent_c = Agent(name="agent_c", ...)
+    agent_a = Agent(model_config=..., description="...", agent_name="agent_a")
+    agent_b = Agent(model_config=..., description="...", agent_name="agent_b")
+    agent_c = Agent(model_config=..., description="...", agent_name="agent_c")
     
     coordinator = Agent(
-        name="coordinator",
-        instructions="""Process sequentially:
+        model_config=...,
+        description="""Process sequentially:
         1. agent_a analyzes the input
         2. agent_b processes agent_a's output
-        3. agent_c finalizes the result"""
+        3. agent_c finalizes the result""",
+        agent_name="coordinator",
+        allowed_peers=["agent_a", "agent_b", "agent_c"]
     )
 ```
 
@@ -75,11 +78,13 @@ async def sequential_pattern():
 async def parallel_pattern():
     # Multiple agents work simultaneously
     coordinator = Agent(
-        name="coordinator",
-        instructions="""Process in parallel:
+        model_config=...,
+        description="""Process in parallel:
         - Use agent_1 for analysis A
         - Use agent_2 for analysis B
-        - Combine both results"""
+        - Combine both results""",
+        agent_name="coordinator",
+        allowed_peers=["agent_1", "agent_2"]
     )
 ```
 
@@ -88,10 +93,12 @@ async def parallel_pattern():
 async def hierarchical_pattern():
     # Manager → Team Leaders → Workers
     manager = Agent(
-        name="manager",
-        instructions="""You manage team leaders:
+        model_config=...,
+        description="""You manage team leaders:
         - 'team_lead_1' handles technical tasks
-        - 'team_lead_2' handles creative tasks"""
+        - 'team_lead_2' handles creative tasks""",
+        agent_name="manager",
+        allowed_peers=["team_lead_1", "team_lead_2"]
     )
 ```
 
@@ -100,32 +107,37 @@ async def hierarchical_pattern():
 1. **Clear Role Definition**
    ```python
    agent = Agent(
-       name="data_analyst",
-       instructions="""You are a data analyst specializing in:
+       model_config=...,
+       description="""You are a data analyst specializing in:
        - Statistical analysis
        - Data visualization recommendations
        - Trend identification
-       Do not attempt tasks outside your expertise."""
+       Do not attempt tasks outside your expertise.""",
+       agent_name="data_analyst"
    )
    ```
 
 2. **Effective Coordination**
    ```python
    coordinator = Agent(
-       instructions="""Coordinate efficiently:
+       model_config=...,
+       description="""Coordinate efficiently:
        1. Understand the task requirements
        2. Delegate to appropriate specialists
-       3. Synthesize results into cohesive output"""
+       3. Synthesize results into cohesive output""",
+       agent_name="coordinator"
    )
    ```
 
 3. **Error Handling**
    ```python
    coordinator = Agent(
-       instructions="""If an agent fails:
+       model_config=...,
+       description="""If an agent fails:
        1. Try an alternative approach
        2. Use a different agent if available
-       3. Provide partial results with explanation"""
+       3. Provide partial results with explanation""",
+       agent_name="coordinator"
    )
    ```
 

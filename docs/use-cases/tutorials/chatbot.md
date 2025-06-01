@@ -6,20 +6,21 @@ Create an intelligent chatbot with memory and tool usage.
 
 ```python
 import asyncio
-from src.agents.agent import Agent
-from src.utils.config import ModelConfig
+from src.agents import Agent
+from src.models.models import ModelConfig
 
 async def create_chatbot():
     chatbot = Agent(
-        name="assistant",
         model_config=ModelConfig(
+            type="api",
             provider="openai",
-            model_name="gpt-3.5-turbo",
+            name="gpt-4.1-mini",
             temperature=0.7
         ),
-        instructions="""You are a helpful AI assistant. 
+        description="""You are a helpful AI assistant. 
         Be friendly, informative, and concise.
-        Remember previous conversations."""
+        Remember previous conversations.""",
+        agent_name="assistant"
     )
     
     # Chat loop
@@ -29,10 +30,10 @@ async def create_chatbot():
             break
             
         response = await chatbot.auto_run(
-            task=user_input,
+            initial_request=user_input,
             max_steps=1
         )
-        print(f"Bot: {response.content}")
+        print(f"Bot: {response}")
 
 # Run chatbot
 asyncio.run(create_chatbot())
@@ -57,22 +58,22 @@ async def get_weather(city: str) -> str:
 # Create chatbot with tools
 async def create_smart_chatbot():
     chatbot = Agent(
-        name="smart_assistant",
-        model_config=ModelConfig(provider="openai", model_name="gpt-4"),
-        instructions="""You are a helpful assistant with access to tools.
+        model_config=ModelConfig(type="api", provider="openai", name="gpt-4"),
+        description="""You are a helpful assistant with access to tools.
         Use them when appropriate to provide accurate information.""",
         tools={
             "get_current_time": get_current_time,
             "get_weather": get_weather
-        }
+        },
+        agent_name="smart_assistant"
     )
     
     # Example conversation
     response = await chatbot.auto_run(
-        task="What time is it and how's the weather in London?",
+        initial_request="What time is it and how's the weather in London?",
         max_steps=3
     )
-    print(response.content)
+    print(response)
 ```
 
 ## Memory Management
@@ -80,44 +81,44 @@ async def create_smart_chatbot():
 ```python
 async def chatbot_with_memory():
     chatbot = Agent(
-        name="memory_bot",
-        model_config=ModelConfig(provider="openai", model_name="gpt-3.5-turbo"),
-        instructions="Remember and reference previous conversations."
+        model_config=ModelConfig(type="api", provider="openai", name="gpt-4.1-mini"),
+        description="Remember and reference previous conversations.",
+        agent_name="memory_bot"
     )
     
     # First interaction
     await chatbot.auto_run(
-        task="My name is Alice and I love Python programming",
+        initial_request="My name is Alice and I love Python programming",
         max_steps=1
     )
     
     # Later interaction (remembers context)
     response = await chatbot.auto_run(
-        task="What's my name and what do I like?",
+        initial_request="What's my name and what do I like?",
         max_steps=1
     )
-    print(response.content)  # Should remember Alice and Python
+    print(response)  # Should remember Alice and Python
 ```
 
 ## Advanced Features
 
 ### 1. Multi-Modal Chatbot
 ```python
-from src.agents.browser_agent import BrowserAgent
+from src.agents import BrowserAgent
 
 async def multimodal_chatbot():
-    chatbot = BrowserAgent(
-        name="multimodal_assistant",
-        model_config=ModelConfig(provider="openai", model_name="gpt-4"),
-        instructions="""You can browse the web and analyze images.
-        Use these capabilities to provide comprehensive help."""
+    chatbot = await BrowserAgent.create(
+        model_config=ModelConfig(type="api", provider="openai", name="gpt-4"),
+        generation_description="""You can browse the web and analyze images.
+        Use these capabilities to provide comprehensive help.""",
+        agent_name="multimodal_assistant"
     )
     
     response = await chatbot.auto_run(
-        task="Find the latest news about AI and summarize it",
+        initial_request="Find the latest news about AI and summarize it",
         max_steps=5
     )
-    print(response.content)
+    print(response)
 ```
 
 ### 2. Personality Customization
@@ -130,9 +131,9 @@ async def create_custom_personality():
     }
     
     chatbot = Agent(
-        name="custom_bot",
-        model_config=ModelConfig(provider="openai", model_name="gpt-3.5-turbo"),
-        instructions=personalities["teacher"]
+        model_config=ModelConfig(type="api", provider="openai", name="gpt-4.1-mini"),
+        description=personalities["teacher"],
+        agent_name="custom_bot"
     )
 ```
 
@@ -140,12 +141,12 @@ async def create_custom_personality():
 ```python
 async def context_aware_chatbot():
     chatbot = Agent(
-        name="context_bot",
-        model_config=ModelConfig(provider="openai", model_name="gpt-4"),
-        instructions="""Maintain conversation context:
+        model_config=ModelConfig(type="api", provider="openai", name="gpt-4"),
+        description="""Maintain conversation context:
         - Remember user preferences
         - Track conversation topics
-        - Provide relevant follow-ups"""
+        - Provide relevant follow-ups""",
+        agent_name="context_bot"
     )
     
     # Conversation flow
@@ -157,9 +158,9 @@ async def context_aware_chatbot():
     ]
     
     for message in conversations:
-        response = await chatbot.auto_run(task=message, max_steps=1)
+        response = await chatbot.auto_run(initial_request=message, max_steps=1)
         print(f"User: {message}")
-        print(f"Bot: {response.content}\n")
+        print(f"Bot: {response}\n")
 ```
 
 ## Deployment Considerations

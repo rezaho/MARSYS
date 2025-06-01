@@ -7,9 +7,10 @@
 Establish communication between agents:
 
 ```python
-from src.agents import Agent
-from src.agents.memory import Message
+from src.agents.agents import Agent
+from src.models.message import Message
 from src.agents.utils import RequestContext
+import logging
 
 class HandshakeProtocol:
     async def initiate_handshake(
@@ -18,9 +19,15 @@ class HandshakeProtocol:
         to_agent_name: str
     ) -> bool:
         """Establish communication with another agent."""
+        context = RequestContext(
+            request_id=f"handshake_{from_agent.name}_{to_agent_name}",
+            agent_name=from_agent.name,
+            logger=logging.getLogger(__name__)
+        )
+        
         # Send handshake request
         handshake_msg = Message(
-            role="agent_call",
+            role="assistant",
             content="HANDSHAKE_REQUEST",
             name=to_agent_name,
             metadata={
@@ -33,14 +40,11 @@ class HandshakeProtocol:
         response = await from_agent.invoke_agent(
             to_agent_name,
             handshake_msg.content,
-            context=RequestContext(
-                request_id=f"handshake_{from_agent.name}_{to_agent_name}",
-                agent_name=from_agent.name
-            )
+            context=context
         )
         
         # Validate handshake response
-        if response.metadata.get("protocol") == "handshake":
+        if response and hasattr(response, 'metadata'):
             return response.metadata.get("status") == "accepted"
         return False
 ```
@@ -53,7 +57,11 @@ Structured request-reply communication:
 import asyncio
 import uuid
 import json
-from typing import Any, Callable, Dict, List, Optional
+import time
+from typing import Any, Dict, List, Optional
+from src.agents.agents import Agent
+from src.models.message import Message
+from src.agents.utils import RequestContext
 
 class RequestReplyProtocol:
     def __init__(self):
@@ -70,33 +78,41 @@ class RequestReplyProtocol:
         """Send request and wait for reply."""
         request_id = f"req_{uuid.uuid4().hex[:8]}"
         
-        # Create request message
-        request = Message(
-            role="agent_call",
-            content=json.dumps(payload),
-            name=to_agent,
-            metadata={
-                "request_id": request_id,
-                "request_type": request_type,
-                "reply_to": from_agent.name
-            }
+        context = RequestContext(
+            request_id=request_id,
+            agent_name=from_agent.name,
+            logger=logging.getLogger(__name__)
         )
+        
+        # Create request message
+        request_content = json.dumps({
+            "request_type": request_type,
+            "payload": payload,
+            "reply_to": from_agent.name
+        })
         
         # Track pending request
         future = asyncio.Future()
         self.pending_requests[request_id] = future
         
         # Send request
-        asyncio.create_task(
-            from_agent.invoke_agent(to_agent, request.content)
-        )
-        
-        # Wait for reply with timeout
         try:
-            reply = await asyncio.wait_for(future, timeout)
-            return reply
+            response = await from_agent.invoke_agent(
+                to_agent, 
+                request_content,
+                context=context
+            )
+            
+            # For immediate responses, resolve the future
+            if request_id in self.pending_requests:
+                self.pending_requests[request_id].set_result(response)
+                del self.pending_requests[request_id]
+            
+            return response
+            
         except asyncio.TimeoutError:
-            del self.pending_requests[request_id]
+            if request_id in self.pending_requests:
+                del self.pending_requests[request_id]
             raise
     
     def handle_reply(self, message: Message):
@@ -104,6 +120,7 @@ class RequestReplyProtocol:
         request_id = message.metadata.get("in_reply_to")
         if request_id in self.pending_requests:
             self.pending_requests[request_id].set_result(message)
+            del self.pending_requests[request_id]
 ```
 
 ## Communication Patterns Examples
@@ -113,12 +130,21 @@ class RequestReplyProtocol:
 Distribute work and aggregate results:
 
 ```python
+from src.agents.agents import Agent
+from src.agents.utils import RequestContext
+import asyncio
+import json
+
 class MapReduceCoordinator(Agent):
+    def __init__(self, name: str, model_config: dict, **kwargs):
+        super().__init__(name=name, model_config=model_config, **kwargs)
+    
     async def map_reduce(
         self,
         data: List[Any],
         mapper_agents: List[str],
-        reducer_agent: str
+        reducer_agent: str,
+        context: RequestContext
     ) -> Any:
         """Execute map-reduce pattern."""
         # Map phase - distribute work
@@ -130,19 +156,39 @@ class MapReduceCoordinator(Agent):
             end = start + chunk_size if i < len(mapper_agents) - 1 else len(data)
             chunk = data[start:end]
             
+            task_context = RequestContext(
+                request_id=f"{context.request_id}_map_{i}",
+                agent_name=self.name,
+                logger=context.logger
+            )
+            
             task = self.invoke_agent(
                 mapper,
-                f"Process this data chunk: {json.dumps(chunk)}"
+                f"Process this data chunk: {json.dumps(chunk)}",
+                context=task_context
             )
             map_tasks.append(task)
         
         # Gather map results
-        map_results = await asyncio.gather(*map_tasks)
+        map_results = await asyncio.gather(*map_tasks, return_exceptions=True)
+        
+        # Filter out exceptions and get successful results
+        successful_results = [
+            r for r in map_results 
+            if not isinstance(r, Exception)
+        ]
         
         # Reduce phase - aggregate results
+        reduce_context = RequestContext(
+            request_id=f"{context.request_id}_reduce",
+            agent_name=self.name,
+            logger=context.logger
+        )
+        
         reduce_result = await self.invoke_agent(
             reducer_agent,
-            f"Aggregate these results: {[r.content for r in map_results]}"
+            f"Aggregate these results: {json.dumps([r.content if hasattr(r, 'content') else str(r) for r in successful_results])}",
+            context=reduce_context
         )
         
         return reduce_result
@@ -153,35 +199,48 @@ class MapReduceCoordinator(Agent):
 Pass requests through a chain of handlers:
 
 ```python
+from src.agents.agents import Agent
+from src.models.message import Message
+from src.agents.utils import RequestContext
+from typing import Optional, List
+
 class ChainOfResponsibilityAgent(Agent):
-    def __init__(self, next_handler: Optional[str] = None, **kwargs):
-        super().__init__(**kwargs)
+    def __init__(
+        self, 
+        name: str, 
+        model_config: dict,
+        next_handler: Optional[str] = None,
+        supported_types: List[str] = None,
+        **kwargs
+    ):
+        super().__init__(name=name, model_config=model_config, **kwargs)
         self.next_handler = next_handler
+        self.supported_types = supported_types or []
     
-    async def handle_request(self, request: Message) -> Message:
+    async def _process_request(self, message: Message, context: RequestContext) -> Message:
         """Process request or pass to next handler."""
         # Check if this agent can handle the request
-        if self.can_handle(request):
-            return await self.process_request(request)
+        if self.can_handle(message):
+            return await super()._process_request(message, context)
         
         # Pass to next handler
         if self.next_handler:
             return await self.invoke_agent(
                 self.next_handler,
-                request.content,
-                metadata=request.metadata
+                message.content,
+                context=context
             )
         
         # No handler found
         return Message(
-            role="error",
+            role="assistant",
             content="No handler found for request",
-            name=self.name
+            metadata={"error": "no_handler", "agent": self.name}
         )
     
-    def can_handle(self, request: Message) -> bool:
+    def can_handle(self, message: Message) -> bool:
         """Check if agent can handle this request type."""
-        request_type = request.metadata.get("type")
+        request_type = message.metadata.get("type") if message.metadata else None
         return request_type in self.supported_types
 ```
 
@@ -190,10 +249,15 @@ class ChainOfResponsibilityAgent(Agent):
 Notify multiple agents of state changes:
 
 ```python
+from src.agents.agents import Agent
+from src.agents.utils import RequestContext
+import asyncio
+from typing import Any, List
+
 class ObservableAgent(Agent):
-    def __init__(self, **kwargs):
-        super().__init__(**kwargs)
-        self.observers = []
+    def __init__(self, name: str, model_config: dict, **kwargs):
+        super().__init__(name=name, model_config=model_config, **kwargs)
+        self.observers: List[str] = []
     
     def attach_observer(self, observer_name: str):
         """Add observer to notification list."""
@@ -205,15 +269,21 @@ class ObservableAgent(Agent):
         if observer_name in self.observers:
             self.observers.remove(observer_name)
     
-    async def notify_observers(self, event: str, data: Any):
+    async def notify_observers(self, event: str, data: Any, context: RequestContext):
         """Notify all observers of state change."""
         notifications = []
         
         for observer in self.observers:
+            notification_context = RequestContext(
+                request_id=f"{context.request_id}_notify_{observer}",
+                agent_name=self.name,
+                logger=context.logger
+            )
+            
             notification = self.invoke_agent(
                 observer,
                 f"Event: {event}",
-                metadata={"event_data": data}
+                context=notification_context
             )
             notifications.append(notification)
         
@@ -228,6 +298,12 @@ class ObservableAgent(Agent):
 Implement circuit breaker pattern:
 
 ```python
+import time
+from typing import Any
+from src.agents.agents import Agent
+from src.models.message import Message
+from src.agents.utils import RequestContext
+
 class CircuitBreaker:
     def __init__(
         self,
@@ -240,7 +316,13 @@ class CircuitBreaker:
         self.last_failure_time = None
         self.state = "closed"  # closed, open, half-open
     
-    async def call(self, agent: Agent, target: str, task: str) -> Message:
+    async def call(
+        self, 
+        agent: Agent, 
+        target: str, 
+        task: str,
+        context: RequestContext
+    ) -> Message:
         """Execute call with circuit breaker protection."""
         if self.state == "open":
             if time.time() - self.last_failure_time > self.recovery_timeout:
@@ -249,7 +331,7 @@ class CircuitBreaker:
                 raise Exception("Circuit breaker is open")
         
         try:
-            result = await agent.invoke_agent(target, task)
+            result = await agent.invoke_agent(target, task, context=context)
             
             # Success - reset on half-open
             if self.state == "half-open":
@@ -273,34 +355,49 @@ class CircuitBreaker:
 Handle failed messages:
 
 ```python
+from datetime import datetime
+from typing import Optional, List, Dict
+from src.agents.agents import Agent
+from src.models.message import Message
+from src.agents.utils import RequestContext
+import asyncio
+
 class DeadLetterQueue:
     def __init__(self):
-        self.failed_messages = []
+        self.failed_messages: List[Dict] = []
     
     async def process_with_dlq(
         self,
         agent: Agent,
         message: Message,
+        context: RequestContext,
         max_retries: int = 3
     ) -> Optional[Message]:
         """Process message with dead letter queue for failures."""
         for attempt in range(max_retries):
             try:
-                result = await agent.process(message)
+                result = await agent._process_request(message, context)
                 return result
             except Exception as e:
+                context.logger.warning(
+                    f"Attempt {attempt + 1} failed for agent {agent.name}: {e}"
+                )
+                
                 if attempt == max_retries - 1:
                     # Add to dead letter queue
                     self.failed_messages.append({
                         "message": message,
                         "error": str(e),
                         "timestamp": datetime.now(),
-                        "attempts": max_retries
+                        "attempts": max_retries,
+                        "agent": agent.name
                     })
                     return None
                 
                 # Exponential backoff
                 await asyncio.sleep(2 ** attempt)
+        
+        return None
 ```
 
 ## Performance Optimization
@@ -310,9 +407,22 @@ class DeadLetterQueue:
 Batch multiple messages for efficiency:
 
 ```python
+from src.agents.agents import Agent
+from src.models.message import Message
+from src.agents.utils import RequestContext
+import asyncio
+from typing import List
+
 class BatchingAgent(Agent):
-    def __init__(self, batch_size: int = 10, batch_timeout: float = 1.0, **kwargs):
-        super().__init__(**kwargs)
+    def __init__(
+        self, 
+        name: str, 
+        model_config: dict,
+        batch_size: int = 10, 
+        batch_timeout: float = 1.0, 
+        **kwargs
+    ):
+        super().__init__(name=name, model_config=model_config, **kwargs)
         self.batch_size = batch_size
         self.batch_timeout = batch_timeout
         self.message_queue = asyncio.Queue()
@@ -355,12 +465,22 @@ class BatchingAgent(Agent):
             for i, msg in enumerate(messages)
         ])
         
-        result = await self.model.run([
-            Message(role="user", content=f"Process these requests:\n{combined_content}")
-        ])
+        batch_message = Message(
+            role="user", 
+            content=f"Process these requests:\n{combined_content}"
+        )
+        
+        context = RequestContext(
+            request_id=f"batch_{len(messages)}",
+            agent_name=self.name,
+            logger=logging.getLogger(__name__)
+        )
+        
+        result = await self._process_request(batch_message, context)
         
         # Parse and distribute results
-        # ... implementation
+        # Implementation depends on your specific batching logic
+        return result
 ```
 
 ### Connection Pooling
@@ -368,10 +488,17 @@ class BatchingAgent(Agent):
 Manage agent connections efficiently:
 
 ```python
+from src.agents.registry import AgentRegistry
+from src.agents.agents import Agent
+from src.models.message import Message
+from src.agents.utils import RequestContext
+import asyncio
+from typing import Dict
+
 class AgentConnectionPool:
     def __init__(self, max_connections: int = 10):
         self.max_connections = max_connections
-        self.connections = {}
+        self.connections: Dict[str, Agent] = {}
         self.semaphore = asyncio.Semaphore(max_connections)
     
     async def get_connection(self, agent_name: str) -> Agent:
@@ -389,11 +516,13 @@ class AgentConnectionPool:
         self,
         from_agent: Agent,
         to_agent: str,
-        task: str
+        task: str,
+        context: RequestContext
     ) -> Message:
         """Invoke agent using connection pool."""
+        # Ensure target agent is available
         target = await self.get_connection(to_agent)
-        return await from_agent.invoke_agent(to_agent, task)
+        return await from_agent.invoke_agent(to_agent, task, context=context)
 ```
 
 ## Best Practices
@@ -402,26 +531,31 @@ class AgentConnectionPool:
    - Keep messages self-contained
    - Include necessary context in metadata
    - Use structured formats (JSON) for complex data
+   - Always include proper RequestContext
 
 2. **Error Handling**
    - Always handle communication failures
    - Implement timeouts for all remote calls
    - Use circuit breakers for unreliable connections
+   - Log errors with proper context
 
 3. **Performance**
    - Batch messages when possible
    - Use async operations throughout
    - Monitor communication latency
+   - Use connection pooling for frequent communications
 
 4. **Security**
    - Validate message sources
    - Sanitize message content
    - Implement access controls
+   - Use proper authentication in RequestContext
 
 5. **Monitoring**
    - Log all inter-agent communications
    - Track message flow and latency
    - Monitor failed communications
+   - Use structured logging with RequestContext
 
 ## Next Steps
 

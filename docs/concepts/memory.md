@@ -25,8 +25,8 @@ from src.agents.memory import MemoryManager
 
 # Create memory manager
 memory = MemoryManager(
-    input_message_processor=agent._input_message_processor(),
-    output_message_processor=agent._output_message_processor()
+    input_processor=agent._input_message_processor(),
+    output_processor=agent._output_message_processor()
 )
 
 # Add messages
@@ -137,11 +137,8 @@ all_messages = memory.retrieve_all()
 # Get by ID
 specific_message = memory.retrieve_by_id("msg_123")
 
-# Get last N messages
-recent_messages = memory.retrieve_last_n(5)
-
-# Search messages
-results = memory.search("weather")
+# Get recent messages
+recent_messages = memory.retrieve_recent(5)
 ```
 
 ### Memory for LLM
@@ -262,10 +259,13 @@ class EpisodicMemory:
         self.current_episode = MemoryManager()
     
     def recall_episode(self, query: str):
-        # Search across all episodes
+        # Find episodes containing messages with query content
         for i, episode in enumerate(self.episodes):
-            if episode.search(query):
-                return i, episode
+            messages = episode.retrieve_all()
+            for msg in messages:
+                if query.lower() in msg.content.lower():
+                    return i, episode
+        return None, None
 ```
 
 ### Shared Memory
@@ -307,17 +307,17 @@ async def memory_example():
     
     # First interaction
     response1 = await agent.auto_run(
-        task="Remember that my favorite color is blue",
+        initial_request="Remember that my favorite color is blue",
         max_steps=1
     )
     
     # Second interaction - agent should remember
     response2 = await agent.auto_run(
-        task="What is my favorite color?",
+        initial_request="What is my favorite color?",
         max_steps=1
     )
     
-    print(response2.content)  # Should mention blue
+    print(response2)  # Should mention blue
 
 asyncio.run(memory_example())
 ```

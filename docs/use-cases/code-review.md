@@ -20,46 +20,63 @@ from src.models.models import ModelConfig
 async def create_code_review_team():
     # Security Reviewer
     security = Agent(
-        name="security_reviewer",
-        model_config=ModelConfig(provider="openai", model_name="gpt-4"),
-        instructions="""You are a security expert. Review code for:
+        model_config=ModelConfig(
+            type="api",
+            provider="openai", 
+            name="gpt-4"
+        ),
+        description="""You are a security expert. Review code for:
         - SQL injection vulnerabilities
         - XSS risks
         - Authentication issues
-        - Data exposure risks"""
+        - Data exposure risks""",
+        agent_name="security_reviewer"
     )
     
     # Performance Reviewer
     performance = Agent(
-        name="performance_reviewer",
-        model_config=ModelConfig(provider="anthropic", model_name="claude-3"),
-        instructions="""You are a performance specialist. Check for:
+        model_config=ModelConfig(
+            type="api",
+            provider="anthropic", 
+            name="claude-3-sonnet-20240229"
+        ),
+        description="""You are a performance specialist. Check for:
         - Algorithm efficiency
         - Database query optimization
         - Memory usage
-        - Caching opportunities"""
+        - Caching opportunities""",
+        agent_name="performance_reviewer"
     )
     
     # Style Reviewer
     style = Agent(
-        name="style_reviewer",
-        model_config=ModelConfig(provider="openai", model_name="gpt-3.5-turbo"),
-        instructions="""You are a code style expert. Ensure:
+        model_config=ModelConfig(
+            type="api",
+            provider="openai", 
+            name="gpt-4.1-mini"
+        ),
+        description="""You are a code style expert. Ensure:
         - Consistent naming conventions
         - Proper documentation
         - Clean code principles
-        - Design patterns usage"""
+        - Design patterns usage""",
+        agent_name="style_reviewer"
     )
     
     # Lead Reviewer
     lead = Agent(
-        name="lead_reviewer",
-        model_config=ModelConfig(provider="openai", model_name="gpt-4"),
-        instructions="""You coordinate code reviews. Use:
+        model_config=ModelConfig(
+            type="api",
+            provider="openai", 
+            name="gpt-4"
+        ),
+        description="""You coordinate code reviews. Use:
         - security_reviewer for security analysis
         - performance_reviewer for efficiency checks
         - style_reviewer for code quality
-        Provide a comprehensive review summary."""
+        Provide a comprehensive review summary.""",
+        agent_name="lead_reviewer",
+        allowed_peers=["security_reviewer", "performance_reviewer", "style_reviewer"]
     )
     
     # Review code
@@ -70,7 +87,7 @@ async def create_code_review_team():
     '''
     
     result = await lead.auto_run(
-        task=f"Review this code thoroughly:\n{code_sample}",
+        initial_request=f"Review this code thoroughly:\n{code_sample}",
         max_steps=10
     )
     
@@ -78,7 +95,7 @@ async def create_code_review_team():
 
 # Run the review
 result = asyncio.run(create_code_review_team())
-print(result.content)
+print(result)
 ```
 
 ## Benefits

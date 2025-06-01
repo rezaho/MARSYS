@@ -6,31 +6,32 @@ Learn how to create your first custom agent from scratch.
 
 ```python
 import asyncio
-from src.agents.agent import Agent
-from src.utils.config import ModelConfig
+from src.agents import Agent
+from src.models.models import ModelConfig
 
 async def main():
     # Configure the model
     config = ModelConfig(
+        type="api",
         provider="openai",
-        model_name="gpt-3.5-turbo",
+        name="gpt-4.1-mini",
         temperature=0.7
     )
     
     # Create your agent
     agent = Agent(
-        name="my_first_agent",
         model_config=config,
-        instructions="You are a helpful assistant that explains things clearly."
+        description="You are a helpful assistant that explains things clearly.",
+        agent_name="my_first_agent"
     )
     
     # Run a task
     response = await agent.auto_run(
-        task="Explain what an AI agent is in simple terms",
+        initial_request="Explain what an AI agent is in simple terms",
         max_steps=1
     )
     
-    print(response.content)
+    print(response)
 
 # Run the agent
 asyncio.run(main())

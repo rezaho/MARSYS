@@ -14,28 +14,29 @@ Concepts: Agent creation, basic configuration, running tasks
 """
 
 import asyncio
-from src.agents.agent import Agent
-from src.utils.config import ModelConfig
+from src.agents import Agent
+from src.models.models import ModelConfig
 
 async def main():
     # Create a simple agent
     agent = Agent(
-        name="greeter",
         model_config=ModelConfig(
+            type="api",
             provider="openai",
-            model_name="gpt-3.5-turbo",
+            name="gpt-4.1-mini",
             temperature=0.7
         ),
-        instructions="You are a friendly greeter. Always be polite and welcoming."
+        description="You are a friendly greeter. Always be polite and welcoming.",
+        agent_name="greeter"
     )
     
     # Run a simple task
     response = await agent.auto_run(
-        task="Say hello and introduce yourself",
+        initial_request="Say hello and introduce yourself",
         max_steps=1
     )
     
-    print(f"Agent says: {response.content}")
+    print(f"Agent says: {response}")
 
 if __name__ == "__main__":
     asyncio.run(main())
@@ -53,30 +54,31 @@ Concepts: Tool usage, multi-step reasoning, tool results
 """
 
 import asyncio
-from src.agents.agent import Agent
-from src.utils.config import ModelConfig
+from src.agents import Agent
+from src.models.models import ModelConfig
 from src.environment.tools import AVAILABLE_TOOLS
 
 async def main():
     # Create agent with calculation tool
     agent = Agent(
-        name="calculator",
         model_config=ModelConfig(
+            type="api",
             provider="openai",
-            model_name="gpt-4",
+            name="gpt-4.1-mini",
             temperature=0
         ),
-        instructions="You are a helpful math assistant. Use the calculate tool for all calculations.",
-        tools={"calculate": AVAILABLE_TOOLS["calculate"]}
+        description="You are a helpful math assistant. Use the calculate tool for all calculations.",
+        tools={"calculate": AVAILABLE_TOOLS["calculate"]},
+        agent_name="calculator"
     )
     
     # Complex calculation task
     response = await agent.auto_run(
-        task="Calculate the following: (15 * 4) + (25 / 5) - 3^2",
+        initial_request="Calculate the following: (15 * 4) + (25 / 5) - 3^2",
         max_steps=5
     )
     
-    print(f"Result: {response.content}")
+    print(f"Result: {response}")
     
     # Show calculation steps
     for msg in agent.memory.retrieve_all():
@@ -99,39 +101,41 @@ Concepts: Agent registration, inter-agent communication, message passing
 """
 
 import asyncio
-from src.agents.agent import Agent
-from src.utils.config import ModelConfig
+from src.agents import Agent
+from src.models.models import ModelConfig
 
 async def main():
     # Create interviewer agent
     interviewer = Agent(
-        name="interviewer",
         model_config=ModelConfig(
+            type="api",
             provider="openai",
-            model_name="gpt-3.5-turbo"
+            name="gpt-4.1-mini"
         ),
-        instructions="You are conducting a job interview. Ask relevant questions.",
-        register=True
+        description="You are conducting a job interview. Ask relevant questions.",
+        agent_name="interviewer",
+        allowed_peers=["candidate"]
     )
     
     # Create candidate agent
     candidate = Agent(
-        name="candidate",
         model_config=ModelConfig(
+            type="api",
             provider="openai",
-            model_name="gpt-3.5-turbo"
+            name="gpt-4.1-mini"
         ),
-        instructions="You are a job candidate. Answer questions professionally.",
-        register=True
+        description="You are a job candidate. Answer questions professionally.",
+        agent_name="candidate",
+        allowed_peers=["interviewer"]
     )
     
     # Interviewer asks candidate a question
     response = await interviewer.auto_run(
-        task="Interview the candidate agent for a software developer position. Ask them about their experience.",
+        initial_request="Interview the candidate agent for a software developer position. Ask them about their experience.",
         max_steps=3
     )
     
-    print(f"Interview result:\n{response.content}")
+    print(f"Interview result:\n{response}")
 
 if __name__ == "__main__":
     asyncio.run(main())
@@ -149,8 +153,8 @@ Concepts: File tools, async file operations, error handling
 """
 
 import asyncio
-from src.agents.agent import Agent
-from src.utils.config import ModelConfig
+from src.agents import Agent
+from src.models.models import ModelConfig
 
 async def read_file(filepath: str) -> str:
     """Read file contents."""
@@ -172,33 +176,34 @@ async def write_file(filepath: str, content: str) -> str:
 async def main():
     # Create file manager agent
     agent = Agent(
-        name="file_manager",
         model_config=ModelConfig(
+            type="api",
             provider="openai",
-            model_name="gpt-3.5-turbo"
+            name="gpt-4.1-mini"
         ),
-        instructions="You are a file manager. Help users read and write files.",
+        description="You are a file manager. Help users read and write files.",
         tools={
             "read_file": read_file,
             "write_file": write_file
-        }
+        },
+        agent_name="file_manager"
     )
     
     # Create a test file
     response = await agent.auto_run(
-        task="Create a file named 'test.txt' with the content 'Hello from the agent!'",
+        initial_request="Create a file named 'test.txt' with the content 'Hello from the agent!'",
         max_steps=2
     )
     
-    print(f"Write result: {response.content}")
+    print(f"Write result: {response}")
     
     # Read the file back
     response = await agent.auto_run(
-        task="Read the contents of 'test.txt' and tell me what it says",
+        initial_request="Read the contents of 'test.txt' and tell me what it says",
         max_steps=2
     )
     
-    print(f"Read result: {response.content}")
+    print(f"Read result: {response}")
 
 if __name__ == "__main__":
     asyncio.run(main())
@@ -216,33 +221,34 @@ Concepts: Memory management, context preservation, message history
 """
 
 import asyncio
-from src.agents.agent import Agent
-from src.utils.config import ModelConfig
+from src.agents import Agent
+from src.models.models import ModelConfig
 
 async def main():
     # Create agent with memory
     agent = Agent(
-        name="memory_bot",
         model_config=ModelConfig(
+            type="api",
             provider="openai",
-            model_name="gpt-3.5-turbo"
+            name="gpt-4.1-mini"
         ),
-        instructions="You have perfect memory. Remember everything the user tells you."
+        description="You have perfect memory. Remember everything the user tells you.",
+        agent_name="memory_bot"
     )
     
     # First interaction
     response = await agent.auto_run(
-        task="Remember this number: 42. It's my lucky number.",
+        initial_request="Remember this number: 42. It's my lucky number.",
         max_steps=1
     )
-    print(f"Agent: {response.content}\n")
+    print(f"Agent: {response}\n")
     
     # Second interaction - agent should remember
     response = await agent.auto_run(
-        task="What's my lucky number?",
+        initial_request="What's my lucky number?",
         max_steps=1
     )
-    print(f"Agent: {response.content}\n")
+    print(f"Agent: {response}\n")
     
     # Show memory contents
     print("Memory contents:")
@@ -266,8 +272,8 @@ Concepts: External API integration, async operations, result processing
 
 import asyncio
 import json
-from src.agents.agent import Agent
-from src.utils.config import ModelConfig
+from src.agents import Agent
+from src.models.models import ModelConfig
 
 async def search_web(query: str, max_results: int = 3) -> str:
     """Mock web search function."""
@@ -285,22 +291,23 @@ async def search_web(query: str, max_results: int = 3) -> str:
 async def main():
     # Create search agent
     agent = Agent(
-        name="search_assistant",
         model_config=ModelConfig(
+            type="api",
             provider="openai",
-            model_name="gpt-3.5-turbo"
+            name="gpt-4.1-mini"
         ),
-        instructions="You are a research assistant. Search for information and provide summaries.",
-        tools={"search_web": search_web}
+        description="You are a research assistant. Search for information and provide summaries.",
+        tools={"search_web": search_web},
+        agent_name="search_assistant"
     )
     
     # Search for information
     response = await agent.auto_run(
-        task="Search for information about quantum computing and summarize what you find",
+        initial_request="Search for information about quantum computing and summarize what you find",
         max_steps=3
     )
     
-    print(f"Search results:\n{response.content}")
+    print(f"Search results:\n{response}")
 
 if __name__ == "__main__":
     asyncio.run(main())
@@ -320,8 +327,8 @@ Concepts: Time tools, timezone handling, scheduling logic
 import asyncio
 from datetime import datetime
 import pytz
-from src.agents.agent import Agent
-from src.utils.config import ModelConfig
+from src.agents import Agent
+from src.models.models import ModelConfig
 
 def get_time(timezone: str = "UTC") -> str:
     """Get current time in specified timezone."""
@@ -335,22 +342,23 @@ def get_time(timezone: str = "UTC") -> str:
 async def main():
     # Create time-aware agent
     agent = Agent(
-        name="scheduler",
         model_config=ModelConfig(
+            type="api",
             provider="openai",
-            model_name="gpt-3.5-turbo"
+            name="gpt-4.1-mini"
         ),
-        instructions="You are a scheduling assistant. Help users with time-related queries.",
-        tools={"get_time": get_time}
+        description="You are a scheduling assistant. Help users with time-related queries.",
+        tools={"get_time": get_time},
+        agent_name="scheduler"
     )
     
     # Ask about time in different zones
     response = await agent.auto_run(
-        task="What time is it in New York, Tokyo, and London? Also calculate the time differences.",
+        initial_request="What time is it in New York, Tokyo, and London? Also calculate the time differences.",
         max_steps=5
     )
     
-    print(f"Time information:\n{response.content}")
+    print(f"Time information:\n{response}")
 
 if __name__ == "__main__":
     asyncio.run(main())
@@ -368,8 +376,8 @@ Concepts: Try-catch blocks, error messages, fallback behavior
 """
 
 import asyncio
-from src.agents.agent import Agent
-from src.utils.config import ModelConfig
+from src.agents import Agent
+from src.models.models import ModelConfig
 from src.models.message import Message
 
 def risky_operation(value: str) -> str:
@@ -381,28 +389,29 @@ def risky_operation(value: str) -> str:
 async def main():
     # Create agent with risky tool
     agent = Agent(
-        name="error_handler",
         model_config=ModelConfig(
+            type="api",
             provider="openai",
-            model_name="gpt-3.5-turbo"
+            name="gpt-4.1-mini"
         ),
-        instructions="You handle operations that might fail. Be helpful when errors occur.",
-        tools={"risky_operation": risky_operation}
+        description="You handle operations that might fail. Be helpful when errors occur.",
+        tools={"risky_operation": risky_operation},
+        agent_name="error_handler"
     )
     
     # Successful operation
     response = await agent.auto_run(
-        task="Use risky_operation with the value 'test'",
+        initial_request="Use risky_operation with the value 'test'",
         max_steps=2
     )
-    print(f"Success case: {response.content}\n")
+    print(f"Success case: {response}\n")
     
     # Failed operation
     response = await agent.auto_run(
-        task="Use risky_operation with the value 'fail' and handle any errors gracefully",
+        initial_request="Use risky_operation with the value 'fail' and handle any errors gracefully",
         max_steps=3
     )
-    print(f"Error case: {response.content}")
+    print(f"Error case: {response}")
     
     # Check for error messages
     for msg in agent.memory.retrieve_all():

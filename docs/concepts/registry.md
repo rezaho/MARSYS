@@ -25,25 +25,19 @@ graph LR
 
 ### Agent Registration
 
-Agents can register automatically or manually:
+Agents register automatically when created:
 
 ```python
 from src.agents import Agent
 
-# Automatic registration
+# Agents automatically register on creation
 agent = Agent(
-    name="data_processor",
-    model_config=config,
-    register=True  # Auto-register on creation
+    agent_name="data_processor",
+    model_config=config
 )
 
-# Manual registration
-agent = Agent(
-    name="analyzer",
-    model_config=config,
-    register=False
-)
-agent.register()  # Register later
+# All agents are automatically registered with the registry
+# No manual registration needed
 ```
 
 ### Checking Registration
@@ -52,11 +46,11 @@ agent.register()  # Register later
 from src.agents.registry import AgentRegistry
 
 # Check if agent is registered
-if AgentRegistry.get_agent("data_processor"):
+if AgentRegistry.get("data_processor"):
     print("Agent is available")
 
 # List all registered agents
-all_agents = AgentRegistry.list_agents()
+all_agents = AgentRegistry.all()
 print(f"Registered agents: {all_agents}")
 ```
 
@@ -70,7 +64,7 @@ from src.agents.memory import Message
 # Inside an agent's code
 async def collaborate_with_expert(self, topic: str):
     # Look up expert agent
-    expert = AgentRegistry.get_agent("domain_expert")
+    expert = AgentRegistry.get("domain_expert")
     
     if not expert:
         return Message(
@@ -90,47 +84,61 @@ async def collaborate_with_expert(self, topic: str):
 
 ### Thread-Safe Design
 
-The registry uses thread-safe operations:
+The registry uses thread-safe operations with weak references:
 
 ```python
+import weakref
+import threading
+from typing import TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from src.agents.agents import BaseAgent
+
 class AgentRegistry:
-    _agents: Dict[str, BaseAgent] = {}
+    _agents: weakref.WeakValueDictionary[str, "BaseAgent"] = weakref.WeakValueDictionary()
     _lock = threading.Lock()
     
     @classmethod
-    def register(cls, agent: BaseAgent) -> None:
-        """Register an agent with thread safety."""
+    def register(cls, agent, name=None, prefix="BaseAgent") -> str:
+        """Register an agent with automatic name generation."""
         with cls._lock:
-            if agent.name in cls._agents:
-                raise ValueError(f"Agent '{agent.name}' already registered")
-            cls._agents[agent.name] = agent
+            if name is None:
+                name = f"{prefix}_{len(cls._agents)}"
+            
+            if name in cls._agents:
+                raise ValueError(f"Agent '{name}' already registered")
+            
+            cls._agents[name] = agent
+            return name
     
     @classmethod
-    def unregister(cls, agent_name: str) -> None:
-        """Unregister an agent safely."""
-        with cls._lock:
-            cls._agents.pop(agent_name, None)
+    def get(cls, name: str):
+        """Get a registered agent by name."""
+        return cls._agents.get(name)
+    
+    @classmethod  
+    def all(cls):
+        """Get all registered agent names."""
+        return list(cls._agents.keys())
 ```
 
 ### Lifecycle Management
 
-Agents automatically manage their registration:
+Agents automatically register during initialization:
 
 ```python
 class BaseAgent:
-    def __init__(self, name: str, register: bool = True, **kwargs):
-        self.name = name
+    def __init__(self, agent_name: str = None, **kwargs):
+        # Automatic registration during initialization
+        self.name = AgentRegistry.register(
+            self, 
+            name=agent_name, 
+            prefix=self.__class__.__name__
+        )
         # ... other initialization
-        
-        if register:
-            self.register()
     
-    def __del__(self):
-        """Cleanup on deletion."""
-        try:
-            self.unregister()
-        except:
-            pass  # Ignore errors during cleanup
+    # Weak references in registry handle cleanup automatically
+    # No manual unregistration needed
 ```
 
 ## Registry Patterns
@@ -160,7 +168,7 @@ class CapabilityRegistry(AgentRegistry):
 
 # Usage
 from src.agents import Agent
-agent = Agent(name="translator", ...)
+agent = Agent(agent_name="translator", model_config=config)
 CapabilityRegistry.register_capability("translator", "translation")
 
 # Find all translation agents
@@ -213,7 +221,7 @@ class HealthCheckRegistry(AgentRegistry):
             try:
                 # Simple ping test
                 response = await agent.auto_run(
-                    task="ping",
+                    initial_request="ping",
                     max_steps=1
                 )
                 health_status[name] = response.role != "error"
@@ -231,12 +239,12 @@ Always use unique, descriptive names:
 
 ```python
 # Good
-agent1 = Agent(name="customer_support_specialist_1", ...)
-agent2 = Agent(name="technical_documentation_writer", ...)
+agent1 = Agent(agent_name="customer_support_specialist_1", model_config=config)
+agent2 = Agent(agent_name="technical_documentation_writer", model_config=config)
 
 # Bad
-agent1 = Agent(name="agent1", ...)
-agent2 = Agent(name="helper", ...)
+agent1 = Agent(agent_name="agent1", model_config=config)
+agent2 = Agent(agent_name="helper", model_config=config)
 ```
 
 ### 2. Registration Checks
@@ -246,7 +254,7 @@ Always check if an agent exists before invoking:
 ```python
 async def safe_invoke(self, agent_name: str, task: str) -> Message:
     """Safely invoke an agent with existence check."""
-    if not AgentRegistry.get_agent(agent_name):
+    if not AgentRegistry.get(agent_name):
         return Message(
             role="error",
             content=f"Agent '{agent_name}' not found",
@@ -261,20 +269,19 @@ async def safe_invoke(self, agent_name: str, task: str) -> Message:
 Ensure proper cleanup:
 
 ```python
-class ManagedAgent(Agent):
-    async def __aenter__(self):
-        """Context manager entry."""
-        self.register()
-        return self
-    
-    async def __aexit__(self, exc_type, exc_val, exc_tb):
-        """Context manager exit."""
-        self.unregister()
+# Agents are automatically cleaned up via weak references
+# No manual cleanup needed - just let the agent go out of scope
+
+async def temporary_task():
+    """Example of automatic cleanup."""
+    agent = Agent(agent_name="temp_worker", model_config=config)
+    response = await agent.auto_run(initial_request="...")
+    return response
+    # Agent automatically removed from registry when garbage collected
 
 # Usage
-async with ManagedAgent(name="temp_worker", ...) as agent:
-    response = await agent.auto_run(task="...")
-# Agent automatically unregistered
+result = await temporary_task()
+# No manual cleanup required
 ```
 
 ### 4. Registry Monitoring
@@ -284,7 +291,7 @@ Monitor registry state:
 ```python
 def log_registry_state():
     """Log current registry state."""
-    agents = AgentRegistry.list_agents()
+    agents = AgentRegistry.all()
     logger.info(f"Active agents: {len(agents)}")
     for agent_name in agents:
         logger.debug(f"  - {agent_name}")
@@ -296,12 +303,12 @@ def log_registry_state():
 
 ```python
 try:
-    agent = Agent(name="processor", register=True)
+    agent = Agent(agent_name="processor", model_config=config)
 except ValueError as e:
     # Handle duplicate name
     agent = Agent(
-        name=f"processor_{uuid.uuid4().hex[:8]}", 
-        register=True
+        agent_name=f"processor_{uuid.uuid4().hex[:8]}", 
+        model_config=config
     )
 ```
 
@@ -310,9 +317,9 @@ except ValueError as e:
 ```python
 def get_or_create_agent(name: str, config: ModelConfig) -> BaseAgent:
     """Get existing agent or create new one."""
-    agent = AgentRegistry.get_agent(name)
+    agent = AgentRegistry.get(name)
     if not agent:
-        agent = Agent(name=name, model_config=config, register=True)
+        agent = Agent(agent_name=name, model_config=config)
     return agent
 ```
 
@@ -391,5 +398,5 @@ class EventRegistry(AgentRegistry):
 ## Next Steps
 
 - Learn about [Agent Communication](communication.md) - How agents use the registry
-- Explore [Topologies](topologies.md) - Complex registry patterns
-- See [Examples](../use-cases/ - Registry usage in practice
+- Explore [Topologies](topologies.md) - Complex registry patterns  
+- See [Examples](../use-cases/) - Registry usage in practice

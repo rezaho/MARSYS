@@ -14,62 +14,62 @@ Concepts: Agent coordination, specialization, knowledge synthesis
 """
 
 import asyncio
-from src.agents.agent import Agent
-from src.utils.config import ModelConfig
+from src.agents import Agent
+from src.models.models import ModelConfig
 from src.agents.registry import AgentRegistry
 
 class ResearchTeam:
     def __init__(self):
         # Create specialized agents
         self.coordinator = Agent(
-            name="research_coordinator",
-            model_config=ModelConfig(provider="openai", model_name="gpt-4"),
-            instructions="""You coordinate research projects. Your responsibilities:
+            model_config=ModelConfig(type="api", provider="openai", name="gpt-4"),
+            description="""You coordinate research projects. Your responsibilities:
             1. Break down research questions into subtasks
             2. Delegate tasks to appropriate specialists
             3. Synthesize findings into comprehensive reports
             4. Ensure research quality and coherence""",
-            register=True
+            agent_name="research_coordinator",
+            allowed_peers=["data_analyst", "literature_reviewer", "subject_expert"]
         )
         
         self.data_analyst = Agent(
-            name="data_analyst",
-            model_config=ModelConfig(provider="openai", model_name="gpt-4"),
-            instructions="""You are a data analysis expert. You:
+            model_config=ModelConfig(type="api", provider="openai", name="gpt-4"),
+            description="""You are a data analysis expert. You:
             1. Analyze quantitative data and statistics
             2. Identify trends and patterns
             3. Create data visualizations (describe them)
             4. Provide statistical insights""",
-            register=True
+            agent_name="data_analyst",
+            allowed_peers=["research_coordinator"]
         )
         
         self.literature_reviewer = Agent(
-            name="literature_reviewer",
-            model_config=ModelConfig(provider="openai", model_name="gpt-4"),
-            instructions="""You are a literature review specialist. You:
+            model_config=ModelConfig(type="api", provider="openai", name="gpt-4"),
+            description="""You are a literature review specialist. You:
             1. Find and summarize relevant research papers
             2. Identify research gaps
             3. Synthesize existing knowledge
             4. Provide citations and references""",
-            register=True
+            agent_name="literature_reviewer",
+            allowed_peers=["research_coordinator"]
         )
         
         self.subject_expert = Agent(
-            name="subject_expert",
-            model_config=ModelConfig(provider="openai", model_name="gpt-4"),
-            instructions="""You are a domain expert. You:
+            model_config=ModelConfig(type="api", provider="openai", name="gpt-4"),
+            description="""You are a domain expert. You:
             1. Provide deep domain knowledge
             2. Explain complex concepts clearly
             3. Identify important considerations
             4. Suggest research directions""",
-            register=True
+            agent_name="subject_expert",
+            allowed_peers=["research_coordinator"]
         )
     
     async def conduct_research(self, research_question: str) -> str:
         """Conduct comprehensive research on a topic."""
         # Coordinator creates research plan
         response = await self.coordinator.auto_run(
-            task=f"""Create a research plan for: {research_question}
+            initial_request=f"""Create a research plan for: {research_question}
             
             Break this down into tasks for:
             - literature_reviewer (for existing research)
@@ -80,7 +80,7 @@ class ResearchTeam:
             max_steps=10
         )
         
-        return response.content
+        return response
 
 async def main():
     # Create research team
@@ -112,57 +112,57 @@ Concepts: Specialized review, consensus building, quality assurance
 
 import asyncio
 from typing import Dict, List
-from src.agents.agent import Agent
-from src.utils.config import ModelConfig
+from src.agents import Agent
+from src.models.models import ModelConfig
 
 class CodeReviewSystem:
     def __init__(self):
         self.security_reviewer = Agent(
-            name="security_reviewer",
-            model_config=ModelConfig(provider="openai", model_name="gpt-4"),
-            instructions="""You are a security-focused code reviewer. Check for:
+            model_config=ModelConfig(type="api", provider="openai", name="gpt-4"),
+            description="""You are a security-focused code reviewer. Check for:
             1. SQL injection vulnerabilities
             2. XSS vulnerabilities
             3. Authentication/authorization issues
             4. Sensitive data exposure
             5. Input validation problems""",
-            register=True
+            agent_name="security_reviewer",
+            allowed_peers=["lead_reviewer"]
         )
         
         self.performance_reviewer = Agent(
-            name="performance_reviewer",
-            model_config=ModelConfig(provider="openai", model_name="gpt-4"),
-            instructions="""You review code for performance. Focus on:
+            model_config=ModelConfig(type="api", provider="openai", name="gpt-4"),
+            description="""You review code for performance. Focus on:
             1. Algorithm complexity (Big O)
             2. Database query optimization
             3. Memory usage
             4. Caching opportunities
             5. Async/parallel processing""",
-            register=True
+            agent_name="performance_reviewer",
+            allowed_peers=["lead_reviewer"]
         )
         
         self.style_reviewer = Agent(
-            name="style_reviewer",
-            model_config=ModelConfig(provider="openai", model_name="gpt-4"),
-            instructions="""You review code style and maintainability. Check:
+            model_config=ModelConfig(type="api", provider="openai", name="gpt-4"),
+            description="""You review code style and maintainability. Check:
             1. Naming conventions
             2. Code organization
             3. Documentation and comments
             4. DRY principle violations
             5. SOLID principles adherence""",
-            register=True
+            agent_name="style_reviewer",
+            allowed_peers=["lead_reviewer"]
         )
         
         self.lead_reviewer = Agent(
-            name="lead_reviewer",
-            model_config=ModelConfig(provider="openai", model_name="gpt-4"),
-            instructions="""You are the lead code reviewer. You:
+            model_config=ModelConfig(type="api", provider="openai", name="gpt-4"),
+            description="""You are the lead code reviewer. You:
             1. Coordinate other reviewers
             2. Synthesize all feedback
             3. Prioritize issues by severity
             4. Provide final recommendations
             5. Suggest specific improvements""",
-            register=True
+            agent_name="lead_reviewer",
+            allowed_peers=["security_reviewer", "performance_reviewer", "style_reviewer"]
         )
     
     async def review_code(self, code: str, language: str = "python") -> Dict[str, str]:
@@ -181,12 +181,12 @@ class CodeReviewSystem:
         Provide a comprehensive review with all findings organized by severity."""
         
         response = await self.lead_reviewer.auto_run(
-            task=review_task,
+            initial_request=review_task,
             max_steps=8
         )
         
         return {
-            "summary": response.content,
+            "summary": response,
             "reviewers": ["security", "performance", "style", "lead"]
         }
 
@@ -236,8 +236,8 @@ Concepts: Agent hierarchy, escalation logic, knowledge routing
 import asyncio
 from enum import Enum
 from typing import Optional, Tuple
-from src.agents.agent import Agent
-from src.utils.config import ModelConfig
+from src.agents import Agent
+from src.models.models import ModelConfig
 from src.models.message import Message
 
 class TicketPriority(Enum):
@@ -259,56 +259,56 @@ class CustomerSupportSystem:
     def __init__(self):
         # Level 1: General support
         self.level1_support = Agent(
-            name="level1_support",
-            model_config=ModelConfig(provider="openai", model_name="gpt-3.5-turbo"),
-            instructions="""You are a Level 1 support agent. Handle:
+            model_config=ModelConfig(type="api", provider="openai", name="gpt-4.1-mini"),
+            description="""You are a Level 1 support agent. Handle:
             1. Basic troubleshooting
             2. Account access issues
             3. General product questions
             4. FAQ responses
             
             If you cannot resolve the issue, escalate to level2_support.""",
-            register=True
+            agent_name="level1_support",
+            allowed_peers=["level2_support"]
         )
         
         # Level 2: Technical support
         self.level2_support = Agent(
-            name="level2_support",
-            model_config=ModelConfig(provider="openai", model_name="gpt-4"),
-            instructions="""You are a Level 2 technical support specialist. Handle:
+            model_config=ModelConfig(type="api", provider="openai", name="gpt-4"),
+            description="""You are a Level 2 technical support specialist. Handle:
             1. Complex technical issues
             2. Bug investigations
             3. Advanced troubleshooting
             4. Configuration problems
             
             If the issue requires engineering attention, escalate to level3_support.""",
-            register=True
+            agent_name="level2_support",
+            allowed_peers=["level1_support", "level3_support"]
         )
         
         # Level 3: Engineering support
         self.level3_support = Agent(
-            name="level3_support",
-            model_config=ModelConfig(provider="openai", model_name="gpt-4"),
-            instructions="""You are a Level 3 engineering support expert. Handle:
+            model_config=ModelConfig(type="api", provider="openai", name="gpt-4"),
+            description="""You are a Level 3 engineering support expert. Handle:
             1. Critical system issues
             2. Bug fixes and workarounds
             3. Infrastructure problems
             4. Custom solutions
             
             You have the final say on all technical matters.""",
-            register=True
+            agent_name="level3_support",
+            allowed_peers=["level2_support", "support_coordinator"]
         )
         
         # Support coordinator
         self.coordinator = Agent(
-            name="support_coordinator",
-            model_config=ModelConfig(provider="openai", model_name="gpt-4"),
-            instructions="""You coordinate customer support. You:
+            model_config=ModelConfig(type="api", provider="openai", name="gpt-4"),
+            description="""You coordinate customer support. You:
             1. Route tickets to appropriate support levels
             2. Monitor escalations
             3. Ensure timely resolution
             4. Track support metrics""",
-            register=True
+            agent_name="support_coordinator",
+            allowed_peers=["level1_support", "level2_support", "level3_support"]
         )
     
     async def handle_ticket(self, ticket: SupportTicket) -> str:
@@ -325,11 +325,11 @@ class CustomerSupportSystem:
         Ensure the customer gets a helpful resolution."""
         
         response = await self.coordinator.auto_run(
-            task=routing_task,
+            initial_request=routing_task,
             max_steps=10
         )
         
-        ticket.resolution = response.content
+        ticket.resolution = response
         return ticket.resolution
     
     async def bulk_handle_tickets(self, tickets: List[SupportTicket]):
@@ -393,8 +393,8 @@ Concepts: Pipeline architecture, data transformation, quality assurance
 import asyncio
 import json
 from typing import List, Dict, Any
-from src.agents.agent import Agent
-from src.utils.config import ModelConfig
+from src.agents import Agent
+from src.models.models import ModelConfig
 
 class DataPipelineAgent(Agent):
     """Base class for data pipeline agents."""
@@ -402,7 +402,7 @@ class DataPipelineAgent(Agent):
     async def process_data(self, data: Any) -> Any:
         """Process data through the agent."""
         response = await self.auto_run(
-            task=f"Process this data: {json.dumps(data, indent=2)}",
+            initial_request=f"Process this data: {json.dumps(data, indent=2)}",
             max_steps=3
         )
         
@@ -410,68 +410,68 @@ class DataPipelineAgent(Agent):
         try:
             # Attempt to parse JSON from response
             import re
-            json_match = re.search(r'```json\n(.*?)\n```', response.content, re.DOTALL)
+            json_match = re.search(r'```json\n(.*?)\n```', response, re.DOTALL)
             if json_match:
                 return json.loads(json_match.group(1))
         except:
             pass
         
-        return {"processed": response.content}
+        return {"processed": response}
 
 class DataPipeline:
     def __init__(self):
         # Extraction agent
         self.extractor = DataPipelineAgent(
-            name="data_extractor",
-            model_config=ModelConfig(provider="openai", model_name="gpt-3.5-turbo"),
-            instructions="""You extract and structure data. You:
+            model_config=ModelConfig(type="api", provider="openai", name="gpt-4.1-mini"),
+            description="""You extract and structure data. You:
             1. Parse raw data into structured format
             2. Handle missing values
             3. Validate data types
             4. Output clean JSON
             
             Always output valid JSON in a code block.""",
-            register=True
+            agent_name="data_extractor",
+            allowed_peers=["pipeline_coordinator"]
         )
         
         # Transformation agent
         self.transformer = DataPipelineAgent(
-            name="data_transformer",
-            model_config=ModelConfig(provider="openai", model_name="gpt-3.5-turbo"),
-            instructions="""You transform data. You:
+            model_config=ModelConfig(type="api", provider="openai", name="gpt-4.1-mini"),
+            description="""You transform data. You:
             1. Apply business logic transformations
             2. Calculate derived fields
             3. Normalize data formats
             4. Aggregate when needed
             
             Always output valid JSON in a code block.""",
-            register=True
+            agent_name="data_transformer",
+            allowed_peers=["pipeline_coordinator"]
         )
         
         # Quality agent
         self.quality_checker = DataPipelineAgent(
-            name="quality_checker",
-            model_config=ModelConfig(provider="openai", model_name="gpt-3.5-turbo"),
-            instructions="""You ensure data quality. You:
+            model_config=ModelConfig(type="api", provider="openai", name="gpt-4.1-mini"),
+            description="""You ensure data quality. You:
             1. Check for anomalies
             2. Validate business rules
             3. Flag quality issues
             4. Suggest corrections
             
             Output a quality report with the data.""",
-            register=True
+            agent_name="quality_checker",
+            allowed_peers=["pipeline_coordinator"]
         )
         
         # Pipeline coordinator
         self.coordinator = Agent(
-            name="pipeline_coordinator",
-            model_config=ModelConfig(provider="openai", model_name="gpt-4"),
-            instructions="""You coordinate the data pipeline. Ensure:
+            model_config=ModelConfig(type="api", provider="openai", name="gpt-4"),
+            description="""You coordinate the data pipeline. Ensure:
             1. Data flows through extraction, transformation, and quality checking
             2. Each stage completes successfully
             3. Final output meets requirements
             4. Document the pipeline execution""",
-            register=True
+            agent_name="pipeline_coordinator",
+            allowed_peers=["data_extractor", "data_transformer", "quality_checker"]
         )
     
     async def run_pipeline(self, raw_data: Any) -> Dict[str, Any]:
@@ -488,12 +488,12 @@ class DataPipeline:
         Provide the final processed data and a summary."""
         
         response = await self.coordinator.auto_run(
-            task=pipeline_task,
+            initial_request=pipeline_task,
             max_steps=10
         )
         
         return {
-            "result": response.content,
+            "result": response,
             "stages": ["extraction", "transformation", "quality_check"]
         }
 
@@ -541,8 +541,8 @@ Concepts: Browser automation, error recovery, data extraction
 
 import asyncio
 from typing import List, Dict, Optional
-from src.agents.browser_agent import BrowserAgent
-from src.utils.config import ModelConfig
+from src.agents import BrowserAgent
+from src.models.models import ModelConfig
 
 class RobustWebScraper(BrowserAgent):
     """Enhanced browser agent with robust scraping capabilities."""
@@ -627,10 +627,12 @@ class RobustWebScraper(BrowserAgent):
 
 async def scrape_news_site():
     """Example: Scrape news articles from a website."""
-    scraper = RobustWebScraper(
-        name="news_scraper",
-        model_config=ModelConfig(provider="openai", model_name="gpt-4-vision-preview"),
-        headless=True
+    scraper = await RobustWebScraper.create(
+        model_config=ModelConfig(type="api", provider="openai", name="gpt-4-vision-preview"),
+        generation_description="News article scraper",
+        critic_description="Validate scraped news content",
+        agent_name="news_scraper",
+        headless_browser=True
     )
     
     try:
@@ -654,7 +656,7 @@ async def scrape_news_site():
         
         # Use AI to summarize
         response = await scraper.auto_run(
-            task=f"Summarize this article: {article_data}",
+            initial_request=f"Summarize this article: {article_data}",
             max_steps=2
         )
         
@@ -678,10 +680,12 @@ async def main():
     # print(f"Scraped data: {result}")
     
     # For demo purposes, we'll create a simple scraper example
-    scraper = BrowserAgent(
-        name="demo_scraper",
-        model_config=ModelConfig(provider="openai", model_name="gpt-4"),
-        headless=True
+    scraper = await BrowserAgent.create(
+        model_config=ModelConfig(type="api", provider="openai", name="gpt-4"),
+        generation_description="Web scraping demo agent",
+        critic_description="Validate scraped content",
+        agent_name="demo_scraper",
+        headless_browser=True
     )
     
     try:
@@ -690,7 +694,7 @@ async def main():
         
         # Extract information
         response = await scraper.auto_run(
-            task="Extract the main heading and any important information from this page",
+            initial_request="Extract the main heading and any important information from this page",
             max_steps=3
         )
         
@@ -718,8 +722,8 @@ import asyncio
 import json
 from datetime import datetime
 from typing import Dict, List
-from src.agents.learnable_agent import LearnableAgent
-from src.utils.config import ModelConfig
+from src.agents import LearnableAgent
+from src.models.models import ModelConfig
 
 class SelfImprovingAssistant(LearnableAgent):
     """Assistant that improves through user interactions."""
@@ -748,7 +752,7 @@ class SelfImprovingAssistant(LearnableAgent):
             
             # Process user request
             response = await self.auto_run(
-                task=user_input,
+                initial_request=user_input,
                 max_steps=3
             )
             
@@ -779,7 +783,7 @@ class SelfImprovingAssistant(LearnableAgent):
         
         # Learn from feedback
         await self.learn_from_feedback(
-            task=last_interaction['user_input'],
+            initial_request=last_interaction['user_input'],
             response=last_interaction['response'],
             feedback_score=score,
             feedback_text=feedback_text
@@ -869,7 +873,7 @@ async def main():
     ]
     
     for task, score, feedback in test_interactions:
-        response = await assistant.auto_run(task=task, max_steps=1)
+        response = await assistant.auto_run(initial_request=task, max_steps=1)
         await assistant.learn_from_feedback(task, response.content, score, feedback)
         assistant.performance_history.append({
             "timestamp": datetime.now(),
@@ -906,8 +910,8 @@ import asyncio
 from enum import Enum
 from typing import Dict, List, Optional
 from dataclasses import dataclass
-from src.agents.agent import Agent
-from src.utils.config import ModelConfig
+from src.agents import Agent
+from src.models.models import ModelConfig
 
 class WorkflowStatus(Enum):
     PENDING = "pending"
@@ -932,15 +936,14 @@ class WorkflowOrchestrator:
         
         # Create orchestrator agent
         self.orchestrator = Agent(
-            name="workflow_orchestrator",
-            model_config=ModelConfig(provider="openai", model_name="gpt-4"),
-            instructions="""You orchestrate complex workflows. You:
+            model_config=ModelConfig(type="api", provider="openai", name="gpt-4"),
+            description="""You orchestrate complex workflows. You:
             1. Execute steps in the correct order
             2. Handle dependencies between steps
             3. Evaluate conditions for conditional steps
             4. Coordinate parallel execution
             5. Handle errors gracefully""",
-            register=True
+            agent_name="workflow_orchestrator"
         )
     
     def register_agent(self, agent: Agent):
@@ -1023,7 +1026,7 @@ class WorkflowOrchestrator:
             
             # Execute task
             response = await agent.auto_run(
-                task=step.task,
+                initial_request=step.task,
                 max_steps=5
             )
             
@@ -1067,19 +1070,19 @@ async def main():
     # Create specialized agents
     data_fetcher = Agent(
         name="data_fetcher",
-        model_config=ModelConfig(provider="openai", model_name="gpt-3.5-turbo"),
+        model_config=ModelConfig(type="api", provider="openai", name="gpt-4.1-mini"),
         instructions="You fetch and prepare data for analysis."
     )
     
     analyzer = Agent(
         name="analyzer",
-        model_config=ModelConfig(provider="openai", model_name="gpt-4"),
+        model_config=ModelConfig(type="api", provider="openai", name="gpt-4"),
         instructions="You analyze data and identify patterns."
     )
     
     report_writer = Agent(
         name="report_writer",
-        model_config=ModelConfig(provider="openai", model_name="gpt-4"),
+        model_config=ModelConfig(type="api", provider="openai", name="gpt-4"),
         instructions="You write comprehensive reports."
     )
     
@@ -1093,37 +1096,37 @@ async def main():
         WorkflowStep(
             name="fetch_sales_data",
             agent_name="data_fetcher",
-            task="Fetch Q4 2023 sales data for all regions"
+            initial_request="Fetch Q4 2023 sales data for all regions"
         ),
         WorkflowStep(
             name="fetch_market_data",
             agent_name="data_fetcher",
-            task="Fetch market trends data for the same period",
+            initial_request="Fetch market trends data for the same period",
             parallel=True  # Can run in parallel with sales data
         ),
         WorkflowStep(
             name="analyze_sales",
             agent_name="analyzer",
-            task="Analyze the sales data and identify top performing products",
+            initial_request="Analyze the sales data and identify top performing products",
             depends_on=["fetch_sales_data"]
         ),
         WorkflowStep(
             name="analyze_market",
             agent_name="analyzer",
-            task="Analyze market trends and competitive landscape",
+            initial_request="Analyze market trends and competitive landscape",
             depends_on=["fetch_market_data"]
         ),
         WorkflowStep(
             name="deep_analysis",
             agent_name="analyzer",
-            task="Perform deep analysis combining sales and market data",
+            initial_request="Perform deep analysis combining sales and market data",
             depends_on=["analyze_sales", "analyze_market"],
             condition="success:analyze_sales"  # Only if sales analysis succeeded
         ),
         WorkflowStep(
             name="write_report",
             agent_name="report_writer",
-            task="Write executive summary report with all findings and recommendations",
+            initial_request="Write executive summary report with all findings and recommendations",
             depends_on=["deep_analysis"]
         )
     ]

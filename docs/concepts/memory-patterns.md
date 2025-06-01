@@ -403,11 +403,11 @@ class SummarizedMemory:
         ])
         
         response = await agent.auto_run(
-            task=f"Summarize this conversation:\n{conversation}",
+            initial_request=f"Summarize this conversation:\n{conversation}",
             max_steps=1
         )
         
-        return response.content
+        return response
 ```
 
 ## Retrieval Patterns

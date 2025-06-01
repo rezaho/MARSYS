@@ -1,5 +1,21 @@
 # Learning Agents
 
+## Overview
+
+Learning agents in MARSYS can adapt their behavior based on feedback, experiences, and training data. They extend the base Agent functionality with learning capabilities.
+
+## Required Imports
+
+```python
+from src.agents import LearnableAgent, Agent
+from src.models.models import ModelConfig, BaseLLM
+from typing import Optional, Dict, Any, List, Tuple
+from datetime import datetime
+from collections import defaultdict, deque
+import json
+import numpy as np
+```
+
 ## Learning Mechanisms
 
 ### 1. Feedback-Based Learning
@@ -10,8 +26,8 @@ Learn from explicit user feedback:
 class FeedbackLearningAgent(LearnableAgent):
     """Agent that learns from feedback scores and text."""
     
-    def __init__(self, **kwargs):
-        super().__init__(**kwargs)
+    def __init__(self, model: BaseLLM, description: str, **kwargs):
+        super().__init__(model=model, description=description, **kwargs)
         self.feedback_history = []
         self.response_patterns = {}
     
@@ -73,8 +89,8 @@ Learn user preferences over time:
 class PreferenceLearningAgent(Agent):
     """Agent that adapts to user preferences."""
     
-    def __init__(self, user_id: str, **kwargs):
-        super().__init__(**kwargs)
+    def __init__(self, model_config: ModelConfig, description: str, user_id: str, **kwargs):
+        super().__init__(model_config=model_config, description=description, **kwargs)
         self.user_id = user_id
         self.preferences = self._load_preferences()
     
@@ -128,8 +144,8 @@ from collections import defaultdict
 class RLAgent(Agent):
     """Agent using reinforcement learning principles."""
     
-    def __init__(self, epsilon: float = 0.1, **kwargs):
-        super().__init__(**kwargs)
+    def __init__(self, model_config: ModelConfig, description: str, epsilon: float = 0.1, **kwargs):
+        super().__init__(model_config=model_config, description=description, **kwargs)
         self.epsilon = epsilon  # Exploration rate
         self.q_table = defaultdict(lambda: defaultdict(float))
         self.learning_rate = 0.1
@@ -192,8 +208,8 @@ Agent that learns how to learn:
 class MetaLearningAgent(Agent):
     """Agent that optimizes its own learning process."""
     
-    def __init__(self, **kwargs):
-        super().__init__(**kwargs)
+    def __init__(self, model_config: ModelConfig, description: str, **kwargs):
+        super().__init__(model_config=model_config, description=description, **kwargs)
         self.learning_strategies = {
             "direct": self._learn_direct,
             "analogy": self._learn_by_analogy,
@@ -258,8 +274,8 @@ Agent that learns continuously without forgetting:
 class ContinualLearningAgent(Agent):
     """Agent with continual learning capabilities."""
     
-    def __init__(self, **kwargs):
-        super().__init__(**kwargs)
+    def __init__(self, model_config: ModelConfig, description: str, **kwargs):
+        super().__init__(model_config=model_config, description=description, **kwargs)
         self.knowledge_base = {}
         self.skill_registry = {}
         self.experience_replay_buffer = deque(maxlen=1000)
@@ -308,8 +324,8 @@ Learn from minimal examples:
 class FewShotLearningAgent(Agent):
     """Agent capable of learning from few examples."""
     
-    def __init__(self, **kwargs):
-        super().__init__(**kwargs)
+    def __init__(self, model_config: ModelConfig, description: str, **kwargs):
+        super().__init__(model_config=model_config, description=description, **kwargs)
         self.example_bank = defaultdict(list)
     
     async def learn_from_few_examples(
@@ -402,8 +418,8 @@ class LearningMetrics:
 class SelfImprovingAssistant(LearnableAgent):
     """Assistant that improves through use."""
     
-    def __init__(self, **kwargs):
-        super().__init__(**kwargs)
+    def __init__(self, model: BaseLLM, description: str, **kwargs):
+        super().__init__(model=model, description=description, **kwargs)
         self.session_feedback = []
         self.improvement_threshold = 0.7
     
@@ -456,33 +472,34 @@ class TestLearningAgent:
     async def test_feedback_learning(self):
         """Test agent learns from feedback."""
         agent = FeedbackLearningAgent(
-            name="test_learner",
-            model_config=ModelConfig(provider="openai", model_name="gpt-3.5-turbo")
+            agent_name="test_learner",
+            model_config=ModelConfig(type="api", provider="openai", name="gpt-4.1-mini"),
+            description="Test learning agent"
         )
         
         # Initial response
         response1 = await agent.auto_run(
-            task="Explain recursion",
+            initial_request="Explain recursion",
             max_steps=1
         )
         
         # Provide feedback
         await agent.learn_from_feedback(
-            task="Explain recursion",
-            response=response1.content,
+            initial_request="Explain recursion",
+            response=response1,
             feedback_score=0.4,
             feedback_text="Too technical, needs simpler explanation"
         )
         
         # Check if agent adapted
         response2 = await agent.auto_run(
-            task="Explain recursion",
+            initial_request="Explain recursion",
             max_steps=1
         )
         
         # Response should be different and simpler
-        assert response1.content != response2.content
-        assert "simple" in response2.content.lower() or "easy" in response2.content.lower()
+        assert response1 != response2
+        assert "simple" in response2.lower() or "easy" in response2.lower()
 ```
 
 ## Next Steps

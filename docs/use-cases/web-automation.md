@@ -13,22 +13,26 @@ This example demonstrates web automation capabilities:
 
 ```python
 import asyncio
-from src.agents.browser_agent import BrowserAgent
-from src.utils.config import ModelConfig
+from src.agents import BrowserAgent, Agent
+from src.models.models import ModelConfig
 
 async def web_automation_example():
-    # Create a browser agent
-    scraper = BrowserAgent(
-        name="web_scraper",
-        model_config=ModelConfig(provider="openai", model_name="gpt-4"),
-        headless=True,  # Run without visible browser
-        instructions="""You are a web automation expert. 
-        Extract data efficiently and handle dynamic content."""
+    # Create a browser agent using the create method
+    scraper = await BrowserAgent.create(
+        model_config=ModelConfig(
+            type="api",
+            provider="openai", 
+            name="gpt-4"
+        ),
+        generation_description="""You are a web automation expert. 
+        Extract data efficiently and handle dynamic content.""",
+        headless_browser=True,  # Run without visible browser
+        agent_name="web_scraper"
     )
     
     # Scrape product information
     result = await scraper.auto_run(
-        task="""
+        initial_request="""
         1. Navigate to https://example-shop.com/products
         2. Extract all product names and prices
         3. Find products under $50
@@ -41,14 +45,18 @@ async def web_automation_example():
 
 async def form_automation():
     # Form filling agent
-    form_agent = BrowserAgent(
-        name="form_filler",
-        model_config=ModelConfig(provider="openai", model_name="gpt-3.5-turbo"),
-        instructions="You automate form submissions accurately."
+    form_agent = await BrowserAgent.create(
+        model_config=ModelConfig(
+            type="api",
+            provider="openai", 
+            name="gpt-4.1-mini"
+        ),
+        generation_description="You automate form submissions accurately.",
+        agent_name="form_filler"
     )
     
     result = await form_agent.auto_run(
-        task="""
+        initial_request="""
         1. Go to https://example.com/contact
         2. Fill the contact form:
            - Name: John Doe
@@ -64,7 +72,7 @@ async def form_automation():
 
 # Run automation
 scrape_result = asyncio.run(web_automation_example())
-print(scrape_result.content)
+print(scrape_result)
 ```
 
 ## Key Features
@@ -78,15 +86,19 @@ print(scrape_result.content)
 ```python
 # Website Monitoring
 async def monitor_website():
-    monitor = BrowserAgent(
-        name="website_monitor",
-        model_config=ModelConfig(provider="openai", model_name="gpt-3.5-turbo"),
-        instructions="Monitor websites for changes and alert on updates."
+    monitor = await BrowserAgent.create(
+        model_config=ModelConfig(
+            type="api",
+            provider="openai", 
+            name="gpt-4.1-mini"
+        ),
+        generation_description="Monitor websites for changes and alert on updates.",
+        agent_name="website_monitor"
     )
     
     # Set up monitoring
     result = await monitor.auto_run(
-        task="""
+        initial_request="""
         1. Navigate to https://example.com/pricing
         2. Extract current prices
         3. Compare with previous prices: [Product A: $99, Product B: $149]
@@ -100,16 +112,20 @@ async def monitor_website():
 # Data Extraction Pipeline
 async def extract_data_pipeline():
     coordinator = Agent(
-        name="pipeline_coordinator",
-        model_config=ModelConfig(provider="openai", model_name="gpt-4"),
-        instructions="""Coordinate web data extraction:
+        model_config=ModelConfig(
+            type="api",
+            provider="openai", 
+            name="gpt-4"
+        ),
+        description="""Coordinate web data extraction:
         1. Use browser agents to scrape data
         2. Process and clean the data
-        3. Generate reports"""
+        3. Generate reports""",
+        agent_name="pipeline_coordinator"
     )
     
     result = await coordinator.auto_run(
-        task="Extract competitor pricing data from 3 websites and create comparison",
+        initial_request="Extract competitor pricing data from 3 websites and create comparison",
         max_steps=15
     )
     

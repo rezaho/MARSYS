@@ -13,41 +13,58 @@ This example shows how to create specialized agents that work together:
 
 ```python
 import asyncio
-from src.agents.agent import Agent
-from src.utils.config import ModelConfig
+from src.agents import Agent
+from src.models.models import ModelConfig
 
 async def create_research_team():
     # Create specialized agents
     researcher = Agent(
-        name="researcher",
-        model_config=ModelConfig(provider="openai", model_name="gpt-4"),
-        instructions="You are a research specialist. Find comprehensive information on topics."
+        model_config=ModelConfig(
+            type="api",
+            provider="openai", 
+            name="gpt-4"
+        ),
+        description="You are a research specialist. Find comprehensive information on topics.",
+        agent_name="researcher"
     )
     
     analyst = Agent(
-        name="analyst",
-        model_config=ModelConfig(provider="anthropic", model_name="claude-3"),
-        instructions="You are a data analyst. Analyze information and identify key insights."
+        model_config=ModelConfig(
+            type="api",
+            provider="anthropic", 
+            name="claude-3-sonnet-20240229"
+        ),
+        description="You are a data analyst. Analyze information and identify key insights.",
+        agent_name="analyst"
     )
     
     writer = Agent(
-        name="writer",
-        model_config=ModelConfig(provider="openai", model_name="gpt-4"),
-        instructions="You are a technical writer. Create clear, well-structured reports."
+        model_config=ModelConfig(
+            type="api",
+            provider="openai", 
+            name="gpt-4"
+        ),
+        description="You are a technical writer. Create clear, well-structured reports.",
+        agent_name="writer"
     )
     
     # Coordinate the team
     coordinator = Agent(
-        name="coordinator",
-        model_config=ModelConfig(provider="openai", model_name="gpt-4"),
-        instructions="""You coordinate a research team. 
+        model_config=ModelConfig(
+            type="api",
+            provider="openai", 
+            name="gpt-4"
+        ),
+        description="""You coordinate a research team. 
         Use the researcher to gather information,
-        the analyst to process it, and the writer to create reports."""
+        the analyst to process it, and the writer to create reports.""",
+        agent_name="coordinator",
+        allowed_peers=["researcher", "analyst", "writer"]
     )
     
     # Run a research project
     result = await coordinator.auto_run(
-        task="Research the impact of AI on healthcare and create a comprehensive report",
+        initial_request="Research the impact of AI on healthcare and create a comprehensive report",
         max_steps=10
     )
     
@@ -55,7 +72,7 @@ async def create_research_team():
 
 # Run the team
 result = asyncio.run(create_research_team())
-print(result.content)
+print(result)
 ```
 
 ## Key Patterns

@@ -7,14 +7,13 @@ Messages are the fundamental communication unit in the Multi-Agent Reasoning Sys
 ```python
 @dataclass
 class Message:
-    role: str                    # Role of the message sender
-    content: str                 # Main message content
-    name: Optional[str]          # Agent/tool name
-    message_id: str              # Unique identifier
-    tool_calls: Optional[List]   # Tool invocations
-    tool_call_id: Optional[str]  # For tool responses
-    metadata: Optional[Dict]     # Additional data
-    timestamp: datetime          # Creation time
+    role: str                          # Role of the message sender
+    content: Optional[str]             # Main message content (can be None)
+    message_id: str                    # Unique identifier (auto-generated)
+    name: Optional[str]                # Agent/tool name
+    tool_calls: Optional[List[Dict]]   # Tool invocations
+    tool_call_id: Optional[str]        # For tool responses
+    agent_call: Optional[Dict]         # For agent invocations
 ```
 
 ## Message Roles
@@ -92,9 +91,9 @@ agent_call = Message(
     role="agent_call",
     content="Research quantum computing basics",
     name="researcher_agent",
-    metadata={
-        "caller": "orchestrator_agent",
-        "task_id": "task_123"
+    agent_call={
+        "agent_name": "researcher_agent",
+        "request": "Research quantum computing basics"
     }
 )
 
@@ -102,11 +101,7 @@ agent_call = Message(
 agent_response = Message(
     role="agent_response",
     content="Quantum computing uses quantum bits...",
-    name="researcher_agent",
-    metadata={
-        "task_id": "task_123",
-        "completion_time": 2.5
-    }
+    name="researcher_agent"
 )
 ```
 
@@ -186,7 +181,7 @@ def process_for_llm(message: Message) -> Dict:
     if message.role == "agent_call":
         return {
             "role": "user",
-            "content": f"[Request from {message.metadata.get('caller')}]: {message.content}"
+            "content": f"[Agent Call]: {message.content}"
         }
     
     # Standard conversion

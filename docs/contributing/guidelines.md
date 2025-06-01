@@ -270,7 +270,7 @@ async def test_agent_creation():
         name="test_agent",
         model_config=ModelConfig(
             provider="openai",
-            model_name="gpt-3.5-turbo"
+            model_name="gpt-4.1-mini"
         )
     )
     assert agent.name == "test_agent"

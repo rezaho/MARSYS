@@ -14,57 +14,74 @@ This example creates a data processing pipeline with:
 
 ```python
 import asyncio
-from src.agents.agent import Agent
-from src.utils.config import ModelConfig
+from src.agents import Agent
+from src.models.models import ModelConfig
 
 async def create_data_pipeline():
     # Data Extractor
     extractor = Agent(
-        name="data_extractor",
-        model_config=ModelConfig(provider="openai", model_name="gpt-4"),
-        instructions="""You extract data from various sources:
+        model_config=ModelConfig(
+            type="api",
+            provider="openai", 
+            name="gpt-4"
+        ),
+        description="""You extract data from various sources:
         - APIs (parse JSON responses)
         - CSV files (handle different formats)
         - Databases (write SQL queries)
-        Always validate data completeness."""
+        Always validate data completeness.""",
+        agent_name="data_extractor"
     )
     
     # Data Transformer
     transformer = Agent(
-        name="data_transformer",
-        model_config=ModelConfig(provider="anthropic", model_name="claude-3"),
-        instructions="""You transform and clean data:
+        model_config=ModelConfig(
+            type="api",
+            provider="anthropic", 
+            name="claude-3-sonnet-20240229"
+        ),
+        description="""You transform and clean data:
         - Remove duplicates
         - Handle missing values
         - Standardize formats
-        - Apply business rules"""
+        - Apply business rules""",
+        agent_name="data_transformer"
     )
     
     # Data Validator
     validator = Agent(
-        name="data_validator",
-        model_config=ModelConfig(provider="openai", model_name="gpt-3.5-turbo"),
-        instructions="""You validate data quality:
+        model_config=ModelConfig(
+            type="api",
+            provider="openai", 
+            name="gpt-4.1-mini"
+        ),
+        description="""You validate data quality:
         - Check data types
         - Verify ranges and constraints
         - Ensure referential integrity
-        - Report anomalies"""
+        - Report anomalies""",
+        agent_name="data_validator"
     )
     
     # Pipeline Coordinator
     coordinator = Agent(
-        name="pipeline_coordinator",
-        model_config=ModelConfig(provider="openai", model_name="gpt-4"),
-        instructions="""You manage the data pipeline:
+        model_config=ModelConfig(
+            type="api",
+            provider="openai", 
+            name="gpt-4"
+        ),
+        description="""You manage the data pipeline:
         1. Use data_extractor to get raw data
         2. Use data_transformer to process it
         3. Use data_validator to ensure quality
-        Provide detailed pipeline execution reports."""
+        Provide detailed pipeline execution reports.""",
+        agent_name="pipeline_coordinator",
+        allowed_peers=["data_extractor", "data_transformer", "data_validator"]
     )
     
     # Run pipeline
     result = await coordinator.auto_run(
-        task="""
+        initial_request="""
         Process customer data:
         1. Extract from API endpoint: /api/customers
         2. Clean and standardize phone numbers and addresses
@@ -78,7 +95,7 @@ async def create_data_pipeline():
 
 # Execute pipeline
 result = asyncio.run(create_data_pipeline())
-print(result.content)
+print(result)
 ```
 
 ## Advanced Pipeline Features
@@ -87,17 +104,21 @@ print(result.content)
 # Real-time Stream Processing
 async def stream_processing_pipeline():
     stream_processor = Agent(
-        name="stream_processor",
-        model_config=ModelConfig(provider="openai", model_name="gpt-4"),
-        instructions="""Process real-time data streams:
+        model_config=ModelConfig(
+            type="api",
+            provider="openai", 
+            name="gpt-4"
+        ),
+        description="""Process real-time data streams:
         - Handle high-velocity data
         - Apply windowing functions
         - Aggregate in real-time
-        - Detect anomalies"""
+        - Detect anomalies""",
+        agent_name="stream_processor"
     )
     
     result = await stream_processor.auto_run(
-        task="Process incoming transaction stream and detect fraud patterns",
+        initial_request="Process incoming transaction stream and detect fraud patterns",
         max_steps=10
     )
     
@@ -107,7 +128,7 @@ async def stream_processing_pipeline():
 async def quality_monitoring():
     quality_monitor = Agent(
         name="quality_monitor",
-        model_config=ModelConfig(provider="openai", model_name="gpt-4"),
+        model_config=ModelConfig(type="api", provider="openai", name="gpt-4"),
         instructions="""Monitor data quality metrics:
         - Completeness
         - Accuracy
@@ -117,7 +138,7 @@ async def quality_monitoring():
     
     # Set up monitoring dashboard
     result = await quality_monitor.auto_run(
-        task="""
+        initial_request="""
         Analyze data quality for the last 24 hours:
         1. Check completeness rates
         2. Identify data anomalies

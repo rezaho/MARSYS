@@ -19,14 +19,14 @@ from src.environment.tools import AVAILABLE_TOOLS
 
 async def create_research_system():
     # Web researcher using browser automation
-    web_researcher = BrowserAgent(
-        agent_name="web_researcher",
+    web_researcher = await BrowserAgent.create(
         model_config=ModelConfig(
             type="api",
             provider="openai",
             name="gpt-4"
         ),
-        headless=True
+        agent_name="web_researcher",
+        headless_browser=True
     )
     
     # Data analyst agent
