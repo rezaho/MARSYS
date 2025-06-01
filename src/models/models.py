@@ -13,13 +13,13 @@ import requests
 from PIL import Image
 
 # Ensure necessary Pydantic imports are present
-from pydantic import model_validator  # Keep model_validator
 from pydantic import (  # root_validator, # Ensure root_validator is removed or commented out
     BaseModel,
     Field,
     ValidationError,
     ValidationInfo,
     field_validator,
+    model_validator,  # Keep model_validator
 )
 from transformers import (
     AutoModelForCausalLM,
@@ -67,7 +67,7 @@ class ModelConfig(BaseModel):
     )
     name: str = Field(
         ...,
-        description="Model identifier (e.g., 'gpt-4-turbo', 'mistralai/Mistral-7B-Instruct-v0.1')",
+        description="Model identifier (e.g., 'gpt-4o', 'mistralai/Mistral-7B-Instruct-v0.1')",
     )
     provider: Optional[
         Literal["openai", "openrouter", "google", "anthropic", "groq"]
@@ -506,15 +506,17 @@ class BaseAPIModel:
                 return ""
 
             # Handle tool calls when in JSON mode - synthesize the expected JSON structure
-            if json_mode and message_obj.get("tool_calls") and not message_obj.get("content"):
+            if (
+                json_mode
+                and message_obj.get("tool_calls")
+                and not message_obj.get("content")
+            ):
                 # When API returns tool_calls with null content, create the expected JSON structure
                 tool_calls = message_obj["tool_calls"]
                 synthesized_json = {
                     "thought": "I need to use a tool to complete this task.",
                     "next_action": "call_tool",
-                    "action_input": {
-                        "tool_calls": tool_calls
-                    }
+                    "action_input": {"tool_calls": tool_calls},
                 }
                 message_role = message_obj.get("role", "assistant")
                 # Replace the message object with content containing the JSON
@@ -522,9 +524,13 @@ class BaseAPIModel:
                 message_obj = {
                     "role": message_role,
                     "content": json.dumps(synthesized_json),
-                    "tool_calls": tool_calls  # Preserve original tool_calls for compatibility
+                    "tool_calls": tool_calls,  # Preserve original tool_calls for compatibility
                 }
-            elif json_mode and message_obj.get("tool_calls") and message_obj.get("content"):
+            elif (
+                json_mode
+                and message_obj.get("tool_calls")
+                and message_obj.get("content")
+            ):
                 # If both tool_calls and content are present, we can use them
                 tool_calls = message_obj["tool_calls"]
                 content = message_obj["content"]
@@ -533,7 +539,7 @@ class BaseAPIModel:
                 message_obj = {
                     "role": message_role,
                     "content": content,
-                    "tool_calls": tool_calls
+                    "tool_calls": tool_calls,
                 }
             elif json_mode and message_obj.get("content"):
                 # If only content is present, we can return it directly
@@ -543,7 +549,7 @@ class BaseAPIModel:
                 message_obj = {
                     "role": message_role,
                     "content": content,
-                    "tool_calls": []  # No tool calls in this case
+                    "tool_calls": [],  # No tool calls in this case
                 }
             elif not json_mode and message_obj.get("content"):
                 # If not in JSON mode and content is present, return it as is
@@ -553,7 +559,7 @@ class BaseAPIModel:
                 message_obj = {
                     "role": message_role,
                     "content": content,
-                    "tool_calls": []  # No tool calls in this case
+                    "tool_calls": [],  # No tool calls in this case
                 }
             else:
                 # If no tool calls or content, return the message as is
