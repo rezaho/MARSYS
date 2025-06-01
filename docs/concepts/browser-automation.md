@@ -31,8 +31,9 @@ async def main():
     browser_agent = await BrowserAgent.create_safe( # Using create_safe for robust initialization
         agent_name="web_navigator",
         model_config=ModelConfig(
+            type="api",
             provider="openai",
-            model_name="gpt-4-turbo", # A capable model for planning
+            name="gpt-4o", # A capable model for planning
             # For tasks involving visual understanding of screenshots, a vision model might be beneficial,
             # though BrowserAgent primarily uses the LLM for planning and tool use.
         ),

@@ -851,8 +851,9 @@ async def main():
     assistant = SelfImprovingAssistant(
         name="learning_assistant",
         model_config=ModelConfig(
+            type="api",
             provider="openai",
-            model_name="gpt-4",
+            name="gpt-4o",
             temperature=0.7
         ),
         instructions="""You are a helpful assistant that learns from feedback.
