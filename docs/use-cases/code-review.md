@@ -23,7 +23,7 @@ async def create_code_review_team():
         model_config=ModelConfig(
             type="api",
             provider="openai", 
-            name="gpt-4"
+            name="gpt-4.1-mini
         ),
         description="""You are a security expert. Review code for:
         - SQL injection vulnerabilities
@@ -68,7 +68,7 @@ async def create_code_review_team():
         model_config=ModelConfig(
             type="api",
             provider="openai", 
-            name="gpt-4"
+            name="gpt-4.1-mini
         ),
         description="""You coordinate code reviews. Use:
         - security_reviewer for security analysis

@@ -37,7 +37,7 @@ async def create_content_pipeline():
         model_config=ModelConfig(
             type="api",
             provider="openai",
-            name="gpt-4"
+            name="gpt-4.1-mini
         ),
         description="You create content strategies and outlines"
     )
@@ -48,7 +48,7 @@ async def create_content_pipeline():
         model_config=ModelConfig(
             type="api",
             provider="openai",
-            name="gpt-4",
+            name="gpt-4.1-mini,
             temperature=0.8
         ),
         description="You write engaging content based on outlines",
@@ -61,7 +61,7 @@ async def create_content_pipeline():
         model_config=ModelConfig(
             type="api",
             provider="openai",
-            name="gpt-4"
+            name="gpt-4.1-mini
         ),
         description="You optimize content for search engines",
         tools={"optimize_seo": optimize_seo}
@@ -73,7 +73,7 @@ async def create_content_pipeline():
         model_config=ModelConfig(
             type="api",
             provider="openai",
-            name="gpt-4"
+            name="gpt-4.1-mini
         ),
         description="You edit and polish content to perfection",
         allowed_peers=["content_writer", "seo_optimizer"]

@@ -55,7 +55,7 @@ agent = Agent(
     model_config=ModelConfig(
         type="api",
         provider="openai",
-        name="gpt-4"
+        name="gpt-4.1-mini
     ),
     description="A weather assistant agent",
     tools={"get_weather": get_weather}
@@ -504,7 +504,7 @@ agent = Agent(
     model_config=ModelConfig(
         type="api",
         provider="openai",
-        name="gpt-4"
+        name="gpt-4.1-mini
     ),
     tools={"my_custom_tool": my_custom_tool}
 )
@@ -525,7 +525,7 @@ async def main():
         model_config=ModelConfig(
             type="api",
             provider="openai",
-            name="gpt-4"
+            name="gpt-4.1-mini
         ),
         tools={
             "calculate": AVAILABLE_TOOLS["calculate"],

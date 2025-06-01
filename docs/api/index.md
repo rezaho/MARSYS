@@ -191,7 +191,7 @@ class ModelConfig:
     """Configuration for AI models."""
     
     provider: str  # "openai", "anthropic", "google"
-    model_name: str  # e.g., "gpt-4", "claude-3"
+    model_name: str  # e.g., "gpt-4.1-mini, "claude-3"
     api_key: Optional[str] = None
     temperature: float = 0.7
     max_tokens: int = 2000
@@ -386,7 +386,7 @@ from src.models.models import ModelConfig
 # Configure model
 config = ModelConfig(
     provider="openai",
-    model_name="gpt-4",
+    model_name="gpt-4.1-mini,
     temperature=0.7
 )
 
@@ -516,7 +516,7 @@ results = await asyncio.gather(
 ```python
 config = ModelConfig(
     provider="openai",
-    model_name="gpt-4",
+    model_name="gpt-4.1-mini,
     temperature=0.7,
     max_tokens=2000,
     timeout=120

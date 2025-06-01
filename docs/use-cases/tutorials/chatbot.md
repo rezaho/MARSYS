@@ -58,7 +58,7 @@ async def get_weather(city: str) -> str:
 # Create chatbot with tools
 async def create_smart_chatbot():
     chatbot = Agent(
-        model_config=ModelConfig(type="api", provider="openai", name="gpt-4"),
+        model_config=ModelConfig(type="api", provider="openai", name="gpt-4.1-mini),
         description="""You are a helpful assistant with access to tools.
         Use them when appropriate to provide accurate information.""",
         tools={
@@ -108,7 +108,7 @@ from src.agents import BrowserAgent
 
 async def multimodal_chatbot():
     chatbot = await BrowserAgent.create(
-        model_config=ModelConfig(type="api", provider="openai", name="gpt-4"),
+        model_config=ModelConfig(type="api", provider="openai", name="gpt-4.1-mini),
         generation_description="""You can browse the web and analyze images.
         Use these capabilities to provide comprehensive help.""",
         agent_name="multimodal_assistant"
@@ -141,7 +141,7 @@ async def create_custom_personality():
 ```python
 async def context_aware_chatbot():
     chatbot = Agent(
-        model_config=ModelConfig(type="api", provider="openai", name="gpt-4"),
+        model_config=ModelConfig(type="api", provider="openai", name="gpt-4.1-mini),
         description="""Maintain conversation context:
         - Remember user preferences
         - Track conversation topics

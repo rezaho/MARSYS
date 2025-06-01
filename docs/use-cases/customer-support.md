@@ -36,7 +36,7 @@ async def create_support_system():
         model_config=ModelConfig(
             type="api",
             provider="openai",
-            name="gpt-4"
+            name="gpt-4.1-mini
         ),
         description="You handle support tickets and look up ticket information",
         tools={"lookup_ticket": lookup_ticket}
@@ -48,7 +48,7 @@ async def create_support_system():
         model_config=ModelConfig(
             type="api",
             provider="openai",
-            name="gpt-4"
+            name="gpt-4.1-mini
         ),
         description="You are a friendly customer service representative",
         allowed_peers=["ticket_handler", "technical_support"]
@@ -60,7 +60,7 @@ async def create_support_system():
         model_config=ModelConfig(
             type="api",
             provider="openai",
-            name="gpt-4"
+            name="gpt-4.1-mini
         ),
         description="You provide technical solutions and troubleshooting"
     )

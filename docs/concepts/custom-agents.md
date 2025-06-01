@@ -1062,7 +1062,7 @@ def create_specialized_agent(domain: str, agent_name: str, model_config: ModelCo
     )
 
 # Example conceptual usage:
-# model_cfg = ModelConfig(type="api", provider="openai", name="gpt-4") # Or your preferred model
+# model_cfg = ModelConfig(type="api", provider="openai", name="gpt-4.1-mini) # Or your preferred model
 # legal_eagle = create_specialized_agent(domain="legal", agent_name="LegalEagleBot", model_config=model_cfg)
 # financial_guru = create_specialized_agent(domain="financial", agent_name="FinanceGuru", model_config=model_cfg)
 ```
