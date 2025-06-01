@@ -281,8 +281,8 @@ export LOG_LEVEL=DEBUG
 ### Where can I get help?
 
 1. Check the [documentation](../index.md)
-2. Search [existing issues](https://github.com/yourusername/MARSYS/issues) <!-- TODO: Update placeholder URL -->
-3. Ask in [discussions](https://github.com/yourusername/MARSYS/discussions) <!-- TODO: Update placeholder URL -->
+2. Search [existing issues](https://github.com/rezaho/MARSYS/issues) <!-- TODO: Update placeholder URL -->
+3. Ask in [discussions](https://github.com/rezaho/MARSYS/discussions) <!-- TODO: Update placeholder URL -->
 4. Join our [Discord community](https://discord.gg/yourinvite) <!-- TODO: Update placeholder URL -->
 
 ## Advanced Topics
@@ -372,4 +372,4 @@ The project is maintained by [Your Organization] <!-- TODO: Update placeholder -
 
 ---
 
-Still have questions? [Open an issue](https://github.com/yourusername/MARSYS/issues/new) <!-- TODO: Update placeholder URL --> or ask in our [Discord community](https://discord.gg/yourinvite) <!-- TODO: Update placeholder URL -->!
+Still have questions? [Open an issue](https://github.com/rezaho/MARSYS/issues/new) <!-- TODO: Update placeholder URL --> or ask in our [Discord community](https://discord.gg/yourinvite) <!-- TODO: Update placeholder URL -->!

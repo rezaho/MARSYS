@@ -64,7 +64,7 @@ export OPENAI_API_KEY="your-key-here"
 
 3. Clone examples:
 ```bash
-git clone https://github.com/yourusername/MARSYS
+git clone https://github.com/rezaho/MARSYS
 cd examples
 ```
 

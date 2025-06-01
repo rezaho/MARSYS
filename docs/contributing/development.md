@@ -12,7 +12,7 @@ Set up your development environment for contributing to the framework.
 
 1. **Fork and Clone**
    ```bash
-   git clone https://github.com/yourusername/MARSYS.git
+   git clone https://github.com/rezaho/MARSYS.git
    cd MARSYS
    ```
 

@@ -16,7 +16,7 @@ By participating in this project, you agree to abide by our Code of Conduct:
 
 ```bash
 # Fork the repository on GitHub, then:
-git clone https://github.com/YOUR_USERNAME/MARSYS.git
+git clone https://github.com/rezaho/MARSYS.git
 cd MARSYS
 
 # Add upstream remote
@@ -154,7 +154,7 @@ cd docs && mkdocs build
 ## Areas for Contribution
 
 ### 🐛 Bug Fixes
-- Check the [issue tracker](https://github.com/yourusername/MARSYS/issues)
+- Check the [issue tracker](https://github.com/rezaho/MARSYS/issues)
 - Look for "good first issue" labels
 - Reproduce the bug and write a test
 - Submit a fix with the test
@@ -377,9 +377,9 @@ def complex_function(
 
 ### Resources
 
-- [Documentation](https://yourusername.github.io/MARSYS/)
-- [Issue Tracker](https://github.com/yourusername/MARSYS/issues)
-- [Discussions](https://github.com/yourusername/MARSYS/discussions)
+- [Documentation](https://rezaho.github.io/MARSYS/)
+- [Issue Tracker](https://github.com/rezaho/MARSYS/issues)
+- [Discussions](https://github.com/rezaho/MARSYS/discussions)
 - [Discord Community](https://discord.gg/yourinvite)
 
 ### Questions?

@@ -13,7 +13,7 @@
 ### 1. Clone the Repository
 
 ```bash
-git clone https://github.com/YOUR_USERNAME/YOUR_REPOSITORY.git <!-- TODO: Update with actual repository URL -->
+git clone https://github.com/rezaho/MARSys.git 
 cd YOUR_REPOSITORY <!-- TODO: Update with actual repository directory name -->
 ```
 
@@ -150,5 +150,5 @@ docker-compose up
 ### Getting Help
 
 - Check the [FAQ](../project/faq.md) for answers to common questions.
-- Open an issue on the project's [GitHub Issues page](https://github.com/YOUR_USERNAME/YOUR_REPOSITORY/issues). <!-- TODO: Update with actual repository URL -->
+- Open an issue on the project's [GitHub Issues page](https://github.com/rezaho/MARSys/issues). 
 - Join our community forum or chat (e.g., Discord, Slack) if available. <!-- TODO: Update with actual community link if one exists, e.g., https://discord.gg/YOUR_INVITE_CODE -->
