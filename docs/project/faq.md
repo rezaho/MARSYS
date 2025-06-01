@@ -74,8 +74,9 @@ from src.models.models import ModelConfig
 agent = Agent(
     name="my_agent",
     model_config=ModelConfig(
+        type="api",
         provider="openai",
-        model_name="gpt-4"
+        name="gpt-4o"
     ),
     instructions="You are a helpful assistant"
 )
