@@ -63,3 +63,31 @@ These guidelines MUST be followed by any AI agent generating or modifying code w
 6.1. **Justification of Approach:**
     - For non-trivial changes, especially those involving architectural decisions (e.g., creating new modules, choosing a specific design pattern) or complex logic, the agent SHOULD provide a brief explanation of its reasoning. This can be included in the "thought" process or as a comment preceding the plan/code.
     - This helps in understanding the agent's choices and ensuring they are well-founded.
+
+## 7. Plan Generation Protocol
+
+When requested to provide a "plan" for addressing a problem, implementing a feature, or making changes, the agent MUST adhere to the following structure and provide the specified information:
+
+7.1. **Problem Definition & Analysis:**
+    - Clearly articulate the problem being solved or the objective of the task.
+    - If an existing issue tracker or bug report is associated with the task, reference it and summarize its key points.
+    - Analyze the core requirements and constraints of the problem.
+
+7.2. **Contextual Information Gathering:**
+    - Identify and list all source files that are directly relevant to the task (i.e., files that will be modified or that contain entities to be used/interacted with).
+    - Proactively use tools (`read_file`, `semantic_search`, `grep_search`, `list_code_usages`) to gather information about these files, including relevant classes, functions, methods, and their current states or behaviors.
+    - Summarize the findings from this information gathering phase.
+
+7.3. **Detailed Action Plan & Current State Assessment:**
+    - For each file identified in step 7.2 that requires modification, describe its current state relevant to the task.
+    - Outline the specific changes (additions, modifications, deletions) planned for each file.
+    - Justify why these changes are necessary to address the problem or implement the feature.
+
+7.4. **Implementation Strategy & Component Design:**
+    - Describe in detail how the proposed solution will be implemented.
+    - For any new or modified classes, functions, methods, or modules:
+        - Explain their purpose and core logic.
+        - Define their expected inputs and outputs.
+        - Describe their internal states or attributes, if any.
+        - Detail how they will interact with each other and with existing components of the MARSYS framework.
+        - Ensure the proposed implementation aligns with the architectural principles and coding standards outlined in `Framework_Development_Guide.instructions.md` and `AI_Agent_Guidelines.instructions.md`.
