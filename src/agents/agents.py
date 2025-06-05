@@ -19,7 +19,7 @@ from typing import List  # Added Coroutine
 from typing import Any, Coroutine, Dict, Optional, Union
 
 # --- New Imports ---
-from src.environment.utils import generate_openai_tool_schema
+from src.environment.utils import generate_openai_tool_schema, convert_user_schema_to_json_schema, validate_data_against_schema
 from src.models.models import BaseAPIModel, BaseLLM, BaseVLM, ModelConfig, PeftHead
 from src.utils.monitoring import default_progress_monitor
 
@@ -82,6 +82,8 @@ class BaseAgent(ABC):
         max_tokens: Optional[int] = 512,
         agent_name: Optional[str] = None,
         allowed_peers: Optional[List[str]] = None,
+        input_schema: Optional[Union[List[str], Dict[str, type], Dict[str, Any]]] = None,
+        output_schema: Optional[Union[List[str], Dict[str, type], Dict[str, Any]]] = None,
     ) -> None:
         """
         Initializes the BaseAgent.
@@ -93,6 +95,12 @@ class BaseAgent(ABC):
             max_tokens: Default maximum tokens for model generation.
             agent_name: Optional specific name for registration.
             allowed_peers: List of agent names this agent can call.
+            input_schema: Schema for validating incoming requests. Can be:
+                - List of strings: Each string is a required key; all values are strings
+                - Dict of key:type: Each key is required; value type is enforced
+                - Full JSON Schema: Most advanced/flexible
+                - None: No validation (default)
+            output_schema: Schema for validating outgoing responses. Same formats as input_schema.
 
         Raises:
             ValueError: If tools are provided without schema or vice-versa.
@@ -106,6 +114,13 @@ class BaseAgent(ABC):
         self.description = description
         self.tools = tools or {}  # Ensure self.tools is a dict
         self.tools_schema: List[Dict[str, Any]] = []  # Initialize as empty list
+        
+        # Convert and store input/output schemas
+        try:
+            self.input_schema_json = convert_user_schema_to_json_schema(input_schema)
+            self.output_schema_json = convert_user_schema_to_json_schema(output_schema)
+        except ValueError as e:
+            raise ValueError(f"Invalid schema format: {e}")
 
         # Initialize logger for the agent instance early
         self.logger = logging.getLogger(
@@ -601,6 +616,35 @@ class BaseAgent(ABC):
                 "Initial request details for callee's auto_run",
                 data={"request_payload_for_callee": request_payload_for_callee},
             )
+
+        # --- Schema Validation for Input ---
+        # Validate the request against the target agent's input schema if it has one
+        if hasattr(target_agent, 'input_schema_json') and target_agent.input_schema_json.get("type") == "object":
+            # Extract the request payload that will be validated
+            # For agent-to-agent communication, we validate the 'request' field if it exists,
+            # otherwise validate the entire payload
+            validation_data = request_payload_for_callee
+            if isinstance(request_payload_for_callee, dict) and "request" in request_payload_for_callee:
+                # If there's a 'request' field, validate that (common pattern for structured requests)
+                validation_data = request_payload_for_callee["request"]
+            
+            is_valid, error_msg = validate_data_against_schema(validation_data, target_agent.input_schema_json)
+            if not is_valid:
+                error_msg = f"Request validation failed for agent '{target_agent_name}': {error_msg}"
+                await self._log_progress(
+                    request_context,
+                    LogLevel.MINIMAL,
+                    f"Input schema validation error: {error_msg}",
+                    interaction_id=interaction_id,
+                    data={"error": "InputSchemaValidation", "schema": target_agent.input_schema_json}
+                )
+                return Message(
+                    role="error",
+                    content=error_msg,
+                    name=self.name,
+                    message_id=str(uuid.uuid4()),
+                )
+        # --- End Schema Validation ---
 
         try:
             # Call auto_run on the target agent for multi-step execution
@@ -1112,6 +1156,25 @@ class BaseAgent(ABC):
                             "For 'final_response', 'action_input' must contain 'response' (string)."
                         )
                     final_answer_str = final_response_content
+                    
+                    # --- Schema Validation for Output ---
+                    # Validate the response against this agent's output schema if it has one
+                    if hasattr(self, 'output_schema_json') and self.output_schema_json.get("type") == "object":
+                        # For output validation, we typically validate the entire action_input
+                        # since it contains the structured response data  
+                        is_valid, error_msg = validate_data_against_schema(action_input_val, self.output_schema_json)
+                        if not is_valid:
+                            error_msg = f"Output validation failed for agent '{self.name}': {error_msg}"
+                            await self._log_progress(
+                                current_step_request_context,
+                                LogLevel.MINIMAL,
+                                f"Output schema validation error: {error_msg}",
+                                data={"error": "OutputSchemaValidation", "schema": self.output_schema_json, "response": action_input_val}
+                            )
+                            # Instead of raising an error (which could break the agent), log the error
+                            # and let the response proceed. This follows the principle of graceful degradation.
+                            # If stricter validation is needed, this could be changed to raise an exception.
+                    # --- End Schema Validation ---
                 else:
                     raise ValueError(
                         f"Unknown 'next_action': {next_action_val}. Must be 'invoke_agent', 'call_tool', or 'final_response'."
@@ -1622,6 +1685,8 @@ class Agent(BaseAgent):
         max_tokens: Optional[int] = None,  # Explicit override; None ⇒ use ModelConfig
         agent_name: Optional[str] = None,
         allowed_peers: Optional[List[str]] = None,
+        input_schema: Optional[Union[List[str], Dict[str, type], Dict[str, Any]]] = None,
+        output_schema: Optional[Union[List[str], Dict[str, type], Dict[str, Any]]] = None,
     ) -> None:
         """
         Initializes the Agent.
@@ -1634,6 +1699,12 @@ class Agent(BaseAgent):
             max_tokens: Default maximum tokens for generation for this agent instance (overrides model_config default).
             agent_name: Optional specific name for registration.
             allowed_peers: List of agent names this agent can call.
+            input_schema: Schema for validating incoming requests. Can be:
+                - List of strings: Each string is a required key; all values are strings
+                - Dict of key:type: Each key is required; value type is enforced
+                - Full JSON Schema: Most advanced/flexible
+                - None: No validation (default)
+            output_schema: Schema for validating outgoing responses. Same formats as input_schema.
 
         Raises:
             ValueError: If model_config is invalid or required keys are missing.
@@ -1654,6 +1725,8 @@ class Agent(BaseAgent):
             max_tokens=effective_max_tokens,  # Use the determined max_tokens
             agent_name=agent_name,
             allowed_peers=allowed_peers,  # Pass allowed_peers
+            input_schema=input_schema,
+            output_schema=output_schema,
         )
         self.memory = MemoryManager(
             memory_type=memory_type or "conversation_history",

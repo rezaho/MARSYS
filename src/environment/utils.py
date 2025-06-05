@@ -234,3 +234,79 @@ def generate_openai_tool_schema(func: Callable, func_name: str) -> Dict[str, Any
         schema["function"]["parameters"]["required"] = required_params
         
     return schema
+
+
+# Schema validation utilities for agent input/output schemas
+def convert_user_schema_to_json_schema(user_schema: Union[List[str], Dict[str, type], Dict[str, Any], None]) -> Dict[str, Any]:
+    """
+    Converts user-friendly schema formats to full JSON Schema.
+    
+    Args:
+        user_schema: User-provided schema in one of three formats:
+            1. List of strings: Each string is a required key; all values are strings
+            2. Dict of key:type: Each key is required; value type is enforced  
+            3. Full JSON Schema: Already in JSON Schema format
+            4. None: No validation (accepts any object)
+    
+    Returns:
+        Dict containing full JSON Schema for validation
+    """
+    if user_schema is None:
+        # No schema provided - accept any object
+        return {"type": "object"}
+    
+    if isinstance(user_schema, list):
+        # List of strings format: ["key1", "key2"] 
+        # All keys are required and expected to be strings
+        if not all(isinstance(key, str) for key in user_schema):
+            raise ValueError("List schema format requires all elements to be strings")
+        
+        properties = {key: {"type": "string"} for key in user_schema}
+        return {
+            "type": "object",
+            "properties": properties,
+            "required": list(user_schema)
+        }
+    
+    if isinstance(user_schema, dict):
+        # Could be dict of key:type or full JSON Schema
+        # Check if it looks like a full JSON Schema (has 'type' key)
+        if "type" in user_schema:
+            # Assume it's already a JSON Schema
+            return user_schema
+        
+        # Dict of key:type format: {"key1": str, "key2": int}
+        properties = {}
+        for key, value_type in user_schema.items():
+            if not isinstance(key, str):
+                raise ValueError("Schema keys must be strings")
+            properties[key] = _map_type_to_json_schema(value_type)
+        
+        return {
+            "type": "object", 
+            "properties": properties,
+            "required": list(user_schema.keys())
+        }
+    
+    raise ValueError(f"Unsupported schema format: {type(user_schema)}. Must be list, dict, or None.")
+
+
+def validate_data_against_schema(data: Any, schema: Dict[str, Any]) -> tuple[bool, str]:
+    """
+    Validates data against a JSON Schema.
+    
+    Args:
+        data: The data to validate
+        schema: JSON Schema to validate against
+        
+    Returns:
+        Tuple of (is_valid, error_message). error_message is empty string if valid.
+    """
+    try:
+        import jsonschema
+        jsonschema.validate(data, schema)
+        return True, ""
+    except jsonschema.ValidationError as e:
+        return False, str(e)
+    except Exception as e:
+        return False, f"Schema validation error: {str(e)}"
