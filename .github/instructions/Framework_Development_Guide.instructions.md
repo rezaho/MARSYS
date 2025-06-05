@@ -32,11 +32,100 @@ Infra        ─┘  (Registry, Memory, Utils, Monitoring)
 
 | Class / Module | Purpose | Key Methods |
 |----------------|---------|-------------|
-| `BaseAgent` | foundation for all agents | registration, progress logging, tool schema gen |
-| `Agent` | generic agent (local or API) | `_run`, `auto_run`, `invoke_agent` |
-| `BrowserAgent` | web-automation agent | Playwright integration + tool mapping |
-| `MemoryManager` | message storage | `update_memory`, `retrieve_*`, `to_llm_format`, `update_from_response` |
-| `Message` | OpenAI-compatible message object | `.to_llm_dict()`, `.from_response_dict()` |
+| `BaseAgent` | Abstract foundation for all agents | `_run()`, `auto_run()`, `invoke_agent()`, progress logging, tool schema generation |
+| `Agent` | Standard agent implementation | `_run()`, `auto_run()`, OpenAI JSON mode responses, tool/peer invocation |
+| `BrowserAgent` | Web automation specialist | Playwright integration, page navigation, element interaction |
+| `BaseLearnableAgent` | Learning-enabled agent base | Reward tracking, experience replay, RL integration |
+| `LearnableAgent` | Concrete learnable agent | Policy updates, learning from interactions |
+| `MemoryManager` | Central memory coordinator | `update_memory()`, `retrieve_*()`, `to_llm_format()`, `update_from_response()` |
+| `Message` | OpenAI-compatible message | `.to_llm_dict()`, `.from_response_dict()`, role validation |
+| `ModelConfig` | Model configuration (Pydantic) | Provider setup, parameter validation, environment integration |
+| `BaseAPIModel` | HTTP-based model wrapper | API calls, retry logic, rate limiting, streaming |
+| `BaseLLM` | Local transformer models | GPU acceleration, tokenization, generation |
+| `BaseVLM` | Vision-language models | Image preprocessing, multimodal input handling |
+| `AgentRegistry` | Global agent lifecycle manager | Registration, weak references, thread-safe operations |
+| `RequestContext` | Async context propagation | Depth tracking, interaction counting, progress monitoring |
+| `BaseCrew` | Multi-agent orchestration | Task distribution, result aggregation, resource cleanup |
+| `GRPOTrainer` | Reinforcement learning trainer | Policy optimization, TRL integration, reward processing |
+
+## 2.1 Module Overview & Logical Flow
+This repository is organized into core modules under `src/` that collaborate to implement a multi-agent reasoning system:
+
+### **src/agents/** - Agent Architecture & Communication
+- **Core Classes:**
+  - `BaseAgent` (abstract): Foundation with registration, progress logging, tool schema generation, and peer discovery via `AgentRegistry`
+  - `Agent`: Standard implementation with OpenAI-style JSON mode responses, tool/peer invocation, auto-retry logic
+  - `BrowserAgent`: Web automation specialist extending `BaseAgent` with Playwright integration
+  - `BaseLearnableAgent` & `LearnableAgent`: Learning-enabled agents with reward tracking, experience replay, and RL integration
+
+- **Memory Management:**
+  - `Message`: OpenAI-compatible message objects with role validation, tool call handling, and LLM format conversion
+  - `ConversationMemory` & `KGMemory`: Conversation history and knowledge graph storage implementations  
+  - `MemoryManager`: Central coordinator with input/output processors, message transformation pipelines, and automatic LLM format conversion
+
+- **Infrastructure:**
+  - `AgentRegistry`: Global agent lifecycle management using weak references and thread-safe operations
+  - `RequestContext`: Async context propagation with depth tracking, interaction counting, and progress monitoring
+  - `ProgressLogger`: Structured logging with level filtering (`MINIMAL` to `DEBUG`) and data truncation
+
+### **src/environment/** - External Integration & Tools
+- **Tool System:**
+  - `AVAILABLE_TOOLS`: Registry of callable functions (web search, file operations, mathematical computations, data transformations)
+  - `generate_openai_tool_schema()`: Automatic JSON schema generation from function signatures and docstrings
+  - Tool sanitization and name normalization for OpenAI compatibility
+
+- **Browser Automation:**
+  - `BrowserTool`: Playwright-powered web automation with page navigation, element interaction, screenshot capture
+  - Async context management and browser lifecycle handling
+
+- **System Operations:**
+  - `OperatorTool`: Low-level OS control (keyboard/mouse simulation, screenshot capture, window management)
+  - Cross-platform compatibility and permission handling
+
+### **src/models/** - Model Abstraction Layer  
+- **Configuration:**
+  - `ModelConfig` (Pydantic): Unified configuration for API and local models with environment variable integration
+  - Provider support: OpenAI, Anthropic, local transformers, custom endpoints
+
+- **Model Implementations:**
+  - `BaseAPIModel`: HTTP-based model wrapper with retry logic, rate limiting, and streaming support
+  - `BaseLLM`: Local transformer models with GPU acceleration and memory optimization
+  - `BaseVLM`: Vision-language models with image preprocessing and multimodal input handling
+
+- **Processing Pipeline:**
+  - Vision processors for image/video handling, format conversion, and quality optimization
+  - Tokenization utilities, generation parameters, and output formatting
+
+### **src/topology/** - Multi-Agent Orchestration
+- **Crew Management:**
+  - `AgentConfig`: Agent initialization specifications with role definitions and capability constraints  
+  - `BaseCrew`: Async agent group coordinator with task distribution, result aggregation, and resource cleanup
+  - Hierarchical task decomposition and peer communication protocols
+
+### **src/learning/** - Reinforcement Learning
+- **Training Infrastructure:**
+  - `GRPOTrainer`: Generalized policy optimization using TRL (Transformer Reinforcement Learning)
+  - Integration with `LearnableAgent` for experience collection and policy updates
+  - Reward signal processing and learning rate scheduling
+
+### **src/utils/** - Monitoring & Utilities
+- **Progress Monitoring:**
+  - `default_progress_monitor()`: Console-based progress tracking with structured output
+  - `ProgressUpdate` message handling and queue management
+  - Integration with agent logging systems
+
+### **Root Level Files:**
+- `main.py`: Empty entry point (placeholder)
+- `example_01_Deep_Research_multi-agent.py`: Complete multi-agent research workflow demonstration
+- `patch_apply.py`: Compatibility patches for model configuration edge cases
+
+### **Data Flow & Integration:**
+1. **Initialization**: `ModelConfig` → Model abstraction → Agent creation → Registry registration
+2. **Execution**: `RequestContext` creation → Tool loading → Memory initialization → Task dispatch
+3. **Communication**: Agent→Agent via `invoke_agent()` → Memory updates → Progress logging
+4. **Learning**: Experience collection → Reward calculation → Policy updates via `GRPOTrainer`
+
+The architecture enables complex multi-agent workflows where specialized agents (research, synthesis, browser automation) coordinate through shared memory, structured communication protocols, and centralized monitoring.
 
 ---
 
@@ -103,14 +192,33 @@ Field rules:
 
 ```
 src/
+  __init__..py    # Package initializer
   agents/         # Agent classes & helpers
-  models/         # Model abstraction layer
-  environment/    # Tools, browser automation, utils
-  utils/          # Monitoring, generic helpers
+  assets/         # Static assets used by the framework or agents
+  environment/    # Tools, browser automation, external service integrations
+  inference/      # Model inference pipelines and helpers (currently empty)
+  learning/       # Components related to agent learning and adaptation
+  models/         # Model abstraction layer (LLMs, VLMs, API models)
+  topology/       # Agent network configurations and management
+  utils/          # Monitoring, generic helpers, shared utilities
+
+Root Level:
+  main.py                                    # Entry point (currently empty)
+  example_01_Deep_Research_multi-agent.py   # Complete workflow demonstration
+  patch_apply.py                             # Compatibility patches
 ```
 
 * Classes: `PascalCase`, methods: `snake_case`, constants: `UPPER_SNAKE_CASE`.  
 * New files must reside inside `src/` or `.github/instructions/` (for AI hints).
+
+### Example Workflow (`example_01_Deep_Research_multi-agent.py`)
+Demonstrates a complete 4-agent research workflow:
+1. **OrchestratorAgent**: Coordinates the entire process, maintains workflow state
+2. **RetrievalAgent**: Uses Google search tools to gather information  
+3. **ResearcherAgent**: Validates retrieved data quality and completeness
+4. **SynthesizerAgent**: Produces final markdown reports with structured sections
+
+The example shows proper agent initialization, tool configuration, memory setup, and async execution patterns.
 
 ---
 
