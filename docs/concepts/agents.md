@@ -173,6 +173,153 @@ researcher_agent = Agent(
 ```
 Tool schemas are generated automatically from the function signature and docstring.
 
+## Agent Input/Output Schema Validation
+
+The MARS framework supports optional schema validation for agent-to-agent communication to ensure data consistency and catch errors early. You can define schemas for both incoming requests (`input_schema`) and outgoing responses (`output_schema`).
+
+### Schema Formats
+
+Schemas can be specified in three user-friendly formats:
+
+#### 1. List of Strings (Simple)
+Each string becomes a required field with string type:
+
+```python
+from src.agents.agents import Agent
+from src.models.models import ModelConfig
+
+# ResearcherAgent expects a 'sub_question' field
+researcher_agent = Agent(
+    model_config=ModelConfig(type="api", provider="openai", name="gpt-4o"),
+    description="You are a research assistant that answers specific sub-questions.",
+    input_schema=["sub_question"],  # Requires: {"sub_question": "string value"}
+    output_schema=["answer"],       # Returns: {"answer": "string response"}
+    agent_name="ResearcherAgent"
+)
+```
+
+#### 2. Dict of Key:Type (Typed)
+Specify exact types for each field:
+
+```python
+# SynthesizerAgent with typed input/output
+synthesizer_agent = Agent(
+    model_config=ModelConfig(type="api", provider="openai", name="gpt-4o"),
+    description="You synthesize research data into reports.",
+    input_schema={
+        "user_query": str,
+        "validated_data": list,
+        "priority": int
+    },
+    output_schema={
+        "report": str,
+        "confidence": float
+    },
+    agent_name="SynthesizerAgent"
+)
+```
+
+#### 3. Full JSON Schema (Advanced)
+Use complete JSON Schema for complex validation:
+
+```python
+# Advanced schema with constraints
+advanced_agent = Agent(
+    model_config=ModelConfig(type="api", provider="openai", name="gpt-4o"),
+    description="You process complex structured data.",
+    input_schema={
+        "type": "object",
+        "properties": {
+            "document": {
+                "type": "string",
+                "minLength": 10
+            },
+            "metadata": {
+                "type": "object",
+                "properties": {
+                    "source": {"type": "string"},
+                    "timestamp": {"type": "number"}
+                },
+                "required": ["source"]
+            }
+        },
+        "required": ["document"]
+    },
+    output_schema={
+        "type": "object", 
+        "properties": {
+            "summary": {"type": "string", "minLength": 5},
+            "key_points": {
+                "type": "array",
+                "items": {"type": "string"},
+                "minItems": 1
+            }
+        },
+        "required": ["summary", "key_points"]
+    },
+    agent_name="AdvancedAgent"
+)
+```
+
+### How Schema Validation Works
+
+1. **Input Validation**: When one agent invokes another via `invoke_agent()`, the request is validated against the target agent's `input_schema` before execution.
+
+2. **Output Validation**: When an agent returns a final response, it's validated against the agent's own `output_schema`.
+
+3. **Error Handling**: Validation failures return error messages instead of proceeding with invalid data.
+
+### Schema Validation in Practice
+
+```python
+# Define agents with schemas
+researcher = Agent(
+    model_config=model_config,
+    description="Research assistant that answers sub-questions.",
+    input_schema=["sub_question"],
+    output_schema=["answer"],
+    agent_name="Researcher",
+    allowed_peers=[]
+)
+
+orchestrator = Agent(
+    model_config=model_config,
+    description="Main agent that coordinates research.",
+    input_schema=["main_query"],
+    output_schema=["final_report"],
+    agent_name="Orchestrator",
+    allowed_peers=["Researcher"]
+)
+
+# This will work - matches input_schema
+result = await orchestrator.invoke_agent(
+    "Researcher",
+    {"sub_question": "What is machine learning?"},
+    request_context
+)
+
+# This will fail validation - missing required field
+result = await orchestrator.invoke_agent(
+    "Researcher", 
+    {"wrong_field": "value"},  # Missing 'sub_question'
+    request_context
+)
+# Returns: Message(role="error", content="Request validation failed...")
+```
+
+### Best Practices for Schemas
+
+1. **Start Simple**: Use list format for basic string fields, then upgrade to dict format when you need types.
+
+2. **Match Communication Patterns**: Design schemas to match how agents actually communicate in your system.
+
+3. **Graceful Degradation**: Schema validation logs errors but doesn't crash agents - invalid data is caught early.
+
+4. **Document Expected Formats**: Include schema information in your agent descriptions so LLMs understand the expected format.
+
+**Note**: Schema validation only applies to agent-to-agent communication and final responses. Internal framework fields like `"status"` and monitoring data are handled separately and should not appear in user-defined schemas.
+
+
 ## Creating Custom Agents
 
 For more specialized behavior, you can create custom agent classes by inheriting from `BaseAgent` or `Agent`.
