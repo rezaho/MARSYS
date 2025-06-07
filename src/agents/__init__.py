@@ -3,7 +3,7 @@ This package provides the core agent infrastructure for the Multi-Agent Reasonin
 """
 
 from .agents import Agent, BaseAgent
-from .browser_agent import BrowserAgent
+from .browser_agent_legacy2 import BrowserAgent
 from .learnable_agents import BaseLearnableAgent, LearnableAgent
 from .memory import ConversationMemory, KGMemory, MemoryManager, Message
 from .registry import AgentRegistry

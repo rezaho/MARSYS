@@ -86,6 +86,9 @@ class Message:
     agent_call: Optional[Dict[str, Any]] = (
         None  # For assistant requesting agent invocation: {"agent_name": str, "request": Any}
     )
+    structured_data: Optional[Dict[str, Any]] = (
+        None  # For storing structured data when agent returns a dictionary from auto_run
+    )
 
     def to_llm_dict(self) -> Dict[str, Any]:
         """Converts the message to a dictionary format suitable for LLM APIs."""
@@ -177,6 +180,9 @@ class Message:
         # Extract tool_call_id if present (for tool responses)
         tool_call_id = response_dict.get("tool_call_id")
         
+        # Extract structured_data if present (for structured responses)
+        structured_data = response_dict.get("structured_data")
+        
         return cls(
             role=role,
             content=content,
@@ -185,6 +191,7 @@ class Message:
             agent_call=agent_call,
             message_id=message_id,
             tool_call_id=tool_call_id,
+            structured_data=structured_data,
         )
 
 
@@ -843,7 +850,7 @@ class MemoryManager:
         )
         
         # Store in memory
-        self.memory_module.add_message(message)
+        self.memory_module.update_memory(message=message)
 
     def update_memory(
         self,
@@ -927,7 +934,7 @@ class MemoryManager:
         Returns:
             List of message dictionaries ready for LLM consumption.
         """
-        messages = self.memory_module.get_messages()
+        messages = self.memory_module.retrieve_all()
         llm_messages = []
         
         for msg in messages:
