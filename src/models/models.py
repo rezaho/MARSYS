@@ -505,69 +505,64 @@ class BaseAPIModel:
                 )
                 return ""
 
-            # Handle tool calls when in JSON mode - synthesize the expected JSON structure
-            if (
-                json_mode
-                and message_obj.get("tool_calls")
-                and not message_obj.get("content")
-            ):
-                # When API returns tool_calls with null content, create the expected JSON structure
-                tool_calls = message_obj["tool_calls"]
+            # Handle different response formats from the API
+            tool_calls = message_obj.get("tool_calls", [])
+            content = message_obj.get("content")
+            message_role = message_obj.get("role", "assistant")
+            
+            if json_mode and tool_calls and not content:
+                # When API returns tool_calls with null content in JSON mode, create the expected JSON structure
                 synthesized_json = {
                     "thought": "I need to use a tool to complete this task.",
                     "next_action": "call_tool",
                     "action_input": {"tool_calls": tool_calls},
                 }
-                message_role = message_obj.get("role", "assistant")
-                # Replace the message object with content containing the JSON
-                # Remove separate tool_calls key - everything is now in the content
                 message_obj = {
                     "role": message_role,
                     "content": json.dumps(synthesized_json),
                     "tool_calls": tool_calls,  # Preserve original tool_calls for compatibility
                 }
-            elif (
-                json_mode
-                and message_obj.get("tool_calls")
-                and message_obj.get("content")
-            ):
-                # If both tool_calls and content are present, we can use them
-                tool_calls = message_obj["tool_calls"]
-                content = message_obj["content"]
-                message_role = message_obj.get("role", "assistant")
-                # Create a new message object with the combined information
+            elif json_mode and tool_calls and content:
+                # If both tool_calls and content are present in JSON mode
                 message_obj = {
                     "role": message_role,
                     "content": content,
                     "tool_calls": tool_calls,
                 }
-            elif json_mode and message_obj.get("content"):
-                # If only content is present, we can return it directly
-                content = message_obj["content"]
-                message_role = message_obj.get("role", "assistant")
-                # Create a new message object with the content
+            elif json_mode and content and not tool_calls:
+                # If only content is present in JSON mode
                 message_obj = {
                     "role": message_role,
                     "content": content,
-                    "tool_calls": [],  # No tool calls in this case
+                    "tool_calls": [],
                 }
-            elif not json_mode and message_obj.get("content"):
-                # If not in JSON mode and content is present, return it as is
-                content = message_obj["content"]
-                message_role = message_obj.get("role", "assistant")
-                # Create a new message object with the content
+            elif not json_mode and tool_calls and not content:
+                # In non-JSON mode with tool calls but no content, return the tool calls
+                message_obj = {
+                    "role": message_role,
+                    "content": "",  # Empty content, tool calls will be handled separately
+                    "tool_calls": tool_calls,
+                }
+            elif not json_mode and content:
+                # In non-JSON mode with content
                 message_obj = {
                     "role": message_role,
                     "content": content,
-                    "tool_calls": [],  # No tool calls in this case
+                    "tool_calls": tool_calls,  # Include any tool calls that might be present
                 }
-            else:
-                # If no tool calls or content, return the message as is
-                # This handles cases where the API response doesn't match expected formats
+            elif not content and not tool_calls:
+                # If neither content nor tool calls are present, this is an error
                 message_obj = {
                     "role": "error",
                     "content": "Unexpected response format or no content provided.",
                     "tool_calls": [],
+                }
+            else:
+                # Default case: preserve the original message structure
+                message_obj = {
+                    "role": message_role,
+                    "content": content or "",
+                    "tool_calls": tool_calls,
                 }
 
             # Return full message dict so upper layers can inspect content *and* tool_calls
