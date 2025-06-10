@@ -423,39 +423,76 @@ body::before {
   }
 }
 
-/* Navigation Consistency Fixes */
-/* Ensure navigation displays consistently across all pages */
-.md-sidebar--primary .md-sidebar__scrollwrap {
-    display: block !important;
+/* Navigation overrides removed to allow natural MkDocs behavior */
+
+/* ───────────────────────── NAVIGATION SECTION SEPARATORS ───────────────────────── */
+
+/* Add visual separators between main navigation sections */
+.md-nav--primary > .md-nav__list > .md-nav__item:not(:first-child) {
+    margin-top: 1.5rem;     /* Single spacing value instead of margin + padding */
 }
 
-/* Fix homepage navigation visibility */
-body[data-md-color-scheme] .md-nav--primary,
-body .md-nav--primary {
-    display: block !important;
-    opacity: 1 !important;
-    visibility: visible !important;
-}
-
-/* Ensure navigation items are visible on homepage */
-.md-nav__list,
-.md-nav__item {
-    display: block !important;
-}
-
-/* Remove any homepage-specific navigation hiding */
-.md-content__inner .md-nav--primary,
-.homepage .md-nav--primary {
-    display: block !important;
-}
-
-/* Force navigation to use mkdocs.yml structure */
+/* Add subtle shadow effect to make sections more distinct */
 .md-nav--primary > .md-nav__list > .md-nav__item {
-    display: block !important;
+    position: relative;
 }
 
+.md-nav--primary > .md-nav__list > .md-nav__item:not(:first-child)::before {
+    content: "";
+    position: absolute;
+    top: -0.75rem;        /* Center the separator in the 1.5rem gap */
+    left: 0.5rem;
+    right: 0.5rem;
+    height: 1px;
+    background: linear-gradient(90deg, transparent 0%, rgba(0, 0, 0, 0.1) 50%, transparent 100%);
+}
 
-/* Sidebar Navigation Fixes *//* Fix 1: Separate click areas for section toggle and link *//* Make the entire label clickable as a link */.md-nav__item--section > .md-nav__link {    pointer-events: auto !important;    cursor: pointer !important;}/* Ensure toggle arrow is separate and clickable */.md-nav__item--section > .md-nav__toggle {    pointer-events: auto !important;    cursor: pointer !important;    z-index: 2; /* Increased z-index */    position: relative;}/* Fix the toggle arrow positioning and make it block clicks to the link underneath */.md-nav__toggle {    position: absolute;    right: 0.4rem;    top: 0.2rem;    width: 2rem; /* Increased width for better click target */    height: 2rem; /* Increased height for better click target */}/* Ensure proper click targets */.md-nav__item--section {    position: relative;}/* Fix 2: Add vertical spacing between sections */.md-nav__item--section {    margin-top: 0.6rem !important;    margin-bottom: 0.2rem !important;}/* Add extra spacing for active sections */.md-nav__item--active.md-nav__item--section {    margin-top: 0.8rem !important;    padding-top: 0.4rem !important;}/* Ensure first section doesn't have extra top margin */.md-nav__list > .md-nav__item--section:first-child {    margin-top: 0 !important;}/* Fix spacing for nested items */.md-nav__item--section .md-nav__list {    margin-top: 0.2rem;}/* Improve visual hierarchy with subtle borders */.md-nav__item--section > .md-nav__link {    border-top: 1px solid rgba(0, 0, 0, 0.05);    padding-top: 0.6rem;    margin-top: 0.2rem;}/* Dark mode border adjustment */[data-md-color-scheme="slate"] .md-nav__item--section > .md-nav__link {    border-top-color: rgba(255, 255, 255, 0.05);}/* Ensure section links have proper padding */.md-nav--primary .md-nav__item--section > .md-nav__link {    padding: 0.6rem 0.8rem;}/* Fix hover states to not interfere with toggle */.md-nav__item--section > .md-nav__link:hover {    background-color: var(--md-default-bg-color--light);}/* Make sure the toggle arrow doesn't get covered */.md-nav__item--section > .md-nav__toggle:hover {    background-color: var(--md-default-bg-color--lighter);    border-radius: 50%;}/* FIX: Remove excessive left padding for active section titles */.md-nav__item--active > .md-nav__link {    padding-left: 0.8rem !important; /* Reset to normal padding */}/* Ensure active sections don't get centered */.md-nav--primary .md-nav__item--active.md-nav__item--section > .md-nav__link {    padding-left: 0.8rem !important;    text-align: left !important;}/* Fix toggle input to prevent navigation */.md-nav__toggle > input[type="checkbox"] {    position: absolute;    width: 100%;    height: 100%;    opacity: 0;    cursor: pointer;    z-index: 3;}/* Ensure toggle label doesn't trigger navigation */.md-nav__toggle > label {    pointer-events: none;}/* Make the toggle area larger and prevent link activation in that area */.md-nav__item--section > .md-nav__link {    padding-right: 2.5rem !important; /* Leave space for toggle */}/* Fix for active/selected section title alignment - more targeted approach */.md-nav--primary .md-nav__item--active.md-nav__item--section > .md-nav__link .md-ellipsis {    text-align: left !important;    margin: 0 !important;    padding: 0 !important;    display: inline !important;    width: auto !important;    position: relative !important;    transform: none !important;}/* Ensure active section has visual distinction without breaking layout */.md-nav--primary .md-nav__item--active.md-nav__item--section > .md-nav__link {    background-color: rgba(var(--md-primary-fg-color--rgb), 0.15) !important;    border-left: 3px solid var(--md-primary-fg-color);    margin-left: -3px;} /* ───────────────────────── HEADER TWEAKS ───────────────────────── */
+/* Dark mode gradient */
+[data-md-color-scheme="slate"] .md-nav--primary > .md-nav__list > .md-nav__item:not(:first-child)::before {
+    background: linear-gradient(90deg, transparent 0%, rgba(255, 255, 255, 0.15) 50%, transparent 100%);
+}
+
+/* ───────────────────────── SUB-SECTION INDENTATION ───────────────────────── */
+
+/* Add indentation to sub-sections for better visual hierarchy */
+.md-nav--primary > .md-nav__list > .md-nav__item .md-nav__list > .md-nav__item > .md-nav__link {
+    padding-left: 1rem !important;     /* Indent sub-sections from main sections */
+    position: relative;
+}
+
+/* Add subtle visual indicator for sub-sections */
+.md-nav--primary > .md-nav__list > .md-nav__item .md-nav__list > .md-nav__item > .md-nav__link::before {
+    content: "";
+    position: absolute;
+    left: 0.3rem;          /* Position dot to the left of the text */
+    top: 50%;
+    transform: translateY(-50%);
+    width: 4px;
+    height: 4px;
+    background: rgba(var(--md-primary-fg-color--rgb), 0.4);
+    border-radius: 50%;
+}
+
+/* Ensure proper spacing for sub-section items */
+.md-nav--primary > .md-nav__list > .md-nav__item .md-nav__list > .md-nav__item {
+    margin: 0.2rem 0;
+}
+
+/* Active sub-section styling */
+.md-nav--primary > .md-nav__list > .md-nav__item .md-nav__list > .md-nav__item--active > .md-nav__link {
+    background: rgba(var(--md-primary-fg-color--rgb), 0.08);
+    border-radius: 0 0.5rem 0.5rem 0;
+    margin-right: 0.5rem;
+}
+
+/* Active sub-section indicator */
+.md-nav--primary > .md-nav__list > .md-nav__item .md-nav__list > .md-nav__item--active > .md-nav__link::before {
+    background: var(--md-primary-fg-color);
+    width: 6px;
+    height: 6px;
+}
+
+/* ───────────────────────── HEADER TWEAKS ───────────────────────── */
 
 /* allow header to expand for breadcrumbs + dropdowns */
 .md-header {
@@ -542,4 +579,4 @@ body .md-nav--primary {
     fill:  #fff !important;
 }
 
-/* 5️⃣  Remove previous rule that hid breadcrumbs row (tabs) *//* (.md-tabs { display:none!important; }) — ensure it no longer exists *//* ─── FINAL HEADER GRADIENT OVERRIDE ─────────────────────────────── *//* keeps the pastel blue-violet in light-mode and deep blue in dark-mode */:root .md-header {                 /* higher specificity overrides earlier duplicates */  background: linear-gradient(      135deg,      rgba(173, 197, 255, 0.70) 0%,      rgba(212, 206, 255, 0.70) 50%,      rgba(255, 255, 255, 0.70) 100%  ) !important;}[data-md-color-scheme="slate"] .md-header {  background: linear-gradient(      135deg,      rgba(40, 52, 104, 0.95) 0%,      rgba(71, 91, 208, 0.85) 50%,      rgba(40, 52, 104, 0.95) 100%  ) !important;}/* ─── Breadcrumbs / Tabs row (glass style) ────────────────────────── */.md-tabs {    /* use the generic glass background instead of an opaque gradient */    background: var(--glass-bg) !important;          /* light & transparent */    backdrop-filter: blur(var(--blur-amount));    -webkit-backdrop-filter: blur(var(--blur-amount));    border: 1px solid var(--glass-border);    border-top: none;                                /* seamless with header */    border-radius: 0;                                /* no rounding - clean rectangle */    margin: 0 1rem;                                  /* side margins match content */    height: 2.5rem;    display: flex !important;                        /* ensure it is visible */    align-items: center;}[data-md-color-scheme="slate"] .md-tabs {    background: rgba(40, 52, 104, 0.40) !important;  /* semi-transparent for dark mode */    backdrop-filter: blur(var(--blur-amount));    -webkit-backdrop-filter: blur(var(--blur-amount));    border: 1px solid rgba(255, 255, 255, 0.15);    border-top: none;}/* tab link colours remain */.md-tabs__link { color: var(--md-default-fg-color) !important; }.md-tabs__link--active { font-weight: 600; }[data-md_color_scheme="slate"] .md-tabs__link,[data-md_color_scheme="slate"] .md-tabs__link--active { color: #fff !important; }/* ────────────────────────────────────────────────────────────────── */ --glass-bg: rgba(255, 255, 255, 0.05);  --glass-border: rgba(255, 255, 255, 0.1);
+/* 5️⃣  Remove previous rule that hid breadcrumbs row (tabs) *//* (.md-tabs { display:none!important; }) — ensure it no longer exists *//* ─── FINAL HEADER GRADIENT OVERRIDE ─────────────────────────────── *//* keeps the pastel blue-violet in light-mode and deep blue in dark-mode */:root .md-header {                 /* higher specificity overrides earlier duplicates */  background: linear-gradient(      135deg,      rgba(173, 197, 255, 0.70) 0%,      rgba(212, 206, 255, 0.70) 50%,      rgba(255, 255, 255, 0.70) 100%  ) !important;}[data-md-color-scheme="slate"] .md-header {  background: linear-gradient(      135deg,      rgba(40, 52, 104, 0.95) 0%,      rgba(71, 91, 208, 0.85) 50%,      rgba(40, 52, 104, 0.95) 100%  ) !important;}/* ─── Breadcrumbs / Tabs row (glass style) ────────────────────────── */.md-tabs {    /* use the generic glass background instead of an opaque gradient */    background: var(--glass-bg) !important;          /* light & transparent */    backdrop-filter: blur(var(--blur-amount));    -webkit-backdrop-filter: blur(var(--blur-amount));    border: 1px solid var(--glass-border);    border-top: none;                                /* seamless with header */    border-radius: 0;                                /* no rounding - clean rectangle */    margin: 0 1rem;                                  /* side margins match content */    height: 2.5rem;    display: flex !important;                        /* ensure it is visible */    align-items: center;}[data-md-color-scheme="slate"] .md-tabs {    background: rgba(40, 52, 104, 0.40) !important;  /* semi-transparent for dark mode */    backdrop-filter: blur(var(--blur-amount));    -webkit-backdrop-filter: blur(var(--blur-amount));    border: 1px solid rgba(255, 255, 255, 0.15);    border-top: none;}/* tab link colours remain */.md-tabs__link { color: var(--md-default-fg-color) !important; }.md-tabs__link--active { font-weight: 600; }[data-md_color_scheme="slate"] .md-tabs__link,[data-md_color_scheme="slate"] .md-tabs__link--active { color: #fff !important; }/* ────────────────────────────────────────────────────────────────── */

@@ -26,13 +26,8 @@ theme:
   features:
     - navigation.instant
     - navigation.tracking
-    - navigation.tabs
-    - navigation.tabs.sticky
     - navigation.sections
-    - navigation.expand
     - navigation.top
-    - navigation.indexes
-    - navigation.prune  # Add this to hide empty sections
     - navigation.path    # Add this to show breadcrumbs
     - toc.follow
     - toc.integrate
@@ -96,62 +91,69 @@ plugins:
   - exclude:
       glob:
         - "_docs_legacy*/*"
+  - mkdocstrings:
+      default_handler: python
+      handlers:
+        python:
+          selection:
+            docstring_style: google
+          rendering:
+            show_source: false
+            show_root_heading: true
+            show_object_full_path: false
+            group_by_category: true
 
 nav:
   - Home: index.md
   
-  # Main Section 1: Getting Started
   - Getting Started:
-    - getting-started/index.md
+    - Introduction: getting-started/index.md
     - Installation: getting-started/installation.md
     - Quick Start: getting-started/quick-start.md  
     - Your First Agent: getting-started/first-agent.md
     - Configuration: getting-started/configuration.md
     
-  # Main Section 2: Concepts  
   - Concepts:
-    - concepts/index.md
-    - Core Concepts: concepts/core-concepts.md
-    - Agents: concepts/agents.md
-    - Memory: concepts/memory.md
-    - Messages: concepts/messages.md
-    - Communication: concepts/communication.md
-    - Tools: concepts/tools.md
-    - Models: concepts/models.md
-    - Registry: concepts/registry.md
-    - Topologies: concepts/topologies.md
-    - Custom Agents: concepts/custom-agents.md
-    - Memory Patterns: concepts/memory-patterns.md
-    - Browser Automation: concepts/browser-automation.md
-    - Learning Agents: concepts/learning-agents.md
-      
-  # Main Section 3: Use Cases & Examples
-  - Use Cases & Examples:
+    - Overview: concepts/overview.md
+    - Core Components: 
+      - Overview: concepts/index.md
+      - Agents: concepts/agents.md
+      - Memory: concepts/memory.md
+      - Tools: concepts/tools.md
+      - Models: concepts/models.md
+      - Registry: concepts/registry.md
+      - Messages: concepts/messages.md
+      - Communication: concepts/communication.md
+    - Advanced Topics:
+      - Error Handling: concepts/error-handling.md
+      - Browser Automation: concepts/browser-automation.md
+      - Learning Agents: concepts/learning-agents.md
+      - Memory Patterns: concepts/memory-patterns.md
+      - Custom Agents: concepts/custom-agents.md
+      - Topology: concepts/advanced/topology.md
+    
+  - API Reference:
+    - Overview: api/overview.md
+    - Models: api/models.md
+    - Agent Class: api/agent-class.md
+
+  - Tutorials:
+    - tutorials/overview.md
+    - Basic Usage: tutorials/basic-usage.md
+
+  - Use Cases:
     - use-cases/index.md
-    - Research Team: use-cases/research-team.md
-    - Customer Support: use-cases/customer-support.md
-    - Code Review: use-cases/code-review.md
-    - Web Automation: use-cases/web-automation.md
-    - Data Pipeline: use-cases/data-pipeline.md
-    - Examples:
-      - Basic Examples: use-cases/examples/basic-examples.md
-      - Advanced Examples: use-cases/examples/advanced-examples.md
-    - Tutorials:
-      - Multi-Agent Basics: use-cases/tutorials/multi-agent-basics.md
-      - Building a Chatbot: use-cases/tutorials/chatbot.md
-      - Web Scraping: use-cases/tutorials/web-scraping.md
-      
-  # Main Section 4: Contributing
+    - Overview: use-cases/overview.md
+
+  - Guides:
+    - guides/overview.md
+
   - Contributing:
     - contributing/index.md
-    - Guidelines: contributing/guidelines.md
-    - Development Setup: contributing/development.md
-    - Architecture: contributing/architecture.md
-    - Testing: contributing/testing.md
-    
-  # Additional Sections
-  - API Reference: api/index.md
-  - FAQ: project/faq.md
+    - Overview: contributing/overview.md
+
+  - Project:
+    - project/overview.md
 
 extra:
   social:
@@ -159,6 +161,8 @@ extra:
       link: https://github.com/rezaho
     - icon: fontawesome/brands/discord
       link: https://discord.gg/yourinvite
+    - icon: fontawesome/brands/python
+      link: https://pypi.org/project/marsys
   analytics:
     provider: google
     property: YOUR_MEASUREMENT_ID
