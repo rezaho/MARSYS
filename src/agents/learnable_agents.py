@@ -17,6 +17,23 @@ from src.models.models import BaseLLM, BaseVLM, PeftHead
 from .agents import BaseAgent
 from .memory import MemoryManager, Message
 from .utils import LogLevel, RequestContext
+from .exceptions import (
+    AgentFrameworkError,
+    MessageError,
+    MessageFormatError,
+    MessageContentError,
+    ActionValidationError,
+    ToolCallError,
+    SchemaValidationError,
+    AgentError,
+    AgentImplementationError,
+    AgentConfigurationError,
+    AgentPermissionError,
+    AgentLimitError,
+    ModelError,
+    ModelResponseError,
+    create_error_from_exception,
+)
 
 
 class BaseLearnableAgent(BaseAgent, ABC):
@@ -87,7 +104,7 @@ class BaseLearnableAgent(BaseAgent, ABC):
         3. Text between the first '{' and the last '}'.
 
         Raises:
-            ValueError: if no valid JSON object can be decoded.
+            MessageFormatError: if no valid JSON object can be decoded.
         """
         # 1. fenced code-block
         block = re.search(r"```json\s*(.*?)\s*```", response, re.I | re.S)
@@ -109,7 +126,11 @@ class BaseLearnableAgent(BaseAgent, ABC):
             except json.JSONDecodeError:
                 continue
 
-        raise ValueError("Could not extract valid JSON from model response.")
+        raise MessageFormatError(
+            "Could not extract valid JSON from model response.",
+            invalid_content=response[:500],  # First 500 chars for context
+            expected_format="JSON object or array within response text or ```json code block"
+        )
 
 
 class LearnableAgent(BaseLearnableAgent):

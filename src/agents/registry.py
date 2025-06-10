@@ -3,6 +3,9 @@ import threading
 import weakref
 from typing import TYPE_CHECKING, Dict, Optional
 
+# Import exception classes
+from .exceptions import AgentConfigurationError
+
 # Import BaseAgent only for static type checkers to avoid circular import at runtime
 if TYPE_CHECKING:  # pragma: no cover
     from .agents import BaseAgent
@@ -51,8 +54,11 @@ class AgentRegistry:
             if final_name in cls._agents:
                 existing_agent = cls._agents.get(final_name)
                 if existing_agent is not None and existing_agent is not agent:
-                    raise ValueError(
-                        f"Agent name '{final_name}' already exists and refers to a different agent instance."
+                    raise AgentConfigurationError(
+                        f"Agent name '{final_name}' already exists and refers to a different agent instance.",
+                        agent_name=final_name,
+                        config_key="name",
+                        config_value=final_name
                     )
             cls._agents[final_name] = agent
             # Pass the agent's final_name as 'agent_name' in the extra dict for logging
