@@ -12,6 +12,13 @@ from pydantic import BaseModel
 from src.models.models import BaseLLM  # Added ModelConfig
 from src.models.models import BaseAPIModel, BaseVLM
 
+# Import the new exception classes
+from .exceptions import (
+    AgentConfigurationError,
+    MessageError,
+    AgentFrameworkError,
+)
+
 
 class SingleMsg(BaseModel):
     role: str
@@ -399,8 +406,10 @@ class ConversationMemory(BaseMemory):
             )
             self.memory.append(new_message)
         else:
-            raise ValueError(
-                "Either a Message object or role must be provided to update_memory."
+            raise MessageError(
+                "Either a Message object or role must be provided to update_memory.",
+                agent_name="ConversationMemory",
+                validation_path="update_memory.message_or_role_validation"
             )
 
     def replace_memory(
@@ -438,8 +447,10 @@ class ConversationMemory(BaseMemory):
                 agent_call=agent_call,  # Added agent_call
             )
         else:
-            raise ValueError(
-                "Either a Message object or role must be provided to replace_memory."
+            raise MessageError(
+                "Either a Message object or role must be provided to replace_memory.",
+                agent_name="ConversationMemory",
+                validation_path="replace_memory.message_or_role_validation"
             )
 
     def delete_memory(self, idx: int) -> None:
@@ -801,12 +812,20 @@ class MemoryManager:
             )
         elif memory_type == "kg":
             if model is None:
-                raise ValueError(
-                    "KGMemory requires a 'model' instance for fact extraction."
+                raise AgentConfigurationError(
+                    "KGMemory requires a 'model' instance for fact extraction.",
+                    agent_name="MemoryManager",
+                    config_key="model",
+                    config_value=None
                 )
             self.memory_module = KGMemory(model=model, description=description)
         else:
-            raise ValueError(f"Unknown memory_type: {memory_type}")
+            raise AgentConfigurationError(
+                f"Unknown memory_type: {memory_type}",
+                agent_name="MemoryManager", 
+                config_key="memory_type",
+                config_value=memory_type
+            )
 
     def set_message_transformers(
         self,

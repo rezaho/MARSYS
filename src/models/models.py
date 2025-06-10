@@ -196,6 +196,8 @@ class ModelConfig(BaseModel):
 
 
 class BaseLLM:
+    """A wrapper for local text-based language models."""
+
     def __init__(
         self,
         model_name: str,
@@ -203,8 +205,6 @@ class BaseLLM:
         torch_dtype: str = "auto",
         device_map: str = "auto",
     ) -> None:
-        # Override model_name with a constant value
-
         self.model = AutoModelForCausalLM.from_pretrained(
             model_name, torch_dtype=torch_dtype, device_map=device_map
         )
@@ -216,10 +216,15 @@ class BaseLLM:
         messages: List[Dict[str, str]],
         json_mode: bool = False,
         max_tokens: int = None,
-    ) -> str:
+        tools: Optional[List[Dict[str, Any]]] = None,
+        **kwargs,
+    ) -> Dict[str, Any]:
         """
         Run the model with a hardcoded prompt and messages, format the input with the tokenizer,
         generate output, and decode the result.
+        
+        Returns:
+            Dictionary with consistent format: {"role": "assistant", "content": "...", "tool_calls": []}
         """
         # format the input with the tokenizer
         text: str = self.tokenizer.apply_chat_template(
@@ -250,7 +255,12 @@ class BaseLLM:
             # now convert the string to a json object
             decoded[0] = json.loads(decoded[0].replace("\n", ""))
 
-        return decoded[0]
+        # Return consistent dictionary format
+        return {
+            "role": "assistant",
+            "content": decoded[0],
+            "tool_calls": []  # Local models don't support tool calls yet
+        }
 
 
 class BaseVLM:
@@ -274,11 +284,18 @@ class BaseVLM:
         self,
         messages: List[Dict[str, str]],
         role: str = "assistant",
-        tools: Optional[List[str]] = None,
+        tools: Optional[List[Dict[str, Any]]] = None,
         images: Optional[List] = None,
         json_mode: bool = False,
         max_tokens: int = None,
-    ) -> str:
+        **kwargs,
+    ) -> Dict[str, Any]:
+        """
+        Run the vision model with messages and optional images.
+        
+        Returns:
+            Dictionary with consistent format: {"role": "assistant", "content": "...", "tool_calls": []}
+        """
         # format the input with the tokenizer
         if tools:
             apply_tools_template(messages, tools)
@@ -333,7 +350,12 @@ class BaseVLM:
             # now convert the string to a json object
             decoded[0] = json.loads(decoded[0].replace("\n", ""))
 
-        return decoded[0]
+        # Return consistent dictionary format
+        return {
+            "role": role,  # Use the specified role (default is "assistant")
+            "content": decoded[0],
+            "tool_calls": []  # Local VLMs don't support tool calls yet
+        }
 
     def fetch_image(self, image: str | dict | Image.Image) -> bytes:
         """This function makes sure that the image is in the right format
@@ -448,7 +470,7 @@ class BaseAPIModel:
         max_tokens: Optional[int] = None,
         temperature: Optional[float] = None,  # Added temperature parameter
         **kwargs,  # Allow passing additional API parameters
-    ) -> str:
+    ) -> Dict[str, Any]:
         """
         Sends messages to the specified API endpoint and returns the model's response.
 
@@ -460,7 +482,7 @@ class BaseAPIModel:
             **kwargs: Additional parameters to pass to the API (e.g., top_p).
 
         Returns:
-            The generated text content from the model.
+            Dictionary with consistent format: {"role": "assistant", "content": "...", "tool_calls": [...]}
         """
         # Determine the temperature to use: override > instance default
         current_temperature = (

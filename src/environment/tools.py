@@ -20,6 +20,14 @@ import requests
 from bs4 import BeautifulSoup
 from googlesearch import search as google_search_lib
 
+from .web_tools import (
+    clean_and_extract_html,
+    extract_images,
+    extract_links,
+    extract_text_content,
+    read_file,
+)
+
 # Logger for the tool library
 tool_logger = logging.getLogger("ToolLibrary")
 
@@ -528,6 +536,12 @@ AVAILABLE_TOOLS = {
     "calculate_math": calculate_math,
     "file_operations": file_operations,
     "data_transform": data_transform,
+    # Web content tools
+    "clean_and_extract_html": clean_and_extract_html,
+    "read_file": read_file,
+    "extract_links": extract_links,
+    "extract_images": extract_images,
+    "extract_text_content": extract_text_content,
 }
 
 
