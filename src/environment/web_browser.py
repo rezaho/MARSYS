@@ -1711,7 +1711,7 @@ FN_WEB_SCREENSHOT: ToolUseSchema = {
         "description": (
             "Uses the Playwright library to take a screenshot of the current page. If 'highlight_bbox' is True, "
             "interactive elements are highlighted with bounding boxes. When a filename is provided, the image is saved "
-            "and the full file path is returned; if not, the PIL Image object is returned."
+            "and the full file path is returned; if not, the screenshot is returned as a PIL Image object."
         ),
         "parameters": {
             "type": "object",
@@ -1802,6 +1802,7 @@ class BrowserTool:
         context: BrowserContext,
         page: Page,
         temp_dir: str,
+        screenshot_dir: Optional[str] = None,
     ) -> None:
         """
         Initialize the BrowserTool instance.
@@ -1811,7 +1812,8 @@ class BrowserTool:
             browser: The browser instance.
             context (BrowserContext): The browser context.
             page (Page): The page to perform actions on.
-            temp_dir (str): Temporary directory for screenshots and downloaded files.
+            temp_dir (str): Temporary directory for downloads and other files.
+            screenshot_dir (Optional[str]): Dedicated directory for screenshots. Defaults to temp_dir/screenshots.
         """
         self.playwright = playwright
         self.browser = browser
@@ -1819,7 +1821,10 @@ class BrowserTool:
         self.page = page
         self.temp_dir = temp_dir
         self.download_path = os.path.join(temp_dir, "downloads")
-        self.screenshot_path = os.path.join(temp_dir, "screenshots")
+
+        # Use dedicated screenshot directory or default to temp_dir/screenshots
+        self.screenshot_path = screenshot_dir or os.path.join(temp_dir, "screenshots")
+
         os.makedirs(self.download_path, exist_ok=True)
         os.makedirs(self.screenshot_path, exist_ok=True)
         # History to store the reasoning chains, actions, screenshots, and outputs
@@ -1832,6 +1837,7 @@ class BrowserTool:
         default_browser: str = "chrome",
         headless: bool = True,
         viewport: Optional[Dict[str, int]] = None,
+        screenshot_dir: Optional[str] = None,
     ) -> "BrowserTool":
         """
         Create and initialize a BrowserTool instance using the async Playwright API.
@@ -1840,6 +1846,8 @@ class BrowserTool:
             temp_dir (Optional[str]): Optional temporary directory for files. Defaults to system temp if not provided.
             default_browser (str): Browser channel to use.
             headless (bool): Whether to launch the browser in headless mode.
+            viewport (Optional[Dict[str, int]]): Browser viewport dimensions.
+            screenshot_dir (Optional[str]): Dedicated directory for screenshots.
 
         Returns:
             BrowserTool: An instance with a page navigated to a default URL (https://google.com).
@@ -1855,7 +1863,7 @@ class BrowserTool:
             context_kwargs["viewport"] = viewport
         context: BrowserContext = await browser.new_context(**context_kwargs)
         page: Page = await context.new_page()
-        tool = cls(playwright, browser, context, page, temp_dir)
+        tool = cls(playwright, browser, context, page, temp_dir, screenshot_dir)
 
         return tool
 
@@ -1867,6 +1875,7 @@ class BrowserTool:
         headless: bool = True,
         timeout: Optional[int] = None,
         viewport: Optional[Dict[str, int]] = None,
+        screenshot_dir: Optional[str] = None,
     ) -> "BrowserTool":
         """
         Create and initialize a BrowserTool instance using the async Playwright API with a timeout.
@@ -1876,6 +1885,8 @@ class BrowserTool:
             default_browser (str): Browser channel to use.
             headless (bool): Whether to launch the browser in headless mode.
             timeout (Optional[int]): Optional timeout in milliseconds for the creation process.
+            viewport (Optional[Dict[str, int]]): Browser viewport dimensions.
+            screenshot_dir (Optional[str]): Dedicated directory for screenshots.
 
         Returns:
             BrowserTool: An instance with a page navigated to a default URL (https://google.com).
@@ -1899,7 +1910,7 @@ class BrowserTool:
             except asyncio.TimeoutError:
                 if attempt == 2:
                     raise TimeoutError("BrowserTool creation timed out.")
-        tool = cls(playwright, browser, context, page, temp_dir)
+        tool = cls(playwright, browser, context, page, temp_dir, screenshot_dir)
         title = await page.title()
         tool.history.append(
             {
@@ -2640,20 +2651,22 @@ class BrowserTool:
         filename: Optional[str] = None,
         reasoning: Optional[str] = None,
         highlight_bbox: bool = True,
+        save_dir: Optional[str] = None,
     ) -> Union[str, PILImage.Image]:
         """
         Take a screenshot of the current page.
 
-        If a filename is provided, the screenshot is saved to that file (path relative to temp_dir) and the full file path is returned.
+        If a filename is provided, the screenshot is saved to that file in the screenshot directory and the full file path is returned.
         If no filename is provided (i.e. filename is None), the screenshot is returned as a PIL Image object.
 
         Additionally, if 'highlight_bbox' is True, interactive elements on the page are highlighted with bounding boxes.
 
         Parameters:
-            filename (Optional[str]): The filename (with path relative to temp_dir) to save the screenshot.
+            filename (Optional[str]): The filename to save the screenshot.
                                       If None, the screenshot is not saved to disk but returned as a PIL Image.
             reasoning (Optional[str]): A description of the reasoning for taking this screenshot.
-            highlight_bbox (bool): Whether to highlight interactive elements in the screenshot. Defaults to False.
+            highlight_bbox (bool): Whether to highlight interactive elements in the screenshot. Defaults to True.
+            save_dir (Optional[str]): Override the default screenshot directory for this screenshot.
 
         Returns:
             Union[str, PILImage.Image]: The full file path where the screenshot is saved, or the PIL Image object if no filename is provided.
@@ -2676,7 +2689,11 @@ class BrowserTool:
             image = PILImage.open(io.BytesIO(screenshot_bytes))
 
         if filename:
-            full_path = os.path.join(self.temp_dir, filename)
+            # Use provided save_dir or default to self.screenshot_path
+            screenshot_dir = save_dir or self.screenshot_path
+            os.makedirs(screenshot_dir, exist_ok=True)
+
+            full_path = os.path.join(screenshot_dir, filename)
             image.save(full_path)
             self.history.append(
                 {
