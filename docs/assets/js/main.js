@@ -68,74 +68,12 @@ if (typeof mermaid !== 'undefined') {
     });
 }
 
-// Ensure navigation is visible on all pages including homepage
-document.addEventListener('DOMContentLoaded', function() {
-    // Force navigation visibility
-    const primaryNav = document.querySelector('.md-nav--primary');
-    const sidebar = document.querySelector('.md-sidebar--primary');
-    
-    if (primaryNav) {
-        primaryNav.style.display = 'block';
-        primaryNav.style.visibility = 'visible';
-        primaryNav.style.opacity = '1';
-    }
-    
-    if (sidebar) {
-        sidebar.style.display = 'block';
-        sidebar.style.visibility = 'visible';
-    }
-});
+// Navigation forcing removed to allow natural MkDocs behavior
 
 
 
 
-// Sidebar Toggle Fix
-document.addEventListener('DOMContentLoaded', function() {
-    // Ensure section toggles work independently from links
-    const sectionItems = document.querySelectorAll('.md-nav__item--section');
-    
-    sectionItems.forEach(item => {
-        const toggle = item.querySelector('.md-nav__toggle');
-        const checkbox = toggle ? toggle.querySelector('input[type="checkbox"]') : null;
-        const link = item.querySelector('.md-nav__link');
-        
-        if (toggle && checkbox && link) {
-            // Prevent the link from being activated when clicking the toggle area
-            toggle.addEventListener('click', function(e) {
-                e.preventDefault();
-                e.stopPropagation();
-                checkbox.checked = !checkbox.checked;
-                // Trigger change event for MkDocs Material theme
-                checkbox.dispatchEvent(new Event('change', { bubbles: true }));
-            });
-            
-            // Prevent navigation when clicking in the toggle area of the link
-            link.addEventListener('click', function(e) {
-                const rect = this.getBoundingClientRect();
-                const clickX = e.clientX - rect.left;
-                const toggleAreaWidth = 40; // Width of the toggle area
-                
-                if (clickX > rect.width - toggleAreaWidth) {
-                    e.preventDefault();
-                    e.stopPropagation();
-                    checkbox.checked = !checkbox.checked;
-                    checkbox.dispatchEvent(new Event('change', { bubbles: true }));
-                }
-            });
-        }
-    });
-    
-    // Fix for active section positioning
-    const activeSection = document.querySelector('.md-nav__item--active.md-nav__item--section');
-    if (activeSection) {
-        const link = activeSection.querySelector('.md-nav__link');
-        if (link) {
-            // Ensure the text doesn't get centered
-            link.style.textAlign = 'left';
-            link.style.paddingLeft = '0.8rem';
-        }
-    }
-});
+// Sidebar navigation overrides removed to allow natural MkDocs behavior
 
 // Add loading animation for page transitions
 document.addEventListener('turbo:load', function() {
