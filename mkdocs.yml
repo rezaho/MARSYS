@@ -92,12 +92,10 @@ plugins:
       glob:
         - "_docs_legacy*/*"
   - mkdocstrings:
-      default_handler: python
       handlers:
         python:
-          selection:
+          options:
             docstring_style: google
-          rendering:
             show_source: false
             show_root_heading: true
             show_object_full_path: false
