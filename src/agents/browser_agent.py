@@ -215,9 +215,6 @@ Return ALL currently accessible interactive elements, understanding that both mo
         
         Analyzes screenshots to identify interactive elements using AI vision.
         """
-        # Clean up previous vision analysis from memory to prevent context bloat
-        await self._cleanup_previous_vision_analysis()
-        
         # Extract and validate input
         prompt_content, passed_context = self._extract_prompt_and_context(prompt)
         
@@ -242,13 +239,6 @@ Return ALL currently accessible interactive elements, understanding that both mo
                 content="Invalid input format. Expected JSON string or dict.",
                 name=self.name
             )
-
-        # Add user message to memory
-        self.memory.update_memory(
-            role="user",
-            content=json.dumps(request_data, indent=2),
-            name=request_context.caller_agent_name or "user"
-        )
 
         # Extract required parameters
         screenshot_path = request_data.get("screenshot_path")
@@ -301,10 +291,18 @@ DETECTION REQUIREMENTS:
 Return a JSON array of objects with "box_2d" and "label" fields only.
             """
 
-            # Prepare messages for the model
+            # Prepare messages for the model (InteractiveElementsAgent keeps only system prompt in memory)
             messages = self.memory.to_llm_format()
             
-            # Create a temporary message with the image to leverage base64 encoding
+            # Add user request message temporarily (not to memory)
+            user_request_message = Message(
+                role="user",
+                content=json.dumps(request_data, indent=2),
+                name=request_context.caller_agent_name or "user"
+            )
+            messages.append(user_request_message.to_llm_dict())
+            
+            # Create a temporary message with the image and analysis prompt
             temp_message = Message(
                 role="user",
                 content=analysis_prompt,
@@ -394,24 +392,14 @@ Return a JSON array of objects with "box_2d" and "label" fields only.
                 # Update the validated response with processed content
                 validated_response["content"] = bounding_boxes
 
-                # Use the memory update method that handles transformations
-                self.memory.update_from_response(
+                # Return the message directly without adding to memory (InteractiveElementsAgent is stateless)
+                assistant_message = Message.from_response_dict(
                     validated_response,
-                    message_id=new_message_id,
+                    default_id=new_message_id,
                     default_role="assistant",
-                    default_name=self.name
+                    default_name=self.name,
+                    processor=self._input_message_processor()
                 )
-                
-                # Retrieve the stored message to return
-                assistant_message = self.memory.retrieve_by_id(new_message_id)
-                if not assistant_message:
-                    # Fallback if retrieval fails
-                    assistant_message = Message.from_response_dict(
-                        validated_response,
-                        default_id=new_message_id,
-                        default_role="assistant",
-                        default_name=self.name
-                    )
 
                 return assistant_message
 
@@ -460,50 +448,7 @@ Return a JSON array of objects with "box_2d" and "label" fields only.
             return result
         return transform_to_llm
 
-    async def _cleanup_previous_vision_analysis(self) -> None:
-        """
-        Clean up previous vision analysis messages from memory to prevent context bloat.
-        
-        For the InteractiveElementsAgent, we only need:
-        - System messages (agent behavior instructions)
-        - The current screenshot analysis request
-        
-        This method removes ALL previous user and assistant messages from vision analysis,
-        as they are not needed for the current prediction task.
-        """
-        try:
-            # Get all current messages
-            all_messages = self.memory.retrieve_all()
-            
-            # Keep only system messages - remove ALL user and assistant messages
-            # since InteractiveElementsAgent should start fresh with each analysis
-            filtered_messages = []
-            
-            for message in all_messages:
-                # Keep only system messages (agent instructions)
-                if message.role == "system":
-                    filtered_messages.append(message)
-                    continue
-                
-                # Remove ALL user messages (previous screenshot requests)
-                if message.role == "user":
-                    continue
-                
-                # Remove ALL assistant messages (previous bounding box results)
-                if message.role == "assistant":
-                    continue
-                
-                # Keep any other message types (error, tool, etc.) just in case
-                filtered_messages.append(message)
-            
-            # Clear memory and restore only system messages
-            self.memory.reset_memory()
-            for message in filtered_messages:
-                self.memory.update_memory(message=message)
-                
-        except Exception as e:
-            # If cleanup fails, log but don't break the analysis
-            logger.warning(f"Failed to cleanup previous vision analysis from memory: {e}")
+
 
 
 
@@ -1080,9 +1025,9 @@ class BrowserAgent(BaseAgent):
                 abs_y_max = int(norm_y_max / 1000 * img_height)
                 abs_x_max = int(norm_x_max / 1000 * img_width)
                     
-                    # Calculate center point
-                center_x = (abs_x_min + abs_x_max) / 2
-                center_y = (abs_y_min + abs_y_max) / 2
+                    # Calculate center point as integers
+                center_x = int(round((abs_x_min + abs_x_max) / 2))
+                center_y = int(round((abs_y_min + abs_y_max) / 2))
                 
                 # BrowserTool format: {"bbox": [x1, y1, x2, y2], "center": [x, y], "label": "...", etc.}
                 converted_elem = {
@@ -1466,25 +1411,28 @@ class BrowserAgent(BaseAgent):
                     label = element.get('label', 'Unknown')
                     number = element.get('number', '?')
                     center = element.get('center', [0, 0])
-                    elements_content += f"Element {number}: {label} (center: {center[0]}, {center[1]})\n"
+                    # Ensure center coordinates are integers
+                    center_x = int(round(center[0]))
+                    center_y = int(round(center[1]))
+                    elements_content += f"Element {number}: {label} (center: {center_x}, {center_y})\n"
                 
-                # Add elements to memory as a user message
-                    self.memory.update_memory(
-                        role="user",
+                # Add elements to memory as a user message (once per step, not per element)
+                self.memory.update_memory(
+                    role="user",
                     content=elements_content,
                     name="auto_elements_system",  # Special name to identify auto-generated elements
                     message_id=elements_message_id,
-                        )
-                        
-                        # Track this message ID for future cleanup
-                    self._last_auto_elements_message_id = elements_message_id
-                        
-                    await self._log_progress(
-                        request_context,
-                        LogLevel.DEBUG,
+                )
+                
+                # Track this message ID for future cleanup
+                self._last_auto_elements_message_id = elements_message_id
+                
+                await self._log_progress(
+                    request_context,
+                    LogLevel.DEBUG,
                     f"Auto-detected interactive elements added to memory after step {step_number}",
                     data={"elements_count": len(elements), "action_type": action_type, "message_id": elements_message_id}
-                    )
+                )
 
         except Exception as e:
             # Don't fail the entire step if highlight_interactive_elements fails
