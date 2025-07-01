@@ -5,7 +5,12 @@ import json
 import logging
 import time
 import uuid
-from typing import Any, Dict, Optional
+from typing import Any, Dict, Optional, Tuple
+
+try:
+    import jsonschema
+except ImportError:
+    jsonschema = None
 
 
 class LogLevel(enum.IntEnum):
@@ -18,6 +23,7 @@ class LogLevel(enum.IntEnum):
     DEBUG = 4
 
 
+logger = logging.getLogger(__name__)
 # --- Custom Logging Filter ---
 # This filter ensures that all log records have an 'agent_name' and a normalized 'name' (logger name)
 # attribute before being processed by the formatter. This is crucial for consistent log output,
@@ -221,3 +227,115 @@ class ProgressLogger:
                 except TypeError:
                     log_msg += f" Data: (Unserializable data)"
             logging.log(std_log_level, log_msg)
+
+
+# --- Schema Utility Functions ---
+
+PYTHON_TYPE_TO_JSON_TYPE = {
+    str: "string",
+    int: "integer",
+    float: "number",
+    bool: "boolean",
+    list: "array",
+    dict: "object",
+    type(None): "null",
+}
+
+
+def compile_schema(schema: Any) -> Optional[Dict[str, Any]]:
+    """
+    Compiles a user-friendly schema into a JSON schema dictionary.
+    """
+    if schema is None:
+        return None
+
+    if isinstance(schema, list) and all(isinstance(i, str) for i in schema):
+        return {
+            "type": "object",
+            "properties": {key: {"type": "string"} for key in schema},
+            "required": schema,
+        }
+
+    if isinstance(schema, dict):
+        is_dict_of_types = all(isinstance(v, type) for v in schema.values())
+        is_json_schema = "properties" in schema and "type" in schema
+
+        if is_dict_of_types and not is_json_schema:
+            properties = {}
+            for key, value_type in schema.items():
+                json_type = PYTHON_TYPE_TO_JSON_TYPE.get(value_type)
+                if json_type is None:
+                    logger.warning(
+                        f"Unsupported type '{value_type}' in schema for key '{key}'. "
+                        "Defaulting to 'object'."
+                    )
+                    properties[key] = {"type": "object"}
+                else:
+                    properties[key] = {"type": json_type}
+            return {
+                "type": "object",
+                "properties": properties,
+                "required": list(schema.keys()),
+            }
+        return schema
+
+    logger.warning(
+        f"Invalid schema format provided: {type(schema)}. No schema will be enforced."
+    )
+    return None
+
+
+def prepare_for_validation(data: Any, schema: Dict[str, Any]) -> Any:
+    """
+    Prepares data before validation, e.g., by wrapping a string.
+    """
+    if (
+        isinstance(data, str)
+        and schema.get("type") == "object"
+        and len(schema.get("required", [])) == 1
+    ):
+        required_key = schema["required"][0]
+        prop_schema = schema.get("properties", {}).get(required_key, {})
+        if prop_schema.get("type") == "string":
+            logger.debug(
+                f"Wrapping string data into object with key '{required_key}' for validation."
+            )
+            return {required_key: data}
+    return data
+
+
+def validate_data(
+    data: Any, compiled_schema: Optional[Dict[str, Any]]
+) -> Tuple[bool, Optional[str]]:
+    """
+    Validates data against a compiled JSON schema.
+    """
+    if compiled_schema is None:
+        return True, None
+
+    if jsonschema is None:
+        logger.warning(
+            "jsonschema is not installed. Skipping validation. "
+            "Please `pip install jsonschema` to enable validation."
+        )
+        return True, None
+
+    prepared_data = prepare_for_validation(data, compiled_schema)
+
+    try:
+        jsonschema.validate(instance=prepared_data, schema=compiled_schema)
+        return True, None
+    except jsonschema.exceptions.ValidationError as e:
+        error_path = " -> ".join(map(str, e.path))
+        if error_path:
+            error_msg = f"Validation Error at '{error_path}': {e.message}"
+        else:
+            error_msg = f"Validation Error: {e.message}"
+        logger.debug(f"Schema validation failed: {error_msg}\nData: {data}\nSchema: {compiled_schema}")
+        return False, error_msg
+    except Exception as e:
+        error_msg = f"An unexpected error occurred during schema validation: {e}"
+        logger.error(error_msg, exc_info=True)
+        return False, error_msg
+
+# --- End Schema Utility Functions ---

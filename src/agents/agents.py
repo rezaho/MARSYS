@@ -18,123 +18,7 @@ from typing import Callable
 from typing import List  # Added Coroutine
 from typing import Any, Coroutine, Dict, Optional, Tuple, Type, Union
 
-try:
-    import jsonschema
-except ImportError:
-    jsonschema = None
-
-# --- Schema Utility Functions ---
-
 logger = logging.getLogger(__name__)
-
-PYTHON_TYPE_TO_JSON_TYPE = {
-    str: "string",
-    int: "integer",
-    float: "number",
-    bool: "boolean",
-    list: "array",
-    dict: "object",
-    type(None): "null",
-}
-
-
-def compile_schema(schema: Any) -> Optional[Dict[str, Any]]:
-    """
-    Compiles a user-friendly schema into a JSON schema dictionary.
-    """
-    if schema is None:
-        return None
-
-    if isinstance(schema, list) and all(isinstance(i, str) for i in schema):
-        return {
-            "type": "object",
-            "properties": {key: {"type": "string"} for key in schema},
-            "required": schema,
-        }
-
-    if isinstance(schema, dict):
-        is_dict_of_types = all(isinstance(v, type) for v in schema.values())
-        is_json_schema = "properties" in schema and "type" in schema
-
-        if is_dict_of_types and not is_json_schema:
-            properties = {}
-            for key, value_type in schema.items():
-                json_type = PYTHON_TYPE_TO_JSON_TYPE.get(value_type)
-                if json_type is None:
-                    logger.warning(
-                        f"Unsupported type '{value_type}' in schema for key '{key}'. "
-                        "Defaulting to 'object'."
-                    )
-                    properties[key] = {"type": "object"}
-                else:
-                    properties[key] = {"type": json_type}
-            return {
-                "type": "object",
-                "properties": properties,
-                "required": list(schema.keys()),
-            }
-        return schema
-
-    logger.warning(
-        f"Invalid schema format provided: {type(schema)}. No schema will be enforced."
-    )
-    return None
-
-
-def prepare_for_validation(data: Any, schema: Dict[str, Any]) -> Any:
-    """
-    Prepares data before validation, e.g., by wrapping a string.
-    """
-    if (
-        isinstance(data, str)
-        and schema.get("type") == "object"
-        and len(schema.get("required", [])) == 1
-    ):
-        required_key = schema["required"][0]
-        prop_schema = schema.get("properties", {}).get(required_key, {})
-        if prop_schema.get("type") == "string":
-            logger.debug(
-                f"Wrapping string data into object with key '{required_key}' for validation."
-            )
-            return {required_key: data}
-    return data
-
-
-def validate_data(
-    data: Any, compiled_schema: Optional[Dict[str, Any]]
-) -> Tuple[bool, Optional[str]]:
-    """
-    Validates data against a compiled JSON schema.
-    """
-    if compiled_schema is None:
-        return True, None
-
-    if jsonschema is None:
-        logger.warning(
-            "jsonschema is not installed. Skipping validation. "
-            "Please `pip install jsonschema` to enable validation."
-        )
-        return True, None
-
-    prepared_data = prepare_for_validation(data, compiled_schema)
-
-    try:
-        jsonschema.validate(instance=prepared_data, schema=compiled_schema)
-        return True, None
-    except jsonschema.exceptions.ValidationError as e:
-        error_path = " -> ".join(map(str, e.path))
-        if error_path:
-            error_msg = f"Validation Error at '{error_path}': {e.message}"
-        else:
-            error_msg = f"Validation Error: {e.message}"
-        logger.debug(f"Schema validation failed: {error_msg}\nData: {data}\nSchema: {compiled_schema}")
-        return False, error_msg
-    except Exception as e:
-        error_msg = f"An unexpected error occurred during schema validation: {e}"
-        logger.error(error_msg, exc_info=True)
-        return False, error_msg
-
-# --- End Schema Utility Functions ---
 
 # --- New Imports ---
 from src.environment.utils import generate_openai_tool_schema
@@ -143,7 +27,7 @@ from src.utils.monitoring import default_progress_monitor
 
 from .memory import ConversationMemory, MemoryManager, Message
 from .registry import AgentRegistry
-from .utils import LogLevel, ProgressLogger, RequestContext
+from .utils import LogLevel, ProgressLogger, RequestContext, compile_schema, prepare_for_validation, validate_data
 from .exceptions import (
     AgentFrameworkError,
     MessageError,
@@ -1052,122 +936,116 @@ Example for `final_response`:
                 role="error", content=f"Error in handle_invocation: {e}", name=self.name
             )
 
-    # robust-JSON helpers
-    @staticmethod
-    def _close_json_braces(src: str) -> str:
+    def _parse_model_response(self, response: str) -> Dict[str, Any]:
         """
-        Appends missing closing braces/brackets so that a truncation at the end of
-        a model response does not break json.loads.
-        """
-        stack: list[str] = []
-        pairs = {"{": "}", "[": "]"}
-        for ch in src:
-            if ch in pairs:
-                stack.append(pairs[ch])
-            elif ch in pairs.values() and stack and stack[-1] == ch:
-                stack.pop()
-        return src + "".join(reversed(stack))
-
-    @staticmethod
-    def _robust_json_loads(src: str, max_depth: int = 3) -> Dict[str, Any]:
-        """
-        Attempts to load JSON with support for recursive/nested JSON strings.
-        
-        This method handles cases where:
-        1. JSON might have missing closing braces (auto-closes them)
-        2. JSON content might be nested/double-encoded as strings
-        3. Multiple levels of JSON encoding exist
-        4. Multiple concatenated JSON objects (invalid format)
+        Extract a single JSON object from `response`.
+        This is the centralized JSON parsing method for all agents.
         
         Args:
-            src: The source string to parse
-            max_depth: Maximum recursion depth to prevent infinite loops
+            response: The response string from the model
             
         Returns:
             Parsed dictionary
             
         Raises:
-            json.JSONDecodeError: If parsing fails after all attempts
-            ValueError: If multiple concatenated JSON objects are detected
+            ValueError: if no valid JSON object can be decoded.
         """
-        def check_for_multiple_json_objects(content: str) -> None:
-            """Check for multiple concatenated JSON objects and raise error if found."""
-            json_str_clean = content.strip()
-            
-            # Only check if it looks like JSON
-            if not json_str_clean.startswith('{'):
-                return
-            
-            # Count opening braces to detect multiple root objects
-            brace_count = 0
-            first_object_end = -1
-            for i, char in enumerate(json_str_clean):
-                if char == '{':
-                    brace_count += 1
-                elif char == '}':
-                    brace_count -= 1
-                    if brace_count == 0 and first_object_end == -1:
-                        first_object_end = i + 1
-                        break
-            
-            # Check if there's additional content after the first complete JSON object
-            if first_object_end != -1 and first_object_end < len(json_str_clean):
-                remaining_content = json_str_clean[first_object_end:].strip()
-                if remaining_content and remaining_content.startswith('{'):
-                    raise MessageFormatError(
-                        "Invalid JSON format: Multiple JSON objects detected. "
-                        "Please provide a SINGLE JSON object. For multiple tool calls, "
-                        "use an array within the 'tool_calls' field of a single JSON response.",
-                        invalid_content=content,
-                        expected_format="Single JSON object with optional tool_calls array"
-                    )
-        
-        def try_parse_recursive(content: str, depth: int = 0) -> Dict[str, Any]:
-            if depth >= max_depth:
-                raise json.JSONDecodeError("Maximum recursion depth reached", content, 0)
-            
-            # Check for multiple concatenated JSON objects on first attempt
-            if depth == 0:
-                check_for_multiple_json_objects(content)
-            
+        # For BaseAgent, we use the BaseAPIModel's robust JSON parsing if available
+        if hasattr(self.model, '_robust_json_loads'):
             try:
-                parsed = json.loads(content)
-                
-                # If we got a dictionary, check if any values are JSON strings that need parsing
-                if isinstance(parsed, dict):
-                    for key, value in parsed.items():
-                        if isinstance(value, str) and value.strip().startswith(('{', '[')):
-                            try:
-                                # Try to recursively parse this value
-                                parsed[key] = try_parse_recursive(value, depth + 1)
-                            except json.JSONDecodeError:
-                                # If parsing fails, keep the original string value
-                                pass
-                
-                return parsed if isinstance(parsed, dict) else {"content": parsed}
-                
+                return self.model._robust_json_loads(response)
+            except (json.JSONDecodeError, ValueError) as e:
+                raise ValueError(f"Could not extract valid JSON from model response: {e}")
+        else:
+            # Fallback to simple JSON parsing for models that don't have robust parsing
+            try:
+                return json.loads(response)
             except json.JSONDecodeError as e:
-                if depth == 0:
-                    # Only try auto-closing braces on the first attempt
-                    try:
-                        closed_content = BaseAgent._close_json_braces(content)
-                        # Check again for multiple objects after closing braces
-                        check_for_multiple_json_objects(closed_content)
-                        return try_parse_recursive(closed_content, depth + 1)
-                    except json.JSONDecodeError:
-                        raise e
-                else:
-                    raise e
-        
-        return try_parse_recursive(src)
+                raise ValueError(f"Could not extract valid JSON from model response: {e}")
 
-    @abstractmethod
-    def _parse_model_response(self, response: str) -> Dict[str, Any]:
+    def _default_response_processor(self, message_obj: Dict[str, Any]) -> Dict[str, Any]:
         """
-        Sub-classes must extract a single JSON object from `response`.
-        Raise ValueError if extraction fails.
+        Default response processor for BaseAgent that expects agent action format.
+        
+        This processor looks for agent actions (next_action, action_input) in the response
+        and formats them according to the BaseAgent's expected structure.
+        
+        Args:
+            message_obj: Raw message object from API response
+            
+        Returns:
+            Dictionary with format: {"role": "assistant", "content": "...", "tool_calls": [...], "agent_calls": [...]}
         """
-        raise NotImplementedError
+        # Extract basic fields
+        tool_calls = message_obj.get("tool_calls", [])
+        content = message_obj.get("content")
+        message_role = message_obj.get("role", "assistant")
+        agent_calls: Optional[List[Dict[str, Any]]] = None
+
+        # Attempt to parse content as JSON if it's a string (handles both raw JSON and markdown-wrapped JSON)
+        parsed_content: Optional[Dict[str, Any]] = None
+        if isinstance(content, str) and content.strip():
+            try:
+                # Use the model's robust JSON parsing if available
+                if hasattr(self.model, '_robust_json_loads'):
+                    parsed_content = self.model._robust_json_loads(content)
+                else:
+                    parsed_content = json.loads(content)
+            except (json.JSONDecodeError, ValueError):
+                parsed_content = None  # Leave as-is if JSON parsing fails
+
+        # Process structured content to extract tool_calls/agent_call
+        if isinstance(parsed_content, dict):
+            next_action_val = parsed_content.get("next_action")
+            action_input_val = parsed_content.get("action_input", {})
+
+            # Handle call_tool action inside content
+            if (
+                next_action_val == "call_tool"
+                and isinstance(action_input_val, dict)
+                and "tool_calls" in action_input_val
+            ):
+                embedded_tool_calls = action_input_val.get("tool_calls")
+                # If tool_calls field from API is empty, promote embedded ones
+                if not tool_calls and embedded_tool_calls:
+                    tool_calls = embedded_tool_calls
+                    # Keep only the "thought" in content if present, else set to None
+                    thought_only = parsed_content.get("thought")
+                    content = thought_only if thought_only else None
+                elif tool_calls and embedded_tool_calls:
+                    # Already have tool_calls separately → remove duplication in content
+                    thought_only = parsed_content.get("thought")
+                    content = thought_only if thought_only else None
+
+            # Handle invoke_agent action inside content
+            elif (
+                next_action_val == "invoke_agent"
+                and isinstance(action_input_val, dict)
+                and "agent_name" in action_input_val
+            ):
+                if not agent_calls:
+                    agent_calls = [{
+                        "agent_name": action_input_val.get("agent_name"),
+                        "request": action_input_val.get("request"),
+                    }]
+                    # Similar clean-up of content keeping only thought
+                    thought_only = parsed_content.get("thought")
+                    content = thought_only if thought_only else None
+
+        # Ensure OpenAI compatibility: if tool_calls present for assistant, content must be null
+        if message_role == "assistant" and tool_calls:
+            content = None
+
+        # Build response payload
+        response_payload: Dict[str, Any] = {
+            "role": message_role,
+            "content": content,  # Can be None for assistant with tool_calls
+            "tool_calls": tool_calls,
+        }
+        if agent_calls:
+            response_payload["agent_calls"] = agent_calls
+
+        return response_payload
 
     @abstractmethod
     async def _run(
@@ -1197,9 +1075,37 @@ Example for `final_response`:
         """
         raise NotImplementedError("_run must be implemented in subclasses.")
 
+    async def _post_step_hook(
+        self, 
+        step_number: int,
+        action_type: str,
+        request_context: RequestContext,
+        **kwargs: Any
+    ) -> None:
+        """
+        Post-step hook that runs after each auto_run step completes.
+        
+        This method is called after each step in auto_run, allowing subclasses
+        to perform custom actions like taking screenshots, logging, cleanup, etc.
+        
+        Args:
+            step_number: The current step number (1-indexed)
+            action_type: The type of action that was performed ('call_tool', 'invoke_agent', 'final_response')
+            request_context: The current request context
+            **kwargs: Additional context data that might be useful for post-processing
+        """
+        # Default implementation does nothing
+        # Subclasses can override this to add custom post-step behavior
+        pass
+
     async def _validate_initial_request(self, initial_request: Any, request_context: RequestContext) -> Tuple[bool, Optional[str]]:
         """
         Validate the initial request against the agent's input schema.
+        Handles all validation logic and logging internally.
+        
+        Args:
+            initial_request: The request to validate
+            request_context: The request context for logging
         
         Returns:
             Tuple of (is_valid, error_message)
@@ -1219,19 +1125,20 @@ Example for `final_response`:
         
         is_valid, error = validate_data(validation_data, self._compiled_input_schema)
         if not is_valid:
+            error_msg = f"Input validation failed for agent '{self.name}': {error}"
             await self._log_progress(
                 request_context,
                 LogLevel.MINIMAL,
-                f"Initial request validation failed for agent '{self.name}': {error}",
+                f"Auto_run terminated due to input validation failure: {error_msg}",
                 data={"validation_error": error, "request_preview": str(validation_data)[:200]}
             )
+            return False, f"Error: {error_msg}"
         
-        return is_valid, error
+        return True, None
 
     async def auto_run(
         self,
         initial_request: Any,
-        # request_context: RequestContext, # Made optional
         request_context: Optional[RequestContext] = None,
         max_steps: int = 10,
         max_re_prompts: int = 2,
@@ -1239,13 +1146,13 @@ Example for `final_response`:
             Callable[
                 [asyncio.Queue, Optional[logging.Logger]], Coroutine[Any, Any, None]
             ]
-        ] = None,  # New parameter
-    ) -> Union[Dict[str, Any], str]:  # Updated return type
+        ] = None,
+    ) -> Union[Dict[str, Any], str]:
         current_task_steps = 0
-        final_answer_data: Optional[Union[Dict[str, Any], str]] = None  # Updated variable name and type
+        final_answer_data: Optional[Union[Dict[str, Any], str]] = None
 
         # --- RequestContext and Progress Monitor Handling ---
-        # _request_context: RequestContext # Variable will be named request_context
+        # _request_context: RequestContext
         monitor_task: Optional[asyncio.Task] = None
         created_new_context = False
 
@@ -1258,11 +1165,11 @@ Example for `final_response`:
                 initial_request
             )
 
-            request_context = RequestContext(  # Assign to request_context
+            request_context = RequestContext(
                 task_id=task_id,
                 initial_prompt=initial_prompt_for_context,
                 progress_queue=progress_queue,
-                log_level=LogLevel.SUMMARY,  # Corrected to a valid LogLevel member
+                log_level=LogLevel.SUMMARY,
                 max_depth=3,
                 max_interactions=max_steps * 2 + 5,
             )
@@ -1274,19 +1181,11 @@ Example for `final_response`:
             self.logger.info(
                 f"Created new RequestContext (ID: {task_id}) and started progress monitor for agent {self.name}."
             )
-        # else: # request_context is already populated if provided
-        # self.logger.info(f"Using provided RequestContext (ID: {request_context.task_id}) for agent {self.name}.")
         # --- End RequestContext and Progress Monitor Handling ---
 
         # --- Input Schema Validation ---
         is_valid, validation_error = await self._validate_initial_request(initial_request, request_context)
         if not is_valid:
-            error_msg = f"Input validation failed for agent '{self.name}': {validation_error}"
-            await self._log_progress(
-                request_context,
-                LogLevel.MINIMAL,
-                f"Auto_run terminated due to input validation failure: {error_msg}"
-            )
             # Cleanup monitor if created
             if created_new_context and monitor_task:
                 await request_context.progress_queue.put(None)
@@ -1294,7 +1193,7 @@ Example for `final_response`:
                     await asyncio.wait_for(monitor_task, timeout=2.0)
                 except asyncio.TimeoutError:
                     monitor_task.cancel()
-            return f"Error: {error_msg}"
+            return validation_error
         # --- End Input Schema Validation ---
 
         if isinstance(initial_request, str):
@@ -1354,670 +1253,112 @@ Example for `final_response`:
                 final_answer_data = f"Error: {error_msg}"
                 break
 
-            # Handle tool-only responses (content is None/empty but tool_calls exist)
-            if (
-                (raw_llm_response_message.content is None or raw_llm_response_message.content == "")
-                and raw_llm_response_message.tool_calls
-            ):
+            # Check if _run returned an error message
+            if raw_llm_response_message.role == "error":
+                error_code = getattr(raw_llm_response_message, 'error_code', None)
+                error_msg = f"Agent '{self.name}' returned error: {raw_llm_response_message.content}"
                 await self._log_progress(
                     current_step_request_context,
-                    LogLevel.DEBUG,
-                    f"Agent '{self.name}' returned tool-only response with {len(raw_llm_response_message.tool_calls)} tool calls",
+                    LogLevel.MINIMAL,
+                    error_msg,
+                data={"error_code": error_code}
                 )
-                # Create synthetic action for tool calls
-                parsed_content_dict = {
-                    "thought": "Executing tool calls",
-                    "next_action": "call_tool",
-                    "action_input": {"tool_calls": raw_llm_response_message.tool_calls},
-                }
-                next_action_val = "call_tool"
-                action_input_val = parsed_content_dict["action_input"]
-                tool_calls_to_make = raw_llm_response_message.tool_calls
-                re_prompt_attempt_count = 0
-            else:
-                # Simplified content parsing - _run should have already handled JSON parsing
-                raw_content = raw_llm_response_message.content
-                
-                # Handle case where content is already a dictionary
-                if isinstance(raw_content, dict):
-                    parsed_content_dict = raw_content
-                elif isinstance(raw_content, str):
-                    if raw_content.strip():
-                        # Try to parse string content as JSON using _robust_json_loads
-                        try:
-                            parsed_content_dict = self._robust_json_loads(raw_content.strip())
-                        except (json.JSONDecodeError, ValueError) as e:
-                            # Provide informative error message to guide the model
-                            await self._log_progress(
-                                current_step_request_context,
-                                LogLevel.DEBUG,
-                                f"Failed to parse content as JSON: {e}. Content: {raw_content[:200]}"
-                            )
-                            
-                            # Check if it looks like it might be intended as a final answer
-                            if len(raw_content.strip()) > 20 and not raw_content.strip().startswith('{'):
-                                # Likely intended as final text response
-                                final_answer_data = raw_content.strip()
-                                break
-                            
-                            # Otherwise, provide guidance to fix JSON format
-                            parsing_error_feedback = (
-                                f"Your response could not be parsed as valid JSON. Error: {str(e)}\n\n"
-                                f"Your response was: {raw_content[:300]}{'...' if len(raw_content) > 300 else ''}\n\n"
-                                "Please provide a valid JSON response with the following structure:\n"
-                                "{\n"
-                                '  "thought": "Your reasoning here",\n'
-                                '  "next_action": "invoke_agent", "call_tool", or "final_response",\n'
-                                '  "action_input": { /* appropriate fields for the action */ }\n'
-                                "}\n\n"
-                                "Make sure your JSON is properly formatted with matching braces and quotes."
-                            )
-                            if re_prompt_attempt_count < max_re_prompts:
-                                re_prompt_attempt_count += 1
-                                await self._log_progress(
-                                    current_step_request_context,
-                                    LogLevel.DETAILED,
-                                    f"Re-prompting agent '{self.name}' (attempt {re_prompt_attempt_count}/{max_re_prompts}) due to JSON parsing error.",
-                                )
-                                current_request_payload = {
-                                    "prompt": parsing_error_feedback,
-                                    "error_correction": True,
-                                    "json_parsing_error": True,
-                                }
-                                continue
-                            else:
-                                final_answer_data = (
-                                    f"Error: Agent '{self.name}' failed to produce valid JSON "
-                                    f"after {max_re_prompts + 1} attempts. Last error: {e}"
-                                )
-                                await self._log_progress(
-                                    current_step_request_context, LogLevel.MINIMAL, final_answer_data
-                                )
-                                break
-                    else:
-                        # Empty string content
-                        content_error_feedback = (
-                            "Your response content was empty. Please provide a JSON response with:\n"
-                            "{\n"
-                            '  "thought": "Your reasoning here",\n'
-                            '  "next_action": "invoke_agent", "call_tool", or "final_response",\n'
-                            '  "action_input": { /* appropriate fields for the action */ }\n'
-                            "}"
-                        )
-                        if re_prompt_attempt_count < max_re_prompts:
-                            re_prompt_attempt_count += 1
-                            await self._log_progress(
-                                current_step_request_context,
-                                LogLevel.DETAILED,
-                                f"Re-prompting agent '{self.name}' (attempt {re_prompt_attempt_count}/{max_re_prompts}) due to empty content.",
-                            )
-                            current_request_payload = {
-                                "prompt": content_error_feedback,
-                                "error_correction": True,
-                                "empty_content": True,
-                            }
-                            continue
-                        else:
-                            final_answer_data = f"Error: Agent '{self.name}' provided empty responses after {max_re_prompts + 1} attempts."
-                            await self._log_progress(
-                                current_step_request_context, LogLevel.MINIMAL, final_answer_data
-                            )
-                            break
-                else:
-                    # Content is neither dict nor string - this indicates a problem with _run implementation
-                    content_type = type(raw_content).__name__
-                    if raw_content is None:
-                        type_error_feedback = (
-                            "Your response content was None. Please provide a JSON response with:\n"
-                            "{\n"
-                            '  "thought": "Your reasoning here",\n'
-                            '  "next_action": "invoke_agent", "call_tool", or "final_response",\n'
-                            '  "action_input": { /* appropriate fields for the action */ }\n'
-                            "}"
-                        )
-                    else:
-                        # This suggests a bug in the _run method implementation
-                        error_msg = (
-                            f"Internal error: {self.__class__.__name__}._run() returned Message with "
-                            f"content of type {content_type} (value: {str(raw_content)[:100]}). "
-                            f"Expected dict or str. This indicates a bug in the agent implementation."
-                        )
-                        await self._log_progress(
-                            current_step_request_context,
-                            LogLevel.MINIMAL,
-                            error_msg,
-                            data={"content_type": content_type, "content_value": str(raw_content)[:200]}
-                        )
-                        final_answer_data = f"Error: {error_msg}"
-                        break
-                    
-                    # Try to recover by prompting the model
-                    if re_prompt_attempt_count < max_re_prompts:
-                        re_prompt_attempt_count += 1
-                        await self._log_progress(
-                            current_step_request_context,
-                            LogLevel.DETAILED,
-                            f"Re-prompting agent '{self.name}' (attempt {re_prompt_attempt_count}/{max_re_prompts}) due to unexpected content type: {content_type}.",
-                        )
-                        current_request_payload = {
-                            "prompt": type_error_feedback,
-                            "error_correction": True,
-                            "unexpected_content_type": True,
-                        }
-                        continue
-                    else:
-                        final_answer_data = f"Error: Agent '{self.name}' provided invalid content type after {max_re_prompts + 1} attempts."
-                        await self._log_progress(
-                            current_step_request_context, LogLevel.MINIMAL, final_answer_data
-                        )
-                        break
-                
-                # Validate parsed content structure
-                if not isinstance(parsed_content_dict, dict):
-                    structure_error_feedback = (
-                        f"Your response was parsed but is not a JSON object. Got {type(parsed_content_dict).__name__}: {str(parsed_content_dict)[:200]}\n\n"
-                        "Please provide a JSON object (dictionary) with this structure:\n"
-                        "{\n"
-                        '  "thought": "Your reasoning here",\n'
-                        '  "next_action": "invoke_agent", "call_tool", or "final_response",\n'
-                        '  "action_input": { /* appropriate fields for the action */ }\n'
-                        "}"
-                    )
-                    if re_prompt_attempt_count < max_re_prompts:
-                        re_prompt_attempt_count += 1
-                        await self._log_progress(
-                            current_step_request_context,
-                            LogLevel.DETAILED,
-                            f"Re-prompting agent '{self.name}' (attempt {re_prompt_attempt_count}/{max_re_prompts}) due to non-dict parsed content.",
-                        )
-                        current_request_payload = {
-                            "prompt": structure_error_feedback,
-                            "error_correction": True,
-                            "wrong_json_type": True,
-                        }
-                        continue
-                    else:
-                        await self._log_progress(
-                            current_step_request_context,
-                            LogLevel.MINIMAL,
-                            f"Agent '{self.name}' exceeded max re-prompt attempts ({max_re_prompts}) for invalid JSON structure.",
-                        )
-                        final_answer_data = f"Error: Agent failed to produce valid JSON object after {max_re_prompts} attempts."
-                        break
-
-                # Extract action components
-                next_action_val = parsed_content_dict.get("next_action")
-                action_input_val = parsed_content_dict.get("action_input")
-
-                tool_calls_to_make: Optional[List[Dict[str, Any]]] = None
-                agent_to_invoke_name: Optional[str] = None
-                agent_request_for_invoke_payload: Optional[Any] = None
-
-                try:
-                    # Validate basic structure
-                    if not next_action_val or not isinstance(next_action_val, str):
-                        raise ActionValidationError(
-                            f"Invalid or missing 'next_action'. Got: {next_action_val}",
-                            action=next_action_val,
-                            valid_actions=["invoke_agent", "call_tool", "final_response"],
-                            agent_name=self.name,
-                            task_id=request_context.task_id if request_context else None
-                        )
-                    if action_input_val is None:
-                        raise ActionValidationError(
-                            "Missing 'action_input' (must be an object/dictionary).",
-                            action=next_action_val,
-                            action_input=action_input_val,
-                            agent_name=self.name,
-                            task_id=request_context.task_id if request_context else None
-                        )
-                    if not isinstance(action_input_val, dict):
-                        raise ActionValidationError(
-                            f"'action_input' must be an object/dictionary, but got {type(action_input_val)}.",
-                            action=next_action_val,
-                            action_input=action_input_val,
-                            agent_name=self.name,
-                            task_id=request_context.task_id if request_context else None
-                        )
-
-                    # Process based on action type
-                    if next_action_val == "invoke_agent":
-                        agent_to_invoke_name = action_input_val.get("agent_name")
-                        agent_request_for_invoke_payload = action_input_val.get("request")
-                        if not agent_to_invoke_name or not isinstance(agent_to_invoke_name, str):
-                            raise ValueError(
-                                "For 'invoke_agent', 'action_input' must contain a valid 'agent_name' (string)."
-                            )
-                        if agent_request_for_invoke_payload is None:
-                            raise ValueError(
-                                "'action_input' for 'invoke_agent' must have 'request'."
-                            )
-
-                    elif next_action_val == "call_tool":
-                        tool_calls_to_make_raw = action_input_val.get("tool_calls")
-                        if not tool_calls_to_make_raw or not isinstance(tool_calls_to_make_raw, list):
-                            raise ValueError(
-                                "For 'call_tool', 'action_input' must contain 'tool_calls' (list)."
-                            )
-                        if not tool_calls_to_make_raw:
-                            raise ValueError(
-                                "For 'call_tool', 'tool_calls' list cannot be empty."
-                            )
-
-                        tool_calls_to_make = []
-                        for tc_idx, tc in enumerate(tool_calls_to_make_raw):
-                            func_details = tc.get("function")
-                            if (
-                                not isinstance(tc, dict)
-                                or tc.get("type") != "function"
-                                or not isinstance(func_details, dict)
-                                or not isinstance(func_details.get("name"), str)
-                                or not isinstance(func_details.get("arguments"), str)
-                            ):
-                                raise ValueError(
-                                    f"Invalid structure for tool_call at index {tc_idx}. Check id, type, function.name, function.arguments."
-                                )
-                            # Validate tool arguments are valid JSON
-                            try:
-                                json.loads(func_details["arguments"])
-                            except json.JSONDecodeError as je:
-                                raise ValueError(
-                                    f"Invalid JSON in tool arguments for '{func_details.get('name', 'Unknown')}' at index {tc_idx}: {je}"
-                                )
-                            tool_calls_to_make.append(tc)
-
-                    elif next_action_val == "final_response":
-                        response_val = action_input_val.get("response")
-                        if response_val is None:
-                            raise ValueError(
-                                "For 'final_response', 'action_input' must contain a 'response' field."
-                            )
-
-                        # --- Output Schema Validation ---
-                        if self._compiled_output_schema:
-                            is_valid, error = validate_data(response_val, self._compiled_output_schema)
-                            if not is_valid:
-                                schema_error_feedback = (
-                                    f"Your final response does not conform to the required output schema. "
-                                    f"Validation error: {error}\n"
-                                    f"Required format: {self._format_schema_for_prompt(self._compiled_output_schema)}\n"
-                                    f"Your response was: {json.dumps(response_val) if isinstance(response_val, (dict, list)) else str(response_val)}\n"
-                                    "Please provide a final_response that matches the required schema."
-                                )
-                                if re_prompt_attempt_count < max_re_prompts:
-                                    re_prompt_attempt_count += 1
-                                    await self._log_progress(
-                                        current_step_request_context,
-                                        LogLevel.DETAILED,
-                                        f"Re-prompting agent '{self.name}' (attempt {re_prompt_attempt_count}/{max_re_prompts}) due to output schema validation failure.",
-                                        data={"validation_error": error, "response_preview": str(response_val)[:200]}
-                                    )
-                                    current_request_payload = {
-                                        "prompt": schema_error_feedback,
-                                        "error_correction": True,
-                                        "schema_validation_failed": True,
-                                    }
-                                    continue
-                                else:
-                                    final_answer_data = (
-                                        f"Error: Agent '{self.name}' failed to produce schema-compliant output "
-                                        f"after {max_re_prompts + 1} attempts. Last validation error: {error}"
-                                    )
-                                    await self._log_progress(
-                                        current_step_request_context, LogLevel.MINIMAL, final_answer_data
-                                    )
-                                    break
-
-                        # Determine final answer format
-                        if self._compiled_output_schema:
-                            final_answer_data = response_val
-                        else:
-                            # Legacy behavior: convert to string
-                            if isinstance(response_val, (dict, list)):
-                                final_answer_data = json.dumps(response_val, indent=2)
-                            else:
-                                final_answer_data = str(response_val)
-
-                        await self._log_progress(
-                            current_step_request_context,
-                            LogLevel.SUMMARY,
-                            f"Agent '{self.name}' completing task with final response.",
-                            data={"final_response_preview": str(final_answer_data)[:200]},
-                        )
-                        break  # Exit the loop
-
-                    else:
-                        raise ValueError(f"Unknown 'next_action': '{next_action_val}'")
-
-                except (ActionValidationError, ValueError) as e:
-                    # Handle action validation errors with specific, detailed feedback
-                    validation_error_msg = str(e)
-                    
-                    # Create detailed, structured error feedback based on the specific validation failure
-                    if "next_action" in validation_error_msg:
-                        error_feedback = (
-                            f"❌ **next_action Validation Error**: {validation_error_msg}\n\n"
-                            "**Expected format for next_action:**\n"
-                            '- Must be a string\n'
-                            '- Must be one of: "invoke_agent", "call_tool", or "final_response"\n'
-                            f'- You provided: {json.dumps(next_action_val)}\n\n'
-                            "**Correct JSON structure:**\n"
-                            "{\n"
-                            '  "thought": "Your reasoning here",\n'
-                            '  "next_action": "invoke_agent",  // or "call_tool" or "final_response"\n'
-                            '  "action_input": { /* fields specific to the action */ }\n'
-                            "}"
-                        )
-                    elif "action_input" in validation_error_msg and "object" in validation_error_msg:
-                        error_feedback = (
-                            f"❌ **action_input Type Error**: {validation_error_msg}\n\n"
-                            "**Expected format for action_input:**\n"
-                            '- Must be a JSON object (dictionary)\n'
-                            f'- You provided: {type(action_input_val).__name__} = {json.dumps(action_input_val) if action_input_val is not None else "null"}\n\n'
-                            "**Correct examples:**\n"
-                            '• For invoke_agent: "action_input": {"agent_name": "AgentName", "request": "task description"}\n'
-                            '• For call_tool: "action_input": {"tool_calls": [/* tool call objects */]}\n'
-                            '• For final_response: "action_input": {"response": "your final answer"}'
-                        )
-                    elif "invoke_agent" in validation_error_msg:
-                        error_feedback = (
-                            f"❌ **invoke_agent Structure Error**: {validation_error_msg}\n\n"
-                            "**Required fields for invoke_agent action_input:**\n"
-                            '- "agent_name": string (exact name of the agent to invoke)\n'
-                            '- "request": string or object (the task/question for the agent)\n\n'
-                            f'**Your action_input was:**\n{json.dumps(action_input_val, indent=2)}\n\n'
-                            f'**Available agents you can invoke:** {list(self.allowed_peers) if self.allowed_peers else "None"}\n\n'
-                            "**Correct example:**\n"
-                            "{\n"
-                            '  "next_action": "invoke_agent",\n'
-                            '  "action_input": {\n'
-                            '    "agent_name": "ExactAgentName",\n'
-                            '    "request": "Please analyze this data"\n'
-                            "  }\n"
-                            "}"
-                        )
-                    elif "call_tool" in validation_error_msg:
-                        error_feedback = (
-                            f"❌ **call_tool Structure Error**: {validation_error_msg}\n\n"
-                            "**Required format for call_tool action_input:**\n"
-                            '- "tool_calls": array of tool call objects\n'
-                            "- Each tool call must have: id, type, function\n"
-                            "- Function must have: name, arguments (as JSON string)\n\n"
-                            f'**Your action_input was:**\n{json.dumps(action_input_val, indent=2)}\n\n'
-                            f'**Available tools:** {list(self.tools.keys()) if self.tools else "None"}\n\n'
-                            "**Correct example:**\n"
-                            "{\n"
-                            '  "next_action": "call_tool",\n'
-                            '  "action_input": {\n'
-                            '    "tool_calls": [{\n'
-                            '      "id": "call_123",\n'
-                            '      "type": "function",\n'
-                            '      "function": {\n'
-                            '        "name": "tool_name_here",\n'
-                            '        "arguments": "{\\"param1\\": \\"value1\\"}"\n'
-                            "      }\n"
-                            "    }]\n"
-                            "  }\n"
-                            "}"
-                        )
-                    elif "final_response" in validation_error_msg:
-                        error_feedback = (
-                            f"❌ **final_response Structure Error**: {validation_error_msg}\n\n"
-                            "**Required format for final_response action_input:**\n"
-                            '- "response": your final answer/result\n'
-                            "- Response can be string, object, or array\n\n"
-                            f'**Your action_input was:**\n{json.dumps(action_input_val, indent=2)}\n\n'
-                            "**Correct example:**\n"
-                            "{\n"
-                            '  "next_action": "final_response",\n'
-                            '  "action_input": {\n'
-                            '    "response": "Here is my final answer or analysis results"\n'
-                            "  }\n"
-                            "}"
-                        )
-                    elif "Unknown 'next_action'" in validation_error_msg:
-                        error_feedback = (
-                            f"❌ **Unknown Action Error**: {validation_error_msg}\n\n"
-                            f'**You provided next_action:** "{next_action_val}"\n'
-                            "**Valid next_action values are:**\n"
-                            '- "invoke_agent": Call another agent for help\n'
-                            '- "call_tool": Execute available tools/functions\n'
-                            '- "final_response": Provide your final answer\n\n'
-                            "**Choose the appropriate action based on what you need to do next.**"
-                        )
-                    else:
-                        # Generic fallback for any other validation errors
-                        error_feedback = (
-                            f"❌ **JSON Structure Validation Error**: {validation_error_msg}\n\n"
-                            "**Your response structure had issues. Please provide valid JSON with:**\n"
-                            "- 'next_action': string ('invoke_agent', 'call_tool', or 'final_response')\n"
-                            "- 'action_input': object with appropriate fields for the action type\n\n"
-                            f"**Your complete response was:**\n{json.dumps(parsed_content_dict, indent=2)[:800]}{'...' if len(json.dumps(parsed_content_dict, indent=2)) > 800 else ''}\n\n"
-                            "**Please fix the structural issues and try again.**"
-                        )
-                    
-                    if re_prompt_attempt_count < max_re_prompts:
-                        re_prompt_attempt_count += 1
-                        await self._log_progress(
-                            current_step_request_context,
-                            LogLevel.DETAILED,
-                            f"Re-prompting agent '{self.name}' (attempt {re_prompt_attempt_count}/{max_re_prompts}) due to action validation error: {validation_error_msg[:100]}",
-                            data={"validation_error": validation_error_msg, "error_type": "action_validation"},
-                        )
-                        current_request_payload = {
-                            "prompt": error_feedback,
-                            "error_correction": True,
-                            "action_validation_error": True,
-                        }
-                        continue
-                    else:
-                        final_answer_data = (
-                            f"Error: Agent '{self.name}' failed to produce valid action structure "
-                            f"after {max_re_prompts + 1} attempts. Last error: {validation_error_msg}"
-                        )
-                        await self._log_progress(
-                            current_step_request_context, LogLevel.MINIMAL, final_answer_data
-                        )
-                        break
-
-            # Continue with rest of auto_run logic (tool execution, agent invocation, etc.)
-            if final_answer_data is not None:
-                await self._log_progress(
-                    current_step_request_context,
-                    LogLevel.SUMMARY,
-                    f"Agent '{self.name}' provided final answer. Task complete.",
-                )
+                final_answer_data = f"Error: {error_msg}"
                 break
-
-            if next_action_val == "call_tool" and tool_calls_to_make:
-                # --- Sanitize tool names in tool_calls_to_make before updating memory ---
-                sanitized_tool_calls_for_api = []
-                for tc_from_llm in tool_calls_to_make:
-                    original_func_name = tc_from_llm.get("function", {}).get("name")
-                    processed_func_name = original_func_name
-                    if isinstance(
-                        original_func_name, str
-                    ) and original_func_name.startswith("functions."):
-                        processed_func_name = original_func_name.split("functions.", 1)[
-                            -1
-                        ]
-
-                    # Further ensure it matches the API pattern (simple replacement for now)
-                    # A more robust regex replacement might be needed if other invalid chars appear
-                    if isinstance(processed_func_name, str):
-                        processed_func_name = re.sub(
-                            r"[^a-zA-Z0-9_-]", "_", processed_func_name
-                        )
-
-                    # Create a copy to avoid modifying the original dict from LLM if needed elsewhere
-                    # (though tool_calls_to_make is usually locally scoped here)
-                    sanitized_tc = tc_from_llm.copy()
-                    sanitized_tc["function"] = sanitized_tc.get(
-                        "function", {}
-                    ).copy()  # Ensure 'function' key exists and is a copy
-                    sanitized_tc["function"]["name"] = processed_func_name
-                    sanitized_tool_calls_for_api.append(sanitized_tc)
-
-                tool_calls_to_make = (
-                    sanitized_tool_calls_for_api  # Use the sanitized version
+                
+            # -------------------------------------------------------------
+            # NEW PRIORITY HANDLING: Use Message.to_action_dict()
+            # -------------------------------------------------------------
+            action_dict = raw_llm_response_message.to_action_dict()
+            
+            if action_dict is None:
+                # No valid action found - raise custom exception
+                from src.agents.exceptions import ModelResponseError
+                
+                error_msg = (
+                    f"Agent '{self.name}' returned invalid response format. "
+                    f"Expected one of: tool_calls attribute, agent_calls attribute, or "
+                    f"content with next_action='final_response'. "
+                    f"Got: tool_calls={bool(raw_llm_response_message.tool_calls)}, "
+                    f"agent_calls={bool(getattr(raw_llm_response_message, 'agent_calls', None))}, "
+                    f"content_type={type(raw_llm_response_message.content).__name__}, "
+                    f"content_next_action={raw_llm_response_message.content.get('next_action') if isinstance(raw_llm_response_message.content, dict) else 'N/A'}"
                 )
-                # --- End of sanitize ---
-
-                # --- Update the assistant message in memory to include tool_calls (For OpenAI API Compatibility) ---
-                if (
-                    raw_llm_response_message
-                    and hasattr(self, "memory")
-                    and isinstance(self.memory.memory_module, ConversationMemory)
-                ):
-                    all_messages_in_memory = self.memory.retrieve_all()
-                    target_message_id_to_update = raw_llm_response_message.message_id
-                    found_message_idx = -1
-                    for idx, msg_in_mem in enumerate(all_messages_in_memory):
-                        if msg_in_mem.message_id == target_message_id_to_update:
-                            found_message_idx = idx
-                            break
-
-                    if found_message_idx != -1:
-                        original_message_to_update = all_messages_in_memory[
-                            found_message_idx
-                        ]
-                        if original_message_to_update.role == "assistant":
-                            thought_content = parsed_content_dict.get(
-                                "thought"
-                            )  # Extract thought from the parsed JSON
-
-                            # Determine if this is an agent call
-                            agent_call_info = None
-                            if next_action_val == "invoke_agent" and action_input_val:
-                                agent_call_info = {
-                                    "agent_name": action_input_val.get("agent_name"),
-                                    "request": action_input_val.get("request"),
-                                }
-
-                            updated_assistant_message = Message(
-                                role="assistant",
-                                content=thought_content,
-                                tool_calls=tool_calls_to_make if next_action_val == "call_tool" else None,  # Only set tool_calls for tool actions
-                                agent_call=agent_call_info,  # Set agent_call for invoke_agent actions
-                                message_id=original_message_to_update.message_id,
-                                name=original_message_to_update.name,
-                            )
-                            self.memory.replace_memory(
-                                found_message_idx, message=updated_assistant_message
-                            )
-                            await self._log_progress(
-                                current_step_request_context,
-                                LogLevel.DEBUG,
-                                f"Updated assistant message {target_message_id_to_update} in memory with {'tool_calls' if next_action_val == 'call_tool' else 'agent_call'} for tracking.",
-                            )
-                        else:
-                            await self._log_progress(
-                                current_step_request_context,
-                                LogLevel.WARNING,
-                                f"Message {target_message_id_to_update} (to be updated for tool_calls) was not 'assistant'. Role: {original_message_to_update.role}",
-                            )
-                    else:
-                        await self._log_progress(
-                            current_step_request_context,
-                            LogLevel.WARNING,
-                            f"Could not find assistant message {target_message_id_to_update} in memory to update with tool_calls.",
-                        )
-                # --- End of update ---
-
+                
                 await self._log_progress(
                     current_step_request_context,
-                    LogLevel.DETAILED,
-                    f"Agent '{self.name}' initiating tool calls: {[tc['function']['name'] for tc in tool_calls_to_make]}.",
-                )
-
-                tool_results_structured_for_llm: List[Dict] = (
-                    await self._execute_tool_calls(
-                        tool_calls_to_make, current_step_request_context
-                    )
-                )
-
-                current_request_payload = {
-                    # "prompt": "Tool execution completed. Review the results (available in history via role='tool' messages) and decide the next step.",
-                    # "tool_execution_summary": str(tool_results_structured_for_llm)
-                    "prompt": "Tool execution completed. Review the results (which are now in your message history with role='tool' directly following your tool call request) and decide the next step based on your original goal and these results."
+                    LogLevel.MINIMAL,
+                error_msg,
+                data={
+                    "content": str(raw_llm_response_message.content)[:200] if raw_llm_response_message.content else None,
+                    "tool_calls_present": bool(raw_llm_response_message.tool_calls),
+                    "agent_calls_present": bool(getattr(raw_llm_response_message, 'agent_calls', None))
                 }
-                await self._log_progress(
-                    current_step_request_context,
-                    LogLevel.DEBUG,
-                    f"Agent '{self.name}' prepared next payload after tool call.",
                 )
+                
+                raise ModelResponseError(
+                    error_msg,
+                        agent_name=self.name,
+                    response_content=raw_llm_response_message.content,
+                        task_id=request_context.task_id if request_context else None
+                    )
 
-            elif (
-                next_action_val == "invoke_agent"
-                and agent_to_invoke_name
-                and agent_request_for_invoke_payload is not None
-            ):
-                await self._log_progress(
+            # Extract action components
+            next_action_val = action_dict.get("next_action")
+            action_input_val = action_dict.get("action_input")
+            
+            # Dispatch to appropriate action handler
+            if next_action_val == "call_tool":
+                current_request_payload = await self._handle_call_tool_action(
+                    action_input_val,
+                    raw_llm_response_message,
                     current_step_request_context,
-                    LogLevel.DETAILED,
-                    f"Agent '{self.name}' attempting to invoke agent '{agent_to_invoke_name}'.",
                 )
-
-                # Use the original request_context for tracking overall task depth and interaction count.
-                # invoke_agent itself will create a new interaction_id and increment depth/count for its call.
-                peer_invocation_context = dataclasses.replace(
+            elif next_action_val == "invoke_agent":
+                current_request_payload = await self._handle_invoke_agent_action(
+                    raw_llm_response_message,
+                    current_step_request_context,
                     request_context,
-                    caller_agent_name=self.name,
-                    callee_agent_name=agent_to_invoke_name,
+                    )
+            elif next_action_val == "final_response":
+                is_final, final_answer_data, retry_payload = await self._handle_final_response_action(
+                    action_input_val, current_step_request_context, re_prompt_attempt_count, max_re_prompts
+                )
+                if is_final:
+                    if final_answer_data is not None:
+                        # Call post-step hook before breaking for final response
+                        await self._post_step_hook(
+                            step_number=current_task_steps + 1,
+                            action_type=next_action_val,
+                            request_context=current_step_request_context,
+                            final_response=True,
+                            action_input=action_input_val
+                        )
+                        break  # Exit the loop with final answer
+                else:
+                    # Retry needed
+                    re_prompt_attempt_count += 1
+                    current_request_payload = retry_payload
+                    continue
+            else:
+                # This should not happen if to_action_dict() is working correctly
+                from src.agents.exceptions import ModelResponseError
+                raise ModelResponseError(
+                    f"Unknown next_action '{next_action_val}' returned by Message.to_action_dict()",
+                    agent_name=self.name,
+                    response_content=raw_llm_response_message.content,
+                    task_id=request_context.task_id if request_context else None
                 )
 
-                try:
-                    peer_response_message: Message = await self.invoke_agent(
-                        target_agent_name=agent_to_invoke_name,
-                        request=agent_request_for_invoke_payload,
-                        request_context=peer_invocation_context,
-                    )
-                    # Update the memory with the response from the invoked agent
-                    self.memory.update_memory(message=peer_response_message)
-
-                    if peer_response_message.role == "error":
-                        await self._log_progress(
-                            current_step_request_context,
-                            LogLevel.MINIMAL,
-                            f"Peer agent '{agent_to_invoke_name}' returned an error: {peer_response_message.content}",
-                        )
-                        current_request_payload = {
-                            "prompt": f"Peer agent '{agent_to_invoke_name}' responded with an error: '{peer_response_message.content}'. Review this error (available in history) and decide the next step.",
-                            "peer_error_summary": {
-                                "agent_name": agent_to_invoke_name,
-                                "error": peer_response_message.content,
-                            },
-                        }
-                    else:
-                        await self._log_progress(
-                            current_step_request_context,
-                            LogLevel.DEBUG,
-                            f"Agent '{self.name}' received response from peer '{agent_to_invoke_name}'.",
-                        )
-                        current_request_payload = {
-                            "prompt": f"Received response from peer agent '{agent_to_invoke_name}' (ID: {peer_response_message.message_id}). Review this response (available in history) and decide the next step.",
-                            # "peer_response_summary": {"agent_name": agent_to_invoke_name, "response_preview": str(peer_response_message.content)[:100]}
-                        }
-                except Exception as e_invoke:
-                    error_msg = f"Critical error during invoke_agent call to '{agent_to_invoke_name}': {e_invoke}"
-                    await self._log_progress(
-                        current_step_request_context,
-                        LogLevel.MINIMAL,
-                        error_msg,
-                        data={
-                            "exception_type": type(e_invoke).__name__,
-                            "exception_str": str(e_invoke),
-                        },
-                    )
-                    self.memory.update_memory(
-                        role="assistant",
-                        name=self.name,
-                        content=f"System Error: Failed to invoke agent '{agent_to_invoke_name}'. Reason: {e_invoke}",
-                    )
-                    current_request_payload = {
-                        "prompt": f"A system error occurred when trying to invoke agent '{agent_to_invoke_name}': {e_invoke}. Please analyze this failure and decide how to proceed (e.g., try an alternative, or conclude if not possible).",
-                        "is_system_error_feedback": True,
-                    }
+            # Call post-step hook for non-final actions
+            if next_action_val != "final_response":
+                await self._post_step_hook(
+                    step_number=current_task_steps + 1,
+                    action_type=next_action_val,
+                    request_context=current_step_request_context,
+                    action_input=action_input_val,
+                    raw_response_message=raw_llm_response_message
+                )
 
             current_task_steps += 1
             if current_task_steps >= max_steps and final_answer_data is None:
@@ -2032,11 +1373,11 @@ Example for `final_response`:
         if final_answer_data is not None:
             # Create preview of final answer for logging
             if isinstance(final_answer_data, dict):
-                preview = str(final_answer_data)[:100]
+                preview = str(final_answer_data)[:200]
             elif isinstance(final_answer_data, str):
-                preview = final_answer_data[:100]
+                preview = final_answer_data[:200]
             else:
-                preview = str(final_answer_data)[:100]
+                preview = str(final_answer_data)[:200]
             
             await self._log_progress(
                 request_context,
@@ -2149,7 +1490,7 @@ Example for `final_response`:
             function_spec = tool_call.get("function", {})
             raw_tool_name = function_spec.get("name")
             tool_args_str = function_spec.get("arguments", "{}")
-            tool_output_content: str
+            tool_output_content: str = ""  # Initialize with empty string as fallback
 
             # Process the tool name to remove potential "functions." prefix
             tool_name = raw_tool_name
@@ -2186,11 +1527,18 @@ Example for `final_response`:
                     tool_func = self.tools[tool_name]
 
                     if asyncio.iscoroutinefunction(tool_func):
-                        tool_output_content = str(await tool_func(**tool_args))
+                        raw_result = await tool_func(**tool_args)
                     else:
-                        tool_output_content = str(
-                            await asyncio.to_thread(tool_func, **tool_args)
-                        )
+                        raw_result = await asyncio.to_thread(tool_func, **tool_args)
+                    
+                    # Ensure we always have a string result, handle None/empty cases
+                    if raw_result is None:
+                        tool_output_content = ""
+                    elif isinstance(raw_result, dict) and not raw_result:
+                        # Handle empty dict case - convert to empty string
+                        tool_output_content = ""
+                    else:
+                        tool_output_content = str(raw_result)
 
                     await self._log_progress(
                         request_context,
@@ -2231,12 +1579,21 @@ Example for `final_response`:
                     result_for_llm["output"] = tool_output_content
                     result_for_llm["error"] = True
 
+            # For OpenAI API compatibility, tool message content must be a string
+            # We'll embed the tool_call_id information in a JSON string format
+            structured_tool_content = json.dumps({
+                "tool_call_id": tool_call_id,
+                "output": tool_output_content
+            })
+
+            # Add tool message without images (OpenAI doesn't allow images in tool messages)
             self.memory.update_memory(
                 role="tool",
-                content=tool_output_content,
+                content=structured_tool_content,
                 name=tool_name,  # OpenAI spec uses function name here - use the processed one
-                tool_call_id=tool_call_id,
+                images=None,  # Never attach images to tool messages
             )
+            
             tool_results_payload.append(result_for_llm)
 
         return tool_results_payload
@@ -2291,8 +1648,9 @@ Example for `final_response`:
         # Normalize the response
         normalized = {
             "role": raw_response["role"],
-            "content": raw_response.get("content", ""),
-            "tool_calls": raw_response.get("tool_calls", [])
+            "content": raw_response.get("content", None),
+            "tool_calls": raw_response.get("tool_calls", []),
+            "agent_calls": raw_response.get("agent_calls")  # Accept agent_calls if present
         }
         
         # Validate role
@@ -2324,6 +1682,15 @@ Example for `final_response`:
                         f"tool_calls[{i}].function must have a 'name' field: {tool_call}"
                     )
         
+                # Validate agent_calls format (if present)
+        agent_calls_val = normalized.get("agent_calls")
+        if agent_calls_val is not None and not isinstance(agent_calls_val, list):
+            raise ValueError(
+                f"'agent_calls' must be a list if provided, got {type(agent_calls_val).__name__}: {agent_calls_val}"
+                    )
+        
+
+        
         return normalized
 
     @staticmethod
@@ -2347,12 +1714,762 @@ Example for `final_response`:
         if not hasattr(message, 'role'):
             return False, f"Message object from {agent_class_name}._run() is missing 'role' attribute"
         
-        # Validate content type
+        # Validate content type - now accepts any dict, not just MessageContent
         content = message.content
         if content is not None and not isinstance(content, (str, dict, list)):
             return False, f"Message.content must be str, dict, list, or None. Got {type(content).__name__}: {str(content)[:100]}"
         
         return True, None
+
+    def _create_json_error_feedback(self, raw_content: str, error_str: str) -> str:
+        """
+        Creates a JSON parsing error feedback message.
+        
+        Args:
+            raw_content: The raw content that caused the error
+            error_str: The error message string
+            
+        Returns:
+            A formatted error message
+        """
+        return (
+            f"Your response could not be parsed as valid JSON. Error: {error_str}\n\n"
+            f"Your response was: {raw_content[:300]}{'...' if len(raw_content) > 300 else ''}\n\n"
+            "Please provide a valid JSON response with the following structure:\n"
+            "{\n"
+            '  "thought": "Your reasoning here",\n'
+            '  "next_action": "invoke_agent", "call_tool", or "final_response",\n'
+            '  "action_input": { /* appropriate fields for the action */ }\n'
+            "}\n\n"
+            "Make sure your JSON is properly formatted with matching braces and quotes."
+        )
+
+    def _create_empty_content_feedback(self) -> str:
+        """
+        Creates an empty content feedback message.
+        
+        Returns:
+            A formatted error message
+        """
+        return (
+            "Your response content was empty. Please provide a JSON response with:\n"
+            "{\n"
+            '  "thought": "Your reasoning here",\n'
+            '  "next_action": "invoke_agent", "call_tool", or "final_response",\n'
+            '  "action_input": { /* appropriate fields for the action */ }\n'
+            "}"
+        )
+
+
+
+    async def _handle_auto_run_error(
+        self,
+        error_type: str,
+        error_data: Dict[str, Any],
+        re_prompt_attempt_count: int,
+        max_re_prompts: int,
+        request_context: RequestContext,
+    ) -> Tuple[bool, Optional[str], Optional[Dict[str, Any]]]:
+        """
+        Centralized error handling for auto_run method.
+        
+        Args:
+            error_type: Type of error ('json_parsing', 'empty_content', 'content_type', 
+                       'structure', 'action_validation', 'schema_validation')
+            error_data: Dictionary containing error-specific data
+            re_prompt_attempt_count: Current retry attempt count
+            max_re_prompts: Maximum allowed retry attempts
+            request_context: Current request context for logging
+            
+        Returns:
+            Tuple of (should_retry, error_feedback_prompt, next_request_payload)
+            - should_retry: Whether to attempt another retry
+            - error_feedback_prompt: The feedback message for the agent (None if no retry)
+            - next_request_payload: The payload for the next request (None if no retry)
+        """
+        should_retry = re_prompt_attempt_count < max_re_prompts
+        
+        if not should_retry:
+            # Generate final error message for different error types
+            if error_type == "json_parsing":
+                final_error = (
+                    f"Error: Agent '{self.name}' failed to produce valid JSON "
+                    f"after {max_re_prompts + 1} attempts. Last error: {error_data.get('error_message', 'Unknown JSON error')}"
+                )
+            elif error_type == "empty_content":
+                final_error = f"Error: Agent '{self.name}' provided empty responses after {max_re_prompts + 1} attempts."
+            elif error_type == "content_type":
+                final_error = f"Error: Agent '{self.name}' provided invalid content type after {max_re_prompts + 1} attempts."
+            elif error_type == "structure":
+                final_error = f"Error: Agent failed to produce valid JSON object after {max_re_prompts} attempts."
+            elif error_type == "action_validation":
+                final_error = (
+                    f"Error: Agent '{self.name}' failed to produce valid action structure "
+                    f"after {max_re_prompts + 1} attempts. Last error: {error_data.get('validation_error', 'Unknown validation error')}"
+                )
+            elif error_type == "schema_validation":
+                final_error = (
+                    f"Error: Agent '{self.name}' failed to produce schema-compliant output "
+                    f"after {max_re_prompts + 1} attempts. Last validation error: {error_data.get('validation_error', 'Unknown schema error')}"
+                )
+
+            else:
+                final_error = f"Error: Agent '{self.name}' failed after {max_re_prompts + 1} attempts due to {error_type}."
+            
+            await self._log_progress(
+                request_context, LogLevel.MINIMAL, final_error
+            )
+            return False, None, None
+        
+        # Generate error feedback for retry
+        error_feedback = self._generate_error_feedback(error_type, error_data)
+        
+        # Create next request payload
+        next_request_payload = {
+            "prompt": error_feedback,
+            "error_correction": True,
+            f"{error_type}_error": True,  # e.g., "json_parsing_error": True, "multiple_json_objects_error": True
+        }
+        
+        # Log the retry attempt
+        await self._log_progress(
+            request_context,
+            LogLevel.DETAILED,
+            f"Re-prompting agent '{self.name}' (attempt {re_prompt_attempt_count + 1}/{max_re_prompts}) due to {error_type.replace('_', ' ')} error.",
+            data={"error_type": error_type, **error_data}
+        )
+        
+        return True, error_feedback, next_request_payload
+
+    def _generate_error_feedback(self, error_type: str, error_data: Dict[str, Any]) -> str:
+        """
+        Generate specific error feedback messages based on error type and data.
+        
+        Args:
+            error_type: Type of error
+            error_data: Error-specific data
+            
+        Returns:
+            Formatted error feedback message
+        """
+        if error_type == "json_parsing":
+            raw_content = error_data.get("raw_content", "")
+            error_str = error_data.get("error_message", "Unknown JSON error")
+            return self._create_json_error_feedback(raw_content, error_str)
+        
+        elif error_type == "empty_content":
+            return self._create_empty_content_feedback()
+        
+        elif error_type == "content_type":
+            content_type = error_data.get("content_type", "unknown")
+            if error_data.get("is_none", False):
+                return self._create_empty_content_feedback()
+            else:
+                return (
+                    f"Your response returned content of type {content_type}, but expected a string or dictionary. "
+                    "This indicates an internal error. Please provide a valid JSON response:\n"
+                    "{\n"
+                    '  "thought": "Your reasoning here",\n'
+                    '  "next_action": "invoke_agent", "call_tool", or "final_response",\n'
+                    '  "action_input": { /* appropriate fields for the action */ }\n'
+                    "}"
+                )
+        
+        elif error_type == "structure":
+            parsed_content = error_data.get("parsed_content", {})
+            return (
+                f"Your response was parsed but is not a JSON object. Got {type(parsed_content).__name__}: {str(parsed_content)[:400]}\n\n"
+                "Please provide a JSON object (dictionary) with this structure:\n"
+                "{\n"
+                '  "thought": "Your reasoning here",\n'
+                '  "next_action": "invoke_agent", "call_tool", or "final_response",\n'
+                '  "action_input": { /* appropriate fields for the action */ }\n'
+                "}"
+            )
+        
+        elif error_type == "action_validation":
+            return self._generate_action_validation_feedback(error_data)
+        
+        elif error_type == "schema_validation":
+            validation_error = error_data.get("validation_error", "Unknown schema error")
+            response_val = error_data.get("response_value")
+            return (
+                f"Your final response does not conform to the required output schema. "
+                f"Validation error: {validation_error}\n"
+                f"Required format: {self._format_schema_for_prompt(self._compiled_output_schema)}\n"
+                f"Your response was: {json.dumps(response_val) if isinstance(response_val, (dict, list)) else str(response_val)}\n"
+                "Please provide a final_response that matches the required schema."
+            )
+        
+        else:
+            return (
+                f"An error occurred: {error_type}. Please provide a valid JSON response:\n"
+                "{\n"
+                '  "thought": "Your reasoning here",\n'
+                '  "next_action": "invoke_agent", "call_tool", or "final_response",\n'
+                '  "action_input": { /* appropriate fields for the action */ }\n'
+                "}"
+            )
+
+    def _generate_action_validation_feedback(self, error_data: Dict[str, Any]) -> str:
+        """
+        Generate detailed action validation error feedback.
+        
+        Args:
+            error_data: Dictionary containing validation error details
+            
+        Returns:
+            Formatted error feedback message
+        """
+        validation_error_msg = error_data.get("validation_error", "Unknown validation error")
+        next_action_val = error_data.get("next_action")
+        action_input_val = error_data.get("action_input")
+        parsed_content_dict = error_data.get("parsed_content", {})
+        
+        # Create detailed, structured error feedback based on the specific validation failure
+        if "next_action" in validation_error_msg:
+            return (
+                f"❌ **next_action Validation Error**: {validation_error_msg}\n\n"
+                "**Expected format for next_action:**\n"
+                '- Must be a string\n'
+                '- Must be one of: "invoke_agent", "call_tool", or "final_response"\n'
+                f'- You provided: {json.dumps(next_action_val)}\n\n'
+                "**Correct JSON structure:**\n"
+                "{\n"
+                '  "thought": "Your reasoning here",\n'
+                '  "next_action": "invoke_agent",  // or "call_tool" or "final_response"\n'
+                '  "action_input": { /* fields specific to the action */ }\n'
+                "}"
+            )
+        elif "action_input" in validation_error_msg and "object" in validation_error_msg:
+            return (
+                f"❌ **action_input Type Error**: {validation_error_msg}\n\n"
+                "**Expected format for action_input:**\n"
+                '- Must be a JSON object (dictionary)\n'
+                f'- You provided: {type(action_input_val).__name__} = {json.dumps(action_input_val) if action_input_val is not None else "null"}\n\n'
+                "**Correct examples:**\n"
+                '• For invoke_agent: "action_input": {"agent_name": "AgentName", "request": "task description"}\n'
+                '• For call_tool: "action_input": {"tool_calls": [/* tool call objects */]}\n'
+                '• For final_response: "action_input": {"response": "your final answer"}'
+            )
+        elif "invoke_agent" in validation_error_msg:
+            return (
+                f"❌ **invoke_agent Structure Error**: {validation_error_msg}\n\n"
+                "**Required fields for invoke_agent action_input:**\n"
+                '- "agent_name": string (exact name of the agent to invoke)\n'
+                '- "request": string or object (the task/question for the agent)\n\n'
+                f'**Your action_input was:**\n{json.dumps(action_input_val, indent=2)}\n\n'
+                f'**Available agents you can invoke:** {list(self.allowed_peers) if self.allowed_peers else "None"}\n\n'
+                "**Correct example:**\n"
+                "{\n"
+                '  "next_action": "invoke_agent",\n'
+                '  "action_input": {\n'
+                '    "agent_name": "ExactAgentName",\n'
+                '    "request": "Please analyze this data"\n'
+                "  }\n"
+                "}"
+            )
+        elif "call_tool" in validation_error_msg:
+            return (
+                f"❌ **call_tool Structure Error**: {validation_error_msg}\n\n"
+                "**Required format for call_tool action_input:**\n"
+                '- "tool_calls": array of tool call objects\n'
+                "- Each tool call must have: id, type, function\n"
+                "- Function must have: name, arguments (as JSON string)\n\n"
+                f'**Your action_input was:**\n{json.dumps(action_input_val, indent=2)}\n\n'
+                f'**Available tools:** {list(self.tools.keys()) if self.tools else "None"}\n\n'
+                "**Correct example:**\n"
+                "{\n"
+                '  "next_action": "call_tool",\n'
+                '  "action_input": {\n'
+                '    "tool_calls": [{\n'
+                '      "id": "call_123",\n'
+                '      "type": "function",\n'
+                '      "function": {\n'
+                '        "name": "tool_name_here",\n'
+                '        "arguments": "{\\"param1\\": \\"value1\\"}"\n'
+                "      }\n"
+                "    }]\n"
+                "  }\n"
+                "}"
+            )
+        elif "final_response" in validation_error_msg:
+            return (
+                f"❌ **final_response Structure Error**: {validation_error_msg}\n\n"
+                "**Required format for final_response action_input:**\n"
+                '- "response": your final answer/result\n'
+                "- Response can be string, object, or array\n\n"
+                f'**Your action_input was:**\n{json.dumps(action_input_val, indent=2)}\n\n'
+                "**Correct example:**\n"
+                "{\n"
+                '  "next_action": "final_response",\n'
+                '  "action_input": {\n'
+                '    "response": "Here is my final answer or analysis results"\n'
+                "  }\n"
+                "}"
+            )
+        elif "Unknown 'next_action'" in validation_error_msg:
+            return (
+                f"❌ **Unknown Action Error**: {validation_error_msg}\n\n"
+                f'**You provided next_action:** "{next_action_val}"\n'
+                "**Valid next_action values are:**\n"
+                '- "invoke_agent": Call another agent for help\n'
+                '- "call_tool": Execute available tools/functions\n'
+                '- "final_response": Provide your final answer\n\n'
+                "**Choose the appropriate action based on what you need to do next.**"
+            )
+        else:
+            # Generic fallback for any other validation errors
+            return (
+                f"❌ **JSON Structure Validation Error**: {validation_error_msg}\n\n"
+                "**Your response structure had issues. Please provide valid JSON with:**\n"
+                "- 'next_action': string ('invoke_agent', 'call_tool', or 'final_response')\n"
+                "- 'action_input': object with appropriate fields for the action type\n\n"
+                f"**Your complete response was:**\n{json.dumps(parsed_content_dict, indent=2)[:800]}{'...' if len(json.dumps(parsed_content_dict, indent=2)) > 800 else ''}\n\n"
+                "**Please fix the structural issues and try again.**"
+            )
+
+    async def _handle_call_tool_action(
+        self,
+        action_input_val: Dict[str, Any],
+        raw_llm_response_message: Message,
+        current_step_request_context: RequestContext,
+    ) -> Dict[str, Any]:
+        """
+        Handle call_tool action: validate, execute tools, and update memory.
+        
+        Args:
+            action_input_val: The parsed action input containing tool_calls from to_action_dict()
+            raw_llm_response_message: The original message from _run (for memory updates and metadata)
+            current_step_request_context: Current request context
+            
+        Returns:
+            Next request payload for the agent
+            
+        Raises:
+            ValueError: If tool call validation fails
+        """
+        # Extract tool calls from the parsed action input (authoritative source)
+        tool_calls_from_action = action_input_val.get("tool_calls", [])
+        if not tool_calls_from_action:
+            raise ValueError(
+                "action_input has no 'tool_calls' field or it's empty."
+            )
+        
+        # Tool calls from action_input are already in dict format (standardized by to_action_dict)
+        tool_calls_to_make_raw = tool_calls_from_action
+
+        # Validate each tool call structure
+        tool_calls_to_make = []
+        for tc_idx, tc in enumerate(tool_calls_to_make_raw):
+            func_details = tc.get("function")
+            if (
+                not isinstance(tc, dict)
+                or tc.get("type") != "function"
+                or not isinstance(func_details, dict)
+                or not isinstance(func_details.get("name"), str)
+                or not isinstance(func_details.get("arguments"), str)
+            ):
+                raise ValueError(
+                    f"Invalid structure for tool_call at index {tc_idx}. Check id, type, function.name, function.arguments."
+                )
+            # Validate tool arguments are valid JSON
+            try:
+                json.loads(func_details["arguments"])
+            except json.JSONDecodeError as je:
+                raise ValueError(
+                    f"Invalid JSON in tool arguments for '{func_details.get('name', 'Unknown')}' at index {tc_idx}: {je}"
+                )
+            tool_calls_to_make.append(tc)
+
+        # Sanitize tool names
+        sanitized_tool_calls_for_api = []
+        for tc_from_llm in tool_calls_to_make:
+            original_func_name = tc_from_llm.get("function", {}).get("name")
+            processed_func_name = original_func_name
+            if isinstance(original_func_name, str) and original_func_name.startswith("functions."):
+                processed_func_name = original_func_name.split("functions.", 1)[-1]
+
+            # Further ensure it matches the API pattern
+            if isinstance(processed_func_name, str):
+                processed_func_name = re.sub(r"[^a-zA-Z0-9_-]", "_", processed_func_name)
+
+            # Create a copy to avoid modifying the original dict
+            sanitized_tc = tc_from_llm.copy()
+            sanitized_tc["function"] = sanitized_tc.get("function", {}).copy()
+            sanitized_tc["function"]["name"] = processed_func_name
+            sanitized_tool_calls_for_api.append(sanitized_tc)
+
+        tool_calls_to_make = sanitized_tool_calls_for_api
+
+        # Update the assistant message in memory to include tool_calls (For OpenAI API Compatibility)
+        # Extract thought from content (could be string or dict with thought key)
+        thought = None
+        if isinstance(raw_llm_response_message.content, str):
+            thought = raw_llm_response_message.content
+        elif isinstance(raw_llm_response_message.content, dict):
+            thought = raw_llm_response_message.content.get("thought")
+        
+        # Create a synthetic parsed_content_dict for compatibility
+        parsed_content_dict = {
+            "thought": thought,
+            "next_action": "call_tool",
+            "action_input": {"tool_calls": tool_calls_to_make}
+        }
+        await self._update_assistant_message_with_tool_calls(
+            raw_llm_response_message, parsed_content_dict, tool_calls_to_make, current_step_request_context
+        )
+
+        # Execute tool calls
+        await self._log_progress(
+            current_step_request_context,
+            LogLevel.DETAILED,
+            f"Agent '{self.name}' initiating tool calls: {[tc['function']['name'] for tc in tool_calls_to_make]}.",
+        )
+
+        tool_results_structured_for_llm: List[Dict] = await self._execute_tool_calls(
+            tool_calls_to_make, current_step_request_context
+        )
+
+        # Prepare next request payload
+        next_request_payload = {
+            "prompt": "Tool execution completed. Review the results (which are now in your message history with role='tool' directly following your tool call request) and decide the next step based on your original goal and these results."
+        }
+        
+        await self._log_progress(
+            current_step_request_context,
+            LogLevel.DEBUG,
+            f"Agent '{self.name}' prepared next payload after tool call.",
+        )
+        
+        return next_request_payload
+
+    async def _handle_invoke_agent_action(
+        self,
+        raw_llm_response_message: Message,
+        current_step_request_context: RequestContext,
+        request_context: RequestContext,
+    ) -> Dict[str, Any]:
+        """
+        Handle invoke_agent action: validate, invoke agent, and update memory.
+        
+        Args:
+            raw_llm_response_message: The original message from _run with agent_calls
+            current_step_request_context: Current step request context
+            request_context: Main request context
+            
+        Returns:
+            Next request payload for the agent
+            
+        Raises:
+            ValueError: If agent invocation validation fails
+        """
+        # Extract agent calls directly from Message object
+        if not hasattr(raw_llm_response_message, 'agent_calls') or not raw_llm_response_message.agent_calls:
+            raise ValueError(
+                "Message has no agent_calls attribute or it's empty."
+            )
+        
+        # For now, we only support single agent invocation, so take the first one
+        first_agent_call_msg = raw_llm_response_message.agent_calls[0]
+        
+        # Convert AgentCallMsg to dict for processing
+        if hasattr(first_agent_call_msg, 'to_dict'):
+            agent_call_data = first_agent_call_msg.to_dict()
+        else:
+            # Already a dict
+            agent_call_data = first_agent_call_msg
+        
+        # Validate agent invocation structure
+        agent_to_invoke_name = agent_call_data.get("agent_name")
+        agent_request_for_invoke_payload = agent_call_data.get("request")
+        
+        if not agent_to_invoke_name or not isinstance(agent_to_invoke_name, str):
+            raise ValueError(
+                "Agent call must contain a valid 'agent_name' (string)."
+            )
+        if agent_request_for_invoke_payload is None:
+            raise ValueError(
+                "Agent call must have 'request'."
+            )
+
+        # Update the assistant message in memory to include agent_calls info
+        # Create a synthetic parsed_content_dict for compatibility
+        parsed_content_dict = {
+            "thought": (raw_llm_response_message.content if isinstance(raw_llm_response_message.content, str) 
+                       else raw_llm_response_message.content.get("thought") if isinstance(raw_llm_response_message.content, dict) else None),
+            "next_action": "invoke_agent",
+            "action_input": agent_call_data
+        }
+        await self._update_assistant_message_with_agent_calls(
+            raw_llm_response_message, parsed_content_dict, agent_call_data, current_step_request_context
+        )
+
+        # Invoke the agent
+        await self._log_progress(
+            current_step_request_context,
+            LogLevel.DETAILED,
+            f"Agent '{self.name}' attempting to invoke agent '{agent_to_invoke_name}'.",
+        )
+
+        # Use the original request_context for tracking overall task depth and interaction count
+        peer_invocation_context = dataclasses.replace(
+            request_context,
+            caller_agent_name=self.name,
+            callee_agent_name=agent_to_invoke_name,
+        )
+
+        try:
+            peer_response_message: Message = await self.invoke_agent(
+                target_agent_name=agent_to_invoke_name,
+                request=agent_request_for_invoke_payload,
+                request_context=peer_invocation_context,
+            )
+            # Update the memory with the response from the invoked agent
+            self.memory.update_memory(message=peer_response_message)
+
+            if peer_response_message.role == "error":
+                await self._log_progress(
+                    current_step_request_context,
+                    LogLevel.MINIMAL,
+                    f"Peer agent '{agent_to_invoke_name}' returned an error: {peer_response_message.content}",
+                )
+                next_request_payload = {
+                    "prompt": f"Peer agent '{agent_to_invoke_name}' responded with an error: '{peer_response_message.content}'. Review this error (available in history) and decide the next step.",
+                    "peer_error_summary": {
+                        "agent_name": agent_to_invoke_name,
+                        "error": peer_response_message.content,
+                    },
+                }
+            else:
+                await self._log_progress(
+                    current_step_request_context,
+                    LogLevel.DEBUG,
+                    f"Agent '{self.name}' received response from peer '{agent_to_invoke_name}'.",
+                )
+                next_request_payload = {
+                    "prompt": f"Received response from peer agent '{agent_to_invoke_name}' (ID: {peer_response_message.message_id}). Review this response (available in history) and decide the next step.",
+                }
+        except Exception as e_invoke:
+            error_msg = f"Critical error during invoke_agent call to '{agent_to_invoke_name}': {e_invoke}"
+            await self._log_progress(
+                current_step_request_context,
+                LogLevel.MINIMAL,
+                error_msg,
+                data={
+                    "exception_type": type(e_invoke).__name__,
+                    "exception_str": str(e_invoke),
+                },
+            )
+            self.memory.update_memory(
+                role="assistant",
+                name=self.name,
+                content=f"System Error: Failed to invoke agent '{agent_to_invoke_name}'. Reason: {e_invoke}",
+            )
+            next_request_payload = {
+                "prompt": f"A system error occurred when trying to invoke agent '{agent_to_invoke_name}': {e_invoke}. Please analyze this failure and decide how to proceed (e.g., try an alternative, or conclude if not possible).",
+                "is_system_error_feedback": True,
+            }
+
+        return next_request_payload
+
+    async def _handle_final_response_action(
+        self,
+        action_input_val: Dict[str, Any],
+        current_step_request_context: RequestContext,
+        re_prompt_attempt_count: int,
+        max_re_prompts: int,
+    ) -> Tuple[bool, Optional[Union[Dict[str, Any], str]], Optional[Dict[str, Any]]]:
+        """
+        Handle final_response action: validate and process final response.
+        
+        Args:
+            action_input_val: The action_input from the parsed response
+            current_step_request_context: Current step request context
+            re_prompt_attempt_count: Current retry count
+            max_re_prompts: Maximum retry attempts
+            
+        Returns:
+            Tuple of (is_final, final_answer_data, next_request_payload)
+            - is_final: True if this is the final response, False if retry needed
+            - final_answer_data: The final answer if is_final=True, None otherwise
+            - next_request_payload: The retry payload if is_final=False, None otherwise
+            
+        Raises:
+            ValueError: If final response validation fails
+        """
+        # Validate final response structure
+        response_val = action_input_val.get("response")
+        if response_val is None:
+            raise ValueError(
+                "For 'final_response', 'action_input' must contain a 'response' field."
+            )
+
+        # Output Schema Validation
+        if self._compiled_output_schema:
+            is_valid, error = validate_data(response_val, self._compiled_output_schema)
+            if not is_valid:
+                error_data = {
+                    "validation_error": error,
+                    "response_value": response_val
+                }
+                should_retry, error_feedback, next_payload = await self._handle_auto_run_error(
+                    "schema_validation", error_data, re_prompt_attempt_count, max_re_prompts, current_step_request_context
+                )
+                
+                if should_retry:
+                    return False, None, next_payload
+                else:
+                    final_error = error_feedback or f"Error: Agent '{self.name}' failed to produce schema-compliant output after {max_re_prompts + 1} attempts. Last validation error: {error}"
+                    return True, final_error, None
+
+        # Determine final answer format
+        if self._compiled_output_schema:
+            final_answer_data = response_val
+        else:
+            # Legacy behavior: convert to string
+            if isinstance(response_val, (dict, list)):
+                final_answer_data = json.dumps(response_val, indent=2)
+            else:
+                final_answer_data = str(response_val)
+
+        await self._log_progress(
+            current_step_request_context,
+            LogLevel.SUMMARY,
+            f"Agent '{self.name}' completing task with final response.",
+            data={"final_response_preview": str(final_answer_data)[:200]},
+        )
+        
+        return True, final_answer_data, None
+
+    async def _update_assistant_message_with_tool_calls(
+        self,
+        raw_llm_response_message: Message,
+        parsed_content_dict: Dict[str, Any],
+        tool_calls_to_make: List[Dict[str, Any]],
+        current_step_request_context: RequestContext,
+    ) -> None:
+        """
+        Update the assistant message in memory to include tool_calls for OpenAI API compatibility.
+        
+        Args:
+            raw_llm_response_message: The original message from _run
+            parsed_content_dict: The full parsed response dictionary
+            tool_calls_to_make: The validated and sanitized tool calls
+            current_step_request_context: Current request context
+        """
+        if (
+            raw_llm_response_message
+            and hasattr(self, "memory")
+            and isinstance(self.memory.memory_module, ConversationMemory)
+        ):
+            all_messages_in_memory = self.memory.retrieve_all()
+            target_message_id_to_update = raw_llm_response_message.message_id
+            found_message_idx = -1
+            for idx, msg_in_mem in enumerate(all_messages_in_memory):
+                if msg_in_mem.message_id == target_message_id_to_update:
+                    found_message_idx = idx
+                    break
+
+            if found_message_idx != -1:
+                original_message_to_update = all_messages_in_memory[found_message_idx]
+                if original_message_to_update.role == "assistant":
+                    thought_content = parsed_content_dict.get("thought")
+
+                    updated_assistant_message = Message(
+                        role="assistant",
+                        content=thought_content,
+                        tool_calls=tool_calls_to_make,  # Raw dicts - will be auto-converted
+                        agent_calls=None,
+                        message_id=original_message_to_update.message_id,
+                        name=original_message_to_update.name,
+                    )
+                    self.memory.replace_memory(found_message_idx, message=updated_assistant_message)
+                    
+                    await self._log_progress(
+                        current_step_request_context,
+                        LogLevel.DEBUG,
+                        f"Updated assistant message {target_message_id_to_update} in memory with tool_calls for tracking.",
+                    )
+                else:
+                    await self._log_progress(
+                        current_step_request_context,
+                        LogLevel.MINIMAL,
+                        f"Message {target_message_id_to_update} (to be updated for tool_calls) was not 'assistant'. Role: {original_message_to_update.role}",
+                    )
+            else:
+                await self._log_progress(
+                    current_step_request_context,
+                    LogLevel.MINIMAL,
+                    f"Could not find assistant message {target_message_id_to_update} in memory to update with tool_calls.",
+                )
+
+    async def _update_assistant_message_with_agent_calls(
+        self,
+        raw_llm_response_message: Message,
+        parsed_content_dict: Dict[str, Any],
+        action_input_val: Dict[str, Any],
+        current_step_request_context: RequestContext,
+    ) -> None:
+        """
+        Update the assistant message in memory to include agent_calls info.
+        
+        Args:
+            raw_llm_response_message: The original message from _run
+            parsed_content_dict: The full parsed response dictionary
+            action_input_val: The action_input containing agent call info
+            current_step_request_context: Current request context
+        """
+        if (
+            raw_llm_response_message
+            and hasattr(self, "memory")
+            and isinstance(self.memory.memory_module, ConversationMemory)
+        ):
+            all_messages_in_memory = self.memory.retrieve_all()
+            target_message_id_to_update = raw_llm_response_message.message_id
+            found_message_idx = -1
+            for idx, msg_in_mem in enumerate(all_messages_in_memory):
+                if msg_in_mem.message_id == target_message_id_to_update:
+                    found_message_idx = idx
+                    break
+
+            if found_message_idx != -1:
+                original_message_to_update = all_messages_in_memory[found_message_idx]
+                if original_message_to_update.role == "assistant":
+                    thought_content = parsed_content_dict.get("thought")
+                    
+                    agent_call_data = {
+                        "agent_name": action_input_val.get("agent_name"),
+                        "request": action_input_val.get("request"),
+                    }
+
+                    updated_assistant_message = Message(
+                        role="assistant",
+                        content=thought_content,
+                        tool_calls=None,
+                        agent_calls=[agent_call_data],  # Raw dict list - will be auto-converted
+                        message_id=original_message_to_update.message_id,
+                        name=original_message_to_update.name,
+                    )
+                    self.memory.replace_memory(found_message_idx, message=updated_assistant_message)
+                    
+                    await self._log_progress(
+                        current_step_request_context,
+                        LogLevel.DEBUG,
+                        f"Updated assistant message {target_message_id_to_update} in memory with agent_calls for tracking.",
+                    )
+                else:
+                    await self._log_progress(
+                        current_step_request_context,
+                        LogLevel.MINIMAL,
+                        f"Message {target_message_id_to_update} (to be updated for agent_calls) was not 'assistant'. Role: {original_message_to_update.role}",
+                    )
+            else:
+                await self._log_progress(
+                    current_step_request_context,
+                    LogLevel.MINIMAL,
+                    f"Could not find assistant message {target_message_id_to_update} in memory to update with agent_calls.",
+        )
 
 
 class Agent(BaseAgent):
@@ -2486,12 +2603,16 @@ class Agent(BaseAgent):
         elif model_type == "api":
             api_key = config.api_key
             base_url = config.base_url
+            provider = config.provider or "openai"  # Default to openai if no provider specified
             return BaseAPIModel(
                 model_name=model_name,
                 api_key=api_key,
                 base_url=base_url,
                 max_tokens=max_tokens_cfg,
                 temperature=temperature_cfg,
+                provider=provider,  # Pass the provider parameter
+                thinking_budget=config.thinking_budget,  # Pass the thinking budget
+                response_processor=self._default_response_processor,
                 **extra_kwargs,
             )
         else:
@@ -2521,6 +2642,7 @@ class Agent(BaseAgent):
                 "api_key",  # Passed to BaseAPIModel init
                 "max_tokens",  # Handled by Agent init and run override
                 "temperature",  # Handled by Agent init and run override
+                "thinking_budget",  # Passed to BaseAPIModel init
                 "model_class",  # Local model specific
                 "torch_dtype",  # Local model specific
                 "device_map",  # Local model specific
@@ -2537,28 +2659,12 @@ class Agent(BaseAgent):
             return kwargs
         return {}
 
-    def _parse_model_response(self, response: str) -> Dict[str, Any]:
-        """
-        Parse model response using the robust JSON loader.
-        
-        Args:
-            response: The response string from the model
-            
-        Returns:
-            Parsed dictionary
-            
-        Raises:
-            ValueError: if no valid JSON object can be decoded.
-        """
-        try:
-            return self._robust_json_loads(response)
-        except (json.JSONDecodeError, ValueError) as e:
-            raise ValueError(f"Could not extract valid JSON from model response: {e}")
+
 
     def _input_message_processor(self) -> Callable[[Dict[str, Any]], Dict[str, Any]]:
         """
         Creates a processor function that converts LLM JSON responses to Message-compatible format.
-        Extracts agent_call information from JSON content when present.
+        Extracts agent_calls information from JSON content when present.
         """
         def transform_from_llm(data: Dict[str, Any]) -> Dict[str, Any]:
             # Start with a copy of the original data
@@ -2570,10 +2676,10 @@ class Agent(BaseAgent):
                 try:
                     parsed_content = json.loads(content)
                     if isinstance(parsed_content, dict) and parsed_content.get("next_action") == "invoke_agent":
-                        # Extract agent_call information
+                        # Extract agent_calls information as raw dict list - Message.__post_init__ will convert
                         action_input = parsed_content.get("action_input", {})
                         if isinstance(action_input, dict) and "agent_name" in action_input:
-                            result["agent_call"] = action_input
+                            result["agent_calls"] = [action_input]  # Create list with single agent call
                             
                             # Keep only thought in content if present
                             thought = parsed_content.get("thought")
@@ -2592,28 +2698,41 @@ class Agent(BaseAgent):
     def _output_message_processor(self) -> Callable[[Dict[str, Any]], Dict[str, Any]]:
         """
         Creates a processor function that converts Message dicts to LLM-compatible format.
-        Synthesizes JSON content when agent_call is present.
+        Synthesizes JSON content when agent_calls is present.
         """
         def transform_to_llm(msg_dict: Dict[str, Any]) -> Dict[str, Any]:
             # Start with a copy
             result = msg_dict.copy()
             
-            # If agent_call is present and role is assistant, synthesize JSON content
-            if msg_dict.get("role") == "assistant" and msg_dict.get("agent_call"):
-                agent_call = msg_dict["agent_call"]
+            # If agent_calls is present and role is assistant, synthesize JSON content
+            if msg_dict.get("role") == "assistant" and msg_dict.get("agent_calls"):
+                agent_calls = msg_dict["agent_calls"]
                 thought = msg_dict.get("content", "I need to invoke another agent.")
+                
+                # For now, we only support single agent invocation, so take the first one
+                if agent_calls and len(agent_calls) > 0:
+                    first_agent_call_msg = agent_calls[0]
+                    
+                    # Handle both AgentCallMsg objects and raw dict format
+                    if hasattr(first_agent_call_msg, 'to_dict'):
+                        # It's an AgentCallMsg object
+                        agent_call_data = first_agent_call_msg.to_dict()
+                    else:
+                        # It's already a dict
+                        agent_call_data = first_agent_call_msg
                 
                 synthesized_content = {
                     "thought": thought,
                     "next_action": "invoke_agent",
-                    "action_input": agent_call
+                        "action_input": agent_call_data
                 }
                 result["content"] = json.dumps(synthesized_content)
-                # Remove agent_call from result as it's not part of OpenAI API
-                result.pop("agent_call", None)
+                
+                # Remove agent_calls from result as it's not part of OpenAI API
+                result.pop("agent_calls", None)
             else:
-                # Remove agent_call if present (not part of OpenAI API)
-                result.pop("agent_call", None)
+                # Remove agent_calls if present (not part of OpenAI API)
+                result.pop("agent_calls", None)
             
             return result
         
@@ -2759,16 +2878,7 @@ class Agent(BaseAgent):
             # Validate and normalize model response
             validated_response = self._validate_and_normalize_model_response(raw_model_output)
             
-            # Parse content if it's a JSON string that should be a dictionary
-            content = validated_response.get("content")
-            if isinstance(content, str) and content.strip().startswith(('{', '[')):
-                try:
-                    parsed_content = self._robust_json_loads(content)
-                    validated_response = validated_response.copy()
-                    validated_response["content"] = parsed_content
-                except (json.JSONDecodeError, ValueError):
-                    # Keep original string content if parsing fails
-                    pass
+            # Content parsing is now handled centrally through _parse_model_response in auto_run
             
             # Use the memory update method that handles transformations
             self.memory.update_from_response(
@@ -2800,6 +2910,7 @@ class Agent(BaseAgent):
                     "content_preview": str(assistant_message.content)[:100] if assistant_message.content else "Empty"
                 },
             )
+
         except Exception as e:
             await self._log_progress(
                 request_context,

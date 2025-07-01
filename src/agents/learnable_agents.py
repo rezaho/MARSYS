@@ -94,43 +94,7 @@ class BaseLearnableAgent(BaseAgent, ABC):
             self.model = PeftHead(model=self.model)
             self.model.prepare_peft_model(**learning_head_config)
 
-    def _parse_model_response(self, response: str) -> Dict[str, Any]:
-        """
-        Extract and return a single JSON object from `response`.
 
-        Order of extraction attempts:
-        1. First fenced ```json … ``` block.
-        2. Whole response if it already begins with '{' or '['.
-        3. Text between the first '{' and the last '}'.
-
-        Raises:
-            MessageFormatError: if no valid JSON object can be decoded.
-        """
-        # 1. fenced code-block
-        block = re.search(r"```json\s*(.*?)\s*```", response, re.I | re.S)
-        candidates = [block.group(1)] if block else []
-
-        # 2. whole response
-        stripped = response.strip()
-        if stripped.startswith(("{", "[")):
-            candidates.append(stripped)
-
-        # 3. slice between braces
-        first, last = response.find("{"), response.rfind("}")
-        if 0 <= first < last:
-            candidates.append(response[first : last + 1])
-
-        for candidate in candidates:
-            try:
-                return json.loads(candidate)
-            except json.JSONDecodeError:
-                continue
-
-        raise MessageFormatError(
-            "Could not extract valid JSON from model response.",
-            invalid_content=response[:500],  # First 500 chars for context
-            expected_format="JSON object or array within response text or ```json code block"
-        )
 
 
 class LearnableAgent(BaseLearnableAgent):
@@ -207,7 +171,7 @@ class LearnableAgent(BaseLearnableAgent):
     def _input_message_processor(self) -> Callable[[Dict[str, Any]], Dict[str, Any]]:
         """
         Creates a processor function that converts LLM JSON responses to Message-compatible format.
-        Extracts agent_call information from JSON content when present.
+        Extracts agent_calls information from JSON content when present.
         """
 
         def transform_from_llm(data: Dict[str, Any]) -> Dict[str, Any]:
@@ -223,13 +187,13 @@ class LearnableAgent(BaseLearnableAgent):
                         isinstance(parsed_content, dict)
                         and parsed_content.get("next_action") == "invoke_agent"
                     ):
-                        # Extract agent_call information
+                        # Extract agent_calls information as raw dict list - Message.__post_init__ will convert
                         action_input = parsed_content.get("action_input", {})
                         if (
                             isinstance(action_input, dict)
                             and "agent_name" in action_input
                         ):
-                            result["agent_call"] = action_input
+                            result["agent_calls"] = [action_input]  # Create list with single agent call
 
                             # Keep only thought in content if present
                             thought = parsed_content.get("thought")
@@ -248,29 +212,42 @@ class LearnableAgent(BaseLearnableAgent):
     def _output_message_processor(self) -> Callable[[Dict[str, Any]], Dict[str, Any]]:
         """
         Creates a processor function that converts Message dicts to LLM-compatible format.
-        Synthesizes JSON content when agent_call is present.
+        Synthesizes JSON content when agent_calls is present.
         """
 
         def transform_to_llm(msg_dict: Dict[str, Any]) -> Dict[str, Any]:
             # Start with a copy
             result = msg_dict.copy()
 
-            # If agent_call is present and role is assistant, synthesize JSON content
-            if msg_dict.get("role") == "assistant" and msg_dict.get("agent_call"):
-                agent_call = msg_dict["agent_call"]
+            # If agent_calls is present and role is assistant, synthesize JSON content
+            if msg_dict.get("role") == "assistant" and msg_dict.get("agent_calls"):
+                agent_calls = msg_dict["agent_calls"]
                 thought = msg_dict.get("content", "I need to invoke another agent.")
+
+                # For now, we only support single agent invocation, so take the first one
+                if agent_calls and len(agent_calls) > 0:
+                    first_agent_call_msg = agent_calls[0]
+                    
+                    # Handle both AgentCallMsg objects and raw dict format
+                    if hasattr(first_agent_call_msg, 'to_dict'):
+                        # It's an AgentCallMsg object
+                        agent_call_data = first_agent_call_msg.to_dict()
+                    else:
+                        # It's already a dict
+                        agent_call_data = first_agent_call_msg
 
                 synthesized_content = {
                     "thought": thought,
                     "next_action": "invoke_agent",
-                    "action_input": agent_call,
+                        "action_input": agent_call_data,
                 }
                 result["content"] = json.dumps(synthesized_content)
-                # Remove agent_call from result as it's not part of OpenAI API
-                result.pop("agent_call", None)
+                
+                # Remove agent_calls from result as it's not part of OpenAI API
+                result.pop("agent_calls", None)
             else:
-                # Remove agent_call if present (not part of OpenAI API)
-                result.pop("agent_call", None)
+                # Remove agent_calls if present (not part of OpenAI API)
+                result.pop("agent_calls", None)
 
             return result
 
@@ -415,7 +392,7 @@ class LearnableAgent(BaseLearnableAgent):
                     )
             else:
                 # String response or other format - create message directly
-                content = str(raw_model_output) if raw_model_output else ""
+                content = str(raw_model_output) if raw_model_output else None
                 assistant_message = Message(
                     role="assistant",
                     content=content,

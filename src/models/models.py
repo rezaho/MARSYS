@@ -3,9 +3,10 @@ import io
 import json
 import logging
 import os
+import uuid
 import warnings
 from abc import ABC, abstractmethod
-from typing import Any, Dict, List, Literal, Optional, Union
+from typing import Any, Callable, Dict, List, Literal, Optional, Union
 
 import requests
 
@@ -42,13 +43,716 @@ except ImportError:
     LoraConfig, TaskType, get_peft_model, PeftModel = None, None, None, None
 
 
+# --- Provider Adapter Pattern ---
+
+class APIProviderAdapter(ABC):
+    """Abstract base class for API provider adapters"""
+    
+    def __init__(self, model_name: str, **provider_config):
+        self.model_name = model_name
+        # Each adapter handles its own config in __init__
+    
+    def run(self, messages: List[Dict], **kwargs) -> Dict[str, Any]:
+        """Common orchestration flow - calls abstract methods"""
+        try:
+            # 1. Build request components using abstract methods
+            headers = self.get_headers()
+            payload = self.format_request_payload(messages, **kwargs)
+            url = self.get_endpoint_url()
+            
+            # 2. Make request (common logic)
+            response = requests.post(url, headers=headers, json=payload, timeout=180)
+            response.raise_for_status()
+            
+            # 3. Parse response using abstract method
+            return self.parse_raw_response(response.json())
+            
+        except requests.exceptions.RequestException as e:
+            return self.handle_api_error(e, response if 'response' in locals() else None)
+    
+    # Abstract methods that each provider must implement
+    @abstractmethod
+    def get_headers(self) -> Dict[str, str]:
+        """Return provider-specific headers"""
+        pass
+    
+    @abstractmethod
+    def format_request_payload(self, messages: List[Dict], **kwargs) -> Dict[str, Any]:
+        """Convert standard format to provider-specific request payload"""
+        pass
+    
+    @abstractmethod
+    def get_endpoint_url(self) -> str:
+        """Return provider-specific endpoint URL"""
+        pass
+    
+    @abstractmethod
+    def parse_raw_response(self, raw_response: Dict) -> Dict[str, Any]:
+        """Convert provider response to basic standard format:
+        {"role": "assistant", "content": "...", "tool_calls": [...]}
+        """
+        pass
+    
+    @abstractmethod
+    def handle_api_error(self, error: Exception, response=None) -> Dict[str, Any]:
+        """Handle provider-specific errors"""
+        pass
+
+
+class OpenAIAdapter(APIProviderAdapter):
+    """Adapter for OpenAI and OpenAI-compatible APIs (OpenRouter, Groq)"""
+    
+    def __init__(self, model_name: str, api_key: str, base_url: str, 
+                 max_tokens: int = 1024, temperature: float = 0.7, top_p: float = None, **kwargs):
+        super().__init__(model_name)
+        self.api_key = api_key
+        self.base_url = base_url
+        self.max_tokens = max_tokens
+        self.temperature = temperature
+        self.top_p = top_p
+    
+    def get_headers(self) -> Dict[str, str]:
+        return {
+            "Authorization": f"Bearer {self.api_key}",
+            "Content-Type": "application/json"
+        }
+    
+    def format_request_payload(self, messages: List[Dict], **kwargs) -> Dict[str, Any]:
+        payload = {
+            "model": self.model_name,
+            "messages": messages,
+            "max_tokens": kwargs.get("max_tokens", self.max_tokens),
+            "temperature": kwargs.get("temperature", self.temperature),
+        }
+        
+        if kwargs.get("top_p") is not None:
+            payload["top_p"] = kwargs["top_p"]
+        elif self.top_p is not None:
+            payload["top_p"] = self.top_p
+        
+        # Handle structured output (takes precedence over simple json_mode)
+        if kwargs.get("response_format"):
+            payload["response_format"] = kwargs["response_format"]
+        elif kwargs.get("json_mode"):
+            payload["response_format"] = {"type": "json_object"}
+            
+        if kwargs.get("tools"):
+            payload["tools"] = kwargs["tools"]
+        
+        # Handle OpenAI reasoning (effort-based only)
+        reasoning_effort = kwargs.get("reasoning_effort")
+        if reasoning_effort and reasoning_effort.lower() in ["high", "medium", "low"]:
+            payload["reasoning"] = {"effort": reasoning_effort.lower()}
+            
+        # Only accept known OpenAI API parameters - warn about unknown ones
+        valid_openai_params = {
+            "max_tokens", "temperature", "top_p", "json_mode", "tools", "response_format", 
+            "reasoning_effort", "frequency_penalty", "presence_penalty", "logit_bias", 
+            "logprobs", "top_logprobs", "n", "seed", "stop", "stream", "suffix", "user"
+        }
+        
+        for key, value in kwargs.items():
+            if key not in valid_openai_params and value is not None:
+                import warnings
+                warnings.warn(f"Unknown parameter '{key}' passed to OpenAI API - this parameter will be ignored")
+        
+        return payload
+    
+    def get_endpoint_url(self) -> str:
+        return f"{self.base_url.rstrip('/')}/chat/completions"
+    
+    def parse_raw_response(self, raw_response: Dict) -> Dict[str, Any]:
+        message = raw_response.get("choices", [{}])[0].get("message", {})
+        return {
+            "role": message.get("role", "assistant"),
+            "content": message.get("content"),
+            "tool_calls": message.get("tool_calls", [])
+        }
+    
+    def handle_api_error(self, error: Exception, response=None) -> Dict[str, Any]:
+        print(f"OpenAI API request failed: {error}")
+        if response is not None:
+            try:
+                error_detail = response.json().get("error", {})
+                print(f"Error details: {error_detail}")
+            except:
+                print(f"Response text: {response.text}")
+        raise error
+
+
+class OpenRouterAdapter(APIProviderAdapter):
+    """Adapter for OpenRouter API (independent implementation with OpenRouter-specific features)"""
+    
+    def __init__(self, model_name: str, api_key: str, base_url: str, 
+                 max_tokens: int = 1024, temperature: float = 0.7, top_p: float = None,
+                 site_url: Optional[str] = None, site_name: Optional[str] = None, 
+                 thinking_budget: Optional[int] = None, reasoning_effort: Optional[str] = None, **kwargs):
+        super().__init__(model_name)
+        self.api_key = api_key
+        self.base_url = base_url
+        self.max_tokens = max_tokens
+        self.temperature = temperature
+        self.top_p = top_p
+        self.site_url = site_url
+        self.site_name = site_name
+        self.thinking_budget = thinking_budget
+        self.reasoning_effort = reasoning_effort  # "high", "medium", "low"
+    
+    def get_headers(self) -> Dict[str, str]:
+        headers = {
+            "Authorization": f"Bearer {self.api_key}",
+            "Content-Type": "application/json"
+        }
+        
+        # Add OpenRouter-specific headers for rankings
+        if self.site_url:
+            headers["HTTP-Referer"] = self.site_url
+        if self.site_name:
+            headers["X-Title"] = self.site_name
+            
+        return headers
+    
+    def format_request_payload(self, messages: List[Dict], **kwargs) -> Dict[str, Any]:
+        payload = {
+            "model": self.model_name,
+            "messages": messages,
+            "max_tokens": kwargs.get("max_tokens", self.max_tokens),
+            "temperature": kwargs.get("temperature", self.temperature),
+        }
+        
+        if kwargs.get("top_p") is not None:
+            payload["top_p"] = kwargs["top_p"]
+        elif self.top_p is not None:
+            payload["top_p"] = self.top_p
+        
+        # Handle structured output (takes precedence over simple json_mode)
+        if kwargs.get("response_format"):
+            payload["response_format"] = kwargs["response_format"]
+        elif kwargs.get("json_mode"):
+            payload["response_format"] = {"type": "json_object"}
+            
+        if kwargs.get("tools"):
+            payload["tools"] = kwargs["tools"]
+        
+        # Handle OpenRouter-specific reasoning configuration
+        thinking_budget = kwargs.get("thinking_budget") or self.thinking_budget
+        reasoning_effort = kwargs.get("reasoning_effort") or self.reasoning_effort
+        exclude_reasoning = kwargs.get("exclude_reasoning", False)
+        
+        reasoning_config = {}
+        
+        if reasoning_effort:
+            # Use effort-based reasoning (OpenAI-style)
+            if reasoning_effort.lower() in ["high", "medium", "low"]:
+                reasoning_config["effort"] = reasoning_effort.lower()
+        elif thinking_budget is not None and thinking_budget >= 0:
+            # Use max_tokens-based reasoning (OpenRouter-specific)
+            reasoning_config["max_tokens"] = thinking_budget
+        
+        # Add exclude parameter if needed (defaults to False)
+        if exclude_reasoning:
+            reasoning_config["exclude"] = True
+            
+        # Add reasoning config to payload if we have any settings
+        if reasoning_config:
+            payload["reasoning"] = reasoning_config
+            
+        # Only accept known OpenRouter API parameters - warn about unknown ones
+        valid_openrouter_params = {
+            "max_tokens", "temperature", "top_p", "json_mode", "tools", "response_format", 
+            "thinking_budget", "reasoning_effort", "exclude_reasoning",
+            "frequency_penalty", "presence_penalty", "logit_bias", 
+            "logprobs", "top_logprobs", "n", "seed", "stop", "stream", "suffix", "user"
+        }
+        
+        for key, value in kwargs.items():
+            if key not in valid_openrouter_params and value is not None:
+                import warnings
+                warnings.warn(f"Unknown parameter '{key}' passed to OpenRouter API - this parameter will be ignored")
+        
+        return payload
+    
+    def get_endpoint_url(self) -> str:
+        return f"{self.base_url.rstrip('/')}/chat/completions"
+    
+    def parse_raw_response(self, raw_response: Dict) -> Dict[str, Any]:
+        message = raw_response.get("choices", [{}])[0].get("message", {})
+        return {
+            "role": message.get("role", "assistant"),
+            "content": message.get("content"),
+            "tool_calls": message.get("tool_calls", [])
+        }
+    
+    def handle_api_error(self, error: Exception, response=None) -> Dict[str, Any]:
+        print(f"OpenRouter API request failed: {error}")
+        if response is not None:
+            try:
+                error_detail = response.json().get("error", {})
+                print(f"Error details: {error_detail}")
+            except:
+                print(f"Response text: {response.text}")
+        raise error
+        
+    def run(self, messages: List[Dict], **kwargs) -> Dict[str, Any]:
+        """Override run method to add enhanced content parsing for OpenRouter"""
+        try:
+            # 1. Build request components using abstract methods
+            headers = self.get_headers()
+            payload = self.format_request_payload(messages, **kwargs)
+            url = self.get_endpoint_url()
+            
+            # 2. Make request (common logic)
+            response = requests.post(url, headers=headers, json=payload, timeout=180)
+            response.raise_for_status()
+            
+            # 3. Parse response with enhanced content parsing
+            raw_response = response.json()
+            message = raw_response.get("choices", [{}])[0].get("message", {})
+            
+            # Standard parsing
+            parsed_response = {
+                "role": message.get("role", "assistant"),
+                "content": message.get("content"),
+                "tool_calls": message.get("tool_calls", [])
+            }
+            
+            # Enhanced content parsing: if content exists, try to parse it as JSON
+            if parsed_response['content'] and parsed_response['content'].strip():
+                parsed_response['content'] = self._extract_json_from_content(parsed_response['content'])
+            
+            return parsed_response
+            
+        except requests.exceptions.RequestException as e:
+            return self.handle_api_error(e, response if 'response' in locals() else None)
+    
+    def _extract_json_from_content(self, content: str) -> dict:
+        """
+        Enhanced JSON extraction that handles:
+        1. Direct JSON content
+        2. JSON wrapped in markdown code blocks
+        3. Fallback parsing for malformed JSON
+        """
+        import re
+        import json
+        
+        if not content or not content.strip():
+            return {}
+        
+        content = content.strip()
+        
+        # Try to extract JSON from markdown code blocks
+        json_block_pattern = r'```json\s*\n?(.*?)\n?```'
+        match = re.search(json_block_pattern, content, re.DOTALL | re.IGNORECASE)
+        
+        if match:
+            json_str = match.group(1).strip()
+        else:
+            # Check for generic code blocks
+            generic_block_pattern = r'```\s*\n?(.*?)\n?```'
+            match = re.search(generic_block_pattern, content, re.DOTALL)
+            
+            if match and match.group(1).strip().startswith('{'):
+                json_str = match.group(1).strip()
+            else:
+                # Assume the whole content is JSON
+                json_str = content
+        
+        # Try to parse the JSON
+        try:
+            return json.loads(json_str)
+        except json.JSONDecodeError:
+            # Try to add missing closing braces
+            try:
+                # Count opening and closing braces
+                open_braces = json_str.count('{')
+                close_braces = json_str.count('}')
+                
+                if open_braces > close_braces:
+                    # Add missing closing braces
+                    missing_braces = open_braces - close_braces
+                    json_str_fixed = json_str + '}' * missing_braces
+                    return json.loads(json_str_fixed)
+            except json.JSONDecodeError:
+                pass
+            
+            # If all else fails, return the original content wrapped
+            return {"content": content}
+
+
+class AnthropicAdapter(APIProviderAdapter):
+    """Adapter for Anthropic Claude API"""
+    
+    def __init__(self, model_name: str, api_key: str, base_url: str,
+                 max_tokens: int = 1024, temperature: float = 0.7, **kwargs):
+        super().__init__(model_name)
+        self.api_key = api_key
+        self.base_url = base_url
+        self.max_tokens = max_tokens
+        self.temperature = temperature
+    
+    def get_headers(self) -> Dict[str, str]:
+        return {
+            "x-api-key": self.api_key,
+            "Content-Type": "application/json",
+            "anthropic-version": "2023-06-01"
+        }
+    
+    def format_request_payload(self, messages: List[Dict], **kwargs) -> Dict[str, Any]:
+        # Extract system message if present (Claude handles it differently)
+        system_message = None
+        user_messages = []
+        
+        for msg in messages:
+            if msg.get("role") == "system":
+                system_message = msg.get("content")
+            else:
+                user_messages.append(msg)
+        
+        payload = {
+            "model": self.model_name,
+            "messages": user_messages,
+            "max_tokens": kwargs.get("max_tokens", self.max_tokens),
+            "temperature": kwargs.get("temperature", self.temperature)
+        }
+        
+        if system_message:
+            payload["system"] = system_message
+            
+        # Claude doesn't support OpenAI's response_format, handle JSON mode differently
+        if kwargs.get("json_mode") and user_messages:
+            last_msg = user_messages[-1]
+            if last_msg.get("role") == "user":
+                last_msg["content"] += "\n\nPlease respond with valid JSON only."
+        
+        return payload
+    
+    def get_endpoint_url(self) -> str:
+        return f"{self.base_url.rstrip('/')}/messages"
+    
+    def parse_raw_response(self, raw_response: Dict) -> Dict[str, Any]:
+        content_blocks = raw_response.get("content", [])
+        
+        text_content = ""
+        tool_calls = []
+        
+        for block in content_blocks:
+            if block.get("type") == "text":
+                text_content += block.get("text", "")
+            elif block.get("type") == "tool_use":
+                # Convert Claude tool use to OpenAI format
+                tool_calls.append({
+                    "id": block.get("id"),
+                    "type": "function",
+                    "function": {
+                        "name": block.get("name"),
+                        "arguments": json.dumps(block.get("input", {}))
+                    }
+                })
+        
+        return {
+            "role": "assistant",
+            "content": text_content if text_content else None,
+            "tool_calls": tool_calls
+        }
+    
+    def handle_api_error(self, error: Exception, response=None) -> Dict[str, Any]:
+        print(f"Anthropic API request failed: {error}")
+        if response is not None:
+            try:
+                error_detail = response.json()
+                print(f"Error details: {error_detail}")
+            except:
+                print(f"Response text: {response.text}")
+        raise error
+
+
+class GoogleAdapter(APIProviderAdapter):
+    """Adapter for Google Gemini API"""
+    
+    def __init__(self, model_name: str, api_key: str, base_url: str,
+                 max_tokens: int = 1024, temperature: float = 0.7, thinking_budget: Optional[int] = 2000, **kwargs):
+        super().__init__(model_name)
+        self.api_key = api_key
+        self.base_url = base_url
+        self.max_tokens = max_tokens
+        self.temperature = temperature
+        self.thinking_budget = thinking_budget
+    
+    def get_headers(self) -> Dict[str, str]:
+        # Google uses API key in URL params, not headers
+        return {"Content-Type": "application/json"}
+    
+    def format_request_payload(self, messages: List[Dict], **kwargs) -> Dict[str, Any]:
+        # Convert OpenAI messages to Google format
+        google_messages = []
+        for msg in messages:
+            # Skip messages with empty or None content
+            content = msg.get("content")
+            if not content:
+                continue
+                
+            # Convert role names: OpenAI uses "assistant", Google uses "model"
+            # Note: Google doesn't have a separate "system" role, so convert system to user
+            msg_role = msg.get("role")
+            if msg_role == "user":
+                role = "user"
+            elif msg_role in ["assistant", "model"]:
+                role = "model"
+            else:  # system or any other role
+                role = "user"
+            
+            # Handle different content types
+            parts = []
+            if isinstance(content, str):
+                # Simple text content
+                parts.append({"text": content})
+            elif isinstance(content, list):
+                # Multi-part content (text + images)
+                for part in content:
+                    if isinstance(part, dict):
+                        if part.get("type") == "text":
+                            parts.append({"text": part.get("text", "")})
+                        elif part.get("type") == "image_url":
+                            # Handle OpenAI-style image URLs
+                            image_url = part.get("image_url", {})
+                            url = image_url.get("url", "")
+                            if url:
+                                image_data = self._process_image_for_google(url)
+                                if image_data:
+                                    parts.append(image_data)
+                        elif part.get("type") == "image":
+                            # Handle direct image references
+                            image_path = part.get("image", part.get("image_url", ""))
+                            if image_path:
+                                image_data = self._process_image_for_google(image_path)
+                                if image_data:
+                                    parts.append(image_data)
+                    elif isinstance(part, str):
+                        parts.append({"text": part})
+            
+            # Only add message if it has parts
+            if parts:
+                google_msg = {
+                    "role": role,
+                    "parts": parts
+                }
+                google_messages.append(google_msg)
+        
+        # Check if we need to add images from the message context
+        # This handles cases where images are referenced separately
+        images = kwargs.get("images", [])
+        if images and google_messages:
+            # Add images to the last user message
+            last_msg = None
+            for msg in reversed(google_messages):
+                if msg["role"] == "user":
+                    last_msg = msg
+                    break
+            
+            if last_msg:
+                for image in images:
+                    image_data = self._process_image_for_google(image)
+                    if image_data:
+                        last_msg["parts"].append(image_data)
+        
+        # Build generation config
+        generation_config = {
+            "maxOutputTokens": kwargs.get("max_tokens", self.max_tokens),
+            "temperature": kwargs.get("temperature", self.temperature)
+        }
+        
+        # Add thinking configuration if thinking budget is provided
+        thinking_budget = kwargs.get("thinking_budget", self.thinking_budget)
+        if thinking_budget is not None:
+            generation_config["thinkingConfig"] = {
+                "thinkingBudget": thinking_budget
+            }
+        
+        # Add structured output schema if provided
+        response_schema = kwargs.get("response_schema")
+        if response_schema:
+            # Convert JSON Schema to Google's format
+            generation_config["responseMimeType"] = "application/json"
+            generation_config["responseSchema"] = self._convert_to_google_schema(response_schema)
+        elif kwargs.get("json_mode"):
+            # Fallback to basic JSON mode
+            generation_config["responseMimeType"] = "application/json"
+        
+        payload = {
+            "contents": google_messages,
+            "generationConfig": generation_config
+        }
+        
+        return payload
+    
+    def _process_image_for_google(self, image_input) -> Dict[str, Any]:
+        """Convert image input to Google API format with base64 encoding"""
+        import base64
+        import os
+        from urllib.parse import urlparse
+        
+        try:
+            if isinstance(image_input, str):
+                if image_input.startswith("data:image"):
+                    # Already base64 encoded in format: data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAA...
+                    if "base64," in image_input:
+                        # Split to get mime type and base64 data
+                        header, base64_data = image_input.split("base64,", 1)
+                        # Extract mime type from header: "data:image/png;" -> "image/png"
+                        mime_type = header.split(":", 1)[1].rstrip(";")
+                        return {
+                            "inline_data": {
+                                "mime_type": mime_type,
+                                "data": base64_data
+                            }
+                        }
+                elif image_input.startswith(("http://", "https://")):
+                    # URL - would need to download and convert
+                    # For now, skip URLs as they need special handling
+                    print(f"Skipping URL image processing: {image_input}")
+                    return None
+                elif os.path.exists(image_input):
+                    # Local file path
+                    with open(image_input, "rb") as image_file:
+                        image_data = image_file.read()
+                        base64_data = base64.b64encode(image_data).decode("utf-8")
+                        
+                        # Determine MIME type from file extension
+                        ext = os.path.splitext(image_input)[1].lower()
+                        mime_type_map = {
+                            ".jpg": "image/jpeg",
+                            ".jpeg": "image/jpeg", 
+                            ".png": "image/png",
+                            ".gif": "image/gif",
+                            ".webp": "image/webp"
+                        }
+                        mime_type = mime_type_map.get(ext, "image/jpeg")
+                        
+                        return {
+                            "inline_data": {
+                                "mime_type": mime_type,
+                                "data": base64_data
+                            }
+                        }
+                else:
+                    print(f"Unrecognized image input format: {image_input[:100]}...")
+                    return None
+        except Exception as e:
+            print(f"Error processing image for Google API: {e}")
+            return None
+        
+        return None
+    
+    def _convert_to_google_schema(self, openai_schema: Dict[str, Any]) -> Dict[str, Any]:
+        """Convert OpenAI JSON Schema to Google Gemini schema format"""
+        def convert_type(schema_type: str) -> str:
+            """Convert JSON Schema types to Google types"""
+            type_mapping = {
+                "object": "OBJECT",
+                "array": "ARRAY", 
+                "string": "STRING",
+                "integer": "INTEGER",
+                "number": "NUMBER",
+                "boolean": "BOOLEAN"
+            }
+            return type_mapping.get(schema_type, "STRING")
+        
+        def convert_schema_recursive(schema: Dict[str, Any]) -> Dict[str, Any]:
+            """Recursively convert schema properties"""
+            google_schema = {}
+            
+            if "type" in schema:
+                google_schema["type"] = convert_type(schema["type"])
+            
+            if "description" in schema:
+                google_schema["description"] = schema["description"]
+            
+            if "properties" in schema:
+                google_schema["properties"] = {}
+                for prop_name, prop_schema in schema["properties"].items():
+                    google_schema["properties"][prop_name] = convert_schema_recursive(prop_schema)
+            
+            if "items" in schema:
+                google_schema["items"] = convert_schema_recursive(schema["items"])
+            
+            if "required" in schema:
+                google_schema["required"] = schema["required"]
+            
+            if "enum" in schema:
+                google_schema["enum"] = schema["enum"]
+                
+            return google_schema
+        
+        return convert_schema_recursive(openai_schema)
+    
+    def get_endpoint_url(self) -> str:
+        return f"{self.base_url.rstrip('/')}/models/{self.model_name}:generateContent?key={self.api_key}"
+    
+    def parse_raw_response(self, raw_response: Dict) -> Dict[str, Any]:
+        candidates = raw_response.get("candidates", [])
+        if not candidates:
+            return {"role": "assistant", "content": None, "tool_calls": []}
+        
+        # Get the first candidate's content
+        candidate = candidates[0]
+        content = candidate.get("content", {})
+        parts = content.get("parts", [])
+        
+        # Extract text content from all parts
+        text_content = ""
+        for part in parts:
+            if isinstance(part, dict) and "text" in part:
+                text_content += part["text"]
+        
+        return {
+            "role": "assistant", 
+            "content": text_content if text_content else None,
+            "tool_calls": []  # Google function calling would be implemented here
+        }
+    
+    def handle_api_error(self, error: Exception, response=None) -> Dict[str, Any]:
+        print(f"Google API request failed: {error}")
+        if response is not None:
+            try:
+                error_detail = response.json()
+                print(f"Error details: {error_detail}")
+            except:
+                print(f"Response text: {response.text}")
+        raise error
+    
+
+    
+
+
+
+class ProviderAdapterFactory:
+    """Factory to create the right adapter based on provider"""
+    
+    @staticmethod
+    def create_adapter(provider: str, model_name: str, api_key: str, base_url: str, **kwargs) -> APIProviderAdapter:
+        adapters = {
+            "openai": OpenAIAdapter,
+            "anthropic": AnthropicAdapter, 
+            "google": GoogleAdapter,
+            "openrouter": OpenRouterAdapter,  # OpenRouter with additional headers support
+            "groq": OpenAIAdapter,        # Groq uses OpenAI format
+        }
+        
+        adapter_class = adapters.get(provider)
+        if not adapter_class:
+            # Default to OpenAI adapter for unknown providers
+            adapter_class = OpenAIAdapter
+            
+        return adapter_class(model_name, api_key, base_url, **kwargs)
+
+
 # --- Model Configuration Schema ---
 
 # Define the provider base URLs dictionary
 PROVIDER_BASE_URLS = {
     "openai": "https://api.openai.com/v1/",
     "openrouter": "https://openrouter.ai/api/v1",
-    "google": "https://generativelanguage.googleapis.com/v1beta/models",  # Assuming Gemini API
+    "google": "https://generativelanguage.googleapis.com/v1beta",  # Gemini API base URL
     "anthropic": "https://api.anthropic.com/v1",
     "groq": "https://api.groq.com/openai/v1",
 }
@@ -83,6 +787,12 @@ class ModelConfig(BaseModel):
     max_tokens: int = Field(1024, description="Default maximum tokens for generation")
     temperature: float = Field(
         0.7, ge=0.0, le=2.0, description="Default sampling temperature"
+    )
+    thinking_budget: Optional[int] = Field(
+        2000, ge=0, description="Token budget for thinking (Google Gemini and OpenRouter). Set to 0 to disable thinking."
+    )
+    reasoning_effort: Optional[str] = Field(
+        None, description="OpenRouter reasoning effort: 'high', 'medium', or 'low'. Takes precedence over thinking_budget for OpenRouter."
     )
 
     # Local model specific fields
@@ -256,9 +966,21 @@ class BaseLLM:
             decoded[0] = json.loads(decoded[0].replace("\n", ""))
 
         # Return consistent dictionary format
+        result_content = decoded[0]
+        
+        # Handle json_mode tool scenarios for future compatibility
+        # Local models don't support tool calls yet, but maintain consistent interface
+        if json_mode and isinstance(result_content, dict):
+            # If the model returned a dict with tool call structure, preserve it
+            if result_content.get("next_action") == "call_tool":
+                # Model already formatted for tool calls - keep as is
+                pass
+            # Content is already a dict - convert back to JSON string for consistency
+            result_content = json.dumps(result_content)
+        
         return {
             "role": "assistant",
-            "content": decoded[0],
+            "content": result_content,
             "tool_calls": []  # Local models don't support tool calls yet
         }
 
@@ -351,9 +1073,16 @@ class BaseVLM:
             decoded[0] = json.loads(decoded[0].replace("\n", ""))
 
         # Return consistent dictionary format
+        result_content = decoded[0]
+        
+        # Handle json_mode scenarios for consistency with other models
+        if json_mode and isinstance(result_content, dict):
+            # If the model returned a dict, convert back to JSON string for consistency
+            result_content = json.dumps(result_content)
+        
         return {
             "role": role,  # Use the specified role (default is "assistant")
-            "content": decoded[0],
+            "content": result_content,
             "tool_calls": []  # Local VLMs don't support tool calls yet
         }
 
@@ -430,173 +1159,425 @@ class BaseVLM:
 class BaseAPIModel:
     """
     Base class for interacting with LLMs via external APIs (OpenAI, OpenRouter, Gemini compatible).
+    Now uses the adapter pattern to support multiple providers.
     """
 
     def __init__(
         self,
         model_name: str,
-        api_key: str,  # Changed to required
-        base_url: str,  # Changed to required
+        api_key: str,
+        base_url: str,
         max_tokens: int = 1024,
-        temperature: float = 0.7,  # Added temperature parameter
+        temperature: float = 0.7,
+        top_p: float = None,
+        provider: str = "openai",  # New parameter to specify provider
+        thinking_budget: Optional[int] = None,  # New parameter for thinking budget
+        response_processor: Optional[Callable[[Dict[str, Any]], Dict[str, Any]]] = None,
+        **kwargs,
     ) -> None:
         """
-        Initializes the API client.
+        Initializes the API client with provider adapter.
 
         Args:
-            model_name: The name of the model to use (e.g., "openai/gpt-4o").
+            model_name: The name of the model to use (e.g., "gpt-4o").
             api_key: The API key for authentication.
-            base_url: The base URL of the API endpoint (should include /chat/completions).
+            base_url: The base URL of the API endpoint.
             max_tokens: The default maximum number of tokens to generate.
             temperature: The default sampling temperature.
+            top_p: The default top_p parameter.
+            provider: The API provider ("openai", "anthropic", "google", "openrouter", "groq").
+            thinking_budget: Token budget for thinking (Google Gemini only). Set to 0 to disable.
+            response_processor: Optional callable to post-process model responses.
+            **kwargs: Additional parameters passed to the adapter.
         """
-        self.model_name = model_name
-        self.api_key = api_key  # Use provided key directly
-        self.base_url = base_url  # Use provided URL directly
+        self._response_processor = response_processor
+        self.thinking_budget = thinking_budget  # Store thinking_budget as instance attribute
+        
+        # Create appropriate adapter based on provider
+        self.adapter = ProviderAdapterFactory.create_adapter(
+            provider=provider,
+            model_name=model_name,
+            api_key=api_key,
+            base_url=base_url,
+            max_tokens=max_tokens,
+            temperature=temperature,
+            top_p=top_p,
+            thinking_budget=thinking_budget,
+            **kwargs
+        )
 
-        # Removed API key env var reading and base_url defaulting logic - handled by ModelConfig now
+    @staticmethod
+    def _robust_json_loads(src: str, max_depth: int = 3) -> Dict[str, Any]:
+        """
+        Attempts to load JSON with support for recursive/nested JSON strings.
+        
+        This method handles cases where:
+        1. JSON wrapped in markdown code blocks (```json...```)
+        2. JSON might have missing closing braces (auto-closes them)
+        3. JSON content might be nested/double-encoded as strings
+        4. Multiple levels of JSON encoding exist
+        5. Multiple concatenated JSON objects (invalid format)
+        
+        Args:
+            src: The source string to parse
+            max_depth: Maximum recursion depth to prevent infinite loops
+            
+        Returns:
+            Parsed dictionary
+            
+        Raises:
+            json.JSONDecodeError: If parsing fails after all attempts
+            ValueError: If multiple concatenated JSON objects are detected
+        """
+        def extract_json_from_markdown(content: str) -> str:
+            """Extract JSON content from markdown code blocks."""
+            import re
+            
+            # Pattern to match ```json ... ``` with optional whitespace
+            json_block_pattern = r'```json\s*\n?(.*?)\n?```'
+            match = re.search(json_block_pattern, content, re.DOTALL | re.IGNORECASE)
+            
+            if match:
+                return match.group(1).strip()
+            
+            # Check for ``` ... ``` without json specifier (fallback)
+            generic_block_pattern = r'```\s*\n?(.*?)\n?```'
+            match = re.search(generic_block_pattern, content, re.DOTALL)
+            
+            if match:
+                extracted = match.group(1).strip()
+                # Only use if it looks like JSON (starts with { or [)
+                if extracted.startswith(('{', '[')):
+                    return extracted
+            
+            # Return original content if no code block found
+            return content
 
-        self._max_tokens = max_tokens
-        self._temperature = temperature  # Store default temperature
-        self._headers = {
-            "Authorization": f"Bearer {self.api_key}",
-            "Content-Type": "application/json",
+        def parse_multiple_json_objects(content: str) -> List[Dict[str, Any]]:
+            """Parse multiple concatenated JSON objects into a list."""
+            json_str_clean = content.strip()
+            
+            # Only check if it looks like JSON
+            if not json_str_clean.startswith('{'):
+                return []
+            
+            json_objects = []
+            current_pos = 0
+            
+            while current_pos < len(json_str_clean):
+                # Skip whitespace
+                while current_pos < len(json_str_clean) and json_str_clean[current_pos].isspace():
+                    current_pos += 1
+                
+                if current_pos >= len(json_str_clean):
+                    break
+                
+                # Find the end of the current JSON object
+                brace_count = 0
+                object_start = current_pos
+                object_end = -1
+                
+                for i in range(current_pos, len(json_str_clean)):
+                    char = json_str_clean[i]
+                    if char == '{':
+                        brace_count += 1
+                    elif char == '}':
+                        brace_count -= 1
+                        if brace_count == 0:
+                            object_end = i + 1
+                            break
+                
+                if object_end == -1:
+                    # Incomplete JSON object, try to close it
+                    remaining_content = json_str_clean[object_start:]
+                    closed_content = BaseAPIModel._close_json_braces(remaining_content)
+                    try:
+                        parsed_obj = json.loads(closed_content)
+                        if isinstance(parsed_obj, dict):
+                            json_objects.append(parsed_obj)
+                    except json.JSONDecodeError:
+                        pass  # Skip invalid JSON
+                    break
+                
+                # Extract and parse the JSON object
+                json_str = json_str_clean[object_start:object_end]
+                try:
+                    parsed_obj = json.loads(json_str)
+                    if isinstance(parsed_obj, dict):
+                        json_objects.append(parsed_obj)
+                except json.JSONDecodeError:
+                    pass  # Skip invalid JSON
+                
+                current_pos = object_end
+            
+            return json_objects
+        
+        def merge_multiple_json_objects(objects: List[Dict[str, Any]]) -> Dict[str, Any]:
+            """
+            Merge multiple JSON objects by extracting their actions into appropriate fields.
+            
+            Args:
+                objects: List of parsed JSON objects
+                
+            Returns:
+                A single merged object with combined tool_calls and agent_calls
+            """
+            merged_tool_calls = []
+            merged_agent_calls = []
+            thoughts = []
+            final_response = None
+            
+            for obj in objects:
+                next_action = obj.get("next_action")
+                action_input = obj.get("action_input", {})
+                thought = obj.get("thought")
+                
+                if thought:
+                    thoughts.append(thought)
+                
+                # Handle standard call_tool action
+                if next_action == "call_tool" and isinstance(action_input, dict):
+                    tool_calls = action_input.get("tool_calls", [])
+                    if isinstance(tool_calls, list):
+                        merged_tool_calls.extend(tool_calls)
+
+                elif next_action == "invoke_agent" and isinstance(action_input, dict):
+                    agent_name = action_input.get("agent_name")
+                    request = action_input.get("request")
+                    if agent_name:
+                        merged_agent_calls.append({
+                            "agent_name": agent_name,
+                            "request": request
+                        })
+                
+                elif next_action == "final_response" and isinstance(action_input, dict):
+                    if final_response is None:  # Use the first final_response found
+                        final_response = action_input.get("response")
+            
+            # Build the merged result
+            if final_response is not None:
+                # If there's a final response, prioritize that
+                return {
+                    "thought": " | ".join(thoughts) if thoughts else None,
+                    "next_action": "final_response",
+                    "action_input": {"response": final_response}
+                }
+            elif merged_tool_calls:
+                # If there are tool calls, return them
+                return {
+                    "thought": " | ".join(thoughts) if thoughts else None,
+                    "next_action": "call_tool",
+                    "action_input": {"tool_calls": merged_tool_calls}
+                }
+            elif merged_agent_calls:
+                # If there are agent calls, return the first one (agents typically handle one at a time)
+                return {
+                    "thought": " | ".join(thoughts) if thoughts else None,
+                    "next_action": "invoke_agent",
+                    "action_input": merged_agent_calls[0]
+                }
+            else:
+                # No valid actions found, return an error structure
+                raise ValueError(
+                    f"Multiple JSON objects detected but no valid actions found. "
+                    f"Objects: {objects}"
+                )
+        
+        def try_parse_recursive(content: str, depth: int = 0) -> Dict[str, Any]:
+            if depth >= max_depth:
+                raise json.JSONDecodeError("Maximum recursion depth reached", content, 0)
+            
+            # Extract JSON from markdown code blocks on first attempt
+            if depth == 0:
+                content = extract_json_from_markdown(content)
+                
+                # Check for multiple JSON objects
+                multiple_objects = parse_multiple_json_objects(content)
+                if len(multiple_objects) >= 1:
+                    # Process objects and merge their actions (works for single or multiple)
+                    return merge_multiple_json_objects(multiple_objects)
+            
+            try:
+                parsed = json.loads(content)
+                
+                # If we got a dictionary, check if any values are JSON strings that need parsing
+                if isinstance(parsed, dict):
+                    for key, value in parsed.items():
+                        if isinstance(value, str) and value.strip().startswith(('{', '[')):
+                            try:
+                                # Try to recursively parse this value
+                                parsed[key] = try_parse_recursive(value, depth + 1)
+                            except json.JSONDecodeError:
+                                # If parsing fails, keep the original string value
+                                pass
+                
+                return parsed if isinstance(parsed, dict) else {"content": parsed}
+                
+            except json.JSONDecodeError as e:
+                if depth == 0:
+                    # Only try auto-closing braces on the first attempt
+                    try:
+                        closed_content = BaseAPIModel._close_json_braces(content)
+                        return try_parse_recursive(closed_content, depth + 1)
+                    except json.JSONDecodeError:
+                        raise e
+                else:
+                    raise e
+        
+        return try_parse_recursive(src)
+
+    @staticmethod
+    def _close_json_braces(src: str) -> str:
+        """
+        Appends missing closing braces/brackets so that a truncation at the end of
+        a model response does not break json.loads.
+        """
+        stack: list[str] = []
+        pairs = {"{": "}", "[": "]"}
+        for ch in src:
+            if ch in pairs:
+                stack.append(pairs[ch])
+            elif ch in pairs.values() and stack and stack[-1] == ch:
+                stack.pop()
+        return src + "".join(reversed(stack))
+
+    def parse_model_response(self, message_obj: Dict[str, Any]) -> Dict[str, Any]:
+        """
+        Parse and harmonize model response to consistent format.
+        
+        Handles different response formats from API models:
+        1. Tool calls in separate field vs embedded in JSON content
+        2. Agent calls embedded in JSON content
+        3. Content cleanup when tool_calls/agent_calls are extracted
+        
+        Args:
+            message_obj: Raw message object from API response
+            
+        Returns:
+            Dictionary with consistent format: {"role": "assistant", "content": "...", "tool_calls": [...], "agent_calls": [...]}
+        """
+        # Extract basic fields
+        tool_calls = message_obj.get("tool_calls", [])
+        content = message_obj.get("content")
+        message_role = message_obj.get("role", "assistant")
+        agent_calls: Optional[List[Dict[str, Any]]] = None
+
+        # Attempt to parse content as JSON if it's a string (handles both raw JSON and markdown-wrapped JSON)
+        parsed_content: Optional[Dict[str, Any]] = None
+        if isinstance(content, str) and content.strip():
+            try:
+                parsed_content = self._robust_json_loads(content)
+            except json.JSONDecodeError:
+                parsed_content = None  # Leave as-is if JSON parsing fails
+            except ValueError as e:
+                # Re-raise ValueError for other validation errors
+                raise e
+
+        # Process structured content to extract tool_calls/agent_call
+        if isinstance(parsed_content, dict):
+            next_action_val = parsed_content.get("next_action")
+            action_input_val = parsed_content.get("action_input", {})
+
+            # Handle call_tool action inside content
+            if (
+                next_action_val == "call_tool"
+                and isinstance(action_input_val, dict)
+                and "tool_calls" in action_input_val
+            ):
+                embedded_tool_calls = action_input_val.get("tool_calls")
+                # If tool_calls field from API is empty, promote embedded ones
+                if not tool_calls and embedded_tool_calls:
+                    tool_calls = embedded_tool_calls
+                    # Keep only the "thought" in content if present, else set to None
+                    thought_only = parsed_content.get("thought")
+                    content = thought_only if thought_only else None
+                elif tool_calls and embedded_tool_calls:
+                    # Already have tool_calls separately → remove duplication in content
+                    thought_only = parsed_content.get("thought")
+                    content = thought_only if thought_only else None
+
+            # Handle invoke_agent action inside content
+            elif (
+                next_action_val == "invoke_agent"
+                and isinstance(action_input_val, dict)
+                and "agent_name" in action_input_val
+            ):
+                if not agent_calls:
+                    agent_calls = [{
+                        "agent_name": action_input_val.get("agent_name"),
+                        "request": action_input_val.get("request"),
+                    }]
+                    # Similar clean-up of content keeping only thought
+                    thought_only = parsed_content.get("thought")
+                    content = thought_only if thought_only else None
+
+        # Ensure OpenAI compatibility: if tool_calls present for assistant, content must be null
+        if message_role == "assistant" and tool_calls:
+            content = None
+
+        # Build response payload
+        response_payload: Dict[str, Any] = {
+            "role": message_role,
+            "content": content,  # Can be None for assistant with tool_calls
+            "tool_calls": tool_calls,
         }
+        if agent_calls:
+            response_payload["agent_calls"] = agent_calls
+
+        return response_payload
 
     def run(
         self,
         messages: List[Dict[str, str]],
         json_mode: bool = False,
         max_tokens: Optional[int] = None,
-        temperature: Optional[float] = None,  # Added temperature parameter
-        **kwargs,  # Allow passing additional API parameters
+        temperature: Optional[float] = None,
+        top_p: Optional[float] = None,
+        tools: Optional[List[Dict[str, Any]]] = None,
+        **kwargs,
     ) -> Dict[str, Any]:
         """
-        Sends messages to the specified API endpoint and returns the model's response.
+        Sends messages to the API endpoint and returns the model's response.
+        Uses the adapter pattern to support multiple providers.
 
         Args:
             messages: A list of message dictionaries, following the OpenAI format.
             json_mode: If True, requests JSON output from the model.
             max_tokens: Overrides the default max_tokens for this specific call.
             temperature: Overrides the default temperature for this specific call.
-            **kwargs: Additional parameters to pass to the API (e.g., top_p).
+            top_p: Overrides the default top_p for this specific call.
+            tools: Optional list of tools for function calling.
+            **kwargs: Additional parameters to pass to the API.
 
         Returns:
             Dictionary with consistent format: {"role": "assistant", "content": "...", "tool_calls": [...]}
         """
-        # Determine the temperature to use: override > instance default
-        current_temperature = (
-            temperature if temperature is not None else self._temperature
-        )
-
-        payload = {
-            "model": self.model_name,
-            "messages": messages,
-            "max_tokens": max_tokens if max_tokens is not None else self._max_tokens,
-            "temperature": current_temperature,  # Include temperature in payload
-            **kwargs,  # Add any extra parameters
-        }
-
-        if json_mode:
-            # Add response_format for OpenAI/OpenRouter compatible APIs
-            payload["response_format"] = {"type": "json_object"}
-            # Note: Gemini API might use a different mechanism for JSON mode.
-            # This implementation primarily targets OpenAI/OpenRouter compatibility.
-
-        # Construct the full URL, assuming a standard /chat/completions endpoint
-        # This covers OpenAI, OpenRouter, Groq based on their base URLs.
-        # Note: Other providers like Google or Anthropic might need different endpoint logic.
-        chat_endpoint = "/chat/completions"
-        # Ensure base_url doesn't have a trailing slash and endpoint starts with one
-        full_url = self.base_url.rstrip("/") + chat_endpoint
-
         try:
-            response = requests.post(
-                full_url,  # Use the constructed full URL
-                headers=self._headers,
-                json=payload,
-                timeout=180,  # Added timeout
-            )
-            response.raise_for_status()  # Raise an exception for bad status codes (4xx or 5xx)
-            result = response.json()
-
-            message_obj = result.get("choices", [{}])[0].get("message", {})
-            if not message_obj:
-                print(
-                    f"Warning: Received empty content or unexpected response format: {result}"
-                )
-                return ""
-
-            # Handle different response formats from the API
-            tool_calls = message_obj.get("tool_calls", [])
-            content = message_obj.get("content")
-            message_role = message_obj.get("role", "assistant")
+            # Include instance thinking_budget if not provided in kwargs and instance has it
+            if "thinking_budget" not in kwargs and hasattr(self, 'thinking_budget') and self.thinking_budget is not None:
+                kwargs["thinking_budget"] = self.thinking_budget
             
-            if json_mode and tool_calls and not content:
-                # When API returns tool_calls with null content in JSON mode, create the expected JSON structure
-                synthesized_json = {
-                    "thought": "I need to use a tool to complete this task.",
-                    "next_action": "call_tool",
-                    "action_input": {"tool_calls": tool_calls},
-                }
-                message_obj = {
-                    "role": message_role,
-                    "content": json.dumps(synthesized_json),
-                    "tool_calls": tool_calls,  # Preserve original tool_calls for compatibility
-                }
-            elif json_mode and tool_calls and content:
-                # If both tool_calls and content are present in JSON mode
-                message_obj = {
-                    "role": message_role,
-                    "content": content,
-                    "tool_calls": tool_calls,
-                }
-            elif json_mode and content and not tool_calls:
-                # If only content is present in JSON mode
-                message_obj = {
-                    "role": message_role,
-                    "content": content,
-                    "tool_calls": [],
-                }
-            elif not json_mode and tool_calls and not content:
-                # In non-JSON mode with tool calls but no content, return the tool calls
-                message_obj = {
-                    "role": message_role,
-                    "content": "",  # Empty content, tool calls will be handled separately
-                    "tool_calls": tool_calls,
-                }
-            elif not json_mode and content:
-                # In non-JSON mode with content
-                message_obj = {
-                    "role": message_role,
-                    "content": content,
-                    "tool_calls": tool_calls,  # Include any tool calls that might be present
-                }
-            elif not content and not tool_calls:
-                # If neither content nor tool calls are present, this is an error
-                message_obj = {
-                    "role": "error",
-                    "content": "Unexpected response format or no content provided.",
-                    "tool_calls": [],
-                }
+            # 1. Adapter converts to basic standard format
+            adapter_response = self.adapter.run(
+                messages=messages,
+                json_mode=json_mode,
+                max_tokens=max_tokens,
+                temperature=temperature,
+                top_p=top_p,
+                tools=tools,
+                **kwargs
+            )
+            
+            # 2. Apply custom response processor if provided, otherwise use default parsing
+            if self._response_processor:
+                return self._response_processor(adapter_response)
             else:
-                # Default case: preserve the original message structure
-                message_obj = {
-                    "role": message_role,
-                    "content": content or "",
-                    "tool_calls": tool_calls,
-                }
-
-            # Return full message dict so upper layers can inspect content *and* tool_calls
-            return message_obj
-
-        except requests.exceptions.RequestException as e:
-            print(f"API request failed: {e}")
-            # Consider more specific error handling or re-raising
-            raise  # Re-raise the exception after logging
-        except (KeyError, IndexError, json.JSONDecodeError) as e:
-            print(f"Failed to parse API response: {e}. Response: {response.text}")
-            raise ValueError(f"Failed to parse API response: {response.text}") from e
+                # 3. Framework-specific harmonization (handles embedded JSON, agent_calls, etc.)
+                return self.parse_model_response(adapter_response)
+            
+        except Exception as e:
+            print(f"BaseAPIModel.run failed: {e}")
+            raise
 
 
 class PeftHead:

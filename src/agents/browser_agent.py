@@ -12,7 +12,7 @@ from urllib.parse import urlparse
 from PIL import Image as PILImage
 from playwright.async_api import Browser, Page, async_playwright
 
-from src.environment.web_browser import highlight_interactive_elements
+from src.environment.web_browser import BrowserTool
 from src.models.models import BaseAPIModel, BaseLLM, BaseVLM, ModelConfig
 
 from .agents import BaseAgent
@@ -34,9 +34,8 @@ class InteractiveElementsAgent(BaseAgent):
     A specialized agent for analyzing interactive elements on web pages.
     
     This agent takes screenshots and uses vision models to identify interactive elements
-    like buttons, links, inputs, etc. It can work in two modes:
-    1. Pure prediction: Uses AI vision to predict interactive elements
-    2. Hybrid: Uses DOM analysis to highlight elements, then AI to complement the analysis
+    like buttons, links, inputs, etc. It uses normalized coordinates (1000x1000) internally
+    and scales them to actual pixel coordinates.
     """
 
     def __init__(
@@ -53,12 +52,76 @@ class InteractiveElementsAgent(BaseAgent):
             agent_name: Optional name for registration
             allowed_peers: List of agent names this agent can invoke
         """
-        description = (
-            "You are a specialized vision analysis agent that identifies interactive elements "
-            "on web pages from screenshots. You can analyze images to find buttons, links, "
-            "input fields, dropdowns, and other clickable elements. You provide precise "
-            "bounding box coordinates and center points for each interactive element you identify."
-        )
+        description = """
+You are an expert UI analyst. Your task is to identify ALL currently accessible interactive elements, understanding modal interaction hierarchy.
+
+INTERACTION HIERARCHY UNDERSTANDING:
+When a modal/dialog is present, there are typically TWO layers of accessible elements:
+
+LAYER 1 - MODAL ELEMENTS (Primary Focus):
+- Elements within the modal/dialog box that demand immediate attention
+- Cookie consent buttons, form controls, modal-specific links
+- These have the highest interaction priority
+
+LAYER 2 - PERSISTENT NAVIGATION (Secondary Focus):  
+- Navigation elements that remain accessible even when modal is present
+- Language selectors, sign-in buttons, account menus, app switchers
+- Close/escape functionality, critical site navigation
+- These are NOT blocked by the modal and should be detected
+
+LAYER 3 - BLOCKED CONTENT (Ignore):
+- Main page content that is visually dimmed or covered by modal overlay
+- Background articles, search results, main content areas
+- Elements that appear inactive or are clearly behind the modal
+
+DETECTION STRATEGY:
+
+1. **MODAL IDENTIFICATION**: First identify if there's a modal/dialog present
+
+2. **MODAL ELEMENT DETECTION**: Detect all interactive elements within the modal boundaries:
+   - Primary action buttons (Accept, Save, Continue)
+   - Secondary actions (Reject, Cancel, Close) 
+   - Settings/configuration options (Manage, Customize)
+   - Modal-specific links (Privacy Policy, Terms within modal)
+   - Form controls within modal
+
+3. **PERSISTENT NAVIGATION DETECTION**: Detect navigation elements that remain accessible:
+   - Top navigation bar elements (language selectors, sign-in buttons)
+   - Header navigation that stays clickable
+   - Account/user menus and dropdowns
+   - App switchers and utility navigation
+   - Site-wide search if still accessible
+   - Close buttons or escape mechanisms
+
+4. **BLOCKED CONTENT EXCLUSION**: Ignore content that's clearly blocked:
+   - Main page content covered by modal overlay
+   - Background articles, cards, or content sections
+   - Elements that appear dimmed or inactive
+   - Footer content when modal is active
+
+CONSISTENCY RULES:
+- Modal elements should ALWAYS be detected when modal is present
+- Persistent navigation should be detected consistently if visually accessible
+- Use visual cues: brightness, contrast, clickability appearance
+- Elements that look clickable and unobstructed should be detected
+
+SEMANTIC LABELING - Provide descriptive, context-aware labels:
+
+For Modal Elements:
+- "Cookie Consent Modal - Accept All Button"
+- "Cookie Consent Modal - Reject All Button"  
+- "Cookie Consent Modal - Manage Settings Button"
+- "Cookie Consent Modal - Privacy Policy Link"
+
+For Persistent Navigation:
+- "Language Selection Button (DE)"
+- "Sign In Account Button"
+- "User Account Menu"
+- "App Switcher Button"
+- "Site Navigation - Home Link"
+
+Return ALL currently accessible interactive elements, understanding that both modal and persistent navigation can coexist.
+        """
 
         # Define input schema for this agent
         input_schema = {
@@ -67,101 +130,35 @@ class InteractiveElementsAgent(BaseAgent):
                 "screenshot_path": {
                     "type": "string",
                     "description": "Path to the screenshot image to analyze"
-                },
-                "mode": {
-                    "type": "string",
-                    "enum": ["predict_only", "highlight_and_predict"],
-                    "description": "Analysis mode: 'predict_only' uses pure AI vision, 'highlight_and_predict' uses DOM highlighting + AI"
-                },
-                "existing_elements": {
-                    "type": "array",
-                    "items": {
-                        "type": "object",
-                        "properties": {
-                            "box": {
-                                "type": "array",
-                                "items": {"type": "number"},
-                                "minItems": 4,
-                                "maxItems": 4,
-                                "description": "[top_left_x, top_left_y, bottom_right_x, bottom_right_y]"
-                            },
-                            "center": {
-                                "type": "array", 
-                                "items": {"type": "number"},
-                                "minItems": 2,
-                                "maxItems": 2,
-                                "description": "[center_x, center_y]"
-                            },
-                            "description": {
-                                "type": "string",
-                                "description": "Description of the element"
-                            }
-                        },
-                        "required": ["box", "center"]
-                    },
-                    "description": "Existing interactive elements found via DOM analysis (optional)"
                 }
             },
-            "required": ["screenshot_path", "mode"]
+            "required": ["screenshot_path"]
         }
 
-        # Define output schema for this agent
+        # Define output schema for this agent (matches BoundingBox model exactly)
         output_schema = {
-            "type": "object",
-            "properties": {
-                "elements": {
                     "type": "array",
                     "items": {
                         "type": "object",
                         "properties": {
-                            "box": {
+                            "box_2d": {
                                 "type": "array",
-                                "items": {"type": "number"},
-                                "minItems": 4,
-                                "maxItems": 4,
-                                "description": "[top_left_x, top_left_y, bottom_right_x, bottom_right_y]"
+                                "items": {"type": "integer"},
+                        "description": "Bounding box coordinates in normalized format [y_min, x_min, y_max, x_max] (0-1000 scale)"
                             },
-                            "center": {
-                                "type": "array",
-                                "items": {"type": "number"}, 
-                                "minItems": 2,
-                                "maxItems": 2,
-                                "description": "[center_x, center_y]"
-                            },
-                            "confidence": {
-                                "type": "number",
-                                "minimum": 0,
-                                "maximum": 1,
-                                "description": "Confidence score for this element (0-1)"
-                            },
-                            "element_type": {
+                            "label": {
                                 "type": "string",
-                                "description": "Type of interactive element (button, link, input, etc.)"
-                            },
-                            "description": {
-                                "type": "string",
-                                "description": "Brief description of the element"
+                        "description": "Descriptive label for the UI element"
                             }
                         },
-                        "required": ["box", "center", "element_type"]
+                        "required": ["box_2d", "label"]
                     }
-                },
-                "highlighted_screenshot_path": {
-                    "type": "string",
-                    "description": "Path to screenshot with highlighted elements (if highlighting was performed)"
-                },
-                "analysis_method": {
-                    "type": "string",
-                    "description": "Method used for analysis (DOM+AI, AI_only, etc.)"
-                }
-            },
-            "required": ["elements", "analysis_method"]
         }
 
         super().__init__(
             model=model,
             description=description,
-            max_tokens=2048,  # Allow more tokens for detailed analysis
+            max_tokens=4096,  # Allow more tokens for detailed analysis
             agent_name=agent_name,
             allowed_peers=allowed_peers,
             input_schema=input_schema,
@@ -173,7 +170,42 @@ class InteractiveElementsAgent(BaseAgent):
             memory_type="conversation_history",
             description=self.description,
             model=self.model if hasattr(self.model, 'embedding') else None,
+            input_processor=self._input_message_processor(),
+            output_processor=self._output_message_processor(),
         )
+
+    def _web_elements_response_processor(self, message_obj: Dict[str, Any]) -> Dict[str, Any]:
+        """
+        Custom response processor for InteractiveElementsAgent that handles vision analysis responses.
+        
+        This processor expects responses in the format:
+        {
+          "interactive_elements": [...],
+          "elements": [...],
+          or other vision-specific formats
+        }
+        
+        It preserves the original JSON content without trying to extract agent actions.
+        
+        Args:
+            message_obj: Raw message object from API response
+            
+        Returns:
+            Dictionary preserving the original content structure
+        """
+        # Extract basic fields
+        content = message_obj.get("content")
+        message_role = message_obj.get("role", "assistant")
+        
+        # For vision analysis, we want to preserve the original JSON content as-is
+        # No need to extract tool_calls or agent_calls since this agent returns data, not actions
+        
+        return {
+            "role": message_role,
+            "content": content,  # Preserve original content exactly as returned
+            "tool_calls": [],   # Vision agent doesn't make tool calls
+            "agent_calls": None # Vision agent doesn't invoke other agents
+        }
 
     async def _run(
         self, prompt: Any, request_context: RequestContext, run_mode: str, **kwargs: Any
@@ -183,6 +215,9 @@ class InteractiveElementsAgent(BaseAgent):
         
         Analyzes screenshots to identify interactive elements using AI vision.
         """
+        # Clean up previous vision analysis from memory to prevent context bloat
+        await self._cleanup_previous_vision_analysis()
+        
         # Extract and validate input
         prompt_content, passed_context = self._extract_prompt_and_context(prompt)
         
@@ -217,8 +252,6 @@ class InteractiveElementsAgent(BaseAgent):
 
         # Extract required parameters
         screenshot_path = request_data.get("screenshot_path")
-        mode = request_data.get("mode", "predict_only")
-        existing_elements = request_data.get("existing_elements", [])
 
         if not screenshot_path:
             return Message(
@@ -240,96 +273,155 @@ class InteractiveElementsAgent(BaseAgent):
             with PILImage.open(screenshot_path) as img:
                 img_width, img_height = img.size
 
-            # Prepare the analysis prompt
-            if mode == "highlight_and_predict" and existing_elements:
-                elements_info = f"Existing elements found via DOM analysis: {json.dumps(existing_elements, indent=2)}"
-                task_description = (
-                    "Analyze this screenshot that shows a web page with some interactive elements "
-                    "already highlighted. Your task is to:\n"
-                    "1. Confirm the highlighted elements are indeed interactive\n"
-                    "2. Identify any additional interactive elements not yet highlighted\n"
-                    "3. Provide precise bounding boxes for all interactive elements\n\n"
-                    f"{elements_info}\n\n"
-                )
-            else:
-                task_description = (
-                    "Analyze this screenshot of a web page and identify ALL interactive elements "
-                    "such as buttons, links, input fields, dropdowns, checkboxes, and any other "
-                    "clickable elements. Provide precise bounding boxes for each element.\n\n"
-                )
+            # Prepare the refined analysis prompt using normalized coordinates
+            analysis_prompt = """
+Analyze this webpage screenshot and identify ALL currently accessible interactive UI elements using the modal hierarchy understanding from your system instructions.
 
-            analysis_prompt = (
-                f"{task_description}"
-                "For each interactive element you identify, provide:\n"
-                "1. Bounding box coordinates [top_left_x, top_left_y, bottom_right_x, bottom_right_y]\n"
-                "2. Center point [center_x, center_y]\n"
-                "3. Element type (button, link, input, select, etc.)\n"
-                "4. Brief description of the element\n"
-                "5. Confidence score (0-1)\n\n"
-                f"The image dimensions are {img_width}x{img_height} pixels. "
-                "Use these exact pixel coordinates in your response.\n\n"
-                "Respond with a JSON object matching the required output schema."
-            )
+Return a JSON array containing each interactive element with:
+
+COORDINATE FORMAT (CRITICAL):
+- box_2d: [y_min, x_min, y_max, x_max] in NORMALIZED coordinates (0-1000 scale)
+- label: Descriptive, context-aware label as specified in system instructions
+
+COORDINATE SYSTEM:
+- Normalized scale: 0-1000 (NOT pixel coordinates)
+- Format: [y_min, x_min, y_max, x_max] where:
+  * y_min: top edge (0-1000)
+  * x_min: left edge (0-1000) 
+  * y_max: bottom edge (0-1000)
+  * x_max: right edge (0-1000)
+
+DETECTION REQUIREMENTS:
+1. Follow modal hierarchy rules from system instructions
+2. Detect modal elements with high priority
+3. Detect persistent navigation elements  
+4. Use semantic labeling conventions
+5. Return ONLY elements that are currently interactive/accessible
+
+Return a JSON array of objects with "box_2d" and "label" fields only.
+            """
 
             # Prepare messages for the model
             messages = self.memory.to_llm_format()
             
-            # Create the vision message
-            vision_message = {
-                "role": "user",
-                "content": [
-                    {"type": "text", "text": analysis_prompt},
-                    {"type": "image_url", "image_url": {"url": f"file://{screenshot_path}"}}
-                ]
-            }
+            # Create a temporary message with the image to leverage base64 encoding
+            temp_message = Message(
+                role="user",
+                content=analysis_prompt,
+                images=[screenshot_path]
+            )
+            
+            # Convert to LLM format to get proper base64 encoding
+            vision_message = temp_message.to_llm_dict()
             messages.append(vision_message)
 
+            # Define the JSON schema for bounding box response (matches our BoundingBox model)
+            bounding_box_schema = {
+                "type": "array",
+                "items": {
+                    "type": "object",
+                    "properties": {
+                        "box_2d": {
+                            "type": "array",
+                            "items": {"type": "integer"},
+                            "description": "Bounding box coordinates in normalized format [y_min, x_min, y_max, x_max] (0-1000 scale)"
+                        },
+                        "label": {
+                            "type": "string",
+                            "description": "Descriptive label for the UI element"
+                        }
+                    },
+                    "required": ["box_2d", "label"]
+                }
+            }
+
+            # Get API kwargs for the vision model
+            api_model_kwargs = {}
+            if hasattr(self, '_get_api_kwargs'):
+                api_model_kwargs = self._get_api_kwargs()
+
+            # Use response_schema for structured output
+            api_model_kwargs['response_schema'] = bounding_box_schema
+            api_model_kwargs['json_mode'] = True
+
             # Call the model
-            model_response = self.model.run(
+            raw_model_output = self.model.run(
                 messages=messages,
                 max_tokens=self.max_tokens,
-                json_mode=True,  # Request JSON output
+                temperature=0.1,
+                top_p=1,
+                **api_model_kwargs,
             )
 
-            # Parse the response
+            # Generate message ID for the response
+            new_message_id = str(uuid.uuid4())
+            
+            # Validate and normalize model response
+            validated_response = self._validate_and_normalize_model_response(raw_model_output)
+            
+            # For InteractiveElementsAgent, we expect a JSON array of bounding boxes
             try:
-                if isinstance(model_response, str):
+                content = validated_response.get("content", "")
+                if isinstance(content, str):
                     # Extract JSON from markdown if present
-                    json_match = re.search(r'```json\s*(.*?)\s*```', model_response, re.DOTALL)
+                    json_match = re.search(r'```json\s*(.*?)\s*```', content, re.DOTALL)
                     if json_match:
                         json_content = json_match.group(1)
                     else:
-                        json_content = model_response.strip()
+                        # Handle cases where content might have prefix characters like '![' 
+                        # Try to find JSON array pattern
+                        json_array_match = re.search(r'(\[.*\])', content, re.DOTALL)
+                        if json_array_match:
+                            json_content = json_array_match.group(1)
+                        else:
+                            json_content = content.strip()
                     
-                    response_data = json.loads(json_content)
+                    bounding_boxes = json.loads(json_content)
+                elif isinstance(content, list):
+                    bounding_boxes = content
                 else:
-                    response_data = model_response
+                    raise ValueError(f"Expected list of bounding boxes, got: {type(content)}")
 
-                # Ensure the response has required fields
-                if "elements" not in response_data:
-                    response_data["elements"] = []
-                if "analysis_method" not in response_data:
-                    response_data["analysis_method"] = "AI_vision_analysis"
+                # Validate that we have a list of bounding boxes
+                if not isinstance(bounding_boxes, list):
+                    raise ValueError("Response must be a list of bounding boxes")
+                
+                # Validate each bounding box has required fields
+                for bbox in bounding_boxes:
+                    if not isinstance(bbox, dict) or "box_2d" not in bbox or "label" not in bbox:
+                        raise ValueError("Each bounding box must have 'box_2d' and 'label' fields")
 
-                # Create response message
-                assistant_message = Message(
-                    role="assistant",
-                    content=json.dumps(response_data, indent=2),
-                    name=self.name,
-                    message_id=str(uuid.uuid4())
+                # Update the validated response with processed content
+                validated_response["content"] = bounding_boxes
+
+                # Use the memory update method that handles transformations
+                self.memory.update_from_response(
+                    validated_response,
+                    message_id=new_message_id,
+                    default_role="assistant",
+                    default_name=self.name
                 )
-
-                # Add to memory
-                self.memory.update_memory(message=assistant_message)
+                
+                # Retrieve the stored message to return
+                assistant_message = self.memory.retrieve_by_id(new_message_id)
+                if not assistant_message:
+                    # Fallback if retrieval fails
+                    assistant_message = Message.from_response_dict(
+                        validated_response,
+                        default_id=new_message_id,
+                        default_role="assistant",
+                        default_name=self.name
+                    )
 
                 return assistant_message
 
-            except json.JSONDecodeError as e:
-                error_msg = f"Failed to parse model response as JSON: {e}\nResponse: {model_response}"
+            except (json.JSONDecodeError, ValueError) as e:
+                error_msg = f"Failed to parse model response as JSON: {e}\nResponse: {validated_response.get('content', '')}"
                 return Message(
                     role="error",
                     content=error_msg,
-                    name=self.name
+                    name=self.name,
+                    message_id=str(uuid.uuid4())
                 )
 
         except Exception as e:
@@ -343,26 +435,77 @@ class InteractiveElementsAgent(BaseAgent):
             return Message(
                 role="error",
                 content=error_msg, 
-                name=self.name
+                name=self.name,
+                message_id=str(uuid.uuid4())
             )
 
-    def _parse_model_response(self, response: str) -> Dict[str, Any]:
+    def _input_message_processor(self) -> Callable[[Dict[str, Any]], Dict[str, Any]]:
         """
-        Parse model response using the robust JSON loader.
+        Creates a processor function for InteractiveElementsAgent.
+        This agent doesn't use agent_calls, so we use a simple passthrough.
+        """
+        def transform_from_llm(data: Dict[str, Any]) -> Dict[str, Any]:
+            return data.copy()
+        return transform_from_llm
+
+    def _output_message_processor(self) -> Callable[[Dict[str, Any]], Dict[str, Any]]:
+        """
+        Creates a processor function for InteractiveElementsAgent.
+        This agent doesn't use agent_calls, so we use a simple passthrough.
+        """
+        def transform_to_llm(msg_dict: Dict[str, Any]) -> Dict[str, Any]:
+            result = msg_dict.copy()
+            # Remove agent_calls if present (not part of OpenAI API)
+            result.pop("agent_calls", None)
+            return result
+        return transform_to_llm
+
+    async def _cleanup_previous_vision_analysis(self) -> None:
+        """
+        Clean up previous vision analysis messages from memory to prevent context bloat.
         
-        Args:
-            response: The response string from the model
-            
-        Returns:
-            Parsed dictionary
-            
-        Raises:
-            ValueError: if no valid JSON object can be decoded.
+        For the InteractiveElementsAgent, we only need:
+        - System messages (agent behavior instructions)
+        - The current screenshot analysis request
+        
+        This method removes ALL previous user and assistant messages from vision analysis,
+        as they are not needed for the current prediction task.
         """
         try:
-            return self._robust_json_loads(response)
-        except (json.JSONDecodeError, ValueError) as e:
-            raise ValueError(f"Could not extract valid JSON from model response: {e}")
+            # Get all current messages
+            all_messages = self.memory.retrieve_all()
+            
+            # Keep only system messages - remove ALL user and assistant messages
+            # since InteractiveElementsAgent should start fresh with each analysis
+            filtered_messages = []
+            
+            for message in all_messages:
+                # Keep only system messages (agent instructions)
+                if message.role == "system":
+                    filtered_messages.append(message)
+                    continue
+                
+                # Remove ALL user messages (previous screenshot requests)
+                if message.role == "user":
+                    continue
+                
+                # Remove ALL assistant messages (previous bounding box results)
+                if message.role == "assistant":
+                    continue
+                
+                # Keep any other message types (error, tool, etc.) just in case
+                filtered_messages.append(message)
+            
+            # Clear memory and restore only system messages
+            self.memory.reset_memory()
+            for message in filtered_messages:
+                self.memory.update_memory(message=message)
+                
+        except Exception as e:
+            # If cleanup fails, log but don't break the analysis
+            logger.warning(f"Failed to cleanup previous vision analysis from memory: {e}")
+
+
 
 
 class BrowserAgent(BaseAgent):
@@ -386,13 +529,16 @@ class BrowserAgent(BaseAgent):
         agent_name: Optional[str] = None,
         allowed_peers: Optional[List[str]] = None,
         headless: bool = True,
-        viewport_width: int = 1280,
-        viewport_height: int = 720,
+        viewport_width: int = 1440,
+        viewport_height: int = 960,
         tmp_dir: Optional[str] = None,
         browser_channel: Optional[str] = None,
         vision_model_config: Optional[ModelConfig] = None,
         input_schema: Optional[Any] = None,
         output_schema: Optional[Any] = None,
+        model_config: Optional[ModelConfig] = None,
+        auto_screenshot: bool = False,
+        timeout: int = 5000,
     ) -> None:
         """
         Initialize the BrowserAgent.
@@ -412,6 +558,9 @@ class BrowserAgent(BaseAgent):
             vision_model_config: Optional separate model config for vision analysis
             input_schema: Optional input schema for the agent
             output_schema: Optional output schema for the agent
+            model_config: Optional ModelConfig instance for API kwargs extraction
+            auto_screenshot: Whether to automatically take screenshots after state-changing operations
+            timeout: Default timeout in milliseconds for browser operations (default: 30000)
         """
         # Set up temporary directory
         if tmp_dir:
@@ -427,50 +576,15 @@ class BrowserAgent(BaseAgent):
         self.downloads_dir.mkdir(parents=True, exist_ok=True)
         self.screenshots_dir.mkdir(parents=True, exist_ok=True)
 
-        # Initialize browser-specific tools
-        browser_tools = {
-            "navigate": self.navigate,
-            "click": self.click,
-            "type_text": self.type_text,
-            "get_text": self.get_text,
-            "get_attribute": self.get_attribute,
-            "take_screenshot": self.take_screenshot,
-            "wait_for_selector": self.wait_for_selector,
-            "go_back": self.go_back,
-            "go_forward": self.go_forward,
-            "reload": self.reload,
-            "get_url": self.get_url,
-            "get_title": self.get_title,
-            "extract_links": self.extract_links,
-            "fill_form": self.fill_form,
-            "select_option": self.select_option,
-            "check_checkbox": self.check_checkbox,
-            "uncheck_checkbox": self.uncheck_checkbox,
-            "hover": self.hover,
-            "press_key": self.press_key,
-            "scroll_to": self.scroll_to,
-            "wait_for_navigation": self.wait_for_navigation,
-            "evaluate_javascript": self.evaluate_javascript,
-            "get_cookies": self.get_cookies,
-            "set_cookie": self.set_cookie,
-            "delete_cookies": self.delete_cookies,
-            "get_local_storage": self.get_local_storage,
-            "set_local_storage": self.set_local_storage,
-            "clear_local_storage": self.clear_local_storage,
-            "download_file": self.download_file,
-            "get_clean_html": self.get_clean_html,
-            "html_to_markdown": self.html_to_markdown,
-            "fill": self.fill,
-            "press": self.press,
-            "get_attribute_all": self.get_attribute_all,
-            "open_new_tab": self.open_new_tab,
-            "get_page_count": self.get_page_count,
-            "switch_to_tab": self.switch_to_tab,
-            "extract_content_from_url": self.extract_content_from_url,
-            "highlight_interactive_elements": self.highlight_interactive_elements,
-            "predict_interactive_elements": self.predict_interactive_elements,
-            "highlight_and_predict_elements": self.highlight_and_predict_elements,
-        }
+        # Store auto_screenshot setting
+        self.auto_screenshot = auto_screenshot
+        
+        # Store timeout setting
+        self.timeout = timeout
+
+        # Initialize browser-specific tools - these will be set after browser_tool is initialized
+        # For now, create empty dict and populate later in create_safe
+        browser_tools = {}
 
         # Merge with any additional tools provided
         if tools:
@@ -519,18 +633,21 @@ class BrowserAgent(BaseAgent):
         # Initialize vision analysis agent if vision model config is provided
         self.vision_agent: Optional[InteractiveElementsAgent] = None
         if vision_model_config:
-            # Create model instance for vision agent
+            # Create a temporary model first to create the vision agent
             if vision_model_config.type == "api":
-                vision_model = BaseAPIModel(
+                provider = vision_model_config.provider or "openai"  # Default to openai if no provider specified
+                temp_model = BaseAPIModel(
                     model_name=vision_model_config.name,
                     api_key=vision_model_config.api_key,
                     base_url=vision_model_config.base_url,
                     max_tokens=vision_model_config.max_tokens,
                     temperature=vision_model_config.temperature,
+                    provider=provider,
+                    thinking_budget=vision_model_config.thinking_budget,
                 )
             elif vision_model_config.type == "local":
                 if vision_model_config.model_class == "vlm":
-                    vision_model = BaseVLM(
+                    temp_model = BaseVLM(
                         model_name=vision_model_config.name,
                         max_tokens=vision_model_config.max_tokens,
                         torch_dtype=vision_model_config.torch_dtype,
@@ -543,20 +660,46 @@ class BrowserAgent(BaseAgent):
 
             # Create the vision agent
             self.vision_agent = InteractiveElementsAgent(
-                model=vision_model,
+                model=temp_model,
                 agent_name=f"{agent_name or 'BrowserAgent'}_VisionAnalyzer"
             )
+            
+            # Now replace the model with one that has the custom response processor (for API models only)
+            if vision_model_config.type == "api":
+                provider = vision_model_config.provider or "openai"  # Default to openai if no provider specified
+                vision_model_with_processor = BaseAPIModel(
+                    model_name=vision_model_config.name,
+                    api_key=vision_model_config.api_key,
+                    base_url=vision_model_config.base_url,
+                    max_tokens=vision_model_config.max_tokens,
+                    temperature=vision_model_config.temperature,
+                    provider=provider,
+                    thinking_budget=vision_model_config.thinking_budget,
+                    response_processor=self.vision_agent._web_elements_response_processor,
+                )
+                self.vision_agent.model = vision_model_with_processor
 
-        # Playwright objects (initialized in create_safe)
-        self.playwright = None
-        self.browser: Optional[Browser] = None
-        self.page: Optional[Page] = None
+        # Store vision model config for potential future use
+        self._vision_model_config = vision_model_config
+        
+        # Store the model config for API kwargs extraction
+        self._model_config = model_config
+
+        # Track last auto-generated message IDs for memory management
+        self._last_auto_screenshot_message_id: Optional[str] = None
+        self._last_auto_accessibility_message_id: Optional[str] = None
+        self._last_auto_elements_message_id: Optional[str] = None
+
+        # BrowserTool object (initialized in create_safe)
+        self.browser_tool: Optional["BrowserTool"] = None
 
         # Initialize memory
         self.memory = MemoryManager(
             memory_type="conversation_history",
             description=self.description,
             model=self.model,
+            input_processor=self._input_message_processor(),
+            output_processor=self._output_message_processor(),
         )
 
     def __del__(self):
@@ -580,13 +723,15 @@ class BrowserAgent(BaseAgent):
         agent_name: Optional[str] = None,
         allowed_peers: Optional[List[str]] = None,
         headless: bool = True,
-        viewport_width: int = 1280,
-        viewport_height: int = 720,
+        viewport_width: int = 1440,
+        viewport_height: int = 960,
         tmp_dir: Optional[str] = None,
         browser_channel: Optional[str] = None,
         vision_model_config: Optional[ModelConfig] = None,
         input_schema: Optional[Any] = None,
         output_schema: Optional[Any] = None,
+        auto_screenshot: bool = False,
+        timeout: int = 5000,
     ) -> "BrowserAgent":
         """
         Safe factory method to create and initialize a BrowserAgent.
@@ -596,12 +741,16 @@ class BrowserAgent(BaseAgent):
         """
         # Create model instance from config
         if model_config.type == "api":
+            provider = model_config.provider or "openai"  # Default to openai if no provider specified
             model = BaseAPIModel(
                 model_name=model_config.name,
                 api_key=model_config.api_key,
                 base_url=model_config.base_url,
                 max_tokens=model_config.max_tokens,
                 temperature=model_config.temperature,
+                provider=provider,
+                thinking_budget=model_config.thinking_budget,
+                response_processor=lambda msg_obj: BrowserAgent._default_response_processor_static(msg_obj),
             )
         elif model_config.type == "local":
             if model_config.model_class == "llm":
@@ -639,38 +788,36 @@ class BrowserAgent(BaseAgent):
             vision_model_config=vision_model_config,
             input_schema=input_schema,
             output_schema=output_schema,
+            model_config=model_config,  # Pass the ModelConfig to __init__
+            auto_screenshot=auto_screenshot,
+            timeout=timeout,
         )
 
-        # Initialize browser
+        # Initialize browser using BrowserTool
         await agent._initialize_browser()
+
+        # Now set up browser tools using BrowserTool methods
+        agent._setup_browser_tools()
 
         return agent
 
     async def _initialize_browser(self) -> None:
-        """Initialize Playwright browser and create a page"""
+        """Initialize browser using BrowserTool"""
         try:
-            self.playwright = await async_playwright().start()
-
-            launch_options = {
-                "headless": self.headless,
-                "downloads_path": str(self.downloads_dir),
-            }
-            if self.browser_channel:
-                launch_options["channel"] = self.browser_channel
-
-            self.browser = await self.playwright.chromium.launch(**launch_options)
-
-            # Create browser context with viewport settings
-            context = await self.browser.new_context(
-                viewport={"width": self.viewport_width, "height": self.viewport_height},
-                accept_downloads=True,  # Enable downloads
+            self.browser_tool = await BrowserTool.create_safe(
+                temp_dir=str(self.tmp_dir),
+                default_browser=self.browser_channel or "chrome",
+                browser_channel=self.browser_channel,
+                headless=self.headless,
+                viewport_width=self.viewport_width,
+                viewport_height=self.viewport_height,
+                timeout=self.timeout,
+                downloads_path=str(self.downloads_dir),
+                screenshot_dir=str(self.screenshots_dir),
             )
 
-            # Create a new page
-            self.page = await context.new_page()
-
             logger.info(
-                f"Browser initialized for {self.name} (headless={self.headless})"
+                f"Browser initialized for {self.name} using BrowserTool (headless={self.headless}, timeout={self.timeout}ms)"
             )
         except Exception as e:
             error_message = str(e)
@@ -705,6 +852,70 @@ class BrowserAgent(BaseAgent):
                     f"Original error: {error_message}"
                 ) from e
 
+    def _setup_browser_tools(self) -> None:
+        """Set up browser tools using BrowserTool methods."""
+        if not self.browser_tool:
+            raise RuntimeError("BrowserTool not initialized. Call _initialize_browser first.")
+        
+        # Create browser tools dict using BrowserTool methods
+        browser_tools = {
+            "goto": self.browser_tool.goto,
+            # Mouse-based clicking methods (replaced selector-based click)
+            "scroll_up": self.browser_tool.scroll_up,
+            "scroll_down": self.browser_tool.scroll_down,
+            "mouse_click": self.browser_tool.mouse_click,
+            # "mouse_dbclick": self.browser_tool.mouse_dbclick,
+            "mouse_right_click": self.browser_tool.mouse_right_click,
+            # "type_text": self.browser_tool.type_text,
+            # "get_text": self.browser_tool.get_text,
+            # "get_attribute": self.browser_tool.get_attribute,
+            # "screenshot": self.browser_tool.screenshot,
+            "go_back": self.browser_tool.go_back,
+            # "go_forward": self.browser_tool.go_forward,
+            "reload": self.browser_tool.reload,
+            "get_url": self.browser_tool.get_url,
+            "get_title": self.browser_tool.get_title,
+            # "extract_links": self.browser_tool.extract_links,
+            # "fill_form": self.browser_tool.fill_form,
+            # "select_option": self.browser_tool.select_option,
+            # "check_checkbox": self.browser_tool.check_checkbox,
+            # "uncheck_checkbox": self.browser_tool.uncheck_checkbox,
+            # "hover": self.browser_tool.hover,
+            "type_text": self.browser_tool.type_text,
+            "keyboard_press": self.browser_tool.keyboard_press,
+            "get_accessibility_tree": self.browser_tool.get_accessibility_tree,
+            # "evaluate_javascript": self.browser_tool.evaluate_javascript,
+            "download_file": self.browser_tool.download_file,
+            # "get_clean_html": self.browser_tool.get_clean_html,
+            # "html_to_markdown": self.browser_tool.html_to_markdown,
+            # "fill": self.browser_tool.fill,
+            # "press": self.browser_tool.press,
+            # "open_new_tab": self.browser_tool.open_new_tab,
+            # "get_page_count": self.browser_tool.get_page_count,
+            # "switch_to_tab": self.browser_tool.switch_to_tab,
+            "extract_content_from_url": self.browser_tool.extract_content_from_url,
+
+        }
+        
+        # Update the agent's tools
+        if hasattr(self, 'tools') and self.tools:
+            self.tools.update(browser_tools)
+        else:
+            self.tools = browser_tools
+        
+        # Regenerate tools schema for the updated tools
+        self.tools_schema = []
+        if self.tools:
+            from src.environment.utils import generate_openai_tool_schema
+            for tool_name, tool_func in self.tools.items():
+                try:
+                    schema = generate_openai_tool_schema(tool_func, tool_name)
+                    self.tools_schema.append(schema)
+                except Exception as e:
+                    logger.error(f"Failed to generate schema for tool {tool_name}: {e}")
+        
+        logger.info(f"Browser tools setup completed for agent {self.name}")
+
     async def close(self) -> None:
         """Close the browser and clean up resources"""
         # Close vision agent if it exists
@@ -714,862 +925,92 @@ class BrowserAgent(BaseAgent):
             except Exception as e:
                 logger.warning(f"Error closing vision agent: {e}")
 
-        # Close browser resources
-        if self.page:
-            await self.page.close()
-        if self.browser:
-            await self.browser.close()
-        if self.playwright:
-            await self.playwright.stop()
+        # Close browser resources using BrowserTool
+        if self.browser_tool:
+            try:
+                await self.browser_tool.close()
+            except Exception as e:
+                logger.warning(f"Error during browser cleanup: {e}")
+        
+        self.browser_tool = None
         logger.info(f"Browser closed for {self.name}")
 
-    # Browser action methods
-    async def navigate(self, url: str, wait_until: str = "load") -> str:
+    async def _take_auto_screenshot(self) -> Optional[str]:
         """
-        Navigate to a URL.
-
-        Args:
-            url: The URL to navigate to
-            wait_until: When to consider navigation succeeded. Options: 'load', 'domcontentloaded', 'networkidle'
+        Take an automatic screenshot if auto_screenshot is enabled.
 
         Returns:
-            Success message with final URL
+            Path to the screenshot file if taken, None otherwise
         """
-        if not self.page:
-            raise RuntimeError("Browser not initialized")
-
-        await self.page.goto(url, wait_until=wait_until)
-        final_url = self.page.url
-        return f"Successfully navigated to {final_url}"
-
-    async def click(self, selector: str, timeout: int = 30000) -> str:
-        """
-        Click an element.
-
-        Args:
-            selector: CSS selector or text to click
-            timeout: Maximum time to wait for element in milliseconds
-
-        Returns:
-            Success message
-        """
-        if not self.page:
-            raise RuntimeError("Browser not initialized")
-
-        await self.page.click(selector, timeout=timeout)
-        return f"Successfully clicked element matching '{selector}'"
-
-    async def type_text(self, selector: str, text: str, delay: int = 0) -> str:
-        """
-        Type text into an input field.
-
-        Args:
-            selector: CSS selector for the input field
-            text: Text to type
-            delay: Delay between key presses in milliseconds
-
-        Returns:
-            Success message
-        """
-        if not self.page:
-            raise RuntimeError("Browser not initialized")
-
-        await self.page.type(selector, text, delay=delay)
-        return f"Successfully typed text into element matching '{selector}'"
-
-    async def get_text(self, selector: str, timeout: int = 30000) -> str:
-        """
-        Get text content of an element.
-
-        Args:
-            selector: CSS selector
-            timeout: Maximum time to wait for element
-
-        Returns:
-            Text content of the element
-        """
-        if not self.page:
-            raise RuntimeError("Browser not initialized")
-
-        element = await self.page.wait_for_selector(selector, timeout=timeout)
-        if not element:
-            return f"Element matching '{selector}' not found"
-
-        text = await element.text_content()
-        return text or ""
-
-    async def get_attribute(
-        self, selector: str, attribute: str, timeout: int = 30000
-    ) -> str:
-        """
-        Get attribute value of an element.
-
-        Args:
-            selector: CSS selector
-            attribute: Attribute name
-            timeout: Maximum time to wait for element
-
-        Returns:
-            Attribute value or error message
-        """
-        if not self.page:
-            raise RuntimeError("Browser not initialized")
-
-        element = await self.page.wait_for_selector(selector, timeout=timeout)
-        if not element:
-            return f"Element matching '{selector}' not found"
-
-        value = await element.get_attribute(attribute)
-        return value or f"Attribute '{attribute}' not found"
-
-    async def take_screenshot(
-        self, name: str, selector: Optional[str] = None, full_page: bool = False
-    ) -> str:
-        """
-        Take a screenshot of the page or specific element.
-
-        Args:
-            name: Base name for the screenshot file (without extension)
-            selector: Optional CSS selector to screenshot specific element
-            full_page: Whether to capture full scrollable page
-
-        Returns:
-            Path to the saved screenshot
-        """
-        if not self.page:
-            raise RuntimeError("Browser not initialized")
-
-        # Generate unique filename with timestamp
-        timestamp = str(uuid.uuid4())[:8]
-        filename = f"{name}_{timestamp}.png"
-        filepath = self.screenshots_dir / filename
-
-        if selector:
-            # Screenshot specific element
-            element = await self.page.wait_for_selector(selector, timeout=5000)
-            if element:
-                await element.screenshot(path=str(filepath))
-            else:
-                return f"Element matching '{selector}' not found"
-        else:
-            # Screenshot entire page or viewport
-            await self.page.screenshot(path=str(filepath), full_page=full_page)
-
-        return str(filepath)
-
-    async def wait_for_selector(
-        self, selector: str, timeout: int = 30000, state: str = "visible"
-    ) -> str:
-        """
-        Wait for an element to appear.
-
-        Args:
-            selector: CSS selector
-            timeout: Maximum wait time in milliseconds
-            state: Element state to wait for ('visible', 'hidden', 'attached', 'detached')
-
-        Returns:
-            Success message
-        """
-        if not self.page:
-            raise RuntimeError("Browser not initialized")
-
-        await self.page.wait_for_selector(selector, timeout=timeout, state=state)
-        return f"Element matching '{selector}' is now {state}"
-
-    async def go_back(self) -> str:
-        """Navigate back in browser history"""
-        if not self.page:
-            raise RuntimeError("Browser not initialized")
-
-        await self.page.go_back()
-        return f"Navigated back to {self.page.url}"
-
-    async def go_forward(self) -> str:
-        """Navigate forward in browser history"""
-        if not self.page:
-            raise RuntimeError("Browser not initialized")
-
-        await self.page.go_forward()
-        return f"Navigated forward to {self.page.url}"
-
-    async def reload(self) -> str:
-        """Reload the current page"""
-        if not self.page:
-            raise RuntimeError("Browser not initialized")
-
-        await self.page.reload()
-        return f"Reloaded page: {self.page.url}"
-
-    async def get_url(self) -> str:
-        """Get current page URL"""
-        if not self.page:
-            raise RuntimeError("Browser not initialized")
-
-        return self.page.url
-
-    async def get_title(self) -> str:
-        """Get current page title"""
-        if not self.page:
-            raise RuntimeError("Browser not initialized")
-
-        return await self.page.title()
-
-    async def extract_links(self) -> List[Dict[str, str]]:
-        """
-        Extract all links from the current page.
-
-        Returns:
-            List of dictionaries with 'text' and 'href' keys
-        """
-        if not self.page:
-            raise RuntimeError("Browser not initialized")
-
-        links = await self.page.evaluate(
-            """
-            () => {
-                return Array.from(document.querySelectorAll('a')).map(a => ({
-                    text: a.textContent.trim(),
-                    href: a.href
-                }));
-            }
-        """
-        )
-
-        return links
-
-    async def fill_form(self, form_data: Dict[str, str]) -> str:
-        """
-        Fill a form with provided data.
-
-        Args:
-            form_data: Dictionary mapping selectors to values
-
-        Returns:
-            Success message
-        """
-        if not self.page:
-            raise RuntimeError("Browser not initialized")
-
-        for selector, value in form_data.items():
-            await self.page.fill(selector, value)
-
-        return f"Successfully filled {len(form_data)} form fields"
-
-    async def select_option(self, selector: str, value: str) -> str:
-        """
-        Select an option from a dropdown.
-
-        Args:
-            selector: CSS selector for the select element
-            value: Value or label to select
-
-        Returns:
-            Success message
-        """
-        if not self.page:
-            raise RuntimeError("Browser not initialized")
-
-        await self.page.select_option(selector, value)
-        return f"Successfully selected '{value}' in dropdown matching '{selector}'"
-
-    async def check_checkbox(self, selector: str) -> str:
-        """Check a checkbox"""
-        if not self.page:
-            raise RuntimeError("Browser not initialized")
-
-        await self.page.check(selector)
-        return f"Successfully checked checkbox matching '{selector}'"
-
-    async def uncheck_checkbox(self, selector: str) -> str:
-        """Uncheck a checkbox"""
-        if not self.page:
-            raise RuntimeError("Browser not initialized")
-
-        await self.page.uncheck(selector)
-        return f"Successfully unchecked checkbox matching '{selector}'"
-
-    async def hover(self, selector: str) -> str:
-        """Hover over an element"""
-        if not self.page:
-            raise RuntimeError("Browser not initialized")
-
-        await self.page.hover(selector)
-        return f"Successfully hovered over element matching '{selector}'"
-
-    async def press_key(self, key: str) -> str:
-        """
-        Press a keyboard key.
-
-        Args:
-            key: Key to press (e.g., 'Enter', 'Escape', 'ArrowDown')
-
-        Returns:
-            Success message
-        """
-        if not self.page:
-            raise RuntimeError("Browser not initialized")
-
-        await self.page.keyboard.press(key)
-        return f"Successfully pressed '{key}' key"
-
-    async def scroll_to(self, selector: str) -> str:
-        """Scroll to an element"""
-        if not self.page:
-            raise RuntimeError("Browser not initialized")
-
-        await self.page.evaluate(
-            f"""
-            document.querySelector('{selector}').scrollIntoView({{behavior: 'smooth'}});
-        """
-        )
-        return f"Successfully scrolled to element matching '{selector}'"
-
-    async def wait_for_navigation(self, timeout: int = 30000) -> str:
-        """Wait for page navigation to complete"""
-        if not self.page:
-            raise RuntimeError("Browser not initialized")
-
-        await self.page.wait_for_load_state("load", timeout=timeout)
-        return f"Navigation completed. Current URL: {self.page.url}"
-
-    async def evaluate_javascript(self, script: str) -> Any:
-        """
-        Execute JavaScript in the page context.
-
-        Args:
-            script: JavaScript code to execute
-
-        Returns:
-            Result of the JavaScript execution
-        """
-        if not self.page:
-            raise RuntimeError("Browser not initialized")
-
-        result = await self.page.evaluate(script)
-        return result
-
-    async def get_cookies(self) -> List[Dict[str, Any]]:
-        """Get all cookies for the current page"""
-        if not self.page:
-            raise RuntimeError("Browser not initialized")
-
-        return await self.page.context.cookies()
-
-    async def set_cookie(self, cookie: Dict[str, Any]) -> str:
-        """
-        Set a cookie.
-
-        Args:
-            cookie: Cookie dictionary with 'name', 'value', and optional 'domain', 'path', etc.
-
-        Returns:
-            Success message
-        """
-        if not self.page:
-            raise RuntimeError("Browser not initialized")
-
-        await self.page.context.add_cookies([cookie])
-        return f"Successfully set cookie '{cookie.get('name')}'"
-
-    async def delete_cookies(self) -> str:
-        """Delete all cookies"""
-        if not self.page:
-            raise RuntimeError("Browser not initialized")
-
-        await self.page.context.clear_cookies()
-        return "Successfully cleared all cookies"
-
-    async def get_local_storage(self) -> Dict[str, str]:
-        """Get all local storage items"""
-        if not self.page:
-            raise RuntimeError("Browser not initialized")
-
-        return await self.page.evaluate(
-            """
-            () => {
-                const items = {};
-                for (let i = 0; i < localStorage.length; i++) {
-                    const key = localStorage.key(i);
-                    items[key] = localStorage.getItem(key);
-                }
-                return items;
-            }
-        """
-        )
-
-    async def set_local_storage(self, key: str, value: str) -> str:
-        """Set a local storage item"""
-        if not self.page:
-            raise RuntimeError("Browser not initialized")
-
-        await self.page.evaluate(
-            f"""
-            localStorage.setItem('{key}', '{value}');
-        """
-        )
-        return f"Successfully set local storage item '{key}'"
-
-    async def clear_local_storage(self) -> str:
-        """Clear all local storage items"""
-        if not self.page:
-            raise RuntimeError("Browser not initialized")
-
-        await self.page.evaluate("localStorage.clear();")
-        return "Successfully cleared local storage"
-
-    async def download_file(self, url: str, filename: Optional[str] = None) -> str:
-        """
-        Download a file from a URL.
-
-        Args:
-            url: URL of the file to download
-            filename: Optional filename to save as
-
-        Returns:
-            Path to the downloaded file
-        """
-        if not self.page:
-            raise RuntimeError("Browser not initialized")
-
-        # Extract filename from URL if not provided
-        if not filename:
-            parsed_url = urlparse(url)
-            filename = (
-                os.path.basename(parsed_url.path) or f"download_{uuid.uuid4()[:8]}"
+        if not self.auto_screenshot or not self.browser_tool:
+            return None
+        
+        try:
+            # Create the screenshot path in the tmp_dir/screenshots directory
+            # Use consistent filename "latest_screenshot.png" (overwrite previous)
+            filename = "latest_screenshot.png"
+            
+            # Take screenshot using BrowserTool
+            filepath = await self.browser_tool.screenshot(
+                filename=filename, 
+                reasoning="Auto screenshot",
+                highlight_bbox=False
             )
-
-        filepath = self.downloads_dir / filename
-
-        # Start waiting for download before clicking
-        async with self.page.expect_download() as download_info:
-            # Navigate to the download URL or click download link
-            await self.page.goto(url)
-            download = await download_info.value
-
-        # Save the download
-        await download.save_as(str(filepath))
-
-        return str(filepath)
-
-    async def get_clean_html(
-        self, 
-        selector: Optional[str] = None, 
-        max_text_length: Optional[int] = None,
-        preserve_structure: bool = True
-    ) -> str:
-        """
-        Extract and clean HTML content from the current page.
-
-        This method removes irrelevant elements like scripts, ads, navigation,
-        and focuses on the main content while optionally limiting text length.
-
-        Args:
-            selector: Optional CSS selector to focus on specific element (defaults to body)
-            max_text_length: Optional maximum characters per text node
-            preserve_structure: Whether to keep HTML structure or flatten to text
-
-        Returns:
-            Cleaned HTML content as string
-        """
-        if not self.page:
-            raise RuntimeError("Browser not initialized")
-
-        # JavaScript to clean HTML on the client side
-        clean_html_script = f"""
-        (function() {{
-            // Select the target element or default to body
-            const targetElement = {f"document.querySelector('{selector}')" if selector else "document.body"};
-            if (!targetElement) return '';
-
-            // Clone the element to avoid modifying the original page
-            const clonedElement = targetElement.cloneNode(true);
-            
-            // Define selectors for elements to remove
-            const removeSelectors = [
-                'script', 'style', 'noscript', 'iframe',
-                'nav', 'header', 'footer', 'aside',
-                '.advertisement', '.ad', '.ads', '.banner',
-                '.social', '.share', '.sharing', '.comments',
-                '.cookie', '.popup', '.modal', '.overlay',
-                '.sidebar', '.related', '.recommendations',
-                '[class*="ad-"]', '[class*="ads-"]', '[class*="advertisement"]',
-                '[id*="ad-"]', '[id*="ads-"]', '[id*="advertisement"]',
-                '[class*="social"]', '[class*="share"]', '[class*="comment"]',
-                '[class*="cookie"]', '[class*="popup"]', '[class*="modal"]',
-                '.breadcrumb', '.pagination', '.tags', '.categories'
-            ];
-            
-            // Remove unwanted elements
-            removeSelectors.forEach(selector => {{
-                const elements = clonedElement.querySelectorAll(selector);
-                elements.forEach(el => el.remove());
-            }});
-            
-            // Remove elements with minimal content (likely not main content)
-            const allElements = clonedElement.querySelectorAll('*');
-            allElements.forEach(el => {{
-                const text = el.textContent?.trim() || '';
-                const tagName = el.tagName.toLowerCase();
-                
-                // Keep important structural elements
-                if (['article', 'main', 'section', 'div', 'p', 'h1', 'h2', 'h3', 'h4', 'h5', 'h6', 'ul', 'ol', 'li', 'table', 'tr', 'td', 'th', 'a', 'span', 'strong', 'em', 'b', 'i'].includes(tagName)) {{
-                    return;
-                }}
-                
-                // Remove empty or very short elements that aren't structural
-                if (text.length < 10 && !['img', 'br', 'hr'].includes(tagName)) {{
-                    el.remove();
-                }}
-            }});
-            
-            // Apply text length limits if specified
-            const maxLength = {max_text_length if max_text_length else 'null'};
-            if (maxLength) {{
-                const walker = document.createTreeWalker(
-                    clonedElement,
-                    NodeFilter.SHOW_TEXT,
-                    null,
-                    false
-                );
-                
-                const textNodes = [];
-                let node;
-                while (node = walker.nextNode()) {{
-                    textNodes.push(node);
-                }}
-                
-                textNodes.forEach(textNode => {{
-                    if (textNode.textContent.length > maxLength) {{
-                        // Find word boundary for clean truncation
-                        const truncated = textNode.textContent.substring(0, maxLength);
-                        const lastSpace = truncated.lastIndexOf(' ');
-                        const finalText = lastSpace > 0 ? truncated.substring(0, lastSpace) + '...' : truncated + '...';
-                        textNode.textContent = finalText;
-                    }}
-                }});
-            }}
-            
-            return {'clonedElement.outerHTML' if preserve_structure else 'clonedElement.textContent'};
-        }})();
-        """
-
-        # Execute the cleaning script
-        try:
-            cleaned_content = await self.page.evaluate(clean_html_script)
-            return cleaned_content or ""
+            logger.debug(f"Auto screenshot taken: {filepath}")
+            return filepath
         except Exception as e:
-            logger.error(f"Error cleaning HTML: {e}")
-            # Fallback to basic text extraction
-            fallback_selector = selector or "body"
-            return await self.get_text(fallback_selector)
+            logger.warning(f"Failed to take auto screenshot: {e}")
+            return None
 
-    async def html_to_markdown(
-        self, 
-        selector: str = "body",
-        preserve_links: bool = True,
-        preserve_tables: bool = True,
-        preserve_images: bool = True
-    ) -> str:
-        """
-        Convert HTML content to well-formatted markdown.
 
-        Args:
-            selector: CSS selector for the element to convert
-            preserve_links: Whether to preserve links in markdown format
-            preserve_tables: Whether to preserve tables in markdown format  
-            preserve_images: Whether to preserve images in markdown format
 
-        Returns:
-            Markdown-formatted content
-        """
-        if not self.page:
-            raise RuntimeError("Browser not initialized")
+    # Browser action methods are now handled by BrowserTool via tools dict
 
-        import re
 
-        try:
-            # First get clean HTML content
-            html_content = await self.get_clean_html(
-                selector=selector,
-                preserve_structure=True
-            )
-            
-            # Try to import markdownify (graceful fallback if not available)
-            try:
-                from markdownify import markdownify
-                
-                # Configure conversion options
-                markdown_options = {
-                    'heading_style': 'ATX',  # Use # for headings
-                    'bullets': '-',          # Use - for bullet points
-                    'strip': ['script', 'style'],  # Additional stripping
-                    'convert': ['h1', 'h2', 'h3', 'h4', 'h5', 'h6', 'p', 'br', 'strong', 'em', 'ul', 'ol', 'li']
-                }
-                
-                if preserve_links:
-                    markdown_options['convert'].extend(['a'])
-                    
-                if preserve_tables:
-                    markdown_options['convert'].extend(['table', 'tr', 'td', 'th', 'thead', 'tbody'])
-                    
-                if preserve_images:
-                    markdown_options['convert'].extend(['img'])
-                
-                # Convert to markdown
-                markdown_content = markdownify(html_content, **markdown_options)
-                
-                # Clean up excessive whitespace
-                markdown_content = re.sub(r'\n\s*\n\s*\n', '\n\n', markdown_content)
-                markdown_content = re.sub(r'[ \t]+', ' ', markdown_content)
-                
-                return markdown_content.strip()
-                
-            except ImportError:
-                logger.warning("markdownify not installed. Using basic HTML to text conversion.")
-                logger.info("Install with: pip install markdownify")
-                
-                # Fallback: Basic HTML to markdown conversion using JavaScript
-                basic_conversion_script = f"""
-                (function() {{
-                    const element = document.querySelector('{selector}');
-                    if (!element) return '';
-                    
-                    let markdown = element.innerHTML;
-                    
-                    // Basic HTML to Markdown conversions
-                    markdown = markdown.replace(/<h1[^>]*>(.*?)<\/h1>/gi, '# $1\\n');
-                    markdown = markdown.replace(/<h2[^>]*>(.*?)<\/h2>/gi, '## $1\\n');
-                    markdown = markdown.replace(/<h3[^>]*>(.*?)<\/h3>/gi, '### $1\\n');
-                    markdown = markdown.replace(/<h4[^>]*>(.*?)<\/h4>/gi, '#### $1\\n');
-                    markdown = markdown.replace(/<h5[^>]*>(.*?)<\/h5>/gi, '##### $1\\n');
-                    markdown = markdown.replace(/<h6[^>]*>(.*?)<\/h6>/gi, '###### $1\\n');
-                    
-                    markdown = markdown.replace(/<strong[^>]*>(.*?)<\/strong>/gi, '**$1**');
-                    markdown = markdown.replace(/<b[^>]*>(.*?)<\/b>/gi, '**$1**');
-                    markdown = markdown.replace(/<em[^>]*>(.*?)<\/em>/gi, '*$1*');
-                    markdown = markdown.replace(/<i[^>]*>(.*?)<\/i>/gi, '*$1*');
-                    
-                    if ({str(preserve_links).lower()}) {{
-                        markdown = markdown.replace(/<a[^>]*href=["']([^"']*)["'][^>]*>(.*?)<\/a>/gi, '[$2]($1)');
-                    }}
-                    
-                    markdown = markdown.replace(/<li[^>]*>(.*?)<\/li>/gi, '- $1\\n');
-                    markdown = markdown.replace(/<p[^>]*>(.*?)<\/p>/gi, '$1\\n\\n');
-                    markdown = markdown.replace(/<br[^>]*>/gi, '\\n');
-                    
-                    // Remove remaining HTML tags
-                    markdown = markdown.replace(/<[^>]*>/g, '');
-                    
-                    // Clean up whitespace
-                    markdown = markdown.replace(/\\n\\s*\\n\\s*\\n/g, '\\n\\n');
-                    
-                    return markdown.trim();
-                }})();
-                """
-                
-                fallback_content = await self.page.evaluate(basic_conversion_script)
-                return fallback_content or ""
-                
-        except Exception as e:
-            logger.error(f"Error converting HTML to markdown: {e}")
-            # Final fallback to plain text
-            return await self.get_text(selector)
 
-    async def fill(self, selector: str, text: str) -> str:
-        """Fill an input field with text (alias for type_text for Playwright compatibility)."""
-        if not self.page:
-            raise RuntimeError("Browser not initialized")
-        
-        await self.page.fill(selector, text)
-        return f"Successfully filled element matching '{selector}' with text"
-
-    async def press(self, selector: str, key: str) -> str:
-        """Press a key on a specific element."""
-        if not self.page:
-            raise RuntimeError("Browser not initialized")
-        
-        await self.page.press(selector, key)
-        return f"Successfully pressed '{key}' on element matching '{selector}'"
-
-    async def get_attribute_all(self, selector: str, attribute: str) -> List[str]:
-        """Get attribute values from all matching elements."""
-        if not self.page:
-            raise RuntimeError("Browser not initialized")
-
-        elements = await self.page.query_selector_all(selector)
-        values = []
-        for element in elements:
-            value = await element.get_attribute(attribute)
-            if value:
-                values.append(value)
-        return values
-
-    async def open_new_tab(self, url: str) -> str:
-        """Open a new tab with the specified URL."""
-        if not self.page:
-            raise RuntimeError("Browser not initialized")
-        
-        # Create new page in the same context
-        new_page = await self.page.context.new_page()
-        await new_page.goto(url)
-        
-        return f"Successfully opened new tab with URL: {url}"
-
-    async def get_page_count(self) -> int:
-        """Get the number of open pages/tabs."""
-        if not self.page:
-            raise RuntimeError("Browser not initialized")
-        
-        return len(self.page.context.pages)
-
-    async def switch_to_tab(self, index: int) -> str:
-        """Switch to a specific tab by index."""
-        if not self.page:
-            raise RuntimeError("Browser not initialized")
-        
-        pages = self.page.context.pages
-        if 0 <= index < len(pages):
-            self.page = pages[index]
-            return f"Switched to tab {index}: {self.page.url}"
-        else:
-            raise ValueError(f"Invalid tab index {index}. Available tabs: 0-{len(pages)-1}")
-
-    async def extract_content_from_url(
-        self, 
-        url: str, 
-        selector: str = "main, article, .content, .post, .entry",
-        max_text_length: Optional[int] = 5000,
-        return_markdown: bool = True
-    ) -> Dict[str, Any]:
-        """
-        Navigate to a URL and extract clean content.
-        
-        This is a high-level method that combines navigation, content cleaning,
-        and optional markdown conversion for content extraction workflows.
-        
-        Args:
-            url: URL to navigate to
-            selector: CSS selector to focus on main content area
-            max_text_length: Maximum characters per text node
-            return_markdown: Whether to return content as markdown
-            
-        Returns:
-            Dictionary with extracted content, metadata, and status
-        """
-        if not self.page:
-            raise RuntimeError("Browser not initialized")
-        
-        try:
-            # Navigate to the URL
-            await self.navigate(url)
-            
-            # Wait a moment for dynamic content to load
-            await asyncio.sleep(2)
-            
-            # Try to find the best content selector
-            content_selectors = [
-                selector,
-                "main",
-                "article", 
-                "[role='main']",
-                ".main-content",
-                ".post-content", 
-                ".entry-content",
-                ".content",
-                "body"
-            ]
-            
-            found_selector = None
-            for sel in content_selectors:
-                try:
-                    await self.wait_for_selector(sel, timeout=3000)
-                    found_selector = sel
-                    break
-                except:
-                    continue
-            
-            if not found_selector:
-                found_selector = "body"
-            
-            # Extract content
-            if return_markdown:
-                content = await self.html_to_markdown(
-                    selector=found_selector,
-                    preserve_links=True,
-                    preserve_tables=True
-                )
-            else:
-                content = await self.get_clean_html(
-                    selector=found_selector,
-                    max_text_length=max_text_length,
-                    preserve_structure=False  # Return as text if not markdown
-                )
-            
-            # Get metadata
-            title = await self.get_title()
-            final_url = await self.get_url()
-            
-            return {
-                "success": True,
-                "url": final_url,
-                "title": title,
-                "content": content,
-                "content_length": len(content),
-                "selector_used": found_selector,
-                "format": "markdown" if return_markdown else "text"
-            }
-            
-        except Exception as e:
-            logger.error(f"Error extracting content from {url}: {e}")
-            return {
-                "success": False,
-                "url": url,
-                "error": str(e),
-                "content": "",
-                "content_length": 0
-            }
-
-    async def highlight_interactive_elements(
+    # All browser methods have been moved to BrowserTool and are accessible via the tools dict
+    
+    # The following methods are kept in BrowserAgent as they are unique to this agent's functionality
+    # and need access to the vision agent. The basic browser operations are now handled by BrowserTool.
+    
+    async def detect_interactive_elements_rule_based(
         self, visible_only: bool = True
     ) -> List[Dict[str, Any]]:
         """
-        Highlights interactive elements on the current page using DOM analysis.
+        Detects interactive elements on the current page using rule-based DOM analysis.
 
-        This method injects JavaScript to find all interactive elements (buttons, links, inputs),
-        draws a red box around them, and labels them with an ID. The result is visible in a screenshot.
+        This method uses CSS selectors and DOM analysis to find all interactive elements 
+        (buttons, links, inputs, etc.) and returns them in the same JSON schema format 
+        as predict_interactive_elements for consistency.
 
         Args:
-            visible_only: If True, only highlights elements that are currently visible on the screen.
+            visible_only: If True, only returns elements that are currently visible on the screen.
 
         Returns:
-            A list of dictionaries, where each dictionary contains details of an interactive element,
-            including its ID, position, and description.
+            A list of dictionaries with the same schema as predict_interactive_elements.
         """
-        if not self.page:
-            raise Exception("Browser page is not initialized.")
+        if not self.browser_tool:
+            raise RuntimeError("Browser not initialized")
 
-        highlight_result = await highlight_interactive_elements(
-            self.page, visible_only=visible_only
+        # Use BrowserTool's detect_interactive_elements_rule_based method
+        return await self.browser_tool.detect_interactive_elements_rule_based(
+            visible_only=visible_only,
+            reasoning="Detect interactive elements using rule-based approach"
         )
-        # The result from the helper function includes the image, which we don't need here.
-        # We only care about the element details.
-        return highlight_result.get("interactive_elements_details", [])
 
+    # All other browser methods have been moved to BrowserTool and are available via the tools dict
+    
+    # Keep only the methods that are unique to BrowserAgent and need vision agent access
     async def predict_interactive_elements(self) -> List[Dict[str, Any]]:
         """
-        Uses a specialized vision agent to predict interactive elements from a screenshot.
-
-        Takes a screenshot and delegates to the InteractiveElementsAgent for AI-based
-        analysis of interactive elements. This method now uses the agent framework
-        for proper token tracking and error handling.
+        Uses a specialized InteractiveElementsAgent to predict interactive elements from a screenshot.
 
         Returns:
             A list of dictionaries for each predicted element, including its bounding box
-            and center coordinates.
+            and center coordinates in actual pixel coordinates.
 
         Raises:
-            Exception: If no vision agent is configured.
+            Exception: If no vision agent is configured or analysis fails.
         """
         if not self.vision_agent:
             raise Exception(
@@ -1577,156 +1018,529 @@ class BrowserAgent(BaseAgent):
                 "when creating the BrowserAgent to enable AI-based element prediction."
             )
 
-        # Take a screenshot for analysis
-        screenshot_path = await self.take_screenshot(name="vision_analysis_screenshot.png")
-
-        # Prepare request for the vision agent
-        vision_request = {
-            "screenshot_path": screenshot_path,
-            "mode": "predict_only"
-        }
-
-        # Create a request context for the vision agent call
-        vision_request_context = RequestContext(
-            task_id=f"vision-analysis-{uuid.uuid4()}",
-            initial_prompt=f"Analyze interactive elements in {screenshot_path}",
-            progress_queue=asyncio.Queue(),  # Simple queue for this sub-task
-            log_level=LogLevel.SUMMARY,
-            max_depth=2,
-            max_interactions=5,
-            caller_agent_name=self.name,
-            callee_agent_name=self.vision_agent.name
+        # Take a screenshot for analysis using BrowserTool
+        screenshot_path = await self.browser_tool.screenshot(
+            filename="vision_analysis_screenshot.png",
+            reasoning="Take screenshot for vision analysis",
+            highlight_bbox=False
         )
 
         try:
-            # Call the vision agent
-            response_message = await self.vision_agent.handle_invocation(
-                request=vision_request,
-                request_context=vision_request_context
+            # Create request context for the InteractiveElementsAgent call
+            progress_queue = asyncio.Queue()
+            request_context = RequestContext(
+                progress_queue=progress_queue,
+                caller_agent_name="BrowserAgent"
             )
 
-            if response_message.role == "error":
-                raise Exception(f"Vision analysis failed: {response_message.content}")
+            # Prepare the input for the agent - exactly as in test_framework_bounding_boxes.py
+            agent_input = {
+                "screenshot_path": str(screenshot_path)
+            }
 
-            # Parse the response
-            try:
-                response_data = json.loads(response_message.content)
-                return response_data.get("elements", [])
-        except json.JSONDecodeError:
-                raise Exception("Failed to parse vision agent response")
+            # Call the InteractiveElementsAgent using its _run method - exactly as in test file
+            result = await self.vision_agent._run(
+                prompt=agent_input,
+                request_context=request_context,
+                run_mode="standard"
+            )
+
+            # Check if the response is an error - exactly as in test file
+            if result.role == "error":
+                raise Exception(f"InteractiveElementsAgent returned error: {result.content}")
+
+            # The agent returns the content directly as a list of bounding boxes - exactly as in test file
+            boxes_data = result.content
+            if not isinstance(boxes_data, list):
+                raise Exception(f"Expected list of bounding boxes, got: {type(boxes_data)}")
+                
+            # Get image dimensions for coordinate conversion
+            screenshot_img = PILImage.open(screenshot_path)
+            img_width, img_height = screenshot_img.size
+            screenshot_img.close()
+            
+            # Convert InteractiveElementsAgent format (BoundingBox) to BrowserTool format
+            converted_elements = []
+            for bbox_data in boxes_data:
+                # BoundingBox format: {"box_2d": [y_min, x_min, y_max, x_max], "label": "..."}
+                # Coordinates are in normalized format (0-1000 scale)
+                box_2d = bbox_data.get("box_2d", [0, 0, 0, 0])
+                label = bbox_data.get("label", "unknown")
+                    
+                if len(box_2d) != 4:
+                    continue  # Skip invalid bounding boxes
+                    
+                # Convert normalized coordinates (0-1000) to absolute coordinates
+                # BoundingBox format: [y_min, x_min, y_max, x_max] in 0-1000 scale
+                norm_y_min, norm_x_min, norm_y_max, norm_x_max = box_2d
+                    
+                # Scale to image dimensions
+                abs_y_min = int(norm_y_min / 1000 * img_height)
+                abs_x_min = int(norm_x_min / 1000 * img_width)
+                abs_y_max = int(norm_y_max / 1000 * img_height)
+                abs_x_max = int(norm_x_max / 1000 * img_width)
+                    
+                    # Calculate center point
+                center_x = (abs_x_min + abs_x_max) / 2
+                center_y = (abs_y_min + abs_y_max) / 2
+                
+                # BrowserTool format: {"bbox": [x1, y1, x2, y2], "center": [x, y], "label": "...", etc.}
+                converted_elem = {
+                    'label': label,  # Use label as primary identifier
+                    'href': '',  # Vision agent doesn't provide href
+                'bbox': [abs_x_min, abs_y_min, abs_x_max, abs_y_max],  # [x1, y1, x2, y2]
+                    'center': [center_x, center_y],
+                    'selector': None,  # Synthetic selector for predicted elements
+                'confidence': 1.0,  # InteractiveElementsAgent doesn't provide confidence
+                    'source': 'vision_prediction'  # Mark as vision-predicted
+                }
+                converted_elements.append(converted_elem)
+            
+            return converted_elements
 
         except Exception as e:
-            logger.error(f"Error during vision-based element prediction: {e}")
+            logger.error(f"Error during InteractiveElementsAgent prediction: {e}")
             raise
 
-    async def highlight_and_predict_elements(
-        self, visible_only: bool = True
+    async def highlight_interactive_elements(
+        self, 
+        visible_only: bool = True, 
+        use_prediction: bool = False,
+        use_rule_based: bool = True,
+        intersection_threshold: float = 0.3,
+        screenshot_filename: Optional[str] = None,
+        filter_keys: Optional[List[str]] = None
     ) -> Dict[str, Any]:
         """
-        Combines DOM-based highlighting with AI-based prediction for comprehensive analysis.
+        Highlights interactive elements on the current page with numbered labels and returns metadata.
 
-        This method first uses DOM analysis to find interactive elements, highlights them
-        on the page, then uses the vision agent to complement the analysis and find
-        any additional elements that might have been missed.
+        This method detects interactive elements using rule-based DOM analysis and/or 
+        AI-based prediction, intelligently combines the results, numbers the elements, 
+        and creates a screenshot with highlighted and numbered elements.
+
+        Intelligent Combination Strategy (when both methods are used):
+        - Rule-based elements are more accurate (based on HTML DOM structure)
+        - Prediction-based elements can detect JS-rendered content not visible in DOM
+        - For each prediction-based element, check intersection with rule-based elements
+        - If intersection_ratio (intersection_area / average_area) > threshold:
+          → Use the rule-based element (more accurate)
+        - If no significant intersection:
+          → Keep the prediction-based element (might detect unique content)
+        - Include all rule-based elements that don't intersect with predictions
 
         Args:
             visible_only: If True, only analyzes elements currently visible on screen.
+            use_prediction: If True, includes AI-based prediction results.
+            use_rule_based: If True, includes rule-based DOM analysis results.
+            intersection_threshold: Intersection ratio threshold for intelligent combination (0.0-1.0).
+                                  Higher values = more strict intersection requirements.
+            screenshot_filename: Optional custom filename (without extension) for the screenshot.
+                                If None, uses timestamp-based naming.
+            filter_keys: Optional list of keys to include in element dictionaries. 
+                        Defaults to ["label", "number", "center"] for AI agents.
 
         Returns:
-            A dictionary containing both DOM-found and AI-predicted elements, plus
-            the path to the highlighted screenshot.
+            A dictionary containing:
+            - screenshot_path: Path to the annotated screenshot with numbered elements
+            - elements: List of numbered element dictionaries with filtered metadata
+            - total_elements: Total number of detected elements
+            - detection_methods: Dictionary showing which detection methods were used
 
         Raises:
-            Exception: If no vision agent is configured.
+            ValueError: If both use_prediction and use_rule_based are False.
+            Exception: If use_prediction=True but no vision agent is configured.
         """
-        if not self.vision_agent:
-            raise Exception(
-                "No vision analysis agent configured. Please provide 'vision_model_config' "
-                "when creating the BrowserAgent to enable hybrid element analysis."
+        if not self.browser_tool:
+            raise RuntimeError("Browser not initialized")
+
+        if not use_prediction and not use_rule_based:
+            raise ValueError("At least one detection method (use_prediction or use_rule_based) must be enabled")
+
+        elements = []
+        
+        # Step 1: Use rule-based detection if requested
+        if use_rule_based:
+            rule_based_elements = await self.browser_tool.detect_interactive_elements_rule_based(
+                visible_only=visible_only
             )
-
-        # First, get DOM-based elements and highlight them
-        dom_elements = await self.highlight_interactive_elements(visible_only=visible_only)
-
-        # Take a screenshot with the highlighted elements
-        highlighted_screenshot_path = await self.take_screenshot(
-            name="highlighted_elements_screenshot.png"
+            # Mark elements as rule-based for overlap resolution
+            for elem in rule_based_elements:
+                elem['source'] = 'rule_based'
+            elements.extend(rule_based_elements)
+        
+        # Step 2: Use AI prediction if requested
+        if use_prediction:
+            if not self.vision_agent:
+                raise Exception("Vision agent not configured. Cannot use prediction-based element detection.")
+            
+            predicted_elements = await self.predict_interactive_elements()
+            # Mark elements as predicted for overlap resolution
+            for elem in predicted_elements:
+                elem['source'] = 'vision_prediction'
+            elements.extend(predicted_elements)
+        
+        # Step 3: Intelligently combine rule-based and prediction-based elements
+        if use_rule_based and use_prediction and intersection_threshold > 0:
+            # Use intelligent combination when both methods are used
+            rule_based_elements = [elem for elem in elements if elem.get('source') == 'rule_based']
+            prediction_elements = [elem for elem in elements if elem.get('source') == 'vision_prediction']
+            elements = self._intelligently_combine_elements(rule_based_elements, prediction_elements, intersection_threshold)
+        elif intersection_threshold > 0 and len(elements) > 1:
+            # Use traditional overlap removal for single-method detection
+            elements = self._remove_overlapping_elements(elements, intersection_threshold)
+        
+        # Step 4: Add numbering to elements (1-indexed)
+        numbered_elements = []
+        for i, element in enumerate(elements):
+            numbered_element = element.copy()
+            numbered_element['number'] = i + 1
+            numbered_elements.append(numbered_element)
+        
+        # Step 5: Use BrowserTool's highlight_bbox method to render the elements
+        screenshot_path = await self.browser_tool.highlight_bbox(
+            elements=numbered_elements,
+            reasoning="Highlight interactive elements on page",
+            filename=screenshot_filename
         )
-
-        # Convert DOM elements to the format expected by vision agent
-        existing_elements = []
-        for element in dom_elements:
-            if "bbox" in element and "center" in element:
-                bbox = element["bbox"]
-                existing_elements.append({
-                    "box": [bbox["x"], bbox["y"], bbox["x"] + bbox["width"], bbox["y"] + bbox["height"]],
-                    "center": element["center"],
-                    "description": element.get("description", "")
-                })
-
-        # Prepare request for the vision agent
-        vision_request = {
-            "screenshot_path": highlighted_screenshot_path,
-            "mode": "highlight_and_predict",
-            "existing_elements": existing_elements
+        
+        # Step 6: Filter element keys if specified
+        if filter_keys is None:
+            filter_keys = ["label", "number", "center"]  # Default for AI agents
+        
+        filtered_elements = []
+        for element in numbered_elements:
+            filtered_element = {key: element[key] for key in filter_keys if key in element}
+            filtered_elements.append(filtered_element)
+        
+        return {
+            'screenshot_path': screenshot_path,
+            'elements': filtered_elements,  # Return filtered elements
+            'total_elements': len(filtered_elements),
+            'detection_methods': {
+                'rule_based': use_rule_based,
+                'ai_prediction': use_prediction
+            }
         }
 
-        # Create a request context for the vision agent call
-        vision_request_context = RequestContext(
-            task_id=f"hybrid-analysis-{uuid.uuid4()}",
-            initial_prompt=f"Hybrid analysis of {highlighted_screenshot_path}",
-            progress_queue=asyncio.Queue(),
-            log_level=LogLevel.SUMMARY,
-            max_depth=2,
-            max_interactions=5,
-            caller_agent_name=self.name,
-            callee_agent_name=self.vision_agent.name
-        )
-
-        try:
-            # Call the vision agent
-            response_message = await self.vision_agent.handle_invocation(
-                request=vision_request,
-                request_context=vision_request_context
-            )
-
-            if response_message.role == "error":
-                raise Exception(f"Hybrid analysis failed: {response_message.content}")
-
-            # Parse the response
-            try:
-                response_data = json.loads(response_message.content)
-        return {
-                    "dom_elements": dom_elements,
-                    "ai_elements": response_data.get("elements", []),
-                    "highlighted_screenshot_path": highlighted_screenshot_path,
-                    "analysis_method": "DOM+AI_hybrid"
-                }
-            except json.JSONDecodeError:
-                raise Exception("Failed to parse vision agent response")
-
-        except Exception as e:
-            logger.error(f"Error during hybrid element analysis: {e}")
-            raise
-
-    # Implementation of abstract methods from BaseAgent
-    def _parse_model_response(self, response: str) -> Dict[str, Any]:
+    def _remove_overlapping_elements(self, elements: List[Dict[str, Any]], threshold: float) -> List[Dict[str, Any]]:
         """
-        Parse model response using the robust JSON loader.
+        Remove elements that significantly overlap with others.
+        When elements overlap, prioritize predicted elements over rule-based elements.
+
+        Args:
+            elements: List of element dictionaries with 'bbox' keys
+            threshold: Intersection threshold (0.0 to 1.0)
+
+        Returns:
+            Filtered list of elements with overlaps removed
+        """
+        if not elements:
+            return elements
+        
+        # Sort by source priority (predicted first) then by area (largest first)
+        def sort_key(elem):
+            source_priority = 0 if elem.get('source') == 'vision_prediction' else 1
+            bbox = elem.get('bbox', [0, 0, 0, 0])
+            area = (bbox[2] - bbox[0]) * (bbox[3] - bbox[1]) if len(bbox) >= 4 else 0
+            return (source_priority, -area)  # Negative area for descending order
+        
+        elements_sorted = sorted(elements, key=sort_key)
+        
+        filtered_elements = []
+        
+        for current_elem in elements_sorted:
+            current_bbox = current_elem.get('bbox', [0, 0, 0, 0])
+            if len(current_bbox) != 4:
+                continue
+                
+            current_area = (current_bbox[2] - current_bbox[0]) * (current_bbox[3] - current_bbox[1])
+            
+            # Check if this element significantly overlaps with any already selected element
+            should_keep = True
+            
+            for existing_elem in filtered_elements:
+                existing_bbox = existing_elem.get('bbox', [0, 0, 0, 0])
+                if len(existing_bbox) != 4:
+                    continue
+                    
+                intersection_area = self._calculate_intersection_area(current_bbox, existing_bbox)
+                
+                # Calculate intersection ratio relative to the smaller element
+                existing_area = (existing_bbox[2] - existing_bbox[0]) * (existing_bbox[3] - existing_bbox[1])
+                min_area = min(current_area, existing_area)
+                
+                if min_area > 0:
+                    intersection_ratio = intersection_area / min_area
+                    if intersection_ratio > threshold:
+                        should_keep = False
+                        break
+            
+            if should_keep:
+                filtered_elements.append(current_elem)
+        
+        return filtered_elements
+
+    def _intelligently_combine_elements(
+        self, 
+        rule_based_elements: List[Dict[str, Any]], 
+        prediction_elements: List[Dict[str, Any]], 
+        intersection_threshold: float
+    ) -> List[Dict[str, Any]]:
+        """
+        Intelligently combine rule-based and prediction-based elements using intersection analysis.
+        
+        Strategy:
+        - Rule-based elements are more accurate (based on HTML DOM)
+        - Prediction-based elements can detect JS-rendered content not visible in DOM
+        - If a prediction-based element significantly intersects with a rule-based element,
+          prefer the rule-based element (it's more accurate)
+        - If a prediction-based element doesn't intersect significantly, keep it 
+          (it might be detecting something rule-based missed)
         
         Args:
-            response: The response string from the model
-            
+            rule_based_elements: List of elements detected via DOM analysis
+            prediction_elements: List of elements detected via AI vision
+            intersection_threshold: Intersection ratio threshold (intersection_area / average_area)
+        
         Returns:
-            Parsed dictionary
+            Combined list of elements with intelligent deduplication
+        """
+        if not rule_based_elements:
+            return prediction_elements
+        if not prediction_elements:
+            return rule_based_elements
+        
+        final_elements = []
+        used_rule_based_indices = set()
+        
+        # Process each prediction-based element
+        for pred_elem in prediction_elements:
+            pred_bbox = pred_elem.get('bbox', [0, 0, 0, 0])
+            if len(pred_bbox) != 4:
+                continue
+                
+            pred_area = (pred_bbox[2] - pred_bbox[0]) * (pred_bbox[3] - pred_bbox[1])
+            best_match_index = -1
+            best_intersection_ratio = 0.0
             
-        Raises:
-            ValueError: if no valid JSON object can be decoded.
+            # Find the best matching rule-based element
+            for i, rule_elem in enumerate(rule_based_elements):
+                rule_bbox = rule_elem.get('bbox', [0, 0, 0, 0])
+                if len(rule_bbox) != 4:
+                    continue
+                    
+                rule_area = (rule_bbox[2] - rule_bbox[0]) * (rule_bbox[3] - rule_bbox[1])
+                intersection_area = self._calculate_intersection_area(pred_bbox, rule_bbox)
+                
+                if intersection_area > 0:
+                    # Calculate intersection ratio w.r.t. average area
+                    average_area = (pred_area + rule_area) / 2
+                    intersection_ratio = intersection_area / average_area if average_area > 0 else 0
+                    
+                    if intersection_ratio > best_intersection_ratio:
+                        best_intersection_ratio = intersection_ratio
+                        best_match_index = i
+            
+            # Decide whether to use rule-based or prediction-based element
+            if best_intersection_ratio > intersection_threshold and best_match_index >= 0:
+                # Significant intersection found - prefer rule-based element
+                if best_match_index not in used_rule_based_indices:
+                    rule_elem = rule_based_elements[best_match_index].copy()
+                    rule_elem['matched_with_prediction'] = True
+                    rule_elem['intersection_ratio'] = best_intersection_ratio
+                    final_elements.append(rule_elem)
+                    used_rule_based_indices.add(best_match_index)
+                # Discard the prediction-based element in favor of rule-based
+            else:
+                # No significant intersection - keep prediction-based element
+                # (it might be detecting JS-rendered content not in DOM)
+                pred_elem_copy = pred_elem.copy()
+                pred_elem_copy['no_rule_based_match'] = True
+                final_elements.append(pred_elem_copy)
+        
+        # Add any rule-based elements that weren't matched with predictions
+        for i, rule_elem in enumerate(rule_based_elements):
+            if i not in used_rule_based_indices:
+                rule_elem_copy = rule_elem.copy()
+                rule_elem_copy['no_prediction_match'] = True
+                final_elements.append(rule_elem_copy)
+        
+        return final_elements
+
+    def _calculate_intersection_area(self, bbox1: List[int], bbox2: List[int]) -> float:
+        """
+        Calculate the intersection area between two bounding boxes.
+
+        Args:
+            bbox1: First bounding box [x1, y1, x2, y2]
+            bbox2: Second bounding box [x1, y1, x2, y2]
+
+        Returns:
+            Intersection area in pixels
+        """
+        # Calculate intersection coordinates
+        x1 = max(bbox1[0], bbox2[0])
+        y1 = max(bbox1[1], bbox2[1])
+        x2 = min(bbox1[2], bbox2[2])
+        y2 = min(bbox1[3], bbox2[3])
+        
+        # Check if there's an intersection
+        if x1 < x2 and y1 < y2:
+            return (x2 - x1) * (y2 - y1)
+        else:
+            return 0.0
+
+    # All other browser methods have been moved to BrowserTool and are available via the tools dict
+    
+    # Keep only the methods that are unique to BrowserAgent and need vision agent access
+    async def _post_step_hook(
+        self, 
+        step_number: int,
+        action_type: str,
+        request_context: RequestContext,
+        **kwargs: Any
+    ) -> None:
+        """
+        Post-step hook for BrowserAgent that handles highlighting interactive elements after each step.
+        
+        This method is called after each auto_run step completes and uses highlight_interactive_elements
+        to capture and annotate the current page state with numbered interactive elements.
+        It also manages memory by removing the previous auto-generated screenshot and elements messages
+        to prevent context explosion.
+        """
+        if not self.auto_screenshot:
+            return
+            
+        try:
+            # Remove previous auto-generated messages to prevent memory explosion
+            await self._remove_previous_auto_messages(request_context)
+            
+            # Use highlight_interactive_elements instead of simple screenshot
+            result = await self.highlight_interactive_elements(
+                visible_only=True,
+                use_prediction=True,
+                use_rule_based=True,
+                screenshot_filename=f"auto_step_{step_number}_{action_type}",
+                filter_keys=["label", "number", "center"]  # Only include AI-relevant keys
+            )
+            
+            screenshot_path = result.get('screenshot_path')
+            elements = result.get('elements', [])
+            
+            if screenshot_path:
+                # Generate unique message ID for screenshot
+                screenshot_message_id = str(uuid.uuid4())
+                
+                # Add screenshot to memory as a user message
+                self.memory.update_memory(
+                    role="user",
+                    content=f"Auto-screenshot with interactive elements after step {step_number} ({action_type}):",
+                    name="auto_screenshot_system",  # Special name to identify auto-generated screenshots
+                    images=[screenshot_path],
+                    message_id=screenshot_message_id,
+                )
+                
+                # Track this message ID for future cleanup
+                self._last_auto_screenshot_message_id = screenshot_message_id
+                
+                await self._log_progress(
+                    request_context,
+                    LogLevel.DEBUG,
+                    f"Auto-screenshot with interactive elements taken and added to memory after step {step_number}",
+                    data={"screenshot_path": screenshot_path, "action_type": action_type, "message_id": screenshot_message_id, "elements_count": len(elements)}
+                )
+            
+            # Add interactive elements list to memory as a separate message
+            if elements:
+                # Generate unique message ID for elements
+                elements_message_id = str(uuid.uuid4())
+                
+                # Format elements for AI agent
+                elements_content = (
+                    f"Interactive elements detected after step {step_number} ({action_type}):\n\n"
+                    f"These are the interactive elements you can choose to interact with. "
+                    f"Each element has a number and center coordinates (x,y) for precise interaction:\n\n"
+                )
+                
+                for element in elements:
+                    label = element.get('label', 'Unknown')
+                    number = element.get('number', '?')
+                    center = element.get('center', [0, 0])
+                    elements_content += f"Element {number}: {label} (center: {center[0]}, {center[1]})\n"
+                
+                # Add elements to memory as a user message
+                    self.memory.update_memory(
+                        role="user",
+                    content=elements_content,
+                    name="auto_elements_system",  # Special name to identify auto-generated elements
+                    message_id=elements_message_id,
+                        )
+                        
+                        # Track this message ID for future cleanup
+                    self._last_auto_elements_message_id = elements_message_id
+                        
+                    await self._log_progress(
+                        request_context,
+                        LogLevel.DEBUG,
+                    f"Auto-detected interactive elements added to memory after step {step_number}",
+                    data={"elements_count": len(elements), "action_type": action_type, "message_id": elements_message_id}
+                    )
+
+        except Exception as e:
+            # Don't fail the entire step if highlight_interactive_elements fails
+            await self._log_progress(
+                request_context,
+                LogLevel.MINIMAL,
+                f"Auto-capture with interactive elements failed after step {step_number}: {e}",
+                data={"action_type": action_type, "error": str(e)}
+            )
+
+    async def _remove_previous_auto_messages(self, request_context: RequestContext) -> None:
+        """
+        Remove the previous auto-generated screenshot and elements messages from memory
+        to prevent context explosion.
         """
         try:
-            return self._robust_json_loads(response)
-        except (json.JSONDecodeError, ValueError) as e:
-            raise ValueError(f"Could not extract valid JSON from model response: {e}")
+            messages_removed = 0
+            
+            # Remove previous auto-screenshot message
+            if self._last_auto_screenshot_message_id:
+                if self.memory.remove_by_id(self._last_auto_screenshot_message_id):
+                    messages_removed += 1
+                    await self._log_progress(
+                        request_context,
+                        LogLevel.DEBUG,
+                        f"Removed previous auto-screenshot message from memory",
+                        data={"removed_message_id": self._last_auto_screenshot_message_id}
+                    )
+                self._last_auto_screenshot_message_id = None
+            
+            # Remove previous auto-elements message
+            if self._last_auto_elements_message_id:
+                if self.memory.remove_by_id(self._last_auto_elements_message_id):
+                    messages_removed += 1
+                    await self._log_progress(
+                        request_context,
+                        LogLevel.DEBUG,
+                        f"Removed previous auto-elements message from memory",
+                        data={"removed_message_id": self._last_auto_elements_message_id}
+                    )
+                self._last_auto_elements_message_id = None
+                
+            if messages_removed > 0:
+                await self._log_progress(
+                    request_context,
+                    LogLevel.DEBUG,
+                    f"Memory cleanup: removed {messages_removed} previous auto-generated messages"
+                )
+                
+        except Exception as e:
+            await self._log_progress(
+                request_context,
+                LogLevel.MINIMAL,
+                f"Failed to remove previous auto-messages from memory: {e}",
+                data={"error": str(e)}
+            )
 
     async def _run(
         self, prompt: Any, request_context: RequestContext, run_mode: str, **kwargs: Any
@@ -1737,61 +1551,79 @@ class BrowserAgent(BaseAgent):
         This method processes the input prompt, potentially performs browser actions,
         and returns a response message.
         """
-        # Extract prompt and context
-        if isinstance(prompt, dict):
-            actual_prompt = prompt.get("prompt", "")
-            context_messages = prompt.get("passed_referenced_context", [])
-        else:
-            actual_prompt = str(prompt)
-            context_messages = []
+        # Extract prompt and context using base class method
+        prompt_content, passed_context = self._extract_prompt_and_context(prompt)
 
         # Log the execution
         await self._log_progress(
             request_context,
             LogLevel.DETAILED,
             f"BrowserAgent executing _run with mode='{run_mode}'",
-            data={"prompt_preview": str(actual_prompt)[:100]},
+            data={"prompt_preview": str(prompt_content)[:100]},
         )
 
         # Update memory with context messages
-        for msg in context_messages:
+        for msg in passed_context:
             self.memory.update_memory(message=msg)
 
-        # Add the current prompt to memory
-        if actual_prompt:
+        # 1. Add the user prompt to memory
+        if prompt_content:
             self.memory.update_memory(
                 role="user",
-                content=actual_prompt,
+                content=prompt_content,
                 name=request_context.caller_agent_name or "user",
             )
 
-        # Prepare system prompt based on run mode
+        # 2. Construct system prompt and add temporarily to messages (not to memory)
         base_description = getattr(self, f"description_{run_mode}", self.description)
-
         system_prompt = self._construct_full_system_prompt(
             base_description=base_description,
-            json_mode_for_output=(run_mode == "auto_step"),
+            json_mode_for_output=(run_mode == "auto_step")
         )
 
-        # Get messages for the model
-        messages = []
-        for msg in self.memory.retrieve_all():
-            messages.append({"role": msg.role, "content": msg.content})
+        # Get messages from memory and add system prompt temporarily (following base Agent pattern)
+        llm_messages_for_model = self.memory.to_llm_format()
+        system_message_found_and_updated = False
+        for i, msg_dict in enumerate(llm_messages_for_model):
+            if msg_dict["role"] == "system":
+                llm_messages_for_model[i] = Message(
+                    role="system", content=system_prompt
+                ).to_llm_dict()
+                system_message_found_and_updated = True
+                break
+        if not system_message_found_and_updated:
+            llm_messages_for_model.insert(
+                0,
+                Message(role="system", content=system_prompt).to_llm_dict(),
+            )
 
-        # Update or add system message
-        if messages and messages[0]["role"] == "system":
-            messages[0]["content"] = system_prompt
+        # Extract API kwargs and handle structured output properly
+        max_tokens_override = kwargs.pop("max_tokens", self.max_tokens)
+        default_temperature = self._model_config.temperature if self._model_config else 0.2
+        temperature_override = kwargs.pop("temperature", default_temperature)
+
+        api_model_kwargs = self._get_api_kwargs()
+        api_model_kwargs.update(kwargs)
+
+        # 2. Configure output schema for APIAdapter request (following InteractiveElementsAgent pattern)
+        if self._compiled_output_schema:
+            # Add both response_schema and json_mode to api_model_kwargs
+            api_model_kwargs['response_schema'] = self._compiled_output_schema
+            api_model_kwargs['json_mode'] = True
         else:
-            messages.insert(0, {"role": "system", "content": system_prompt})
+            api_model_kwargs['json_mode'] = False
+
+        # Pass tools when available
+        current_tools_schema = self.tools_schema if self.tools_schema else None
 
         # Call the model
         try:
             response = self.model.run(
-                messages=messages,
-                max_tokens=kwargs.get("max_tokens", self.max_tokens),
-                temperature=kwargs.get("temperature", 0.7),
-                json_mode=(run_mode == "auto_step"),
-                tools=self.tools_schema if self.tools_schema else None,
+                messages=llm_messages_for_model,
+                max_tokens=max_tokens_override,
+                temperature=temperature_override,
+                tools=current_tools_schema,
+                **api_model_kwargs,
             )
 
             # Generate message ID for the response
@@ -1800,31 +1632,27 @@ class BrowserAgent(BaseAgent):
             # Validate and normalize model response
             validated_response = self._validate_and_normalize_model_response(response)
             
-            # Parse content if it's a JSON string that should be a dictionary  
-            content = validated_response.get("content")
-            if isinstance(content, str) and content.strip().startswith(('{', '[')):
-                try:
-                    parsed_content = self._robust_json_loads(content)
-                    validated_response = validated_response.copy()
-                    validated_response["content"] = parsed_content
-                except (json.JSONDecodeError, ValueError):
-                    # Keep original string content if parsing fails
-                    pass
+            # Content parsing is now handled centrally through _parse_model_response in auto_run
 
-            # Create assistant message with validated content
-            assistant_message = Message(
-                role=validated_response["role"],
-                content=validated_response["content"],  # Can be dict, list, or string
-                name=self.name,
+            # Use the memory update method that handles transformations (consistent with Agent class)
+            self.memory.update_from_response(
+                validated_response,
                 message_id=new_message_id,
+                default_role="assistant",
+                default_name=self.name
             )
             
-            # Set tool_calls if present
-            if validated_response.get("tool_calls"):
-                assistant_message.tool_calls = validated_response["tool_calls"]
-
-            # Update memory
-            self.memory.update_memory(message=assistant_message)
+            # Retrieve the stored message to return
+            assistant_message = self.memory.retrieve_by_id(new_message_id)
+            if not assistant_message:
+                # Fallback if retrieval fails
+                assistant_message = Message.from_response_dict(
+                    validated_response,
+                    default_id=new_message_id,
+                    default_role="assistant",
+                    default_name=self.name,
+                    processor=self._input_message_processor()
+                )
 
             await self._log_progress(
                 request_context,
@@ -1837,6 +1665,7 @@ class BrowserAgent(BaseAgent):
             )
 
             return assistant_message
+
 
         except Exception as e:
             error_msg = f"Error in BrowserAgent._run: {e}"
@@ -1851,22 +1680,186 @@ class BrowserAgent(BaseAgent):
                 message_id=str(uuid.uuid4()),
             )
 
+    def _input_message_processor(self) -> Callable[[Dict[str, Any]], Dict[str, Any]]:
+        """
+        Creates a processor function that converts LLM JSON responses to Message-compatible format.
+        Extracts agent_calls information from JSON content when present.
+        """
+        def transform_from_llm(data: Dict[str, Any]) -> Dict[str, Any]:
+            # Start with a copy of the original data
+            result = data.copy()
+            
+            # Check if content contains agent call info in JSON
+            content = data.get("content")
+            if data.get("role") == "assistant" and content and isinstance(content, str):
+                try:
+                    parsed_content = json.loads(content)
+                    if isinstance(parsed_content, dict) and parsed_content.get("next_action") == "invoke_agent":
+                        # Extract agent_calls information as raw dict list - Message.__post_init__ will convert
+                        action_input = parsed_content.get("action_input", {})
+                        if isinstance(action_input, dict) and "agent_name" in action_input:
+                            result["agent_calls"] = [action_input]  # Create list with single agent call
+                            
+                            # Keep only thought in content if present
+                            thought = parsed_content.get("thought")
+                            if thought:
+                                result["content"] = thought
+                            else:
+                                result["content"] = None
+                except (json.JSONDecodeError, TypeError):
+                    # Content is not JSON or parsing failed, keep as is
+                    pass
+            
+            return result
+        
+        return transform_from_llm
+
+    def _output_message_processor(self) -> Callable[[Dict[str, Any]], Dict[str, Any]]:
+        """
+        Creates a processor function that converts Message dicts to LLM-compatible format.
+        Synthesizes JSON content when agent_calls is present.
+        """
+        def transform_to_llm(msg_dict: Dict[str, Any]) -> Dict[str, Any]:
+            # Start with a copy
+            result = msg_dict.copy()
+            
+            # If agent_calls is present and role is assistant, synthesize JSON content
+            if msg_dict.get("role") == "assistant" and msg_dict.get("agent_calls"):
+                agent_calls = msg_dict["agent_calls"]
+                thought = msg_dict.get("content", "I need to invoke another agent.")
+                
+                # For now, we only support single agent invocation, so take the first one
+                if agent_calls and len(agent_calls) > 0:
+                    first_agent_call_msg = agent_calls[0]
+                    
+                    # Handle both AgentCallMsg objects and raw dict format
+                    if hasattr(first_agent_call_msg, 'to_dict'):
+                        # It's an AgentCallMsg object
+                        agent_call_data = first_agent_call_msg.to_dict()
+                    else:
+                        # It's already a dict
+                        agent_call_data = first_agent_call_msg
+                    
+                    synthesized_content = {
+                        "thought": thought,
+                        "next_action": "invoke_agent",
+                        "action_input": agent_call_data
+                    }
+                    result["content"] = json.dumps(synthesized_content)
+                
+                # Remove agent_calls from result as it's not part of OpenAI API
+                result.pop("agent_calls", None)
+            else:
+                # Remove agent_calls if present (not part of OpenAI API)
+                result.pop("agent_calls", None)
+            
+            return result
+        
+        return transform_to_llm
+
+    @staticmethod
+    def _default_response_processor_static(message_obj: Dict[str, Any]) -> Dict[str, Any]:
+        """
+        Static version of the default response processor for BrowserAgent.
+        This handles agent action format responses (next_action, action_input).
+        """
+        import json
+        from typing import Optional, List, Dict, Any
+        
+        # Extract basic fields
+        tool_calls = message_obj.get("tool_calls", [])
+        content = message_obj.get("content")
+        message_role = message_obj.get("role", "assistant")
+        agent_calls: Optional[List[Dict[str, Any]]] = None
+
+        # Attempt to parse content as JSON if it's a string
+        parsed_content: Optional[Dict[str, Any]] = None
+        if isinstance(content, str) and content.strip():
+            try:
+                parsed_content = json.loads(content)
+            except (json.JSONDecodeError, ValueError):
+                parsed_content = None  # Leave as-is if JSON parsing fails
+
+        # Process structured content to extract tool_calls/agent_call
+        if isinstance(parsed_content, dict):
+            next_action_val = parsed_content.get("next_action")
+            action_input_val = parsed_content.get("action_input", {})
+
+            # Handle call_tool action inside content
+            if (
+                next_action_val == "call_tool"
+                and isinstance(action_input_val, dict)
+                and "tool_calls" in action_input_val
+            ):
+                embedded_tool_calls = action_input_val.get("tool_calls")
+                # If tool_calls field from API is empty, promote embedded ones
+                if not tool_calls and embedded_tool_calls:
+                    tool_calls = embedded_tool_calls
+                    # Keep only the "thought" in content if present, else set to None
+                    thought_only = parsed_content.get("thought")
+                    content = thought_only if thought_only else None
+                elif tool_calls and embedded_tool_calls:
+                    # Already have tool_calls separately → remove duplication in content
+                    thought_only = parsed_content.get("thought")
+                    content = thought_only if thought_only else None
+
+            # Handle invoke_agent action inside content
+            elif (
+                next_action_val == "invoke_agent"
+                and isinstance(action_input_val, dict)
+                and "agent_name" in action_input_val
+            ):
+                if not agent_calls:
+                    agent_calls = [{
+                        "agent_name": action_input_val.get("agent_name"),
+                        "request": action_input_val.get("request"),
+                    }]
+                    # Similar clean-up of content keeping only thought
+                    thought_only = parsed_content.get("thought")
+                    content = thought_only if thought_only else None
+
+        # Ensure OpenAI compatibility: if tool_calls present for assistant, content must be null
+        if message_role == "assistant" and tool_calls:
+            content = None
+
+        # Build response payload
+        response_payload: Dict[str, Any] = {
+            "role": message_role,
+            "content": content,  # Can be None for assistant with tool_calls
+            "tool_calls": tool_calls,
+        }
+        if agent_calls:
+            response_payload["agent_calls"] = agent_calls
+
+        return response_payload
+
+
+
     def _get_api_kwargs(self) -> Dict[str, Any]:
-        """Extracts extra kwargs for API model calls from ModelConfig."""
-        # Identical to Agent._get_api_kwargs
+        """
+        Extracts extra keyword arguments intended for API model calls from the ModelConfig instance.
+        Excludes standard config keys handled directly by BaseAPIModel init or BaseAgent init.
+
+        Returns:
+            A dictionary of keyword arguments.
+        """
         if isinstance(self.model, BaseAPIModel) and self._model_config:
+            # Get all fields from the config instance
             config_dict = self._model_config.dict(exclude_unset=True)
+
+            # Define keys handled by Agent/BaseAgent/BaseAPIModel initializers or run methods
             exclude_keys = {
                 "type",
                 "name",
-                "provider",
-                "base_url",
-                "api_key",
-                "max_tokens",
-                "temperature",
-                "model_class",
-                "torch_dtype",
-                "device_map",
+                "provider",  # Handled by ModelConfig validation
+                "base_url",  # Passed to BaseAPIModel init
+                "api_key",  # Passed to BaseAPIModel init
+                "max_tokens",  # Handled by Agent init and run override
+                "temperature",  # Handled by Agent init and run override
+                "model_class",  # Local model specific
+                "torch_dtype",  # Local model specific
+                "device_map",  # Local model specific
+                # Agent specific config, not model config
                 "description",
                 "tools",
                 "tools_schema",
@@ -1874,8 +1867,9 @@ class BrowserAgent(BaseAgent):
                 "agent_name",
                 "allowed_peers",
                 "input_schema",
-                "output_schema",  # Added schema keys
+                "output_schema",
             }
+            # Filter out the excluded keys
             kwargs = {k: v for k, v in config_dict.items() if k not in exclude_keys}
             return kwargs
         return {}

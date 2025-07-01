@@ -100,9 +100,11 @@ class MessageError(AgentFrameworkError):
     """Base class for message handling and validation errors."""
     
     def __init__(self, message: str, **kwargs):
+        # Extract error_code to avoid duplicate parameter
+        error_code = kwargs.pop("error_code", "MESSAGE_ERROR")
         super().__init__(
             message,
-            error_code=kwargs.get("error_code", "MESSAGE_ERROR"),
+            error_code=error_code,
             **kwargs
         )
 
@@ -308,9 +310,11 @@ class AgentError(AgentFrameworkError):
     """Base class for agent implementation and lifecycle errors."""
     
     def __init__(self, message: str, **kwargs):
+        # Extract error_code to avoid duplicate parameter
+        error_code = kwargs.pop("error_code", "AGENT_ERROR")
         super().__init__(
             message,
-            error_code=kwargs.get("error_code", "AGENT_ERROR"),
+            error_code=error_code,
             **kwargs
         )
 
@@ -475,9 +479,11 @@ class ModelError(AgentFrameworkError):
     """Base class for model and API response errors."""
     
     def __init__(self, message: str, **kwargs):
+        # Extract error_code to avoid duplicate parameter
+        error_code = kwargs.pop("error_code", "MODEL_ERROR")
         super().__init__(
             message,
-            error_code=kwargs.get("error_code", "MODEL_ERROR"),
+            error_code=error_code,
             **kwargs
         )
 
@@ -498,11 +504,13 @@ class ModelResponseError(ModelError):
         response_type: Optional[str] = None,
         expected_fields: Optional[List[str]] = None,
         missing_fields: Optional[List[str]] = None,
+        response_content: Optional[Any] = None,
         **kwargs
     ):
         self.response_type = response_type
         self.expected_fields = expected_fields
         self.missing_fields = missing_fields
+        self.response_content = response_content
         
         context = kwargs.get("context", {})
         if response_type:
@@ -511,6 +519,8 @@ class ModelResponseError(ModelError):
             context["expected_fields"] = expected_fields
         if missing_fields:
             context["missing_fields"] = missing_fields
+        if response_content is not None:
+            context["response_content"] = str(response_content)[:500]  # Limit size for logging
         
         super().__init__(
             message,
@@ -611,9 +621,11 @@ class BrowserError(AgentFrameworkError):
     """Base class for browser-related errors."""
     
     def __init__(self, message: str, **kwargs):
+        # Extract error_code to avoid duplicate parameter
+        error_code = kwargs.pop("error_code", "BROWSER_ERROR")
         super().__init__(
             message,
-            error_code=kwargs.get("error_code", "BROWSER_ERROR"),
+            error_code=error_code,
             **kwargs
         )
 
