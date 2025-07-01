@@ -225,10 +225,24 @@ class OpenRouterAdapter(APIProviderAdapter):
         elif self.top_p is not None:
             payload["top_p"] = self.top_p
         
+        # OpenRouter + Gemini fix: Can't combine tools with json_mode
+        # Force json_mode=False when tools are present to avoid API errors
+        has_tools = bool(kwargs.get("tools"))
+        wants_json_mode = bool(kwargs.get("json_mode"))
+        
+        if has_tools and wants_json_mode:
+            # Disable json_mode when tools are present
+            import warnings
+            warnings.warn(
+                "OpenRouter: Disabling json_mode when tools are present to avoid API conflicts. "
+                "The response will still be parsed appropriately."
+            )
+            wants_json_mode = False
+        
         # Handle structured output (takes precedence over simple json_mode)
         if kwargs.get("response_format"):
             payload["response_format"] = kwargs["response_format"]
-        elif kwargs.get("json_mode"):
+        elif wants_json_mode:
             payload["response_format"] = {"type": "json_object"}
             
         if kwargs.get("tools"):
