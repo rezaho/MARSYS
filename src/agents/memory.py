@@ -4,7 +4,9 @@ import json
 import logging
 import time
 import uuid
+import base64
 from abc import ABC, abstractmethod
+from pathlib import Path
 from typing import Any, Callable, Dict, List, Optional, Union
 
 from pydantic import BaseModel
@@ -20,53 +22,123 @@ from .exceptions import (
 )
 
 
-class SingleMsg(BaseModel):
-    role: str
-    content: str | List[Dict] | Dict
-    tool_call: Dict[str, str | Dict] = {}
+# --- Structured Content Data Classes ---
+
+@dataclasses.dataclass
+class MessageContent:
+    """Represents the structured content of a message."""
+    thought: Optional[str] = None
+    next_action: Optional[str] = None
+    action_input: Optional[Dict[str, Any]] = None
+    
+    def __post_init__(self):
+        """Validate next_action field."""
+        if self.next_action is not None:
+            valid_actions = {"call_tool", "invoke_agent", "final_response"}
+            if self.next_action not in valid_actions:
+                raise ValueError(
+                    f"next_action must be one of {valid_actions}, got: {self.next_action}"
+                )
+    
+    def to_dict(self) -> Dict[str, Any]:
+        """Convert to dictionary format."""
+        result = {}
+        if self.thought is not None:
+            result["thought"] = self.thought
+        if self.next_action is not None:
+            result["next_action"] = self.next_action
+        if self.action_input is not None:
+            result["action_input"] = self.action_input
+        return result
+    
+    @classmethod
+    def from_dict(cls, data: Dict[str, Any]) -> "MessageContent":
+        """Create from dictionary format."""
+        return cls(
+            thought=data.get("thought"),
+            next_action=data.get("next_action"),
+            action_input=data.get("action_input")
+        )
 
 
-class MessageMemory(BaseModel):
-    messages: List[SingleMsg] = []
+@dataclasses.dataclass
+class ToolCallMsg:
+    """Represents a tool call in a message."""
+    id: str
+    call_id: str
+    type: str
+    name: str
+    arguments: str
+    
+    def __post_init__(self):
+        """Validate tool call fields."""
+        if not self.id:
+            raise ValueError("Tool call id cannot be empty")
+        if not self.call_id:
+            raise ValueError("Tool call call_id cannot be empty")
+        if not self.type:
+            raise ValueError("Tool call type cannot be empty")
+        if not self.name:
+            raise ValueError("Tool call name cannot be empty")
+        if not isinstance(self.arguments, str):
+            raise ValueError("Tool call arguments must be a string")
+    
+    def to_dict(self) -> Dict[str, Any]:
+        """Convert to dictionary format compatible with OpenAI API."""
+        return {
+            "id": self.id,
+            "type": self.type,
+            "function": {
+                "name": self.name,
+                "arguments": self.arguments
+            }
+        }
+    
+    @classmethod
+    def from_dict(cls, data: Dict[str, Any]) -> "ToolCallMsg":
+        """Create from dictionary format (OpenAI API format)."""
+        function_data = data.get("function", {})
+        return cls(
+            id=data.get("id", ""),
+            call_id=data.get("id", ""),  # Use id as call_id for compatibility
+            type=data.get("type", "function"),
+            name=function_data.get("name", ""),
+            arguments=function_data.get("arguments", "{}")
+        )
 
-    def append(
-        self, role: str, content: str, tool_call: Dict[str, str] = dict()
-    ) -> None:
-        new_message = SingleMsg(role=role, content=content, tool_call=tool_call)
-        self.messages.append(new_message)
 
-    def get_all(self) -> List[Dict[str, str]]:
-        messages = []
-        for m in self.messages:
-            msg = dict()
-            msg["role"] = m.role
-            if m.content is not None:
-                msg["content"] = m.content
-            if m.tool_call:
-                msg["tool_call"] = m.tool_call
-            messages.append(msg)
-        return messages
+@dataclasses.dataclass
+class AgentCallMsg:
+    """Represents an agent invocation call in a message."""
+    agent_name: str
+    request: Any
+    
+    def __post_init__(self):
+        """Validate agent call fields."""
+        if not self.agent_name:
+            raise ValueError("Agent call agent_name cannot be empty")
+        if not isinstance(self.agent_name, str):
+            raise ValueError("Agent call agent_name must be a string")
+        if self.request is None:
+            raise ValueError("Agent call request cannot be None")
 
-    def get_last(self) -> Dict[str, str]:
-        return self.messages[-1]
+    def to_dict(self) -> Dict[str, Any]:
+        """Convert to dictionary format."""
+        return {
+            "agent_name": self.agent_name,
+            "request": self.request
+        }
+    
+    @classmethod
+    def from_dict(cls, data: Dict[str, Any]) -> "AgentCallMsg":
+        """Create from dictionary format."""
+        return cls(
+            agent_name=data.get("agent_name", ""),
+            request=data.get("request")
+        )
 
-    def reset(self):
-        self.messages = []
 
-    def delete_last(self):
-        _ = self.messages.pop()
-
-    # New method to remove html_content from any tool messages
-    def clean_tool_messages(self) -> None:
-        for msg in self.messages:
-            if msg.role == "tool" and isinstance(msg.content, dict):
-                _ = msg.content.pop("html_content", None)
-
-    def __getitem__(self, index: int) -> SingleMsg:
-        return self.messages[index]
-
-    def __len__(self) -> int:
-        return len(self.messages)
+# --- Existing Classes ---
 
 
 # --- Core Data Structures ---
@@ -77,25 +149,163 @@ class Message:
     """Represents a single message in a conversation, with a unique ID."""
 
     role: str
-    content: Optional[
-        str
-    ]  # Content can be None, e.g., for assistant messages with tool_calls
+    content: Optional[Union[str, Dict[str, Any]]] = None  # Can be string or any dictionary
     message_id: str = dataclasses.field(default_factory=lambda: str(uuid.uuid4()))
-    name: Optional[str] = (
-        None  # For tool role (tool name) or assistant name (model name)
-    )
-    tool_calls: Optional[List[Dict[str, Any]]] = (
-        None  # For assistant requesting tool calls
-    )
-    tool_call_id: Optional[str] = (
-        None  # For tool role providing result for a specific tool_call_id (NEEDED for OpenAI API compatibility)
-    )
-    agent_call: Optional[Dict[str, Any]] = (
-        None  # For assistant requesting agent invocation: {"agent_name": str, "request": Any}
-    )
-    structured_data: Optional[Dict[str, Any]] = (
-        None  # For storing structured data when agent returns a dictionary from auto_run
-    )
+    name: Optional[str] = None  # For tool role (tool name) or assistant name (model name)
+    tool_calls: Optional[List[ToolCallMsg]] = None  # For assistant requesting tool calls
+    agent_calls: Optional[List[AgentCallMsg]] = None  # For assistant requesting agent invocations
+    structured_data: Optional[Dict[str, Any]] = None  # For storing structured data when agent returns a dictionary from auto_run
+    images: Optional[List[str]] = None  # For storing image paths/URLs for vision models
+
+    def __post_init__(self):
+        """Automatically convert dictionaries to proper dataclasses with validation."""
+        # Convert tool_calls from List[Dict] to List[ToolCallMsg] if needed
+        if self.tool_calls is not None:
+            if isinstance(self.tool_calls, list):
+                converted_tool_calls = []
+                for i, tc in enumerate(self.tool_calls):
+                    if isinstance(tc, dict):
+                        try:
+                            converted_tool_calls.append(ToolCallMsg.from_dict(tc))
+                        except (ValueError, KeyError, TypeError) as e:
+                            raise MessageError(
+                                f"Failed to convert tool_calls[{i}] to ToolCallMsg: {e}",
+                                message_id=self.message_id,
+                                invalid_data=tc,
+                                expected_format="ToolCallMsg with id, call_id, type, name, arguments fields"
+                            )
+                    elif isinstance(tc, ToolCallMsg):
+                        converted_tool_calls.append(tc)
+                    else:
+                        raise MessageError(
+                            f"tool_calls[{i}] must be dict or ToolCallMsg, got {type(tc).__name__}",
+                            message_id=self.message_id,
+                            invalid_data=tc,
+                            expected_format="Dict or ToolCallMsg object"
+                        )
+                self.tool_calls = converted_tool_calls
+            else:
+                raise MessageError(
+                    f"tool_calls must be a list, got {type(self.tool_calls).__name__}",
+                    message_id=self.message_id,
+                    invalid_data=self.tool_calls,
+                    expected_format="List[ToolCallMsg] or List[Dict]"
+                )
+
+        # Convert agent_calls from List[Dict] to List[AgentCallMsg] if needed
+        if self.agent_calls is not None:
+            if isinstance(self.agent_calls, list):
+                converted_agent_calls = []
+                for i, ac in enumerate(self.agent_calls):
+                    if isinstance(ac, dict):
+                        try:
+                            converted_agent_calls.append(AgentCallMsg.from_dict(ac))
+                        except (ValueError, KeyError, TypeError) as e:
+                            raise MessageError(
+                                f"Failed to convert agent_calls[{i}] to AgentCallMsg: {e}",
+                                message_id=self.message_id,
+                                invalid_data=ac,
+                                expected_format="AgentCallMsg with agent_name and request fields"
+                            )
+                    elif isinstance(ac, AgentCallMsg):
+                        converted_agent_calls.append(ac)
+                    else:
+                        raise MessageError(
+                            f"agent_calls[{i}] must be dict or AgentCallMsg, got {type(ac).__name__}",
+                            message_id=self.message_id,
+                            invalid_data=ac,
+                            expected_format="Dict or AgentCallMsg object"
+                        )
+                self.agent_calls = converted_agent_calls
+            else:
+                raise MessageError(
+                    f"agent_calls must be a list, got {type(self.agent_calls).__name__}",
+                    message_id=self.message_id,
+                    invalid_data=self.agent_calls,
+                    expected_format="List[AgentCallMsg] or List[Dict]"
+                )
+
+        # Content can now be any dictionary - no automatic conversion to MessageContent
+        # This allows specialized agents like InteractiveElementsAgent to return custom formats
+
+        # Validate images field
+        if self.images is not None:
+            if not isinstance(self.images, list):
+                raise MessageError(
+                    f"images must be a list, got {type(self.images).__name__}",
+                    message_id=self.message_id,
+                    invalid_data=self.images,
+                    expected_format="List[str] of image paths/URLs"
+                )
+            for i, img in enumerate(self.images):
+                if not isinstance(img, str):
+                    raise MessageError(
+                        f"images[{i}] must be a string (path/URL), got {type(img).__name__}",
+                        message_id=self.message_id,
+                        invalid_data=img,
+                        expected_format="String path or URL"
+                    )
+
+    def _encode_image_to_base64(self, image_path: str) -> str:
+        """Helper method to encode an image to base64 format for LLM APIs."""
+        try:
+            with open(image_path, "rb") as image_file:
+                image_data = image_file.read()
+                encoded = base64.b64encode(image_data).decode("utf-8")
+                
+                # Determine MIME type based on file extension
+                extension = Path(image_path).suffix.lower()
+                if extension in [".jpg", ".jpeg"]:
+                    mime_type = "image/jpeg"
+                elif extension == ".png":
+                    mime_type = "image/png"
+                elif extension == ".gif":
+                    mime_type = "image/gif"
+                elif extension == ".webp":
+                    mime_type = "image/webp"
+                else:
+                    # Default to PNG if unknown
+                    mime_type = "image/png"
+                
+                return f"data:{mime_type};base64,{encoded}"
+        except Exception as e:
+            # Return placeholder or empty string if image can't be read
+            logging.warning(f"Failed to encode image {image_path}: {e}")
+            return ""
+
+    def _is_agent_action_content(self, content_dict: Dict[str, Any]) -> bool:
+        """
+        Check if a content dictionary represents standard agent action format.
+        
+        Agent action content has the structure:
+        - thought (optional): str
+        - next_action (optional): one of "call_tool", "invoke_agent", "final_response"  
+        - action_input (optional): dict
+        
+        Args:
+            content_dict: Dictionary to check
+            
+        Returns:
+            True if the dict appears to be agent action content, False otherwise
+        """
+        if not isinstance(content_dict, dict):
+            return False
+        
+        # Check if it has the standard agent action keys
+        agent_action_keys = {"thought", "next_action", "action_input"}
+        content_keys = set(content_dict.keys())
+        
+        # If it only contains agent action keys (or subset), it's likely agent action content
+        if content_keys <= agent_action_keys:
+            # Additional validation: if next_action is present, it should be valid
+            next_action = content_dict.get("next_action")
+            if next_action is not None:
+                valid_actions = {"call_tool", "invoke_agent", "final_response"}
+                return next_action in valid_actions
+            return True
+        
+        # If it has other keys beyond agent action keys, it's specialized content
+        return False
 
     def to_llm_dict(self) -> Dict[str, Any]:
         """Converts the message to a dictionary format suitable for LLM APIs."""
@@ -105,28 +315,132 @@ class Message:
         if self.role == "assistant" and self.tool_calls:
             payload["content"] = None  # Must be null if tool_calls are present
         elif self.content is not None:
-            payload["content"] = str(self.content)
+            # Handle structured content
+            if isinstance(self.content, dict):
+                # Check if it's a MessageContent-like dict (has standard agent action keys)
+                if self._is_agent_action_content(self.content):
+                    # Standard agent action content - serialize as JSON string
+                    payload["content"] = json.dumps(self.content, ensure_ascii=False, indent=2)
+                else:
+                    # Specialized content (like InteractiveElementsAgent response) - serialize as JSON string
+                    payload["content"] = json.dumps(self.content, ensure_ascii=False, indent=2)
+            else:
+                # Check if we have images to create multimodal content
+                if self.images and len(self.images) > 0:
+                    # Create multimodal content with text and images
+                    content_parts = []
+                    
+                    # Add text content if present
+                    if str(self.content).strip():
+                        content_parts.append({
+                            "type": "text",
+                            "text": str(self.content)
+                        })
+                    
+                    # Add image content with proper base64 encoding
+                    for image_path in self.images:
+                        encoded_image = self._encode_image_to_base64(image_path)
+                        content_parts.append({
+                            "type": "image_url",
+                            "image_url": {"url": encoded_image}
+                        })
+                    
+                    payload["content"] = content_parts
+                else:
+                    payload["content"] = str(self.content)
         elif self.role in [
             "user",
             "system",
             "tool",
         ]:  # These roles generally require content
-            payload["content"] = ""  # Default to empty string if None
+            # Check if we have images without text content
+            if self.images and len(self.images) > 0:
+                content_parts = []
+                for image_path in self.images:
+                    encoded_image = self._encode_image_to_base64(image_path)
+                    content_parts.append({
+                        "type": "image_url",
+                        "image_url": {"url": encoded_image}
+                    })
+                payload["content"] = content_parts
+            else:
+                payload["content"] = ""  # Keep as empty string if no content or images
         # else: content can remain None for assistant without tool_calls (though less common)
 
         # Add optional fields if they exist
         if self.name:
             payload["name"] = self.name
-        if (
-            self.tool_calls and self.role == "assistant"
-        ):  # tool_calls are specific to assistant role
-            payload["tool_calls"] = self.tool_calls
-        if (
-            self.tool_call_id and self.role == "tool"
-        ):  # tool_call_id is specific to tool role
-            payload["tool_call_id"] = self.tool_call_id
-        if self.agent_call:  # Include agent_call if present
-            payload["agent_call"] = self.agent_call
+        if self.tool_calls and self.role == "assistant":  # tool_calls are specific to assistant role
+            # Convert ToolCallMsg objects back to dicts for LLM API
+            payload["tool_calls"] = [tc.to_dict() for tc in self.tool_calls]
+
+        # Special handling for tool messages - extract tool_call_id from content
+        if self.role == "tool" and self.content:
+            try:
+                # Try to parse content as JSON to extract tool_call_id
+                if isinstance(self.content, str):
+                    content_data = json.loads(self.content)
+                    if isinstance(content_data, dict) and "tool_call_id" in content_data:
+                        payload["tool_call_id"] = content_data["tool_call_id"]
+                        
+                        # Handle content with images
+                        output_text = content_data.get("output", "")
+                        if self.images and len(self.images) > 0:
+                            # Create multimodal content with text and images
+                            content_parts = []
+                            
+                            # Add text content if present
+                            if output_text.strip():
+                                content_parts.append({
+                                    "type": "text",
+                                    "text": output_text
+                                })
+                            
+                            # Add image content with proper base64 encoding
+                            for image_path in self.images:
+                                encoded_image = self._encode_image_to_base64(image_path)
+                                content_parts.append({
+                                    "type": "image_url",
+                                    "image_url": {"url": encoded_image}
+                                })
+                            
+                            payload["content"] = content_parts
+                        else:
+                            # No images, just set text content
+                            payload["content"] = output_text
+                elif isinstance(self.content, dict) and "tool_call_id" in self.content:
+                    # Content is already a dict with tool_call_id
+                    payload["tool_call_id"] = self.content["tool_call_id"]
+                    output_text = self.content.get("output", "")
+                    if self.images and len(self.images) > 0:
+                        # Create multimodal content with text and images
+                        content_parts = []
+                        
+                        # Add text content if present
+                        if output_text.strip():
+                            content_parts.append({
+                                "type": "text",
+                                "text": output_text
+                            })
+                        
+                        # Add image content with proper base64 encoding
+                        for image_path in self.images:
+                            encoded_image = self._encode_image_to_base64(image_path)
+                            content_parts.append({
+                                "type": "image_url",
+                                "image_url": {"url": encoded_image}
+                            })
+                        
+                        payload["content"] = content_parts
+                    else:
+                        # No images, just set text content
+                        payload["content"] = output_text
+            except (json.JSONDecodeError, TypeError):
+                # If content is not JSON or doesn't have expected structure, keep as is
+                pass
+        
+        # Note: agent_calls is NOT included in LLM format as it's not part of OpenAI API
+        # It should be converted to JSON content by message transformers when needed
 
         # Filter out keys with None values, except for 'content: None' for assistant with tool_calls
         final_payload = {}
@@ -136,6 +450,78 @@ class Message:
             elif v is not None:
                 final_payload[k] = v
         return final_payload
+
+    def to_action_dict(self) -> Optional[Dict[str, Any]]:
+        """
+        Converts the Message to an action dictionary format expected by auto_run.
+        
+        This method checks the Message attributes in priority order and returns
+        the appropriate action dictionary format, or None if no valid action is found.
+        
+        Priority order:
+        1. tool_calls attribute -> call_tool action
+        2. agent_calls attribute -> invoke_agent action  
+        3. content with next_action='final_response' -> final_response action
+        4. None if no valid action found
+        
+        Returns:
+            Dictionary with 'thought', 'next_action', and 'action_input' keys, or None
+        """
+        # Extract thought from content if it's a string or dict with thought
+        thought = None
+        if isinstance(self.content, str):
+            thought = self.content
+        elif isinstance(self.content, dict) and "thought" in self.content:
+            thought = self.content["thought"]
+        
+        # Priority 1: Check for tool_calls attribute
+        if self.tool_calls:
+            # Convert ToolCallMsg objects to dicts
+            tc_dicts = []
+            for tc in self.tool_calls:
+                if hasattr(tc, 'to_dict'):
+                    tc_dicts.append(tc.to_dict())
+                else:
+                    # Already a dict
+                    tc_dicts.append(tc)
+            
+            return {
+                "thought": thought,
+                "next_action": "call_tool",
+                "action_input": {"tool_calls": tc_dicts}
+            }
+        
+        # Priority 2: Check for agent_calls attribute
+        if hasattr(self, 'agent_calls') and self.agent_calls:
+            # For now, we only support single agent invocation, so take the first one
+            # In the future, this could be extended to support multiple agent calls
+            first_agent_call_msg = self.agent_calls[0]
+            
+            # Convert AgentCallMsg to dict
+            if hasattr(first_agent_call_msg, 'to_dict'):
+                ac_dict = first_agent_call_msg.to_dict()
+            else:
+                # Already a dict
+                ac_dict = first_agent_call_msg
+            
+            return {
+                "thought": thought,
+                "next_action": "invoke_agent",
+                "action_input": ac_dict
+            }
+        
+        # Priority 3: Check for final_response in content
+        if (isinstance(self.content, dict) and 
+            self.content.get('next_action') == 'final_response'):
+            
+            return self.content  # Return the content dict as-is
+        
+        # Priority 4: Check if content is agent action format (handles legacy MessageContent)
+        if isinstance(self.content, dict) and self._is_agent_action_content(self.content):
+            return self.content  # Return the agent action content as-is
+        
+        # No valid action found
+        return None
 
     @classmethod
     def from_response_dict(
@@ -150,7 +536,8 @@ class Message:
         Creates a Message instance from a model response dictionary.
         
         This method handles various response formats from different model providers
-        and ensures consistent Message creation.
+        and ensures consistent Message creation. The Message.__post_init__ will
+        automatically convert any dict-based tool_calls or agent_calls to proper dataclasses.
         
         Args:
             response_dict: Dictionary containing the model response
@@ -160,45 +547,37 @@ class Message:
             processor: Optional callable to transform the response dict before processing
             
         Returns:
-            A new Message instance
+            Message instance with properly converted structured types
         """
         # Apply processor if provided
         if processor:
             response_dict = processor(response_dict)
             
-        # Extract role with fallback
+        # Extract basic fields
         role = response_dict.get("role", default_role)
-        
-        # Extract content
         content = response_dict.get("content")
-        
-        # Extract name with fallback
         name = response_dict.get("name", default_name)
-        
-        # Extract tool_calls if present
-        tool_calls = response_dict.get("tool_calls")
-        
-        # Extract agent_call if present (custom field)
-        agent_call = response_dict.get("agent_call")
-        
-        # Extract or generate message_id
         message_id = response_dict.get("message_id", default_id or str(uuid.uuid4()))
         
-        # Extract tool_call_id if present (for tool responses)
-        tool_call_id = response_dict.get("tool_call_id")
+        # Extract tool_calls (will be auto-converted by __post_init__)
+        tool_calls = response_dict.get("tool_calls")
         
-        # Extract structured_data if present (for structured responses)
+        # Extract agent_calls (will be auto-converted by __post_init__)
+        agent_calls = response_dict.get("agent_calls")
+        
+        # Extract structured_data if present
         structured_data = response_dict.get("structured_data")
         
+        # Create Message - __post_init__ will handle all conversions automatically
         return cls(
             role=role,
             content=content,
-            name=name,
-            tool_calls=tool_calls,
-            agent_call=agent_call,
             message_id=message_id,
-            tool_call_id=tool_call_id,
+            name=name,
+            tool_calls=tool_calls,  # Can be List[Dict] or List[ToolCallMsg]
+            agent_calls=agent_calls,  # Can be List[Dict] or List[AgentCallMsg]
             structured_data=structured_data,
+            images=response_dict.get("images"),
         )
 
 
@@ -226,12 +605,38 @@ class BaseMemory(ABC):
         content: Optional[str] = None,
         message_id: Optional[str] = None,
         name: Optional[str] = None,
-        tool_calls: Optional[List[Dict[str, Any]]] = None,
-        tool_call_id: Optional[str] = None,
-        agent_call: Optional[Dict[str, Any]] = None,  # Added agent_call
+        tool_calls: Optional[List[ToolCallMsg]] = None,  # Updated type
+        agent_calls: Optional[List[AgentCallMsg]] = None,
+        images: Optional[List[str]] = None,  # For image attachments
     ) -> None:
-        """Adds information to the memory. Can accept a Message object or individual components."""
-        raise NotImplementedError("update_memory must be implemented in subclasses.")
+        """
+        Updates memory with a new message.
+
+        Args:
+            message: Optional Message object to add directly.
+            role: Message role (user, assistant, tool, etc.).
+            content: Message content.
+            message_id: Optional message ID (auto-generated if not provided).
+            name: Optional name field.
+            tool_calls: Optional list of tool calls (can be dicts or ToolCallMsg objects).
+            agent_calls: Optional list of agent calls (can be list of dicts or AgentCallMsg objects).
+            images: Optional list of image paths/URLs for vision models.
+        """
+        if message is not None:
+            # Use the provided message directly - __post_init__ ensures proper conversion
+            self._add_message(message)
+        else:
+            # Create new message - __post_init__ will handle any dict-to-dataclass conversions
+            new_message = Message(
+                role=role or "user",
+                content=content,
+                message_id=message_id or str(uuid.uuid4()),
+                name=name,
+                tool_calls=tool_calls,  # Can be List[Dict] or List[ToolCallMsg]
+                agent_calls=agent_calls,  # Can be List[Dict] or List[AgentCallMsg]
+                images=images,  # List of image paths/URLs
+            )
+            self._add_message(new_message)
 
     @abstractmethod
     def replace_memory(
@@ -243,11 +648,24 @@ class BaseMemory(ABC):
         content: Optional[str] = None,
         message_id: Optional[str] = None,
         name: Optional[str] = None,
-        tool_calls: Optional[List[Dict[str, Any]]] = None,
-        tool_call_id: Optional[str] = None,
-        agent_call: Optional[Dict[str, Any]] = None,  # Added agent_call
+        tool_calls: Optional[List[ToolCallMsg]] = None,  # Updated type
+        agent_calls: Optional[List[AgentCallMsg]] = None,
+        images: Optional[List[str]] = None,  # For image attachments
     ) -> None:
-        """Replaces existing information in the memory at a given index."""
+        """
+        Replaces a message at a specific index.
+
+        Args:
+            idx: Index of the message to replace.
+            message: Optional Message object to use as replacement.
+            role: Message role.
+            content: Message content.
+            message_id: Message ID.
+            name: Optional name field.
+            tool_calls: Optional list of tool calls.
+            agent_calls: Optional list of agent call information.
+            images: Optional list of image paths/URLs for vision models.
+        """
         raise NotImplementedError("replace_memory must be implemented in subclasses.")
 
     @abstractmethod
@@ -269,6 +687,11 @@ class BaseMemory(ABC):
     def retrieve_by_id(self, message_id: str) -> Optional[Message]:
         """Retrieves a specific Message object by its ID."""
         raise NotImplementedError("retrieve_by_id must be implemented in subclasses.")
+
+    @abstractmethod
+    def remove_by_id(self, message_id: str) -> bool:
+        """Removes a specific Message object by its ID. Returns True if removed, False if not found."""
+        raise NotImplementedError("remove_by_id must be implemented in subclasses.")
 
     @abstractmethod
     def retrieve_by_role(self, role: str, n: Optional[int] = None) -> List[Message]:
@@ -377,9 +800,9 @@ class ConversationMemory(BaseMemory):
         content: Optional[str] = None,
         message_id: Optional[str] = None,
         name: Optional[str] = None,
-        tool_calls: Optional[List[Dict[str, Any]]] = None,
-        tool_call_id: Optional[str] = None,
-        agent_call: Optional[Dict[str, Any]] = None,  # Added agent_call
+        tool_calls: Optional[List[ToolCallMsg]] = None,
+        agent_calls: Optional[List[AgentCallMsg]] = None,
+        images: Optional[List[str]] = None,
     ) -> None:
         """
         Appends a message to the conversation history.
@@ -393,7 +816,7 @@ class ConversationMemory(BaseMemory):
             self.memory.append(message)
         elif (
             role is not None
-        ):  # content can be None for assistant messages with tool_calls or agent_call
+        ):  # content can be None for assistant messages with tool_calls or agent_calls
             new_message = Message(
                 role=role,
                 content=content,
@@ -401,8 +824,8 @@ class ConversationMemory(BaseMemory):
                 or str(uuid.uuid4()),  # Use provided or generate new
                 name=name,
                 tool_calls=tool_calls,
-                tool_call_id=tool_call_id,
-                agent_call=agent_call,  # Added agent_call
+                agent_calls=agent_calls,
+                images=images,
             )
             self.memory.append(new_message)
         else:
@@ -421,9 +844,9 @@ class ConversationMemory(BaseMemory):
         content: Optional[str] = None,
         message_id: Optional[str] = None,
         name: Optional[str] = None,
-        tool_calls: Optional[List[Dict[str, Any]]] = None,
-        tool_call_id: Optional[str] = None,
-        agent_call: Optional[Dict[str, Any]] = None,  # Added agent_call
+        tool_calls: Optional[List[ToolCallMsg]] = None,
+        agent_calls: Optional[List[AgentCallMsg]] = None,
+        images: Optional[List[str]] = None,
     ) -> None:
         """
         Replaces the message at the specified index.
@@ -443,8 +866,8 @@ class ConversationMemory(BaseMemory):
                 message_id=message_id or str(uuid.uuid4()),
                 name=name,
                 tool_calls=tool_calls,
-                tool_call_id=tool_call_id,
-                agent_call=agent_call,  # Added agent_call
+                agent_calls=agent_calls,
+                images=images,
             )
         else:
             raise MessageError(
@@ -478,6 +901,14 @@ class ConversationMemory(BaseMemory):
             if msg.message_id == message_id:
                 return msg
         return None
+
+    def remove_by_id(self, message_id: str) -> bool:
+        """Removes a specific Message object by its ID. Returns True if removed, False if not found."""
+        for i, msg in enumerate(self.memory):
+            if msg.message_id == message_id:
+                del self.memory[i]
+                return True
+        return False
 
     def retrieve_by_role(self, role: str, n: Optional[int] = None) -> List[Message]:
         """
@@ -567,10 +998,10 @@ class KGMemory(BaseMemory):
             str
         ] = None,  # Can be used as part of the fact's role or metadata
         tool_calls: Optional[
-            List[Dict[str, Any]]
+            List[ToolCallMsg]
         ] = None,  # Generally not applicable to KG facts
-        tool_call_id: Optional[str] = None,  # Generally not applicable
-        agent_call: Optional[Dict[str, Any]] = None,  # Generally not applicable to KG facts
+        agent_calls: Optional[List[AgentCallMsg]] = None,  # Generally not applicable to KG facts
+        images: Optional[List[str]] = None,  # Generally not applicable to KG facts
     ) -> None:
         """
         Adds information to KG memory. If Message object or role/content is provided,
@@ -615,9 +1046,9 @@ class KGMemory(BaseMemory):
         content: Optional[str] = None,
         message_id: Optional[str] = None,
         name: Optional[str] = None,
-        tool_calls: Optional[List[Dict[str, Any]]] = None,
-        tool_call_id: Optional[str] = None,
-        agent_call: Optional[Dict[str, Any]] = None,  # Added agent_call
+        tool_calls: Optional[List[ToolCallMsg]] = None,
+        agent_calls: Optional[List[AgentCallMsg]] = None,
+        images: Optional[List[str]] = None,
     ) -> None:
         """
         Replaces a fact at a given index. If Message or role/content is provided,
@@ -672,6 +1103,14 @@ class KGMemory(BaseMemory):
                 return self._fact_to_message(fact_dict)
         logging.debug(f"KGMemory: Fact with message_id '{message_id}' not found.")
         return None
+
+    def remove_by_id(self, message_id: str) -> bool:
+        """Removes a specific KG fact by its ID. Returns True if removed, False if not found."""
+        for i, fact_dict in enumerate(self.kg):
+            if fact_dict.get("message_id") == message_id:
+                del self.kg[i]
+                return True
+        return False
 
     def retrieve_by_role(self, role: str, n: Optional[int] = None) -> List[Message]:
         filtered = [fact for fact in self.kg if fact["role"] == role]
@@ -879,9 +1318,9 @@ class MemoryManager:
         content: Optional[str] = None,
         message_id: Optional[str] = None,
         name: Optional[str] = None,
-        tool_calls: Optional[List[Dict[str, Any]]] = None,
-        tool_call_id: Optional[str] = None,
-        agent_call: Optional[Dict[str, Any]] = None,  # Added agent_call
+        tool_calls: Optional[List[ToolCallMsg]] = None,
+        agent_calls: Optional[List[AgentCallMsg]] = None,
+        images: Optional[List[str]] = None,
     ) -> None:
         """Delegates to the underlying memory module's update_memory."""
         self.memory_module.update_memory(
@@ -891,8 +1330,8 @@ class MemoryManager:
             message_id=message_id,
             name=name,
             tool_calls=tool_calls,
-            tool_call_id=tool_call_id,
-            agent_call=agent_call,  # Added agent_call
+            agent_calls=agent_calls,
+            images=images,
         )
 
     def replace_memory(
@@ -904,9 +1343,9 @@ class MemoryManager:
         content: Optional[str] = None,
         message_id: Optional[str] = None,
         name: Optional[str] = None,
-        tool_calls: Optional[List[Dict[str, Any]]] = None,
-        tool_call_id: Optional[str] = None,
-        agent_call: Optional[Dict[str, Any]] = None,  # Added agent_call
+        tool_calls: Optional[List[ToolCallMsg]] = None,
+        agent_calls: Optional[List[AgentCallMsg]] = None,
+        images: Optional[List[str]] = None,
     ) -> None:
         """Delegates to the underlying memory module's replace_memory."""
         self.memory_module.replace_memory(
@@ -917,8 +1356,8 @@ class MemoryManager:
             message_id=message_id,
             name=name,
             tool_calls=tool_calls,
-            tool_call_id=tool_call_id,
-            agent_call=agent_call,  # Added agent_call
+            agent_calls=agent_calls,
+            images=images,
         )
 
     def delete_memory(self, idx: int) -> None:
@@ -936,6 +1375,10 @@ class MemoryManager:
     def retrieve_by_id(self, message_id: str) -> Optional[Message]:
         """Delegates to the underlying memory module's retrieve_by_id."""
         return self.memory_module.retrieve_by_id(message_id)
+
+    def remove_by_id(self, message_id: str) -> bool:
+        """Delegates to the underlying memory module's remove_by_id."""
+        return self.memory_module.remove_by_id(message_id)
 
     def retrieve_by_role(self, role: str, n: Optional[int] = None) -> List[Message]:
         """Delegates to the underlying memory module's retrieve_by_role."""
