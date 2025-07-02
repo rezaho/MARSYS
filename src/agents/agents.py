@@ -1140,8 +1140,8 @@ Example for `final_response`:
         self,
         initial_request: Any,
         request_context: Optional[RequestContext] = None,
-        max_steps: int = 10,
-        max_re_prompts: int = 2,
+        max_steps: int = 30,
+        max_re_prompts: int = 3,
         progress_monitor_func: Optional[
             Callable[
                 [asyncio.Queue, Optional[logging.Logger]], Coroutine[Any, Any, None]
@@ -1272,34 +1272,41 @@ Example for `final_response`:
             action_dict = raw_llm_response_message.to_action_dict()
             
             if action_dict is None:
-                # No valid action found - raise custom exception
-                from src.agents.exceptions import ModelResponseError
-                
-                error_msg = (
-                    f"Agent '{self.name}' returned invalid response format. "
-                    f"Expected one of: tool_calls attribute, agent_calls attribute, or "
-                    f"content with next_action='final_response'. "
-                    f"Got: tool_calls={bool(raw_llm_response_message.tool_calls)}, "
-                    f"agent_calls={bool(getattr(raw_llm_response_message, 'agent_calls', None))}, "
-                    f"content_type={type(raw_llm_response_message.content).__name__}, "
-                    f"content_next_action={raw_llm_response_message.content.get('next_action') if isinstance(raw_llm_response_message.content, dict) else 'N/A'}"
-                )
-                
-                await self._log_progress(
-                    current_step_request_context,
-                    LogLevel.MINIMAL,
-                error_msg,
-                data={
+                # No valid action found - provide feedback for retry
+                error_data = {
                     "content": str(raw_llm_response_message.content)[:200] if raw_llm_response_message.content else None,
                     "tool_calls_present": bool(raw_llm_response_message.tool_calls),
-                    "agent_calls_present": bool(getattr(raw_llm_response_message, 'agent_calls', None))
+                    "agent_calls_present": bool(getattr(raw_llm_response_message, 'agent_calls', None)),
+                    "content_type": type(raw_llm_response_message.content).__name__,
+                    "content_next_action": raw_llm_response_message.content.get('next_action') if isinstance(raw_llm_response_message.content, dict) else 'N/A'
                 }
+                
+                should_retry, error_feedback, next_payload = await self._handle_auto_run_error(
+                    "invalid_response_format", error_data, re_prompt_attempt_count, max_re_prompts, current_step_request_context
                 )
                 
-                raise ModelResponseError(
-                    error_msg,
+                if should_retry:
+                    re_prompt_attempt_count += 1
+                    current_request_payload = next_payload
+                    continue
+                else:
+                    # Maximum retries exceeded - now raise exception
+                    from src.agents.exceptions import ModelResponseError
+                    
+                    final_error_msg = (
+                        f"Agent '{self.name}' failed to provide valid response format after {max_re_prompts + 1} attempts. "
+                        f"Expected one of: tool_calls attribute, agent_calls attribute, or "
+                        f"content with next_action='final_response'. "
+                        f"Got: tool_calls={bool(raw_llm_response_message.tool_calls)}, "
+                        f"agent_calls={bool(getattr(raw_llm_response_message, 'agent_calls', None))}, "
+                        f"content_type={type(raw_llm_response_message.content).__name__}, "
+                        f"content_next_action={raw_llm_response_message.content.get('next_action') if isinstance(raw_llm_response_message.content, dict) else 'N/A'}"
+                    )
+                    
+                    raise ModelResponseError(
+                        final_error_msg,
                         agent_name=self.name,
-                    response_content=raw_llm_response_message.content,
+                        response_content=raw_llm_response_message.content,
                         task_id=request_context.task_id if request_context else None
                     )
 
@@ -1492,18 +1499,36 @@ Example for `final_response`:
             tool_args_str = function_spec.get("arguments", "{}")
             tool_output_content: str = ""  # Initialize with empty string as fallback
 
-            # Process the tool name to remove potential "functions." prefix
+            # Process the tool name to remove potential prefixes
             tool_name = raw_tool_name
-            if isinstance(raw_tool_name, str) and raw_tool_name.startswith(
-                "functions."
-            ):
-                tool_name = raw_tool_name.split("functions.", 1)[-1]
-                await self._log_progress(
-                    request_context,
-                    LogLevel.DEBUG,
-                    f"Stripped 'functions.' prefix from tool name. Original: '{raw_tool_name}', Used: '{tool_name}'",
-                    data={"tool_call_id": tool_call_id},
-                )
+            if isinstance(raw_tool_name, str):
+                # Remove "functions." prefix
+                if raw_tool_name.startswith("functions."):
+                    tool_name = raw_tool_name.split("functions.", 1)[-1]
+                    await self._log_progress(
+                        request_context,
+                        LogLevel.DEBUG,
+                        f"Stripped 'functions.' prefix from tool name. Original: '{raw_tool_name}', Used: '{tool_name}'",
+                        data={"tool_call_id": tool_call_id},
+                    )
+                # Remove "default_api_tool_" prefix (appears with some models)
+                elif raw_tool_name.startswith("default_api_tool_"):
+                    tool_name = raw_tool_name.split("default_api_tool_", 1)[-1]
+                    await self._log_progress(
+                        request_context,
+                        LogLevel.DEBUG,
+                        f"Stripped 'default_api_tool_' prefix from tool name. Original: '{raw_tool_name}', Used: '{tool_name}'",
+                        data={"tool_call_id": tool_call_id},
+                    )
+                # Remove "default_api_" prefix (appears with some models)
+                elif raw_tool_name.startswith("default_api_"):
+                    tool_name = raw_tool_name.split("default_api_", 1)[-1]
+                    await self._log_progress(
+                        request_context,
+                        LogLevel.DEBUG,
+                        f"Stripped 'default_api_' prefix from tool name. Original: '{raw_tool_name}', Used: '{tool_name}'",
+                        data={"tool_call_id": tool_call_id},
+                    )
 
             result_for_llm: Dict[str, Any] = {
                 "tool_call_id": tool_call_id,
@@ -1899,6 +1924,38 @@ Example for `final_response`:
                 f"Required format: {self._format_schema_for_prompt(self._compiled_output_schema)}\n"
                 f"Your response was: {json.dumps(response_val) if isinstance(response_val, (dict, list)) else str(response_val)}\n"
                 "Please provide a final_response that matches the required schema."
+            )
+        
+        elif error_type == "invalid_response_format":
+            content_type = error_data.get("content_type", "unknown")
+            tool_calls_present = error_data.get("tool_calls_present", False)
+            agent_calls_present = error_data.get("agent_calls_present", False)
+            content_next_action = error_data.get("content_next_action", "N/A")
+            content_preview = error_data.get("content", "")
+            
+            return (
+                f"❌ **Invalid Response Format Error**\n\n"
+                f"Your response did not contain a valid action that I can execute.\n\n"
+                f"**What I found in your response:**\n"
+                f"- Content type: {content_type}\n"
+                f"- Tool calls present: {tool_calls_present}\n"
+                f"- Agent calls present: {agent_calls_present}\n"
+                f"- Content next_action: {content_next_action}\n"
+                f"- Content preview: {content_preview[:100]}{'...' if len(content_preview) > 100 else ''}\n\n"
+                f"**What I expected:**\n"
+                f"You must provide ONE of the following:\n\n"
+                f"1. **Tool calls** (if you want to use available tools):\n"
+                f"   - Use the `tool_calls` field in your response\n"
+                f"   - Each tool call must have: id, type, function (with name and arguments)\n\n"
+                f"2. **Agent calls** (if you want to invoke another agent):\n"
+                f"   - Your content should have `next_action: 'invoke_agent'`\n"
+                f"   - With `action_input` containing `agent_name` and `request`\n\n"
+                f"3. **Final response** (if you're ready to complete the task):\n"
+                f"   - Your content should have `next_action: 'final_response'`\n"
+                f"   - With `action_input` containing `response` field\n\n"
+                f"**Available tools:** {list(self.tools.keys()) if self.tools else 'None'}\n"
+                f"**Available agents:** {list(self.allowed_peers) if self.allowed_peers else 'None'}\n\n"
+                f"Please choose the appropriate action type and provide a properly formatted response."
             )
         
         else:
@@ -2653,6 +2710,8 @@ class Agent(BaseAgent):
                 "memory_type",
                 "agent_name",
                 "allowed_peers",
+                "input_schema",  # Agent constructor parameter, not API parameter
+                "output_schema",  # Agent constructor parameter, not API parameter
             }
             # Filter out the excluded keys
             kwargs = {k: v for k, v in config_dict.items() if k not in exclude_keys}
@@ -2670,26 +2729,35 @@ class Agent(BaseAgent):
             # Start with a copy of the original data
             result = data.copy()
             
-            # Check if content contains agent call info in JSON
+            # Check if content contains agent call info
             content = data.get("content")
-            if data.get("role") == "assistant" and content and isinstance(content, str):
-                try:
-                    parsed_content = json.loads(content)
-                    if isinstance(parsed_content, dict) and parsed_content.get("next_action") == "invoke_agent":
-                        # Extract agent_calls information as raw dict list - Message.__post_init__ will convert
-                        action_input = parsed_content.get("action_input", {})
-                        if isinstance(action_input, dict) and "agent_name" in action_input:
-                            result["agent_calls"] = [action_input]  # Create list with single agent call
-                            
-                            # Keep only thought in content if present
-                            thought = parsed_content.get("thought")
-                            if thought:
-                                result["content"] = thought
-                            else:
-                                result["content"] = None
-                except (json.JSONDecodeError, TypeError):
-                    # Content is not JSON or parsing failed, keep as is
-                    pass
+            if data.get("role") == "assistant" and content:
+                parsed_content = None
+                
+                # Handle string content that might be JSON
+                if isinstance(content, str):
+                    try:
+                        parsed_content = json.loads(content)
+                    except (json.JSONDecodeError, TypeError):
+                        # Content is not JSON, keep as is
+                        pass
+                # Handle dict content directly
+                elif isinstance(content, dict):
+                    parsed_content = content
+                
+                # Extract agent_calls if we have parsed content with invoke_agent action
+                if isinstance(parsed_content, dict) and parsed_content.get("next_action") == "invoke_agent":
+                    # Extract agent_calls information as raw dict list - Message.__post_init__ will convert
+                    action_input = parsed_content.get("action_input", {})
+                    if isinstance(action_input, dict) and "agent_name" in action_input:
+                        result["agent_calls"] = [action_input]  # Create list with single agent call
+                        
+                        # Keep only thought in content if present
+                        thought = parsed_content.get("thought")
+                        if thought:
+                            result["content"] = thought
+                        else:
+                            result["content"] = None
             
             return result
         
@@ -2846,6 +2914,14 @@ class Agent(BaseAgent):
         api_model_kwargs = self._get_api_kwargs()
         api_model_kwargs.update(kwargs)
 
+        # Configure output schema for APIAdapter request (following InteractiveElementsAgent pattern)
+        if self._compiled_output_schema:
+            # Add both response_schema and json_mode to api_model_kwargs
+            # api_model_kwargs['response_format'] = self._compiled_output_schema
+            api_model_kwargs['json_mode'] = True
+        else:
+            api_model_kwargs['json_mode'] = json_mode_for_llm_native
+
         # FIX: Only request native JSON format when json_mode_for_llm_native is True
         if (
             json_mode_for_llm_native
@@ -2866,8 +2942,6 @@ class Agent(BaseAgent):
                 messages=llm_messages_for_model,
                 max_tokens=max_tokens_override,
                 temperature=temperature_override,
-                # FIX: Use json_mode_for_llm_native instead of json_mode_for_output
-                json_mode=json_mode_for_llm_native,
                 tools=current_tools_schema,  # Pass the determined tools_schema
                 **api_model_kwargs,
             )
