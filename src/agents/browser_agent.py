@@ -546,16 +546,16 @@ class BrowserAgent(BaseAgent):
             "- JavaScript execution in page context\n"
             "- Cookie and local storage management\n"
             "- File downloads\n\n"
-            "Available browser tools:\n"
-            + "\n".join(
-                [
-                    f"- {tool}: {func.__doc__.strip().split('.')[0] if func.__doc__ else 'No description'}"
-                    for tool, func in browser_tools.items()
-                ][:10]
-            )  # Show first 10 tools
-            + f"\n... and {len(browser_tools) - 10} more tools"
-            if len(browser_tools) > 10
-            else ""
+            # "Available browser tools:\n"
+            # + "\n".join(
+            #     [
+            #         f"- {tool}: {func.__doc__.strip().split('.')[0] if func.__doc__ else 'No description'}"
+            #         for tool, func in browser_tools.items()
+            #     ][:10]
+            # )  # Show first 10 tools
+            # + f"\n... and {len(browser_tools) - 10} more tools"
+            # if len(browser_tools) > 10
+            # else ""
         )
 
         super().__init__(
@@ -1556,7 +1556,7 @@ class BrowserAgent(BaseAgent):
         # 2. Configure output schema for APIAdapter request (following InteractiveElementsAgent pattern)
         if self._compiled_output_schema:
             # Add both response_schema and json_mode to api_model_kwargs
-            api_model_kwargs['response_schema'] = self._compiled_output_schema
+            # api_model_kwargs['response_format'] = self._compiled_output_schema
             api_model_kwargs['json_mode'] = True
         else:
             api_model_kwargs['json_mode'] = False
