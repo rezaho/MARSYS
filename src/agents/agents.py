@@ -1274,7 +1274,7 @@ Example for `final_response`:
             if action_dict is None:
                 # No valid action found - provide feedback for retry
                 error_data = {
-                    "content": str(raw_llm_response_message.content)[:200] if raw_llm_response_message.content else None,
+                    "content": str(raw_llm_response_message.content)[:200] if raw_llm_response_message.content else "",
                     "tool_calls_present": bool(raw_llm_response_message.tool_calls),
                     "agent_calls_present": bool(getattr(raw_llm_response_message, 'agent_calls', None)),
                     "content_type": type(raw_llm_response_message.content).__name__,
@@ -1499,36 +1499,18 @@ Example for `final_response`:
             tool_args_str = function_spec.get("arguments", "{}")
             tool_output_content: str = ""  # Initialize with empty string as fallback
 
-            # Process the tool name to remove potential prefixes
+            # Process the tool name to remove potential "functions." prefix
             tool_name = raw_tool_name
-            if isinstance(raw_tool_name, str):
-                # Remove "functions." prefix
-                if raw_tool_name.startswith("functions."):
-                    tool_name = raw_tool_name.split("functions.", 1)[-1]
-                    await self._log_progress(
-                        request_context,
-                        LogLevel.DEBUG,
-                        f"Stripped 'functions.' prefix from tool name. Original: '{raw_tool_name}', Used: '{tool_name}'",
-                        data={"tool_call_id": tool_call_id},
-                    )
-                # Remove "default_api_tool_" prefix (appears with some models)
-                elif raw_tool_name.startswith("default_api_tool_"):
-                    tool_name = raw_tool_name.split("default_api_tool_", 1)[-1]
-                    await self._log_progress(
-                        request_context,
-                        LogLevel.DEBUG,
-                        f"Stripped 'default_api_tool_' prefix from tool name. Original: '{raw_tool_name}', Used: '{tool_name}'",
-                        data={"tool_call_id": tool_call_id},
-                    )
-                # Remove "default_api_" prefix (appears with some models)
-                elif raw_tool_name.startswith("default_api_"):
-                    tool_name = raw_tool_name.split("default_api_", 1)[-1]
-                    await self._log_progress(
-                        request_context,
-                        LogLevel.DEBUG,
-                        f"Stripped 'default_api_' prefix from tool name. Original: '{raw_tool_name}', Used: '{tool_name}'",
-                        data={"tool_call_id": tool_call_id},
-                    )
+            if isinstance(raw_tool_name, str) and raw_tool_name.startswith(
+                "functions."
+            ):
+                tool_name = raw_tool_name.split("functions.", 1)[-1]
+                await self._log_progress(
+                    request_context,
+                    LogLevel.DEBUG,
+                    f"Stripped 'functions.' prefix from tool name. Original: '{raw_tool_name}', Used: '{tool_name}'",
+                    data={"tool_call_id": tool_call_id},
+                )
 
             result_for_llm: Dict[str, Any] = {
                 "tool_call_id": tool_call_id,
@@ -1934,7 +1916,7 @@ Example for `final_response`:
             content_preview = error_data.get("content", "")
             
             return (
-                f"❌ **Invalid Response Format Error**\n\n"
+                f"**Invalid Response Format Error**\n\n"
                 f"Your response did not contain a valid action that I can execute.\n\n"
                 f"**What I found in your response:**\n"
                 f"- Content type: {content_type}\n"
