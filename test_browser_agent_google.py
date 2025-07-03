@@ -61,7 +61,8 @@ WORKFLOW PHASES:
 - Consider various search angles: recent developments, foundational concepts, expert opinions, case studies
 
 **Phase 2: Google Search Execution**
-- Navigate to google.com and handle any initial barriers (cookie consent, etc.)
+- Navigate to google.com or scholar.google.com (for academic research) and handle any initial barriers (cookie consent, etc.)
+- When you want to write a query, you must first activate the search input field by clicking on it. And then you can use the tools to type the query.
 - Execute each search strategy systematically
 - Extract clean URLs from search results (removing Google tracking parameters)
 - Collect both top-ranked results and diverse sources
@@ -374,8 +375,8 @@ async def create_research_agent(research_id: str) -> BrowserAgent:
         provider="openrouter",
         name="google/gemini-2.5-pro",
         temperature=0.2,  # Slightly higher for creative search strategies
-        max_tokens=8000,
-        thinking_budget=2000,
+        max_tokens=5000,
+        thinking_budget=1000,
         api_key=OPENROUTER_API_KEY,
     )
 
@@ -386,7 +387,7 @@ async def create_research_agent(research_id: str) -> BrowserAgent:
         name="google/gemini-2.5-pro",
         temperature=0.1,  # Low temperature for precise element detection
         max_tokens=4000,
-        thinking_budget=1000,
+        thinking_budget=500,
         api_key=OPENROUTER_API_KEY,
     )
 

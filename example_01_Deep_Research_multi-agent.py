@@ -1,356 +1,627 @@
-# Multi-Agent Deep Research System with Schema Validation
-# ============================================================
-# This example demonstrates the MARSYS framework's multi-agent capabilities
-# with the new schema validation feature that ensures type safety and clear
-# contracts between agents.
-#
-# Schema Validation Features Demonstrated:
-# 1. Input schemas - Define expected structure for agent invocations
-# 2. Output schemas - Ensure consistent response formats
-# 3. Automatic validation - Runtime checking with clear error messages
-# 4. Peer agent instructions - Agents know what format peers expect
-# 5. Re-prompting - Agents get feedback when output doesn't match schema
-#
-# Workflow: User Query → Retrieval → Research Validation → Synthesis → Report
+"""
+Multi-Agent Deep Research System with BrowserAgent and Citation Management
+=========================================================================
+This example demonstrates an advanced multi-agent research workflow that:
+1. Uses RetrievalAgent to find relevant sources
+2. Uses BrowserAgent to extract full content from URLs
+3. Stores content in a scratch pad (JSONL format)
+4. Generates a comprehensive report with proper source citations
+5. Saves the report as a markdown file
 
-# Imports & logging -----------------------------------------------------------
+Features demonstrated:
+- Input/output schema validation
+- BrowserAgent for web content extraction
+- File-based content storage (scratch pad)
+- Source citation management
+- Markdown report generation
+
+Required Environment Variables:
+- OPENROUTER_API_KEY: API key for OpenRouter
+- GOOGLE_SEARCH_API_KEY: API key for Google Custom Search API
+- GOOGLE_CSE_ID_GENERIC: Custom Search Engine ID for Google
+"""
+
 import asyncio
+import json
 import logging
 import os
 from datetime import datetime
+from pathlib import Path
+from typing import Dict, List, Optional, Any
+import uuid
 
 from src.agents.agents import Agent
 from src.agents.browser_agent import BrowserAgent
 from src.agents.utils import init_agent_logging
-from src.environment.tools import tool_google_search_api, tool_google_search_community
+from src.environment.tools import tool_google_search_api
 from src.models.models import ModelConfig
 from src.utils.monitoring import default_progress_monitor
 
+
 # --- Logging Configuration ---
-# Call the centralized setup function to configure logging for the entire application/notebook.
-# This function handles setting up formatters, filters, and handlers.
-# - `level`: Sets the root logger level (e.g., logging.INFO, logging.DEBUG).
-# - `clear_existing_handlers`: True by default, useful in notebooks to prevent
-init_agent_logging(level=logging.DEBUG, clear_existing_handlers=True)
+init_agent_logging(level=logging.INFO, clear_existing_handlers=True)
+logger = logging.getLogger("DeepResearchExample")
 
 
-# --- Notebook-Specific Logger (Optional) ---
-# It can be useful to have a specific logger for messages originating directly from notebook operations,
-# distinct from agent or library logs, though here it will also use the root logger's handlers
-# and level settings established by setup_agent_logging().
-notebook_logger = logging.getLogger("DeepResearchNotebook")
-# The level for this specific logger can be set independently if needed,
-# but it will not output messages below the root logger's level.
-# For instance, if root is INFO, setting this to DEBUG won't show its DEBUG messages
+# --- File Management ---
+# File operations are now handled directly through agent tools
 
 
-# --- Search Tools ---
-# Define the tools dictionary for the RetrievalAgent
-retrieval_tools = {
-    "tool_google_search_api": tool_google_search_api,
-    "tool_google_search_community": tool_google_search_community,
-}
+# --- Tool Functions ---
 
-
-# Main Execution Logic
-if __name__ == "__main__":
-    # Get API key from environment
-    OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
-    if not OPENAI_API_KEY:
-        notebook_logger.error("OPENAI_API_KEY environment variable not set")
-        raise ValueError("OPENAI_API_KEY environment variable is required")
-
-    # Configurations, Agent Descriptions & Initialization
-
-    # --- Model Configurations using ModelConfig ---
+def write_to_scratch_pad(url: str, title: str, content: str, scratch_pad_file: str) -> Dict[str, Any]:
+    """
+    Write extracted content to scratch pad file (JSONL format).
+    
+    Args:
+        url: The URL that was extracted
+        title: The page title
+        content: The extracted content
+        scratch_pad_file: Path to the scratch pad file
+    
+    Returns:
+        Success status and details
+    """
     try:
-        model_config_capable = ModelConfig(
-            type="api",
-            provider="openai",
-            name="gpt-4o-mini",
-            temperature=0.3,
-            max_tokens=16000,
-            api_key=OPENAI_API_KEY,
-        )
-        model_config_worker = ModelConfig(
-            type="api",
-            provider="openai",
-            name="gpt-4o-mini",
-            temperature=0.1,
-            max_tokens=16000,
-            api_key=OPENAI_API_KEY,
-        )
-    except ValueError as e:
-        notebook_logger.error(
-            f"Failed to create ModelConfig: {e}. Ensure API keys are set (e.g., OPENAI_API_KEY)."
-        )
-        raise
+        # Generate source ID based on current file size
+        source_id = 1
+        if os.path.exists(scratch_pad_file):
+            with open(scratch_pad_file, 'r', encoding='utf-8') as f:
+                source_id = sum(1 for line in f if line.strip()) + 1
+        
+        data = {
+            "source_id": source_id,
+            "url": url,
+            "title": title,
+            "content": content,
+            "timestamp": datetime.now().isoformat()
+        }
+        
+        with open(scratch_pad_file, 'a', encoding='utf-8') as f:
+            f.write(json.dumps(data, ensure_ascii=False) + '\n')
+        
+        logger.info(f"Saved content {source_id} to scratch pad: {title}")
+        
+        return {
+            "success": True,
+            "source_id": source_id,
+            "message": f"Content saved successfully as source {source_id}"
+        }
+        
+    except Exception as e:
+        logger.error(f"Failed to write to scratch pad: {e}")
+        return {
+            "success": False,
+            "error": str(e)
+        }
 
-    # --- Agent Descriptions (Kept inline for now) ---
-    ORCHESTRATOR_DESCRIPTION = (
-        "You are the team coordinator responsible for orchestrating a multi-agent research workflow. "
-        "Your role is to manage the sequence of agent invocations to answer user queries thoroughly. "
-        "\n\n"
-        "Workflow Process:\n"
-        "1. First, invoke RetrievalAgent to gather relevant information\n"
-        "2. Then, invoke ResearcherAgent to validate and process the retrieved data\n"
-        "3. Finally, invoke SynthesizerAgent to create the final research report\n"
-        "4. When SynthesizerAgent returns its report, use final_response to provide that exact report to the user\n"
-        "\n"
-        "Important: Always follow the JSON response format for each step. Do not provide final answers until "
-        "the complete workflow is finished."
+
+def read_scratch_pad_content(scratch_pad_file: str) -> List[Dict[str, Any]]:
+    """
+    Read all content from scratch pad file.
+    
+    Args:
+        scratch_pad_file: Path to the scratch pad file
+    
+    Returns:
+        List of all extracted content objects
+    """
+    try:
+        sources = []
+        if os.path.exists(scratch_pad_file):
+            with open(scratch_pad_file, 'r', encoding='utf-8') as f:
+                for line in f:
+                    if line.strip():
+                        sources.append(json.loads(line.strip()))
+        
+        logger.info(f"Read {len(sources)} sources from scratch pad")
+        return sources
+        
+    except Exception as e:
+        logger.error(f"Failed to read scratch pad: {e}")
+        return []
+
+
+def write_markdown_report(content: str, file_path: str) -> Dict[str, Any]:
+    """
+    Write markdown content to a file.
+    
+    Args:
+        content: The markdown content to write
+        file_path: Path where to save the markdown file
+    
+    Returns:
+        Success status and file info
+    """
+    try:
+        # Ensure directory exists
+        Path(file_path).parent.mkdir(parents=True, exist_ok=True)
+        
+        with open(file_path, 'w', encoding='utf-8') as f:
+            f.write(content)
+        
+        file_size = os.path.getsize(file_path)
+        logger.info(f"Markdown report saved to {file_path} ({file_size} bytes)")
+        
+        return {
+            "success": True,
+            "file_path": file_path,
+            "file_size": file_size,
+            "message": f"Report saved successfully to {file_path}"
+        }
+        
+    except Exception as e:
+        logger.error(f"Failed to write markdown report: {e}")
+        return {
+            "success": False,
+            "error": str(e)
+        }
+
+
+# Old batch processing functions removed - now using individual tool-based approach
+
+
+# --- Agent Descriptions are now defined dynamically in main() based on user input ---
+
+
+# Tool function: Mock search function for RetrievalAgent
+def search_web(query: str, num_results: int = 10) -> Dict[str, Any]:
+    """
+    Mock Google search function for finding relevant URLs.
+    In a real implementation, this would use Google Custom Search API.
+    """
+    # This is a simplified mock - in production, implement actual Google Search API
+    mock_results = [
+        {"title": f"Research Article on {query} - Part {i+1}", 
+         "url": f"https://example.com/article-{i+1}", 
+         "snippet": f"Comprehensive analysis of {query} covering key aspects..."}
+        for i in range(min(num_results, 15))
+    ]
+    
+    return {
+        "results": mock_results,
+        "total_results": len(mock_results),
+        "query": query
+    }
+
+
+# Tool function: Ask user questions in terminal for orchestrator
+def ask_user_question(question: str, context: str = "") -> Dict[str, Any]:
+    """
+    Tool for the orchestrator agent to ask clarifying questions to the user in the terminal.
+    
+    Args:
+        question: The specific question to ask the user
+        context: Optional context or explanation for why this question is being asked
+        
+    Returns:
+        Dictionary containing the user's response and metadata
+    """
+    print("\n" + "="*80)
+    print("🤖 CLARIFYING QUESTION FROM RESEARCH ORCHESTRATOR")
+    print("="*80)
+    
+    if context:
+        print(f"📋 Context: {context}")
+        print("-"*80)
+    
+    print(f"❓ Question: {question}")
+    print("-"*80)
+    
+    # Get user response
+    while True:
+        user_response = input("💬 Your response: ").strip()
+        if user_response:
+            break
+        print("❌ Please provide a response to continue.")
+    
+    print("="*80)
+    print("✅ Thank you! Processing your response...\n")
+    
+    return {
+        "success": True,
+        "question": question,
+        "user_response": user_response,
+        "context": context,
+        "timestamp": str(datetime.now())
+    }
+
+
+def setup_logging():
+    """Set up logging configuration"""
+    import logging
+    logging.basicConfig(
+        level=logging.INFO,
+        format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
     )
 
-    RETRIEVAL_DESCRIPTION = (
-        "Role: fetch up to 10 relevant web results using the provided search tools. "
-    )
 
-    RESEARCHER_DESCRIPTION = (
-        "Role: decide if retrieved data sufficiently answers the given sub_question. "
-        "If data is insufficient, request RetrievalAgent again."
-    )
-
-    SYNTHESIZER_DESCRIPTION = (
-        "Role: synthesize the validated data into a clear markdown report.\n"
-        "Structure the report as:\n"
-        "  # Title (H1)\n"
-        "  ## 1. Overview\n"
-        "  ## 2. Key Advancements (bullet list)\n"
-        "  ## 3. Challenges / Risks (bullet list)\n"
-        "  ## 4. Future Directions (optional)\n"
-        "  ## References\n"
-        "In the References section list each source as '- [Title](URL)'. "
-        "Use ONLY the data provided by peer agents; do not fabricate citations."
-    )
-
-    # --- Agent Initialization with Schema Validation ---
-    # Note: Schema validation ensures type safety and clear contracts between agents
-
-    orchestrator_agent = Agent(
-        agent_name="OrchestratorAgent",
-        model_config=model_config_capable,
-        description=ORCHESTRATOR_DESCRIPTION,
-        allowed_peers=["RetrievalAgent", "ResearcherAgent", "SynthesizerAgent"],
-        memory_type="conversation_history",
-        # Orchestrator accepts any user query (no input schema)
-        # Outputs final markdown reports
-        output_schema={"report": str},
-    )
-
-    retrieval_agent = Agent(
-        agent_name="RetrievalAgent",
-        model_config=model_config_worker,
-        description=RETRIEVAL_DESCRIPTION,
-        tools=retrieval_tools,
-        allowed_peers=[],
-        memory_type="conversation_history",
-        # Expects search queries as input
-        input_schema={"query": str, "max_results": int},
-        # Returns search results with metadata
-        output_schema={"results": list, "total_found": int, "search_query": str},
-    )
-
-    researcher_agent = Agent(
-        agent_name="ResearcherAgent",
-        model_config=model_config_worker,
-        description=RESEARCHER_DESCRIPTION,
-        allowed_peers=["RetrievalAgent"],
-        memory_type="conversation_history",
-        # Expects data to validate and a specific sub-question
-        input_schema={
-            "sub_question": str,
-            "retrieved_data": list,
-            "validation_criteria": str,
-        },
-        # Returns validation decision and processed data
-        output_schema={
-            "is_sufficient": bool,
-            "validated_data": list,
-            "confidence": float,
-            "recommendation": str,
-        },
-    )
-
-    synthesizer_agent = Agent(
-        agent_name="SynthesizerAgent",
-        model_config=model_config_capable,
-        description=SYNTHESIZER_DESCRIPTION,
-        allowed_peers=[],
-        memory_type="conversation_history",
-        # Expects original query and validated research data
-        input_schema={
-            "user_query": str,
-            "validated_data": list,
-            "research_context": str,
-        },
-        # Returns structured markdown report
-        output_schema={"report": str, "confidence": float, "sources_count": int},
-    )
-    notebook_logger.info(
-        "All agents initialized with schema validation.", extra={"agent_name": "System"}
-    )
-
-    # --- Schema Validation Demonstration ---
-    # Each agent now has clear contracts for input/output formats
-    notebook_logger.info("Schema validation active:", extra={"agent_name": "System"})
-    notebook_logger.info(
-        f"  • RetrievalAgent expects: {retrieval_agent.input_schema}",
-        extra={"agent_name": "System"},
-    )
-    notebook_logger.info(
-        f"  • ResearcherAgent expects: {researcher_agent.input_schema}",
-        extra={"agent_name": "System"},
-    )
-    notebook_logger.info(
-        f"  • SynthesizerAgent expects: {synthesizer_agent.input_schema}",
-        extra={"agent_name": "System"},
-    )
-    notebook_logger.info(
-        "Peer agents will automatically receive schema requirements in their instructions.",
-        extra={"agent_name": "System"},
-    )
-
-    async def main():
-        """Main function to demonstrate multi-agent collaboration for research."""
-        # Configure logging
-        logging.basicConfig(
-            level=logging.INFO,
-            format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
-        )
-
-        logger = logging.getLogger(__name__)
-
-        # Model configuration
-        model_config = ModelConfig(
-            name="gpt-4o-mini",
-            provider="openai",
-            temperature=0.5,
-            max_tokens=16384,
-            api_key=OPENAI_API_KEY,
-        )
-
-        # Create specialized agents
-        logger.info("Initializing agents...")
-
-        # Add Query Generator Agent
-        query_generator = Agent(
-            model_config=model_config,
-            description="""You are a Query Generator specialized in creating comprehensive search queries.
-Given a research topic, generate multiple diverse search queries that cover different aspects:
-- General overview queries
-- Specific technical queries  
-- Recent developments and trends
-- Comparative queries
-- Problem/solution queries
-
-Return a JSON list of 5-10 search queries that together would provide comprehensive coverage of the topic.""",
-            max_tokens=1024,
-            agent_name="query_generator",
-        )
-
-        orchestrator = Agent(
-            model_config=model_config,
-            description=get_agent_prompt("orchestrator"),
-            tools=ORCHESTRATOR_TOOLS,
-            max_tokens=4096,
-            agent_name="orchestrator",
-            allowed_peers=[
-                "query_generator",
-                "retrieval",
-                "researcher",
-                "synthesizer",
-                "browser_agent",
-            ],
-        )
-
-        # Create BrowserAgent for content extraction
-        browser_agent = await BrowserAgent.create(
-            model_config=model_config,
-            headless=True,
-            max_tokens=4096,
-            agent_name="browser_agent",
-        )
-
-        # Update retrieval agent to work with browser agent
-        retrieval = Agent(
-            model_config=model_config,
-            description="""You are a Retrieval Specialist who searches for information and coordinates with the Browser Agent for content extraction.
-
-Your workflow:
-1. Use search tools to find relevant sources (up to 20 results per query)
-2. Analyze search results to identify the most promising sources
-3. For each promising source, invoke the browser_agent to extract full content
-4. Return both the search results and extracted content
-
-Focus on quality over quantity - only retrieve content from sources that are directly relevant to the research topic.""",
-            tools={"search": search_wrapper},  # Increased from 10 to 20 results
-            max_tokens=4096,
-            agent_name="retrieval",
-            allowed_peers=["browser_agent"],
-        )
-
-        researcher = Agent(
-            model_config=model_config,
-            description=get_agent_prompt("researcher"),
-            tools=RESEARCHER_TOOLS,
-            max_tokens=4096,
-            agent_name="researcher",
-        )
-
-        synthesizer = Agent(
-            model_config=model_config,
-            description=get_agent_prompt("synthesizer"),
-            tools=SYNTHESIZER_TOOLS,
-            max_tokens=8192,
-            agent_name="synthesizer",
-        )
-
-        # User's research query
-        research_topic = (
-            "Recent advances in mechanistic interpretability for large language models"
-        )
-
-        logger.info(f"Starting research on: {research_topic}")
-
-        # Create initial prompt for orchestrator that includes query generation
-        initial_prompt = f"""Please conduct comprehensive research on the following topic:
-
-**Topic**: {research_topic}
-
-Use the available tools and agents to gather comprehensive information about this topic and create a detailed research report."""
-
-        # Execute research with orchestrator_agent (defined above)
+async def main():
+    """Main execution function"""
+    
+    # Get API keys
+    OPENROUTER_API_KEY = os.getenv("OPENROUTER_API_KEY")
+    if not OPENROUTER_API_KEY:
+        print("❌ OPENROUTER_API_KEY environment variable not set")
+        raise ValueError("OPENROUTER_API_KEY required")
+    
+    # Get user input
+    print("\n" + "="*80)
+    print("🔍 DEEP RESEARCH MULTI-AGENT SYSTEM")
+    print("="*80)
+    print("This system will help you conduct comprehensive research on any topic.")
+    print("The AI agents will work together to find, extract, and synthesize information.\n")
+    
+    # Get research query from user
+    while True:
+        research_query = input("📝 Enter your research query: ").strip()
+        if research_query:
+            break
+        print("❌ Please enter a valid research query.")
+    
+    # Get number of articles from user
+    while True:
         try:
-            result = await orchestrator_agent.auto_run(
-                initial_prompt,
-                max_steps=20,
-            )
-
-            logger.info("Research completed successfully!")
-
-            # Save results
-            if isinstance(result, dict):
-                output_content = result.get("final_response", str(result))
+            num_articles_input = input(f"📊 How many articles would you like to retrieve? (default: 10, max: 25): ").strip()
+            if not num_articles_input:
+                num_articles = 10
+                break
+            num_articles = int(num_articles_input)
+            if 1 <= num_articles <= 25:
+                break
             else:
-                output_content = str(result)
+                print("❌ Please enter a number between 1 and 25.")
+        except ValueError:
+            print("❌ Please enter a valid number.")
+    
+    print(f"\n✅ Research Query: '{research_query}'")
+    print(f"✅ Target Articles: {num_articles}")
+    print("\n" + "="*80)
+    
+    # Generate unique research ID using datetime
+    research_id = datetime.now().strftime("%Y%m%d_%H%M%S")
+    
+    # Set up logging
+    setup_logging()
+    logger = logging.getLogger(__name__)
+    
+    try:
+        # Create model configurations
+        orchestrator_config = ModelConfig(
+            type="api",
+            provider="openrouter", 
+            name="anthropic/claude-3.5-sonnet:beta",
+            temperature=0.3,
+            max_tokens=4000,
+            thinking_budget=1000,
+            api_key=OPENROUTER_API_KEY,
+        )
+        
+        worker_config = ModelConfig(
+            type="api",
+            provider="openrouter",
+            name="google/gemini-2.5-pro",
+            temperature=0.2,
+            max_tokens=6000,
+            thinking_budget=1000,
+            api_key=OPENROUTER_API_KEY,
+        )
 
-            output_file = (
-                f"research_output_{datetime.now().strftime('%Y%m%d_%H%M%S')}.md"
-            )
-            with open(output_file, "w", encoding="utf-8") as f:
-                f.write(output_content)
+        # --- Agent Descriptions ---
+        
+        # Orchestrator Agent Description
+        ORCHESTRATOR_DESCRIPTION = f"""
+You are the Orchestrator Agent responsible for managing the comprehensive research workflow and ensuring high-quality results.
 
-            logger.info(f"Results saved to {output_file}")
+Your primary responsibilities:
+1. **Clarify User Intent**: Ask 2-3 targeted clarifying questions to better understand the research goals
+2. **Coordinate Research**: Manage the multi-agent research process
+3. **Quality Control**: Ensure comprehensive coverage and high-quality outputs
+4. **Final Synthesis**: Coordinate the creation of the final research report
 
-            # Print summary
-            print("\n" + "=" * 50)
-            print("RESEARCH COMPLETE")
-            print("=" * 50)
-            print(f"Output saved to: {output_file}")
-            print(f"Total length: {len(output_content)} characters")
+**CLARIFICATION PROCESS**:
+When you receive an initial research query, you should:
+1. Analyze the query for potential ambiguities or areas that need clarification
+2. Use the `ask_user_question` tool to ask 2-3 specific, targeted questions to understand:
+   - Specific focus areas or subtopics of interest
+   - Target audience or use case for the research
+   - Preferred types of sources (academic, news, industry reports, etc.)
+   - Time frame or recency requirements
+   - Any specific angles or perspectives to prioritize
+3. Wait for and process the user's responses before proceeding
 
-        except Exception as e:
-            logger.error(f"Research failed: {e}", exc_info=True)
+**Available tools:**
+- ask_user_question: Ask clarifying questions directly to the user in the terminal
 
-    # To run in Jupyter or standalone:
-    asyncio.run(main())
+Only proceed with the research delegation after receiving clarifying responses through the tool.
+
+**RESEARCH COORDINATION**:
+After clarification, coordinate with:
+- RetrievalAgent: For finding and organizing {num_articles} relevant sources
+- BrowserAgent: For content extraction and scratch pad management  
+- SynthesizerAgent: For creating the comprehensive final report
+
+**Available agents to invoke:**
+- RetrievalAgent: Specialized in finding relevant URLs and coordinating content extraction
+- SynthesizerAgent: Specialized in analyzing extracted content and creating research reports
+
+Process:
+1. Use ask_user_question tool to ask 2-3 clarifying questions about the research scope and approach
+2. Based on user's clarifying responses, create detailed and refined instructions for RetrievalAgent
+3. Invoke RetrievalAgent with the refined query and output directory
+4. Monitor the research progress and ensure quality
+5. Invoke SynthesizerAgent to create the final comprehensive report
+6. Return the complete research results with file paths and summaries
+
+Focus on ensuring the research is targeted, comprehensive, and meets the user's specific needs.
+"""
+
+        # Retrieval Agent Description
+        RETRIEVAL_DESCRIPTION = f"""
+You are the RetrievalAgent specialized in finding and organizing relevant URLs for research.
+
+Your role:
+1. Receive research queries and understand the information needed
+2. Use available search tools to find relevant URLs
+3. Collect and curate a comprehensive list of sources
+4. Send ALL collected URLs together in a single batch to the BrowserAgent for content extraction
+5. Coordinate the collection of extracted content into the scratch pad file
+6. Return the complete scratch pad file path and processing summary
+
+Available tools:
+- search_web: Search Google for relevant information
+
+You work with:
+- BrowserAgent: Specialized in batch content extraction and saving to scratch pad files
+
+Process:
+1. Understand the research query and identify key topics
+2. Perform multiple strategic searches to find diverse, high-quality sources
+3. Collect URLs from search results (aim for exactly {num_articles} quality sources)
+4. Create a scratch pad file named EXACTLY "research_scratch_pad.jsonl" in the output directory
+5. Send the complete list of URLs to BrowserAgent with the exact file path: output_directory + "/research_scratch_pad.jsonl"
+6. Monitor the batch extraction process
+7. Return the complete scratch pad file path and summary of extracted content
+
+IMPORTANT: The scratch pad file must be named "research_scratch_pad.jsonl" (with .jsonl extension). Do not use any other filename or extension.
+
+Focus on finding authoritative, recent, and diverse sources. Target exactly {num_articles} high-quality articles that comprehensively cover the research topic.
+"""
+
+        # Browser Agent Description
+        BROWSER_DESCRIPTION = """
+You are the BrowserAgent specialized in batch web content extraction and scratch pad management.
+
+Your role:
+1. Receive a list of URLs for batch processing using your browser capabilities
+2. Navigate to each URL and extract clean, readable content from web pages
+3. Save all extracted content to the provided scratch pad file named "research_scratch_pad.jsonl"
+4. Return confirmation of successful batch content extraction and storage
+
+Process:
+1. Receive a list of URLs and the exact scratch pad file path (should end with "research_scratch_pad.jsonl")
+2. For each URL in the batch: use the `extract_content_from_url` tool to extract content
+3. Use the `write_to_scratch_pad` tool to save extracted content with source IDs to the .jsonl file
+4. Return extraction status for all URLs with confirmation of saves to "research_scratch_pad.jsonl"
+
+CRITICAL: The scratch pad file must be named "research_scratch_pad.jsonl" with .jsonl extension.
+Do not save content to any other filename or file extension (.txt, .md, etc.).
+
+Focus on extracting substantive, useful content and saving it properly to the scratch pad file.
+Handle errors gracefully and continue processing remaining URLs if some fail.
+The scratch pad file path will be provided to you - use it exactly as provided.
+"""
+
+        # Synthesizer Agent Description
+        SYNTHESIZER_DESCRIPTION = f"""
+You are the SynthesizerAgent specialized in analyzing extracted research content and creating comprehensive reports.
+
+Your role:
+1. Read and analyze all content from the provided scratch pad file
+2. Synthesize information from multiple sources into a coherent narrative
+3. Create a well-structured research report with proper citations
+4. Ensure comprehensive coverage of the research topic
+5. Generate markdown-formatted reports with proper formatting
+
+Process:
+1. Load and analyze all extracted content from the "research_scratch_pad.jsonl" file
+2. Identify key themes, findings, and insights across sources
+3. Create a structured report with:
+   - Executive summary
+   - Main findings organized by themes
+   - Detailed analysis with numbered citations [1], [2], etc.
+   - Reference list with all sources
+4. Save the report as a markdown file named "final_research_report.md"
+5. Return file path and preview of the report
+
+IMPORTANT: The input file should be "research_scratch_pad.jsonl" and output should be "final_research_report.md".
+
+Focus on creating authoritative, well-researched reports that synthesize information effectively and provide clear value to the reader.
+"""
+
+        # --- Agent Creation ---
+
+        # Orchestrator Agent - coordinates the entire research workflow and asks clarifying questions
+        orchestrator = Agent(
+            model_config=orchestrator_config,
+            tools={"ask_user_question": ask_user_question},
+            description=ORCHESTRATOR_DESCRIPTION,
+            agent_name="OrchestratorAgent",
+            allowed_peers=["RetrievalAgent", "SynthesizerAgent"],
+            input_schema={
+                "type": "object", 
+                "properties": {
+                    "query": {"type": "string", "description": "The research query to investigate"},
+                    "output_directory": {"type": "string", "description": "Directory path for saving research outputs"}
+                },
+                "required": ["query", "output_directory"]
+            },
+            output_schema={
+                "type": "object",
+                "properties": {
+                    "report_file": {"type": "string", "description": "Path to the generated research report"},
+                    "report_preview": {"type": "string", "description": "Preview of the research report content"},
+                    "sources_processed": {"type": "integer", "description": "Number of sources successfully processed"},
+                    "research_summary": {"type": "string", "description": "Summary of the research process and findings"}
+                },
+                "required": ["report_file", "report_preview"]
+            }
+        )
+
+        # Retrieval Agent for finding and organizing sources
+        retrieval_agent = Agent(
+            model_config=worker_config,
+            description=RETRIEVAL_DESCRIPTION,
+            agent_name="RetrievalAgent",
+            allowed_peers=["BrowserAgent"],
+            tools={"tool_google_search_api": tool_google_search_api},
+            input_schema={
+                "type": "object",
+                "properties": {
+                    "query": {"type": "string", "description": "Refined research query with specific focus areas"},
+                    "output_directory": {"type": "string", "description": "Directory path for saving the scratch pad file"}
+                },
+                "required": ["query", "output_directory"]
+            },
+            output_schema={
+                "type": "object",
+                "properties": {
+                    "success": {"type": "boolean", "description": "Whether URL collection and content extraction was successful"},
+                    "scratch_pad_file": {"type": "string", "description": "Path to the scratch pad file containing all extracted content"},
+                    "total_sources": {"type": "integer", "description": "Total number of sources found and processed"},
+                    "sources_summary": {"type": "string", "description": "Summary of the types and quality of sources found"}
+                },
+                "required": ["success", "scratch_pad_file", "total_sources"]
+            }
+        )
+
+        # Browser Agent for content extraction
+        browser_agent = await BrowserAgent.create_safe(
+            model_config=worker_config,
+            description=BROWSER_DESCRIPTION,
+            agent_name="BrowserAgent",
+            headless=True,
+            viewport_width=1440,
+            viewport_height=900,
+            tools={"write_to_scratch_pad": write_to_scratch_pad},
+            input_schema={
+                "type": "object",
+                "properties": {
+                    "urls": {
+                        "type": "array", 
+                        "items": {"type": "string"},
+                        "description": "List of URLs to extract content from in batch"
+                    },
+                    "scratch_pad_file": {"type": "string", "description": "Path to scratch pad file for saving all extracted content"}
+                },
+                "required": ["urls", "scratch_pad_file"]
+            },
+            output_schema={
+                "type": "object",
+                "properties": {
+                    "success": {"type": "boolean", "description": "Whether batch extraction was successful"},
+                    "total_processed": {"type": "integer", "description": "Total number of URLs processed"},
+                    "successful_extractions": {"type": "integer", "description": "Number of successful extractions"},
+                    "failed_extractions": {"type": "integer", "description": "Number of failed extractions"},
+                    "results": {
+                        "type": "array",
+                        "items": {
+                            "type": "object",
+                            "properties": {
+                                "url": {"type": "string"},
+                                "success": {"type": "boolean"},
+                                "title": {"type": "string"},
+                                "content_length": {"type": "integer"},
+                                "source_id": {"type": "integer"},
+                                "error": {"type": "string"}
+                            }
+                        },
+                        "description": "Detailed results for each URL processed"
+                    }
+                },
+                "required": ["success", "total_processed", "successful_extractions", "failed_extractions", "results"]
+            }
+        )
+
+        # Synthesizer Agent for creating final reports
+        synthesizer_agent = Agent(
+            model_config=orchestrator_config,  # Use more capable model for synthesis
+            description=SYNTHESIZER_DESCRIPTION,
+            agent_name="SynthesizerAgent",
+            tools={
+                "read_scratch_pad_content": read_scratch_pad_content,
+                "write_markdown_report": write_markdown_report
+            },
+            input_schema={
+                "type": "object",
+                "properties": {
+                    "scratch_pad_file": {"type": "string", "description": "Path to the scratch pad file containing extracted content"},
+                    "output_directory": {"type": "string", "description": "Directory for saving the final report"},
+                    "research_focus": {"type": "string", "description": "Specific focus or angle for the research synthesis"}
+                },
+                "required": ["scratch_pad_file", "output_directory"]
+            },
+            output_schema={
+                "type": "object",
+                "properties": {
+                    "success": {"type": "boolean", "description": "Whether report generation was successful"},
+                    "report_file": {"type": "string", "description": "Path to the generated markdown report"},
+                    "report_preview": {"type": "string", "description": "Preview of the report content (first 1000 characters)"},
+                    "total_sources_cited": {"type": "integer", "description": "Number of sources referenced in the report"},
+                    "report_length": {"type": "integer", "description": "Total length of the report in characters"}
+                },
+                "required": ["success", "report_file", "report_preview", "total_sources_cited"]
+            }
+        )
+
+        # Set up output directory for this research session
+        output_directory = f"tmp/research_output_{research_id}"
+        Path(output_directory).mkdir(exist_ok=True)
+        
+        logger.info(f"Starting research workflow with output directory: {output_directory}")
+        logger.info(f"Research query: '{research_query}' | Target articles: {num_articles}")
+        
+        # Run the orchestrator
+        result = await orchestrator.auto_run(
+            initial_request={
+                "query": research_query,
+                "output_directory": output_directory
+            },
+            max_steps=30,  # Increased to accommodate clarifying questions
+            max_re_prompts=3
+        )
+        
+        # Process results
+        if isinstance(result, dict):
+            report_file = result.get("report_file", "No file generated")
+            report_preview = result.get("report_preview", str(result))
+        else:
+            report_file = "No file generated"
+            report_preview = str(result)
+        
+        # Display results
+        print("\n" + "="*80)
+        print("RESEARCH COMPLETED SUCCESSFULLY!")
+        print("="*80)
+        print("\nReport Preview:")
+        print("-"*80)
+        print(report_preview[:1000] + "..." if len(report_preview) > 1000 else report_preview)
+        print("-"*80)
+        print(f"\nFull report saved to: {report_file}")
+        print(f"Research session ID: {research_id}")
+        print("="*80)
+        
+    except Exception as e:
+        logger.error(f"Research workflow failed: {e}", exc_info=True)
+        raise
+    
+    finally:
+        # Clean up browser resources
+        if hasattr(browser_agent, 'close'):
+            await browser_agent.close()
+            logger.info("Browser agent closed")
+
+
+# Run the example
+if __name__ == "__main__":
+    asyncio.run(main()) 
