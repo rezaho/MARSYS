@@ -15,7 +15,7 @@ from playwright.async_api import Browser, Page, async_playwright
 from src.environment.web_browser import BrowserTool
 from src.models.models import BaseAPIModel, BaseLLM, BaseVLM, ModelConfig
 
-from .agents import BaseAgent
+from .agents import BaseAgent, Agent
 from .memory import MemoryManager, Message
 from .utils import LogLevel, RequestContext
 from .exceptions import (
@@ -453,7 +453,7 @@ Return a JSON array of objects with "box_2d" and "label" fields only.
 
 
 
-class BrowserAgent(BaseAgent):
+class BrowserAgent(Agent):
     """
     A specialized agent for browser automation and web scraping using Playwright.
 
@@ -467,10 +467,10 @@ class BrowserAgent(BaseAgent):
 
     def __init__(
         self,
-        model: Union[BaseVLM, BaseLLM, BaseAPIModel],
+        model_config: ModelConfig,
         description: str,
         tools: Optional[Dict[str, Callable[..., Any]]] = None,
-        max_tokens: Optional[int] = 512,
+        max_tokens: Optional[int] = None,
         agent_name: Optional[str] = None,
         allowed_peers: Optional[List[str]] = None,
         headless: bool = True,
@@ -481,7 +481,6 @@ class BrowserAgent(BaseAgent):
         vision_model_config: Optional[ModelConfig] = None,
         input_schema: Optional[Any] = None,
         output_schema: Optional[Any] = None,
-        model_config: Optional[ModelConfig] = None,
         auto_screenshot: bool = False,
         timeout: int = 5000,
     ) -> None:
@@ -489,10 +488,10 @@ class BrowserAgent(BaseAgent):
         Initialize the BrowserAgent.
 
         Args:
-            model: The language model instance
+            model_config: Configuration for the language model
             description: Agent's role description
             tools: Optional dictionary of additional tools
-            max_tokens: Maximum tokens for model generation
+            max_tokens: Maximum tokens for model generation (overrides model_config default if provided)
             agent_name: Optional name for registration
             allowed_peers: List of agent names this agent can invoke
             headless: Whether to run browser in headless mode
@@ -503,9 +502,8 @@ class BrowserAgent(BaseAgent):
             vision_model_config: Optional separate model config for vision analysis
             input_schema: Optional input schema for the agent
             output_schema: Optional output schema for the agent
-            model_config: Optional ModelConfig instance for API kwargs extraction
             auto_screenshot: Whether to automatically take screenshots after state-changing operations
-            timeout: Default timeout in milliseconds for browser operations (default: 30000)
+            timeout: Default timeout in milliseconds for browser operations (default: 5000)
         """
         # Set up temporary directory
         if tmp_dir:
@@ -559,7 +557,7 @@ class BrowserAgent(BaseAgent):
         )
 
         super().__init__(
-            model=model,
+            model_config=model_config,
             description=enhanced_description,
             tools=browser_tools,
             max_tokens=max_tokens,
@@ -627,9 +625,6 @@ class BrowserAgent(BaseAgent):
         # Store vision model config for potential future use
         self._vision_model_config = vision_model_config
         
-        # Store the model config for API kwargs extraction
-        self._model_config = model_config
-
         # Track last auto-generated message IDs for memory management
         self._last_auto_screenshot_message_id: Optional[str] = None
         self._last_auto_accessibility_message_id: Optional[str] = None
@@ -637,15 +632,6 @@ class BrowserAgent(BaseAgent):
 
         # BrowserTool object (initialized in create_safe)
         self.browser_tool: Optional["BrowserTool"] = None
-
-        # Initialize memory
-        self.memory = MemoryManager(
-            memory_type="conversation_history",
-            description=self.description,
-            model=self.model,
-            input_processor=self._input_message_processor(),
-            output_processor=self._output_message_processor(),
-        )
 
     def __del__(self):
         """Clean up resources when agent is deleted"""
@@ -684,45 +670,12 @@ class BrowserAgent(BaseAgent):
         This method ensures the browser is properly initialized before returning
         the agent instance.
         """
-        # Create model instance from config
-        if model_config.type == "api":
-            provider = model_config.provider or "openai"  # Default to openai if no provider specified
-            model = BaseAPIModel(
-                model_name=model_config.name,
-                api_key=model_config.api_key,
-                base_url=model_config.base_url,
-                max_tokens=model_config.max_tokens,
-                temperature=model_config.temperature,
-                provider=provider,
-                thinking_budget=model_config.thinking_budget,
-                response_processor=lambda msg_obj: BrowserAgent._default_response_processor_static(msg_obj),
-            )
-        elif model_config.type == "local":
-            if model_config.model_class == "llm":
-                model = BaseLLM(
-                    model_name=model_config.name,
-                    max_tokens=model_config.max_tokens,
-                    torch_dtype=model_config.torch_dtype,
-                    device_map=model_config.device_map,
-                )
-            elif model_config.model_class == "vlm":
-                model = BaseVLM(
-                    model_name=model_config.name,
-                    max_tokens=model_config.max_tokens,
-                    torch_dtype=model_config.torch_dtype,
-                    device_map=model_config.device_map,
-                )
-            else:
-                raise ValueError(f"Unsupported model class: {model_config.model_class}")
-        else:
-            raise ValueError(f"Unsupported model type: {model_config.type}")
-
-        # Create agent instance
+        # Create agent instance (Agent's __init__ will handle model creation)
         agent = cls(
-            model=model,
+            model_config=model_config,
             description=description,
             tools=tools,
-            max_tokens=max_tokens or model_config.max_tokens,
+            max_tokens=max_tokens,
             agent_name=agent_name,
             allowed_peers=allowed_peers,
             headless=headless,
@@ -733,7 +686,6 @@ class BrowserAgent(BaseAgent):
             vision_model_config=vision_model_config,
             input_schema=input_schema,
             output_schema=output_schema,
-            model_config=model_config,  # Pass the ModelConfig to __init__
             auto_screenshot=auto_screenshot,
             timeout=timeout,
         )
@@ -1489,335 +1441,3 @@ class BrowserAgent(BaseAgent):
                 f"Failed to remove previous auto-messages from memory: {e}",
                 data={"error": str(e)}
             )
-
-    async def _run(
-        self, prompt: Any, request_context: RequestContext, run_mode: str, **kwargs: Any
-    ) -> Message:
-        """
-        Core execution logic for the BrowserAgent.
-
-        This method processes the input prompt, potentially performs browser actions,
-        and returns a response message.
-        """
-        # Extract prompt and context using base class method
-        prompt_content, passed_context = self._extract_prompt_and_context(prompt)
-
-        # Log the execution
-        await self._log_progress(
-            request_context,
-            LogLevel.DETAILED,
-            f"BrowserAgent executing _run with mode='{run_mode}'",
-            data={"prompt_preview": str(prompt_content)[:100]},
-        )
-
-        # Update memory with context messages
-        for msg in passed_context:
-            self.memory.update_memory(message=msg)
-
-        # 1. Add the user prompt to memory
-        if prompt_content:
-            self.memory.update_memory(
-                role="user",
-                content=prompt_content,
-                name=request_context.caller_agent_name or "user",
-            )
-
-        # 2. Construct system prompt and add temporarily to messages (not to memory)
-        base_description = getattr(self, f"description_{run_mode}", self.description)
-        system_prompt = self._construct_full_system_prompt(
-            base_description=base_description,
-            json_mode_for_output=(run_mode == "auto_step")
-        )
-
-        # Get messages from memory and add system prompt temporarily (following base Agent pattern)
-        llm_messages_for_model = self.memory.to_llm_format()
-        system_message_found_and_updated = False
-        for i, msg_dict in enumerate(llm_messages_for_model):
-            if msg_dict["role"] == "system":
-                llm_messages_for_model[i] = Message(
-                    role="system", content=system_prompt
-                ).to_llm_dict()
-                system_message_found_and_updated = True
-                break
-        if not system_message_found_and_updated:
-            llm_messages_for_model.insert(
-                0,
-                Message(role="system", content=system_prompt).to_llm_dict(),
-            )
-
-        # Extract API kwargs and handle structured output properly
-        max_tokens_override = kwargs.pop("max_tokens", self.max_tokens)
-        default_temperature = self._model_config.temperature if self._model_config else 0.2
-        temperature_override = kwargs.pop("temperature", default_temperature)
-
-        api_model_kwargs = self._get_api_kwargs()
-        api_model_kwargs.update(kwargs)
-
-        # 2. Configure output schema for APIAdapter request (following InteractiveElementsAgent pattern)
-        if self._compiled_output_schema:
-            # Add both response_schema and json_mode to api_model_kwargs
-            # api_model_kwargs['response_format'] = self._compiled_output_schema
-            api_model_kwargs['json_mode'] = True
-        else:
-            api_model_kwargs['json_mode'] = False
-
-        # Pass tools when available
-        current_tools_schema = self.tools_schema if self.tools_schema else None
-
-        # Call the model
-        try:
-            response = self.model.run(
-                messages=llm_messages_for_model,
-                max_tokens=max_tokens_override,
-                temperature=temperature_override,
-                tools=current_tools_schema,
-                **api_model_kwargs,
-            )
-
-            # Generate message ID for the response
-            new_message_id = str(uuid.uuid4())
-            
-            # Validate and normalize model response
-            validated_response = self._validate_and_normalize_model_response(response)
-            
-            # Content parsing is now handled centrally through _parse_model_response in auto_run
-
-            # Use the memory update method that handles transformations (consistent with Agent class)
-            self.memory.update_from_response(
-                validated_response,
-                message_id=new_message_id,
-                default_role="assistant",
-                default_name=self.name
-            )
-            
-            # Retrieve the stored message to return
-            assistant_message = self.memory.retrieve_by_id(new_message_id)
-            if not assistant_message:
-                # Fallback if retrieval fails
-                assistant_message = Message.from_response_dict(
-                    validated_response,
-                    default_id=new_message_id,
-                    default_role="assistant",
-                    default_name=self.name,
-                    processor=self._input_message_processor()
-                )
-
-            await self._log_progress(
-                request_context,
-                LogLevel.DETAILED,
-                f"Model call successful for mode='{run_mode}'. Content type: {type(validated_response['content']).__name__}",
-                data={
-                    "content_preview": str(validated_response["content"])[:100] if validated_response["content"] else "Empty",
-                    "tool_calls_count": len(validated_response.get("tool_calls", []))
-                },
-            )
-
-            return assistant_message
-
-
-        except Exception as e:
-            error_msg = f"Error in BrowserAgent._run: {e}"
-            await self._log_progress(
-                request_context, LogLevel.MINIMAL, error_msg, data={"error": str(e)}
-            )
-
-            return Message(
-                role="error",
-                content=error_msg,
-                name=self.name,
-                message_id=str(uuid.uuid4()),
-            )
-
-    def _input_message_processor(self) -> Callable[[Dict[str, Any]], Dict[str, Any]]:
-        """
-        Creates a processor function that converts LLM JSON responses to Message-compatible format.
-        Extracts agent_calls information from JSON content when present.
-        """
-        def transform_from_llm(data: Dict[str, Any]) -> Dict[str, Any]:
-            # Start with a copy of the original data
-            result = data.copy()
-            
-            # Check if content contains agent call info in JSON
-            content = data.get("content")
-            if data.get("role") == "assistant" and content and isinstance(content, str):
-                try:
-                    parsed_content = json.loads(content)
-                    if isinstance(parsed_content, dict) and parsed_content.get("next_action") == "invoke_agent":
-                        # Extract agent_calls information as raw dict list - Message.__post_init__ will convert
-                        action_input = parsed_content.get("action_input", {})
-                        if isinstance(action_input, dict) and "agent_name" in action_input:
-                            result["agent_calls"] = [action_input]  # Create list with single agent call
-                            
-                            # Keep only thought in content if present
-                            thought = parsed_content.get("thought")
-                            if thought:
-                                result["content"] = thought
-                            else:
-                                result["content"] = None
-                except (json.JSONDecodeError, TypeError):
-                    # Content is not JSON or parsing failed, keep as is
-                    pass
-            
-            return result
-        
-        return transform_from_llm
-
-    def _output_message_processor(self) -> Callable[[Dict[str, Any]], Dict[str, Any]]:
-        """
-        Creates a processor function that converts Message dicts to LLM-compatible format.
-        Synthesizes JSON content when agent_calls is present.
-        """
-        def transform_to_llm(msg_dict: Dict[str, Any]) -> Dict[str, Any]:
-            # Start with a copy
-            result = msg_dict.copy()
-            
-            # If agent_calls is present and role is assistant, synthesize JSON content
-            if msg_dict.get("role") == "assistant" and msg_dict.get("agent_calls"):
-                agent_calls = msg_dict["agent_calls"]
-                thought = msg_dict.get("content", "I need to invoke another agent.")
-                
-                # For now, we only support single agent invocation, so take the first one
-                if agent_calls and len(agent_calls) > 0:
-                    first_agent_call_msg = agent_calls[0]
-                    
-                    # Handle both AgentCallMsg objects and raw dict format
-                    if hasattr(first_agent_call_msg, 'to_dict'):
-                        # It's an AgentCallMsg object
-                        agent_call_data = first_agent_call_msg.to_dict()
-                    else:
-                        # It's already a dict
-                        agent_call_data = first_agent_call_msg
-                    
-                    synthesized_content = {
-                        "thought": thought,
-                        "next_action": "invoke_agent",
-                        "action_input": agent_call_data
-                    }
-                    result["content"] = json.dumps(synthesized_content)
-                
-                # Remove agent_calls from result as it's not part of OpenAI API
-                result.pop("agent_calls", None)
-            else:
-                # Remove agent_calls if present (not part of OpenAI API)
-                result.pop("agent_calls", None)
-            
-            return result
-        
-        return transform_to_llm
-
-    @staticmethod
-    def _default_response_processor_static(message_obj: Dict[str, Any]) -> Dict[str, Any]:
-        """
-        Static version of the default response processor for BrowserAgent.
-        This handles agent action format responses (next_action, action_input).
-        """
-        import json
-        from typing import Optional, List, Dict, Any
-        
-        # Extract basic fields
-        tool_calls = message_obj.get("tool_calls", [])
-        content = message_obj.get("content")
-        message_role = message_obj.get("role", "assistant")
-        agent_calls: Optional[List[Dict[str, Any]]] = None
-
-        # Attempt to parse content as JSON if it's a string
-        parsed_content: Optional[Dict[str, Any]] = None
-        if isinstance(content, str) and content.strip():
-            try:
-                parsed_content = json.loads(content)
-            except (json.JSONDecodeError, ValueError):
-                parsed_content = None  # Leave as-is if JSON parsing fails
-
-        # Process structured content to extract tool_calls/agent_call
-        if isinstance(parsed_content, dict):
-            next_action_val = parsed_content.get("next_action")
-            action_input_val = parsed_content.get("action_input", {})
-
-            # Handle call_tool action inside content
-            if (
-                next_action_val == "call_tool"
-                and isinstance(action_input_val, dict)
-                and "tool_calls" in action_input_val
-            ):
-                embedded_tool_calls = action_input_val.get("tool_calls")
-                # If tool_calls field from API is empty, promote embedded ones
-                if not tool_calls and embedded_tool_calls:
-                    tool_calls = embedded_tool_calls
-                    # Keep only the "thought" in content if present, else set to None
-                    thought_only = parsed_content.get("thought")
-                    content = thought_only if thought_only else None
-                elif tool_calls and embedded_tool_calls:
-                    # Already have tool_calls separately → remove duplication in content
-                    thought_only = parsed_content.get("thought")
-                    content = thought_only if thought_only else None
-
-            # Handle invoke_agent action inside content
-            elif (
-                next_action_val == "invoke_agent"
-                and isinstance(action_input_val, dict)
-                and "agent_name" in action_input_val
-            ):
-                if not agent_calls:
-                    agent_calls = [{
-                        "agent_name": action_input_val.get("agent_name"),
-                        "request": action_input_val.get("request"),
-                    }]
-                    # Similar clean-up of content keeping only thought
-                    thought_only = parsed_content.get("thought")
-                    content = thought_only if thought_only else None
-
-        # Ensure OpenAI compatibility: if tool_calls present for assistant, content must be null
-        if message_role == "assistant" and tool_calls:
-            content = None
-
-        # Build response payload
-        response_payload: Dict[str, Any] = {
-            "role": message_role,
-            "content": content,  # Can be None for assistant with tool_calls
-            "tool_calls": tool_calls,
-        }
-        if agent_calls:
-            response_payload["agent_calls"] = agent_calls
-
-        return response_payload
-
-
-
-    def _get_api_kwargs(self) -> Dict[str, Any]:
-        """
-        Extracts extra keyword arguments intended for API model calls from the ModelConfig instance.
-        Excludes standard config keys handled directly by BaseAPIModel init or BaseAgent init.
-
-        Returns:
-            A dictionary of keyword arguments.
-        """
-        if isinstance(self.model, BaseAPIModel) and self._model_config:
-            # Get all fields from the config instance
-            config_dict = self._model_config.dict(exclude_unset=True)
-
-            # Define keys handled by Agent/BaseAgent/BaseAPIModel initializers or run methods
-            exclude_keys = {
-                "type",
-                "name",
-                "provider",  # Handled by ModelConfig validation
-                "base_url",  # Passed to BaseAPIModel init
-                "api_key",  # Passed to BaseAPIModel init
-                "max_tokens",  # Handled by Agent init and run override
-                "temperature",  # Handled by Agent init and run override
-                "model_class",  # Local model specific
-                "torch_dtype",  # Local model specific
-                "device_map",  # Local model specific
-                # Agent specific config, not model config
-                "description",
-                "tools",
-                "tools_schema",
-                "memory_type",
-                "agent_name",
-                "allowed_peers",
-                "input_schema",
-                "output_schema",
-            }
-            # Filter out the excluded keys
-            kwargs = {k: v for k, v in config_dict.items() if k not in exclude_keys}
-            return kwargs
-        return {}

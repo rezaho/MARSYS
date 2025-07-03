@@ -18,7 +18,6 @@ from typing import Any, Dict, List, Literal, Optional
 import aiohttp
 import requests
 from bs4 import BeautifulSoup
-from googlesearch import search as google_search_lib
 
 from .web_tools import (
     clean_and_extract_html,
@@ -159,6 +158,15 @@ def tool_google_search_community(
     Returns:
         A JSON string of search results or an error.
     """
+    try:
+        from googlesearch import search as google_search_lib
+    except ImportError:
+        tool_logger.error(
+            "googlesearch library not installed. Install with: pip install googlesearch-python",
+            extra={"agent_name": "Tool"},
+        )
+        return json.dumps({"error": "googlesearch library not installed. This tool requires 'pip install googlesearch-python'"})
+    
     tool_logger.info(
         f"Tool Google Search (Community Library) for: {query}",
         extra={"agent_name": "Tool"},
