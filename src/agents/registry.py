@@ -106,3 +106,21 @@ class AgentRegistry:
         """
         with cls._lock:
             return dict(cls._agents)
+
+    @classmethod
+    def clear(cls) -> None:
+        """
+        Removes all agent registrations. Useful for test cleanup.
+        
+        This method should be used with caution in production code as it
+        removes all agent references from the registry.
+        """
+        with cls._lock:
+            agent_names = list(cls._agents.keys())
+            cls._agents.clear()
+            cls._counter = 0
+            if agent_names:
+                logging.info(
+                    f"Registry cleared. Removed {len(agent_names)} agents: {', '.join(agent_names)}",
+                    extra={"agent_name": "Registry"}
+                )

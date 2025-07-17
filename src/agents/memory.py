@@ -1,26 +1,29 @@
 import asyncio
+import base64
 import dataclasses
 import json
 import logging
 import time
 import uuid
-import base64
 from abc import ABC, abstractmethod
 from pathlib import Path
 from typing import Any, Callable, Dict, List, Optional, Union
 
 from pydantic import BaseModel
 
-from src.models.models import BaseLLM  # Added ModelConfig
-from src.models.models import BaseAPIModel, BaseVLM
+from src.models.models import (
+    BaseAPIModel,
+    BaseLLM,  # Added ModelConfig
+    BaseVLM,
+)
+from src.models.response_models import HarmonizedResponse
 
 # Import the new exception classes
 from .exceptions import (
     AgentConfigurationError,
-    MessageError,
     AgentFrameworkError,
+    MessageError,
 )
-
 
 # --- Structured Content Data Classes ---
 
@@ -273,255 +276,78 @@ class Message:
             logging.warning(f"Failed to encode image {image_path}: {e}")
             return ""
 
-    def _is_agent_action_content(self, content_dict: Dict[str, Any]) -> bool:
-        """
-        Check if a content dictionary represents standard agent action format.
+
+    # def to_action_dict(self) -> Optional[Dict[str, Any]]:
+    #     """
+    #     Converts the Message to an action dictionary format expected by auto_run.
         
-        Agent action content has the structure:
-        - thought (optional): str
-        - next_action (optional): one of "call_tool", "invoke_agent", "final_response"  
-        - action_input (optional): dict
+    #     This method checks the Message attributes in priority order and returns
+    #     the appropriate action dictionary format, or None if no valid action is found.
         
-        Args:
-            content_dict: Dictionary to check
+    #     Priority order:
+    #     1. tool_calls attribute -> call_tool action
+    #     2. agent_calls attribute -> invoke_agent action  
+    #     3. content with next_action='final_response' -> final_response action
+    #     4. None if no valid action found
+        
+    #     Returns:
+    #         Dictionary with 'thought', 'next_action', and 'action_input' keys, or None
+    #     """
+    #     # Extract thought from content if it's a string or dict with thought
+    #     thought = None
+    #     if isinstance(self.content, str):
+    #         thought = self.content
+    #     elif isinstance(self.content, dict) and "thought" in self.content:
+    #         thought = self.content["thought"]
+        
+    #     # Priority 1: Check for tool_calls attribute
+    #     if self.tool_calls:
+    #         # Convert ToolCallMsg objects to dicts
+    #         tc_dicts = []
+    #         for tc in self.tool_calls:
+    #             if hasattr(tc, 'to_dict'):
+    #                 tc_dicts.append(tc.to_dict())
+    #             else:
+    #                 # Already a dict
+    #                 tc_dicts.append(tc)
             
-        Returns:
-            True if the dict appears to be agent action content, False otherwise
-        """
-        if not isinstance(content_dict, dict):
-            return False
+    #         return {
+    #             "thought": thought,
+    #             "next_action": "call_tool",
+    #             "action_input": {"tool_calls": tc_dicts}
+    #         }
         
-        # Check if it has the standard agent action keys
-        agent_action_keys = {"thought", "next_action", "action_input"}
-        content_keys = set(content_dict.keys())
-        
-        # If it only contains agent action keys (or subset), it's likely agent action content
-        if content_keys <= agent_action_keys:
-            # Additional validation: if next_action is present, it should be valid
-            next_action = content_dict.get("next_action")
-            if next_action is not None:
-                valid_actions = {"call_tool", "invoke_agent", "final_response"}
-                return next_action in valid_actions
-            return True
-        
-        # If it has other keys beyond agent action keys, it's specialized content
-        return False
-
-    def to_llm_dict(self) -> Dict[str, Any]:
-        """Converts the message to a dictionary format suitable for LLM APIs."""
-        payload: Dict[str, Any] = {"role": self.role}
-
-        # Content handling based on OpenAI spec
-        if self.role == "assistant" and self.tool_calls:
-            payload["content"] = None  # Must be null if tool_calls are present
-        elif self.content is not None:
-            # Handle structured content
-            if isinstance(self.content, dict):
-                # Check if it's a MessageContent-like dict (has standard agent action keys)
-                if self._is_agent_action_content(self.content):
-                    # Standard agent action content - serialize as JSON string
-                    payload["content"] = json.dumps(self.content, ensure_ascii=False, indent=2)
-                else:
-                    # Specialized content (like InteractiveElementsAgent response) - serialize as JSON string
-                    payload["content"] = json.dumps(self.content, ensure_ascii=False, indent=2)
-            else:
-                # Check if we have images to create multimodal content
-                if self.images and len(self.images) > 0:
-                    # Create multimodal content with text and images
-                    content_parts = []
-                    
-                    # Add text content if present
-                    if str(self.content).strip():
-                        content_parts.append({
-                            "type": "text",
-                            "text": str(self.content)
-                        })
-                    
-                    # Add image content with proper base64 encoding
-                    for image_path in self.images:
-                        encoded_image = self._encode_image_to_base64(image_path)
-                        content_parts.append({
-                            "type": "image_url",
-                            "image_url": {"url": encoded_image}
-                        })
-                    
-                    payload["content"] = content_parts
-                else:
-                    payload["content"] = str(self.content)
-        elif self.role in [
-            "user",
-            "system",
-            "tool",
-        ]:  # These roles generally require content
-            # Check if we have images without text content
-            if self.images and len(self.images) > 0:
-                content_parts = []
-                for image_path in self.images:
-                    encoded_image = self._encode_image_to_base64(image_path)
-                    content_parts.append({
-                        "type": "image_url",
-                        "image_url": {"url": encoded_image}
-                    })
-                payload["content"] = content_parts
-            else:
-                payload["content"] = ""  # Keep as empty string if no content or images
-        # else: content can remain None for assistant without tool_calls (though less common)
-
-        # Add optional fields if they exist
-        if self.name:
-            payload["name"] = self.name
-        if self.tool_calls and self.role == "assistant":  # tool_calls are specific to assistant role
-            # Convert ToolCallMsg objects back to dicts for LLM API
-            payload["tool_calls"] = [tc.to_dict() for tc in self.tool_calls]
-
-        # Special handling for tool messages - extract tool_call_id from content
-        if self.role == "tool" and self.content:
-            try:
-                # Try to parse content as JSON to extract tool_call_id
-                if isinstance(self.content, str):
-                    content_data = json.loads(self.content)
-                    if isinstance(content_data, dict) and "tool_call_id" in content_data:
-                        payload["tool_call_id"] = content_data["tool_call_id"]
-                        
-                        # Handle content with images
-                        output_text = content_data.get("output", "")
-                        if self.images and len(self.images) > 0:
-                            # Create multimodal content with text and images
-                            content_parts = []
-                            
-                            # Add text content if present
-                            if output_text.strip():
-                                content_parts.append({
-                                    "type": "text",
-                                    "text": output_text
-                                })
-                            
-                            # Add image content with proper base64 encoding
-                            for image_path in self.images:
-                                encoded_image = self._encode_image_to_base64(image_path)
-                                content_parts.append({
-                                    "type": "image_url",
-                                    "image_url": {"url": encoded_image}
-                                })
-                            
-                            payload["content"] = content_parts
-                        else:
-                            # No images, just set text content
-                            payload["content"] = output_text
-                elif isinstance(self.content, dict) and "tool_call_id" in self.content:
-                    # Content is already a dict with tool_call_id
-                    payload["tool_call_id"] = self.content["tool_call_id"]
-                    output_text = self.content.get("output", "")
-                    if self.images and len(self.images) > 0:
-                        # Create multimodal content with text and images
-                        content_parts = []
-                        
-                        # Add text content if present
-                        if output_text.strip():
-                            content_parts.append({
-                                "type": "text",
-                                "text": output_text
-                            })
-                        
-                        # Add image content with proper base64 encoding
-                        for image_path in self.images:
-                            encoded_image = self._encode_image_to_base64(image_path)
-                            content_parts.append({
-                                "type": "image_url",
-                                "image_url": {"url": encoded_image}
-                            })
-                        
-                        payload["content"] = content_parts
-                    else:
-                        # No images, just set text content
-                        payload["content"] = output_text
-            except (json.JSONDecodeError, TypeError):
-                # If content is not JSON or doesn't have expected structure, keep as is
-                pass
-        
-        # Note: agent_calls is NOT included in LLM format as it's not part of OpenAI API
-        # It should be converted to JSON content by message transformers when needed
-
-        # Filter out keys with None values, except for 'content: None' for assistant with tool_calls
-        final_payload = {}
-        for k, v in payload.items():
-            if k == "content" and self.role == "assistant" and self.tool_calls:
-                final_payload[k] = None  # Explicitly keep content: null
-            elif v is not None:
-                final_payload[k] = v
-        return final_payload
-
-    def to_action_dict(self) -> Optional[Dict[str, Any]]:
-        """
-        Converts the Message to an action dictionary format expected by auto_run.
-        
-        This method checks the Message attributes in priority order and returns
-        the appropriate action dictionary format, or None if no valid action is found.
-        
-        Priority order:
-        1. tool_calls attribute -> call_tool action
-        2. agent_calls attribute -> invoke_agent action  
-        3. content with next_action='final_response' -> final_response action
-        4. None if no valid action found
-        
-        Returns:
-            Dictionary with 'thought', 'next_action', and 'action_input' keys, or None
-        """
-        # Extract thought from content if it's a string or dict with thought
-        thought = None
-        if isinstance(self.content, str):
-            thought = self.content
-        elif isinstance(self.content, dict) and "thought" in self.content:
-            thought = self.content["thought"]
-        
-        # Priority 1: Check for tool_calls attribute
-        if self.tool_calls:
-            # Convert ToolCallMsg objects to dicts
-            tc_dicts = []
-            for tc in self.tool_calls:
-                if hasattr(tc, 'to_dict'):
-                    tc_dicts.append(tc.to_dict())
-                else:
-                    # Already a dict
-                    tc_dicts.append(tc)
+    #     # Priority 2: Check for agent_calls attribute
+    #     if hasattr(self, 'agent_calls') and self.agent_calls:
+    #         # For now, we only support single agent invocation, so take the first one
+    #         # In the future, this could be extended to support multiple agent calls
+    #         first_agent_call_msg = self.agent_calls[0]
             
-            return {
-                "thought": thought,
-                "next_action": "call_tool",
-                "action_input": {"tool_calls": tc_dicts}
-            }
-        
-        # Priority 2: Check for agent_calls attribute
-        if hasattr(self, 'agent_calls') and self.agent_calls:
-            # For now, we only support single agent invocation, so take the first one
-            # In the future, this could be extended to support multiple agent calls
-            first_agent_call_msg = self.agent_calls[0]
+    #         # Convert AgentCallMsg to dict
+    #         if hasattr(first_agent_call_msg, 'to_dict'):
+    #             ac_dict = first_agent_call_msg.to_dict()
+    #         else:
+    #             # Already a dict
+    #             ac_dict = first_agent_call_msg
             
-            # Convert AgentCallMsg to dict
-            if hasattr(first_agent_call_msg, 'to_dict'):
-                ac_dict = first_agent_call_msg.to_dict()
-            else:
-                # Already a dict
-                ac_dict = first_agent_call_msg
+    #         return {
+    #             "thought": thought,
+    #             "next_action": "invoke_agent",
+    #             "action_input": ac_dict
+    #         }
+        
+    #     # Priority 3: Check for final_response in content
+    #     if (isinstance(self.content, dict) and 
+    #         self.content.get('next_action') == 'final_response'):
             
-            return {
-                "thought": thought,
-                "next_action": "invoke_agent",
-                "action_input": ac_dict
-            }
+    #         return self.content  # Return the content dict as-is
         
-        # Priority 3: Check for final_response in content
-        if (isinstance(self.content, dict) and 
-            self.content.get('next_action') == 'final_response'):
-            
-            return self.content  # Return the content dict as-is
+    #     # Priority 4: Check if content is agent action format (handles legacy MessageContent)
+    #     if isinstance(self.content, dict) and self._is_agent_action_content(self.content):
+    #         return self.content  # Return the agent action content as-is
         
-        # Priority 4: Check if content is agent action format (handles legacy MessageContent)
-        if isinstance(self.content, dict) and self._is_agent_action_content(self.content):
-            return self.content  # Return the agent action content as-is
-        
-        # No valid action found
-        return None
+    #     # No valid action found
+    #     return None
 
     @classmethod
     def from_response_dict(
@@ -579,6 +405,48 @@ class Message:
             structured_data=structured_data,
             images=response_dict.get("images"),
         )
+    
+    @classmethod
+    def from_harmonized_response(
+        cls,
+        harmonized_response: HarmonizedResponse,
+        name: Optional[str] = None,
+        images: Optional[List[str]] = None,
+    ) -> "Message":
+        """
+        Creates a Message instance from a HarmonizedResponse object.
+        
+        This method provides a clean way to convert from the BaseAPIModel's
+        HarmonizedResponse format to the Message format used by agents.
+        
+        Args:
+            harmonized_response: HarmonizedResponse object from BaseAPIModel
+            name: Optional name (e.g., model name) to include in the message
+            images: Optional list of image paths/URLs
+            
+        Returns:
+            Message instance created from the HarmonizedResponse
+        """
+        
+        # Convert tool_calls from response format to message format
+        tool_calls = None
+        if harmonized_response.tool_calls:
+            tool_calls = []
+            for tc in harmonized_response.tool_calls:
+                tool_calls.append({
+                    "id": tc.id,
+                    "type": tc.type,
+                    "function": tc.function
+                })
+        
+        # Create Message with fields from HarmonizedResponse
+        return cls(
+            role=harmonized_response.role,
+            content=harmonized_response.content,
+            name=name or harmonized_response.metadata.model,
+            tool_calls=tool_calls,
+            images=images,
+        )
 
 
 # --- Memory Classes ---
@@ -597,46 +465,59 @@ class BaseMemory(ABC):
         self.memory_type = memory_type
 
     @abstractmethod
-    def update_memory(
+    def add(
         self,
         message: Optional[Message] = None,
         *,  # Make subsequent arguments keyword-only if message is not None
         role: Optional[str] = None,
-        content: Optional[str] = None,
-        message_id: Optional[str] = None,
+        content: Optional[Union[str, Dict[str, Any]]] = None,
         name: Optional[str] = None,
-        tool_calls: Optional[List[ToolCallMsg]] = None,  # Updated type
-        agent_calls: Optional[List[AgentCallMsg]] = None,
-        images: Optional[List[str]] = None,  # For image attachments
-    ) -> None:
+        tool_calls: Optional[List[Union[Dict[str, Any], ToolCallMsg]]] = None,
+        agent_calls: Optional[List[Union[Dict[str, Any], AgentCallMsg]]] = None,
+        images: Optional[List[str]] = None,
+    ) -> str:
         """
-        Updates memory with a new message.
+        Adds a new message to memory and returns the message ID.
 
         Args:
             message: Optional Message object to add directly.
             role: Message role (user, assistant, tool, etc.).
             content: Message content.
-            message_id: Optional message ID (auto-generated if not provided).
             name: Optional name field.
             tool_calls: Optional list of tool calls (can be dicts or ToolCallMsg objects).
-            agent_calls: Optional list of agent calls (can be list of dicts or AgentCallMsg objects).
+            agent_calls: Optional list of agent calls (can be dicts or AgentCallMsg objects).
             images: Optional list of image paths/URLs for vision models.
+            
+        Returns:
+            str: The message ID of the added message
         """
-        if message is not None:
-            # Use the provided message directly - __post_init__ ensures proper conversion
-            self._add_message(message)
-        else:
-            # Create new message - __post_init__ will handle any dict-to-dataclass conversions
-            new_message = Message(
-                role=role or "user",
-                content=content,
-                message_id=message_id or str(uuid.uuid4()),
-                name=name,
-                tool_calls=tool_calls,  # Can be List[Dict] or List[ToolCallMsg]
-                agent_calls=agent_calls,  # Can be List[Dict] or List[AgentCallMsg]
-                images=images,  # List of image paths/URLs
-            )
-            self._add_message(new_message)
+        raise NotImplementedError("add must be implemented in subclasses.")
+
+    @abstractmethod
+    def update(
+        self,
+        message_id: str,
+        *,
+        role: Optional[str] = None,
+        content: Optional[Union[str, Dict[str, Any]]] = None,
+        name: Optional[str] = None,
+        tool_calls: Optional[List[Union[Dict[str, Any], ToolCallMsg]]] = None,
+        agent_calls: Optional[List[Union[Dict[str, Any], AgentCallMsg]]] = None,
+        images: Optional[List[str]] = None,
+    ) -> None:
+        """
+        Updates an existing message by its ID.
+
+        Args:
+            message_id: ID of the message to update.
+            role: New role (if provided).
+            content: New content (if provided).
+            name: New name (if provided).
+            tool_calls: New tool calls (if provided).
+            agent_calls: New agent calls (if provided).
+            images: New images list (if provided).
+        """
+        raise NotImplementedError("update must be implemented in subclasses.")
 
     @abstractmethod
     def replace_memory(
@@ -674,18 +555,18 @@ class BaseMemory(ABC):
         raise NotImplementedError("delete_memory must be implemented in subclasses.")
 
     @abstractmethod
-    def retrieve_recent(self, n: int = 1) -> List[Message]:
-        """Retrieves the 'n' most recent Message objects."""
+    def retrieve_recent(self, n: int = 1) -> List[Dict[str, Any]]:
+        """Retrieves the 'n' most recent messages as dictionaries."""
         raise NotImplementedError("retrieve_recent must be implemented in subclasses.")
 
     @abstractmethod
-    def retrieve_all(self) -> List[Message]:
-        """Retrieves all Message objects."""
+    def retrieve_all(self) -> List[Dict[str, Any]]:
+        """Retrieves all messages as dictionaries."""
         raise NotImplementedError("retrieve_all must be implemented in subclasses.")
 
     @abstractmethod
-    def retrieve_by_id(self, message_id: str) -> Optional[Message]:
-        """Retrieves a specific Message object by its ID."""
+    def retrieve_by_id(self, message_id: str) -> Optional[Dict[str, Any]]:
+        """Retrieves a specific message as dictionary by its ID."""
         raise NotImplementedError("retrieve_by_id must be implemented in subclasses.")
 
     @abstractmethod
@@ -694,43 +575,14 @@ class BaseMemory(ABC):
         raise NotImplementedError("remove_by_id must be implemented in subclasses.")
 
     @abstractmethod
-    def retrieve_by_role(self, role: str, n: Optional[int] = None) -> List[Message]:
-        """Retrieves Message objects filtered by role."""
+    def retrieve_by_role(self, role: str, n: Optional[int] = None) -> List[Dict[str, Any]]:
+        """Retrieves messages filtered by role as dictionaries."""
         raise NotImplementedError("retrieve_by_role must be implemented in subclasses.")
 
     @abstractmethod
     def reset_memory(self) -> None:
         """Clears all entries from the memory."""
         raise NotImplementedError("reset_memory must be implemented in subclasses.")
-
-    @abstractmethod
-    def to_llm_format(
-        self, 
-        transform_message: Optional[Callable[[Dict[str, Any]], Dict[str, Any]]] = None
-    ) -> List[Dict[str, Any]]:
-        """
-        Formats the memory content into a list of dictionaries suitable for LLM input.
-        
-        Args:
-            transform_message: Optional callable to transform each message dict before returning.
-                              Takes a message dict and returns a transformed dict.
-        """
-        raise NotImplementedError("to_llm_format must be implemented in subclasses.")
-
-    @abstractmethod
-    def set_message_transformers(
-        self,
-        from_llm_transformer: Optional[Callable[[Dict[str, Any]], Dict[str, Any]]] = None,
-        to_llm_transformer: Optional[Callable[[Dict[str, Any]], Dict[str, Any]]] = None,
-    ) -> None:
-        """
-        Sets transformation functions for converting messages to/from LLM format.
-        
-        Args:
-            from_llm_transformer: Callable to transform LLM response to Message-compatible format
-            to_llm_transformer: Callable to transform Message dict to LLM-compatible format
-        """
-        raise NotImplementedError("set_message_transformers must be implemented in subclasses.")
 
 
 class ConversationMemory(BaseMemory):
@@ -741,99 +593,158 @@ class ConversationMemory(BaseMemory):
     def __init__(
         self, 
         description: Optional[str] = None,
-        from_llm_transformer: Optional[Callable[[Dict[str, Any]], Dict[str, Any]]] = None,
-        to_llm_transformer: Optional[Callable[[Dict[str, Any]], Dict[str, Any]]] = None,
     ) -> None:
         """
         Initializes ConversationMemory.
 
         Args:
             description: Optional content for an initial system message.
-            from_llm_transformer: Callable to transform LLM response to Message-compatible format
-            to_llm_transformer: Callable to transform Message dict to LLM-compatible format
         """
         super().__init__(memory_type="conversation_history")
         self.memory: List[Message] = []
-        self.from_llm_transformer = from_llm_transformer
-        self.to_llm_transformer = to_llm_transformer
         if description:
             self.memory.append(Message(role="system", content=description))
 
-    def set_message_transformers(
-        self,
-        from_llm_transformer: Optional[Callable[[Dict[str, Any]], Dict[str, Any]]] = None,
-        to_llm_transformer: Optional[Callable[[Dict[str, Any]], Dict[str, Any]]] = None,
-    ) -> None:
-        """Sets transformation functions for converting messages to/from LLM format."""
-        if from_llm_transformer is not None:
-            self.from_llm_transformer = from_llm_transformer
-        if to_llm_transformer is not None:
-            self.to_llm_transformer = to_llm_transformer
-
-    def update_memory_from_llm_response(
-        self,
-        llm_response_dict: Dict[str, Any],
-        message_id: Optional[str] = None,
-    ) -> None:
-        """
-        Adds a message from LLM response, applying transformation if set.
-        
-        Args:
-            llm_response_dict: Raw response dict from LLM
-            message_id: Optional message ID to use
-        """
-        # Apply transformation if available
-        if self.from_llm_transformer:
-            transformed_dict = self.from_llm_transformer(llm_response_dict)
+    def _message_to_dict(self, msg: Message) -> Dict[str, Any]:
+        """Convert Message to standard dict format for AI models"""
+        # Handle content with images if present
+        if msg.images and len(msg.images) > 0:
+            # Create multimodal content with text and images
+            content_parts = []
+            
+            # Add text content if present
+            if msg.content is not None:
+                content_text = json.dumps(msg.content, ensure_ascii=False, indent=2) if isinstance(msg.content, dict) else str(msg.content)
+                if content_text.strip():
+                    content_parts.append({
+                        "type": "text",
+                        "text": content_text
+                    })
+            
+            # Add image content with base64 encoding
+            for image_path in msg.images:
+                encoded_image = msg._encode_image_to_base64(image_path)
+                if encoded_image:  # Only add if encoding succeeded
+                    content_parts.append({
+                        "type": "image_url",
+                        "image_url": {"url": encoded_image}
+                    })
+            
+            result = {
+                "role": msg.role,
+                "content": content_parts
+            }
         else:
-            transformed_dict = llm_response_dict
+            # No images, use simple content
+            content = msg.content
+            if isinstance(content, dict):
+                content = json.dumps(content, ensure_ascii=False, indent=2)
+            
+            result = {
+                "role": msg.role,
+                "content": content,
+            }
         
-        # Create Message from transformed dict
-        message = Message.from_response_dict(transformed_dict, default_id=message_id)
-        self.memory.append(message)
+        # Only include non-None optional fields
+        if msg.name:
+            result["name"] = msg.name
+        if msg.tool_calls:
+            result["tool_calls"] = [tc.to_dict() for tc in msg.tool_calls]
+        
+        # Special handling for tool role messages
+        if msg.role == "tool" and msg.content:
+            try:
+                # Try to extract tool_call_id from content
+                if isinstance(msg.content, str):
+                    content_data = json.loads(msg.content)
+                    if isinstance(content_data, dict) and "tool_call_id" in content_data:
+                        result["tool_call_id"] = content_data["tool_call_id"]
+                        result["content"] = content_data.get("output", "")
+                elif isinstance(msg.content, dict) and "tool_call_id" in msg.content:
+                    result["tool_call_id"] = msg.content["tool_call_id"]
+                    result["content"] = msg.content.get("output", "")
+            except (json.JSONDecodeError, TypeError):
+                pass
+        
+        # Note: agent_calls and structured_data not included in standard AI format
+        return result
 
-    def update_memory(
+    def add(
         self,
         message: Optional[Message] = None,
         *,
         role: Optional[str] = None,
-        content: Optional[str] = None,
-        message_id: Optional[str] = None,
+        content: Optional[Union[str, Dict[str, Any]]] = None,
         name: Optional[str] = None,
-        tool_calls: Optional[List[ToolCallMsg]] = None,
-        agent_calls: Optional[List[AgentCallMsg]] = None,
+        tool_calls: Optional[List[Union[Dict[str, Any], ToolCallMsg]]] = None,
+        agent_calls: Optional[List[Union[Dict[str, Any], AgentCallMsg]]] = None,
         images: Optional[List[str]] = None,
-    ) -> None:
+    ) -> str:
         """
-        Appends a message to the conversation history.
+        Adds a new message to the conversation history and returns the message ID.
         If `message` object is provided, it's used directly.
-        Otherwise, a new Message is created from `role` and `content`, etc.
-        `message_id` can be provided to use an existing ID, otherwise a new one is generated.
+        Otherwise, a new Message is created from the provided parameters.
+        
+        Returns:
+            str: The message ID of the added message
         """
         if message:
-            # If a full Message object is provided, ensure its ID is unique if not already set
-            # or if we want to enforce new IDs for additions. For now, trust the provided ID.
             self.memory.append(message)
-        elif (
-            role is not None
-        ):  # content can be None for assistant messages with tool_calls or agent_calls
+            return message.message_id
+        elif role is not None:  # content can be None for assistant messages with tool_calls
             new_message = Message(
                 role=role,
                 content=content,
-                message_id=message_id
-                or str(uuid.uuid4()),  # Use provided or generate new
                 name=name,
                 tool_calls=tool_calls,
                 agent_calls=agent_calls,
                 images=images,
             )
             self.memory.append(new_message)
+            return new_message.message_id
         else:
             raise MessageError(
-                "Either a Message object or role must be provided to update_memory.",
+                "Either a Message object or role must be provided to add.",
                 agent_name="ConversationMemory",
-                validation_path="update_memory.message_or_role_validation"
+                validation_path="add.message_or_role_validation"
             )
+    
+    def update(
+        self,
+        message_id: str,
+        *,
+        role: Optional[str] = None,
+        content: Optional[Union[str, Dict[str, Any]]] = None,
+        name: Optional[str] = None,
+        tool_calls: Optional[List[Union[Dict[str, Any], ToolCallMsg]]] = None,
+        agent_calls: Optional[List[Union[Dict[str, Any], AgentCallMsg]]] = None,
+        images: Optional[List[str]] = None,
+    ) -> None:
+        """
+        Updates an existing message by its ID.
+        Only provided fields are updated; others remain unchanged.
+        """
+        for i, msg in enumerate(self.memory):
+            if msg.message_id == message_id:
+                # Create a new message with updated fields
+                updated_message = Message(
+                    role=role if role is not None else msg.role,
+                    content=content if content is not None else msg.content,
+                    message_id=message_id,  # Keep the same ID
+                    name=name if name is not None else msg.name,
+                    tool_calls=tool_calls if tool_calls is not None else msg.tool_calls,
+                    agent_calls=agent_calls if agent_calls is not None else msg.agent_calls,
+                    images=images if images is not None else msg.images,
+                )
+                self.memory[i] = updated_message
+                return
+        
+        raise MessageError(
+            f"Message with ID '{message_id}' not found in memory.",
+            agent_name="ConversationMemory",
+            message_id=message_id,
+            validation_path="update.message_id_not_found"
+        )
 
     def replace_memory(
         self,
@@ -885,21 +796,22 @@ class ConversationMemory(BaseMemory):
         else:
             raise IndexError("Memory index out of range.")
 
-    def retrieve_recent(self, n: int = 1) -> List[Message]:
+    def retrieve_recent(self, n: int = 1) -> List[Dict[str, Any]]:
         """
-        Retrieves the 'n' most recent Message objects.
+        Retrieves the 'n' most recent messages as dictionaries.
         """
-        return self.memory[-n:] if n > 0 else []
+        messages = self.memory[-n:] if n > 0 else []
+        return [self._message_to_dict(msg) for msg in messages]
 
-    def retrieve_all(self) -> List[Message]:
-        """Retrieves all Message objects in the history."""
-        return list(self.memory)  # Return a copy
+    def retrieve_all(self) -> List[Dict[str, Any]]:
+        """Retrieves all messages in the history as dictionaries."""
+        return [self._message_to_dict(msg) for msg in self.memory]
 
-    def retrieve_by_id(self, message_id: str) -> Optional[Message]:
-        """Retrieves a specific Message object by its ID."""
+    def retrieve_by_id(self, message_id: str) -> Optional[Dict[str, Any]]:
+        """Retrieves a specific message as dictionary by its ID."""
         for msg in self.memory:
             if msg.message_id == message_id:
-                return msg
+                return self._message_to_dict(msg)
         return None
 
     def remove_by_id(self, message_id: str) -> bool:
@@ -910,12 +822,14 @@ class ConversationMemory(BaseMemory):
                 return True
         return False
 
-    def retrieve_by_role(self, role: str, n: Optional[int] = None) -> List[Message]:
+    def retrieve_by_role(self, role: str, n: Optional[int] = None) -> List[Dict[str, Any]]:
         """
-        Retrieves Message objects filtered by role, optionally limited to the most recent 'n'.
+        Retrieves messages filtered by role as dictionaries, optionally limited to the most recent 'n'.
         """
         filtered = [m for m in self.memory if m.role == role]
-        return filtered[-n:] if n else filtered
+        if n:
+            filtered = filtered[-n:]
+        return [self._message_to_dict(msg) for msg in filtered]
 
     def reset_memory(self) -> None:
         """Clears the conversation history, keeping the system prompt Message object if it exists."""
@@ -926,20 +840,6 @@ class ConversationMemory(BaseMemory):
         if system_message:
             self.memory.append(system_message)
 
-    def to_llm_format(
-        self, 
-        transform_message: Optional[Callable[[Dict[str, Any]], Dict[str, Any]]] = None
-    ) -> List[Dict[str, Any]]:
-        """
-        Converts stored Message objects to a list of dictionaries suitable for LLM input.
-        Uses instance transformer if no override provided.
-        """
-        transformer = transform_message or self.to_llm_transformer
-        messages = [msg.to_llm_dict() for msg in self.memory]
-        
-        if transformer:
-            return [transformer(msg) for msg in messages]
-        return messages
 
 
 class KGMemory(BaseMemory):
@@ -987,55 +887,109 @@ class KGMemory(BaseMemory):
             }
         )
 
-    def update_memory(
+    def add(
         self,
         message: Optional[Message] = None,
         *,
         role: Optional[str] = None,
-        content: Optional[str] = None,
-        message_id: Optional[str] = None,  # Ignored for new facts, new ID generated
-        name: Optional[
-            str
-        ] = None,  # Can be used as part of the fact's role or metadata
-        tool_calls: Optional[
-            List[ToolCallMsg]
-        ] = None,  # Generally not applicable to KG facts
-        agent_calls: Optional[List[AgentCallMsg]] = None,  # Generally not applicable to KG facts
-        images: Optional[List[str]] = None,  # Generally not applicable to KG facts
+        content: Optional[Union[str, Dict[str, Any]]] = None,
+        name: Optional[str] = None,
+        tool_calls: Optional[List[Union[Dict[str, Any], ToolCallMsg]]] = None,
+        agent_calls: Optional[List[Union[Dict[str, Any], AgentCallMsg]]] = None,
+        images: Optional[List[str]] = None,
+    ) -> str:
+        """
+        Adds a raw content entry to KG memory and schedules fact extraction.
+        Similar to ConversationMemory but stores as a fact entry.
+        
+        Returns:
+            str: The message ID of the added fact entry
+        """
+        if message:
+            content_text = str(message.content) if message.content else "empty"
+            fact_id = str(uuid.uuid4())
+            # Store the raw content as a fact
+            self.kg.append({
+                "role": message.role,
+                "subject": "raw_content",
+                "predicate": "contains",
+                "object": content_text,
+                "timestamp": time.time(),
+                "message_id": fact_id,
+            })
+            # Schedule extraction
+            if message.content:
+                asyncio.create_task(
+                    self.extract_and_update_from_text(content_text, role=message.role)
+                )
+            return fact_id
+        elif role is not None:
+            content_text = str(content) if content else "empty"
+            fact_id = str(uuid.uuid4())
+            # Store the raw content as a fact
+            self.kg.append({
+                "role": role,
+                "subject": "raw_content",
+                "predicate": "contains",
+                "object": content_text,
+                "timestamp": time.time(),
+                "message_id": fact_id,
+            })
+            # Schedule extraction
+            if content:
+                asyncio.create_task(
+                    self.extract_and_update_from_text(content_text, role=role)
+                )
+            return fact_id
+        else:
+            raise MessageError(
+                "Either a Message object or role must be provided to add.",
+                agent_name="KGMemory",
+                validation_path="add.message_or_role_validation"
+            )
+    
+    def update(
+        self,
+        message_id: str,
+        *,
+        role: Optional[str] = None,
+        content: Optional[Union[str, Dict[str, Any]]] = None,
+        name: Optional[str] = None,
+        tool_calls: Optional[List[Union[Dict[str, Any], ToolCallMsg]]] = None,
+        agent_calls: Optional[List[Union[Dict[str, Any], AgentCallMsg]]] = None,
+        images: Optional[List[str]] = None,
     ) -> None:
         """
-        Adds information to KG memory. If Message object or role/content is provided,
-        it attempts to extract facts from the content.
+        Updates an existing fact by its message_id.
+        For KG, this updates the fact's properties directly.
         """
-        text_to_extract_from = None
-        origin_role = "user"  # Default role for extracted facts if not specified
-
-        if message:
-            text_to_extract_from = message.content
-            origin_role = message.role
-        elif role and content:
-            text_to_extract_from = content
-            origin_role = role
-
-        if text_to_extract_from:
-            logging.info(
-                f"KGMemory attempting to extract facts from text (role: {origin_role}): {text_to_extract_from[:100]}..."
-            )
-            # This is an async call, but update_memory is sync.
-            # For simplicity here, we'll log and skip async extraction.
-            # In a real scenario, this might need to be handled differently,
-            # e.g., by making update_memory async or queueing extraction.
-            # For now, we'll rely on explicit calls to extract_and_update_from_text.
-            asyncio.create_task(
-                self.extract_and_update_from_text(
-                    text_to_extract_from, role=origin_role
-                )
-            )
-            logging.debug("Fact extraction from Message content scheduled.")
-        else:
-            logging.warning(
-                "KGMemory.update_memory called without Message object or role/content for fact extraction."
-            )
+        for i, fact in enumerate(self.kg):
+            if fact.get("message_id") == message_id:
+                # Update fact properties
+                if role is not None:
+                    fact["role"] = role
+                if content is not None:
+                    # For KG, content should be a structured fact update
+                    # We expect content to be a dict with subject/predicate/object
+                    if isinstance(content, dict):
+                        if "subject" in content:
+                            fact["subject"] = content["subject"]
+                        if "predicate" in content:
+                            fact["predicate"] = content["predicate"]
+                        if "object" in content:
+                            fact["object"] = content["object"]
+                    else:
+                        logging.warning(
+                            f"KGMemory.update: content should be a dict with subject/predicate/object, got {type(content)}"
+                        )
+                return
+        
+        raise MessageError(
+            f"Fact with message_id '{message_id}' not found in KG.",
+            agent_name="KGMemory",
+            message_id=message_id,
+            validation_path="update.fact_not_found"
+        )
 
     def replace_memory(
         self,
@@ -1074,33 +1028,30 @@ class KGMemory(BaseMemory):
         else:
             raise IndexError("KG index out of range.")
 
-    def _fact_to_message(self, fact_dict: Dict[str, Any]) -> Message:
-        """Converts a raw KG fact dictionary to a Message object."""
+    def _fact_to_dict(self, fact_dict: Dict[str, Any]) -> Dict[str, Any]:
+        """Convert KG fact to standard message dict"""
         content = f"Fact ({fact_dict['role']}): {fact_dict['subject']} {fact_dict['predicate']} {fact_dict['object']}."
-        return Message(
-            role=fact_dict["role"],  # Or a generic "knowledge" role
-            content=content,
-            message_id=fact_dict.get(
-                "message_id", str(uuid.uuid4())
-            ),  # Use stored ID or generate
-        )
+        return {
+            "role": fact_dict["role"],
+            "content": content
+        }
 
-    def retrieve_recent(self, n: int = 1) -> List[Message]:
+    def retrieve_recent(self, n: int = 1) -> List[Dict[str, Any]]:
         if n <= 0:
             return []
         sorted_kg = sorted(self.kg, key=lambda x: x["timestamp"], reverse=True)
-        return [self._fact_to_message(fact) for fact in sorted_kg[:n]]
+        return [self._fact_to_dict(fact) for fact in sorted_kg[:n]]
 
-    def retrieve_all(self) -> List[Message]:
+    def retrieve_all(self) -> List[Dict[str, Any]]:
         # Sort by timestamp before converting to ensure order if needed, though not strictly required by BaseMemory
         sorted_kg = sorted(self.kg, key=lambda x: x["timestamp"])
-        return [self._fact_to_message(fact) for fact in sorted_kg]
+        return [self._fact_to_dict(fact) for fact in sorted_kg]
 
-    def retrieve_by_id(self, message_id: str) -> Optional[Message]:
-        """Retrieves a specific KG fact Message by its stored message_id."""
+    def retrieve_by_id(self, message_id: str) -> Optional[Dict[str, Any]]:
+        """Retrieves a specific KG fact as dict by its stored message_id."""
         for fact_dict in self.kg:
             if fact_dict.get("message_id") == message_id:
-                return self._fact_to_message(fact_dict)
+                return self._fact_to_dict(fact_dict)
         logging.debug(f"KGMemory: Fact with message_id '{message_id}' not found.")
         return None
 
@@ -1112,14 +1063,14 @@ class KGMemory(BaseMemory):
                 return True
         return False
 
-    def retrieve_by_role(self, role: str, n: Optional[int] = None) -> List[Message]:
+    def retrieve_by_role(self, role: str, n: Optional[int] = None) -> List[Dict[str, Any]]:
         filtered = [fact for fact in self.kg if fact["role"] == role]
         filtered = sorted(
             filtered, key=lambda x: x["timestamp"], reverse=True
         )  # Most recent first
         if n is not None and n > 0:
             filtered = filtered[:n]
-        return [self._fact_to_message(fact) for fact in filtered]
+        return [self._fact_to_dict(fact) for fact in filtered]
 
     def reset_memory(self) -> None:
         self.kg.clear()
@@ -1127,17 +1078,6 @@ class KGMemory(BaseMemory):
         # This depends on how system_prompt was handled in __init__
         # For now, simple clear. If system_prompt was stored as a fact, it's gone.
 
-    def to_llm_format(
-        self, 
-        transform_message: Optional[Callable[[Dict[str, Any]], Dict[str, Any]]] = None
-    ) -> List[Dict[str, Any]]:
-        """Formats all facts in the KG into LLM message dictionaries."""
-        messages = self.retrieve_all()  # Gets List[Message]
-        message_dicts = [msg.to_llm_dict() for msg in messages]
-        
-        if transform_message:
-            return [transform_message(msg) for msg in message_dicts]
-        return message_dicts
 
     async def extract_and_update_from_text(
         self, input_text: str, role: str = "user"
@@ -1225,8 +1165,6 @@ class MemoryManager:
         memory_type: str = "conversation_history",
         description: Optional[str] = None,
         model: Optional[Union["BaseLLM", "BaseVLM"]] = None,
-        input_processor: Optional[Callable[[Dict[str, Any]], Dict[str, Any]]] = None,
-        output_processor: Optional[Callable[[Dict[str, Any]], Dict[str, Any]]] = None,
     ):
         """
         Initialize the MemoryManager with a specific memory strategy.
@@ -1235,19 +1173,13 @@ class MemoryManager:
             memory_type: Type of memory to use ("conversation_history" or "kg").
             description: Initial system description/prompt.
             model: Language model instance (required for KG memory).
-            input_processor: Optional function to transform messages from LLM format before storage.
-            output_processor: Optional function to transform messages to LLM format before sending.
         """
         self.memory_type = memory_type
         self.memory_module: BaseMemory
-        self._input_processor = input_processor
-        self._output_processor = output_processor
 
         if memory_type == "conversation_history":
             self.memory_module = ConversationMemory(
                 description=description,
-                from_llm_transformer=input_processor,
-                to_llm_transformer=output_processor,
             )
         elif memory_type == "kg":
             if model is None:
@@ -1266,68 +1198,44 @@ class MemoryManager:
                 config_value=memory_type
             )
 
-    def set_message_transformers(
-        self,
-        from_llm_transformer: Optional[Callable[[Dict[str, Any]], Dict[str, Any]]] = None,
-        to_llm_transformer: Optional[Callable[[Dict[str, Any]], Dict[str, Any]]] = None,
-    ) -> None:
-        """Delegates to the underlying memory module's set_message_transformers."""
-        self.memory_module.set_message_transformers(from_llm_transformer, to_llm_transformer)
-
-    def update_from_response(
-        self,
-        llm_response: Dict[str, Any],
-        message_id: Optional[str] = None,
-        default_role: str = "assistant",
-        default_name: Optional[str] = None,
-    ) -> None:
-        """
-        Updates memory with a response from the LLM, applying input transformation if configured.
-        
-        This method is specifically designed to handle responses from language models,
-        applying any necessary transformations before storing the message.
-        
-        Args:
-            llm_response: Raw response dictionary from the LLM
-            message_id: Optional message ID to use
-            default_role: Default role if not in response
-            default_name: Default name if not in response
-        """
-        # Apply transformation if processor is configured
-        if self._input_processor:
-            transformed_response = self._input_processor(llm_response)
-        else:
-            transformed_response = llm_response
-            
-        # Create Message from transformed response
-        message = Message.from_response_dict(
-            transformed_response,
-            default_id=message_id,
-            default_role=default_role,
-            default_name=default_name
-        )
-        
-        # Store in memory
-        self.memory_module.update_memory(message=message)
-
-    def update_memory(
+    def add(
         self,
         message: Optional[Message] = None,
         *,
         role: Optional[str] = None,
-        content: Optional[str] = None,
-        message_id: Optional[str] = None,
+        content: Optional[Union[str, Dict[str, Any]]] = None,
         name: Optional[str] = None,
-        tool_calls: Optional[List[ToolCallMsg]] = None,
-        agent_calls: Optional[List[AgentCallMsg]] = None,
+        tool_calls: Optional[List[Union[Dict[str, Any], ToolCallMsg]]] = None,
+        agent_calls: Optional[List[Union[Dict[str, Any], AgentCallMsg]]] = None,
         images: Optional[List[str]] = None,
-    ) -> None:
-        """Delegates to the underlying memory module's update_memory."""
-        self.memory_module.update_memory(
+    ) -> str:
+        """Delegates to the underlying memory module's add method and returns the message ID."""
+        return self.memory_module.add(
             message=message,
             role=role,
             content=content,
+            name=name,
+            tool_calls=tool_calls,
+            agent_calls=agent_calls,
+            images=images,
+        )
+    
+    def update(
+        self,
+        message_id: str,
+        *,
+        role: Optional[str] = None,
+        content: Optional[Union[str, Dict[str, Any]]] = None,
+        name: Optional[str] = None,
+        tool_calls: Optional[List[Union[Dict[str, Any], ToolCallMsg]]] = None,
+        agent_calls: Optional[List[Union[Dict[str, Any], AgentCallMsg]]] = None,
+        images: Optional[List[str]] = None,
+    ) -> None:
+        """Delegates to the underlying memory module's update method."""
+        self.memory_module.update(
             message_id=message_id,
+            role=role,
+            content=content,
             name=name,
             tool_calls=tool_calls,
             agent_calls=agent_calls,
@@ -1389,28 +1297,6 @@ class MemoryManager:
         """Delegates to the underlying memory module's reset_memory."""
         return self.memory_module.reset_memory()
 
-    def to_llm_format(self) -> List[Dict[str, Any]]:
-        """
-        Get all messages in LLM-compatible format, applying output transformation if configured.
-        
-        Returns:
-            List of message dictionaries ready for LLM consumption.
-        """
-        messages = self.memory_module.retrieve_all()
-        llm_messages = []
-        
-        for msg in messages:
-            msg_dict = msg.to_llm_dict()
-            
-            # Apply transformation if processor is configured
-            if self._output_processor:
-                transformed_dict = self._output_processor(msg_dict)
-            else:
-                transformed_dict = msg_dict
-                
-            llm_messages.append(transformed_dict)
-            
-        return llm_messages
 
     def extract_and_update_from_text(
         self, *args: Any, **kwargs: Any
@@ -1428,25 +1314,94 @@ class MemoryManager:
                 "extract_and_update_from_text is only available for KGMemory."
             )
 
-    ### Helper Extract Prompt Method
-    def _extract_prompt_and_context(self, prompt: Any) -> tuple[str, List[Message]]:
+    def save_to_file(self, filepath: str) -> None:
         """
-        Returns (prompt_text, passed_context_messages).
+        Save the current memory state to a file for persistent storage.
+        
+        Args:
+            filepath: Path to save the memory state
+        """
+        import json
+        from pathlib import Path
+        
+        # Ensure directory exists
+        Path(filepath).parent.mkdir(parents=True, exist_ok=True)
+        
+        # Get all messages from memory
+        all_messages = self.memory_module.retrieve_all()
+        
+        # Prepare data for serialization
+        data = {
+            "memory_type": self.memory_type,
+            "messages": all_messages,
+            "timestamp": time.time()
+        }
+        
+        # Save to file
+        with open(filepath, 'w') as f:
+            json.dump(data, f, indent=2)
+        
+        logging.info(f"Memory saved to {filepath}")
 
-        • If `prompt` is a dict:
-            – take 'passed_referenced_context' list if present;
-            – use the 'prompt' value (JSON-dump it if it is itself a dict);
-            – if 'prompt' missing stringify the dict minus 'passed_referenced_context'.
-        • Otherwise cast `prompt` to str and return an empty context list.
+    def load_from_file(self, filepath: str) -> None:
         """
-        if isinstance(prompt, dict):
-            context = prompt.get("passed_referenced_context", []) or []
-            raw = prompt.get("prompt")
-            if raw is None:
-                raw = {
-                    k: v for k, v in prompt.items() if k != "passed_referenced_context"
-                }
-            if isinstance(raw, dict):
-                raw = json.dumps(raw, ensure_ascii=False, indent=2)
-            return str(raw), context
-        return str(prompt), []
+        Load memory state from a file.
+        
+        Args:
+            filepath: Path to load the memory state from
+        """
+        import json
+        from pathlib import Path
+        
+        if not Path(filepath).exists():
+            logging.warning(f"Memory file {filepath} does not exist. Starting with empty memory.")
+            return
+        
+        try:
+            with open(filepath, 'r') as f:
+                data = json.load(f)
+            
+            # Validate memory type matches
+            if data.get("memory_type") != self.memory_type:
+                logging.warning(
+                    f"Memory type mismatch: file has '{data.get('memory_type')}', "
+                    f"but MemoryManager is configured for '{self.memory_type}'. "
+                    "Loading anyway but this may cause issues."
+                )
+            
+            # Clear existing memory
+            self.memory_module.reset_memory()
+            
+            # Reload messages
+            messages = data.get("messages", [])
+            for msg_dict in messages:
+                # Convert dict back to proper format for adding
+                if isinstance(msg_dict, dict):
+                    # Extract fields from the dict
+                    role = msg_dict.get("role")
+                    content = msg_dict.get("content")
+                    name = msg_dict.get("name")
+                    tool_calls = msg_dict.get("tool_calls")
+                    agent_calls = msg_dict.get("agent_calls")
+                    images = msg_dict.get("images")
+                    
+                    # Add message to memory
+                    self.memory_module.add(
+                        role=role,
+                        content=content,
+                        name=name,
+                        tool_calls=tool_calls,
+                        agent_calls=agent_calls,
+                        images=images
+                    )
+            
+            logging.info(f"Memory loaded from {filepath} with {len(messages)} messages")
+            
+        except Exception as e:
+            logging.error(f"Failed to load memory from {filepath}: {e}")
+            raise AgentFrameworkError(
+                f"Failed to load memory from {filepath}: {e}",
+                agent_name="MemoryManager",
+                file_path=filepath
+            )
+

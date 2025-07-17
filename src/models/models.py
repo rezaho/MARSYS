@@ -5,6 +5,7 @@ import logging
 import os
 import uuid
 import warnings
+import time
 from abc import ABC, abstractmethod
 from typing import Any, Callable, Dict, List, Literal, Optional, Union
 
@@ -22,6 +23,9 @@ from pydantic import (  # root_validator, # Ensure root_validator is removed or 
     field_validator,
     model_validator,  # Keep model_validator
 )
+
+# Import the new response models
+from src.models.response_models import HarmonizedResponse, ResponseMetadata, UsageInfo, ToolCall, ErrorResponse
 from transformers import (
     AutoModelForCausalLM,
     AutoModelForVision2Seq,
@@ -40,7 +44,7 @@ try:
     from peft import LoraConfig, PeftModel, TaskType, get_peft_model
 except ImportError:
     logging.warning("PEFT library not found. PEFT features will be unavailable.")
-    LoraConfig, TaskType, get_peft_model, PeftModel = None, None, None, None
+    LoraConfig, TaskType, get_peft_model, PeftModel = None, None
 
 
 # --- Provider Adapter Pattern ---
@@ -52,9 +56,13 @@ class APIProviderAdapter(ABC):
         self.model_name = model_name
         # Each adapter handles its own config in __init__
     
-    def run(self, messages: List[Dict], **kwargs) -> Dict[str, Any]:
+    def run(self, messages: List[Dict], **kwargs) -> HarmonizedResponse:
         """Common orchestration flow - calls abstract methods"""
+        response = None
         try:
+            # Record start time for response time calculation
+            request_start_time = time.time()
+            
             # 1. Build request components using abstract methods
             headers = self.get_headers()
             payload = self.format_request_payload(messages, **kwargs)
@@ -62,13 +70,59 @@ class APIProviderAdapter(ABC):
             
             # 2. Make request (common logic)
             response = requests.post(url, headers=headers, json=payload, timeout=180)
+            
+            # Debug: Print the actual response for debugging
+            if response.status_code != 200:
+                print(f"DEBUG - API Error Response:")
+                print(f"  Status Code: {response.status_code}")
+                print(f"  Response Text: {response.text}")
+                print(f"  Request URL: {url}")
+                print(f"  Request Headers: {headers}")
+                print(f"  Request Payload: {payload}")
+            
             response.raise_for_status()
             
-            # 3. Parse response using abstract method
-            return self.parse_raw_response(response.json())
+            # 3. Get raw response and harmonize
+            raw_response = response.json()
+            
+            # 4. Always use harmonize_response - it's the only method now
+            return self.harmonize_response(raw_response, request_start_time)
             
         except requests.exceptions.RequestException as e:
-            return self.handle_api_error(e, response if 'response' in locals() else None)
+            # Enhanced error handling with response content
+            print(f"DEBUG - Request Exception occurred:")
+            print(f"  Exception: {e}")
+            print(f"  Exception type: {type(e)}")
+            
+            if response is not None:
+                print(f"  Response status code: {response.status_code}")
+                print(f"  Response headers: {dict(response.headers)}")
+                try:
+                    response_json = response.json()
+                    print(f"  Response JSON: {response_json}")
+                except:
+                    print(f"  Response text: {response.text}")
+            else:
+                print(f"  No response object available")
+            
+            return self.handle_api_error(e, response)
+        except Exception as e:
+            # Catch any other exceptions (like Pydantic validation errors)
+            print(f"DEBUG - Unexpected Exception occurred:")
+            print(f"  Exception: {e}")
+            print(f"  Exception type: {type(e)}")
+            
+            if response is not None:
+                print(f"  Response status code: {response.status_code}")
+                print(f"  Response text: {response.text}")
+            
+            # Convert unexpected exceptions to ErrorResponse
+            return ErrorResponse(
+                error=f"Unexpected error: {str(e)}",
+                error_type=type(e).__name__,
+                provider=getattr(self, 'provider', 'unknown'),
+                model=getattr(self, 'model_name', 'unknown')
+            )
     
     # Abstract methods that each provider must implement
     @abstractmethod
@@ -87,15 +141,22 @@ class APIProviderAdapter(ABC):
         pass
     
     @abstractmethod
-    def parse_raw_response(self, raw_response: Dict) -> Dict[str, Any]:
-        """Convert provider response to basic standard format:
-        {"role": "assistant", "content": "...", "tool_calls": [...]}
-        """
+    def handle_api_error(self, error: Exception, response=None) -> ErrorResponse:
+        """Handle provider-specific errors"""
         pass
     
     @abstractmethod
-    def handle_api_error(self, error: Exception, response=None) -> Dict[str, Any]:
-        """Handle provider-specific errors"""
+    def harmonize_response(self, raw_response: Dict[str, Any], request_start_time: float) -> HarmonizedResponse:
+        """
+        Convert provider response to standardized Pydantic model with validation.
+        
+        Args:
+            raw_response: Original API response
+            request_start_time: Unix timestamp when request started
+            
+        Returns:
+            HarmonizedResponse: Validated Pydantic model with standardized structure
+        """
         pass
 
 
@@ -161,23 +222,75 @@ class OpenAIAdapter(APIProviderAdapter):
     def get_endpoint_url(self) -> str:
         return f"{self.base_url.rstrip('/')}/chat/completions"
     
-    def parse_raw_response(self, raw_response: Dict) -> Dict[str, Any]:
-        message = raw_response.get("choices", [{}])[0].get("message", {})
-        return {
-            "role": message.get("role", "assistant"),
-            "content": message.get("content"),
-            "tool_calls": message.get("tool_calls", [])
-        }
-    
-    def handle_api_error(self, error: Exception, response=None) -> Dict[str, Any]:
-        print(f"OpenAI API request failed: {error}")
-        if response is not None:
+    def handle_api_error(self, error: Exception, response=None) -> ErrorResponse:
+        error_msg = str(error)
+        error_code = None
+        error_type = None
+        
+        if response:
             try:
-                error_detail = response.json().get("error", {})
-                print(f"Error details: {error_detail}")
+                error_data = response.json()
+                error_info = error_data.get("error", {})
+                error_msg = error_info.get("message", str(error))
+                error_code = error_info.get("code")
+                error_type = error_info.get("type")
             except:
-                print(f"Response text: {response.text}")
-        raise error
+                pass
+        
+        return ErrorResponse(
+            error=error_msg,
+            error_code=error_code,
+            error_type=error_type,
+            provider="openai",
+            model=self.model_name
+        )
+    
+    def harmonize_response(self, raw_response: Dict[str, Any], request_start_time: float) -> HarmonizedResponse:
+        """Convert OpenAI response to standardized Pydantic model"""
+        
+        # Extract message content
+        message = raw_response.get("choices", [{}])[0].get("message", {})
+        choice = raw_response.get("choices", [{}])[0]
+        
+        # Build tool calls
+        tool_calls = []
+        for tc in message.get("tool_calls", []):
+            tool_calls.append(ToolCall(
+                id=tc.get("id", ""),
+                type=tc.get("type", "function"),
+                function=tc.get("function", {})
+            ))
+        
+        # Build usage info
+        usage_data = raw_response.get("usage", {})
+        usage = None
+        if usage_data:
+            usage = UsageInfo(
+                prompt_tokens=usage_data.get("prompt_tokens"),
+                completion_tokens=usage_data.get("completion_tokens"),
+                total_tokens=usage_data.get("total_tokens"),
+                reasoning_tokens=usage_data.get("reasoning_tokens")  # o1 models
+            )
+        
+        # Build metadata
+        metadata = ResponseMetadata(
+            provider="openai",
+            model=raw_response.get("model", self.model_name),
+            request_id=raw_response.get("id"),
+            created=raw_response.get("created"),
+            usage=usage,
+            finish_reason=choice.get("finish_reason"),
+            response_time=time.time() - request_start_time
+        )
+        
+        # Build harmonized response
+        return HarmonizedResponse(
+            role=message.get("role", "assistant"),
+            content=message.get("content"),
+            tool_calls=tool_calls,
+            reasoning=message.get("reasoning"),  # o1 models
+            metadata=metadata
+        )
 
 
 class OpenRouterAdapter(APIProviderAdapter):
@@ -289,108 +402,108 @@ class OpenRouterAdapter(APIProviderAdapter):
     def get_endpoint_url(self) -> str:
         return f"{self.base_url.rstrip('/')}/chat/completions"
     
-    def parse_raw_response(self, raw_response: Dict) -> Dict[str, Any]:
-        message = raw_response.get("choices", [{}])[0].get("message", {})
-        return {
-            "role": message.get("role", "assistant"),
-            "content": message.get("content"),
-            "tool_calls": message.get("tool_calls", [])
-        }
-    
-    def handle_api_error(self, error: Exception, response=None) -> Dict[str, Any]:
-        print(f"OpenRouter API request failed: {error}")
-        if response is not None:
-            try:
-                error_detail = response.json().get("error", {})
-                print(f"Error details: {error_detail}")
-            except:
-                print(f"Response text: {response.text}")
-        raise error
+    def handle_api_error(self, error: Exception, response=None) -> ErrorResponse:
+        error_msg = str(error)
+        error_code = None
+        error_type = None
         
-    def run(self, messages: List[Dict], **kwargs) -> Dict[str, Any]:
-        """Override run method to add enhanced content parsing for OpenRouter"""
-        try:
-            # 1. Build request components using abstract methods
-            headers = self.get_headers()
-            payload = self.format_request_payload(messages, **kwargs)
-            url = self.get_endpoint_url()
-            
-            # 2. Make request (common logic)
-            response = requests.post(url, headers=headers, json=payload, timeout=180)
-            response.raise_for_status()
-            
-            # 3. Parse response with enhanced content parsing
-            raw_response = response.json()
-            message = raw_response.get("choices", [{}])[0].get("message", {})
-            
-            # Standard parsing
-            parsed_response = {
-                "role": message.get("role", "assistant"),
-                "content": message.get("content"),
-                "tool_calls": message.get("tool_calls", [])
-            }
-            
-            # Enhanced content parsing: if content exists, try to parse it as JSON
-            if parsed_response['content'] and parsed_response['content'].strip():
-                parsed_response['content'] = self._extract_json_from_content(parsed_response['content'])
-            
-            return parsed_response
-            
-        except requests.exceptions.RequestException as e:
-            return self.handle_api_error(e, response if 'response' in locals() else None)
+        if response:
+            try:
+                error_data = response.json()
+                error_info = error_data.get("error", {})
+                error_msg = error_info.get("message", str(error))
+                error_code = error_info.get("code")
+                error_type = error_info.get("type")
+            except:
+                pass
+        
+        return ErrorResponse(
+            error=error_msg,
+            error_code=error_code,
+            error_type=error_type,
+            provider="openrouter",
+            model=self.model_name
+        )
+        
+    
     
     def _extract_json_from_content(self, content: str) -> dict:
-        """
-        Enhanced JSON extraction that handles:
-        1. Direct JSON content
-        2. JSON wrapped in markdown code blocks
-        3. Fallback parsing for malformed JSON
-        """
-        import re
+        """Extract JSON from content using robust parsing utilities."""
+        from src.utils.parsing import robust_json_loads
         import json
         
-        if not content or not content.strip():
-            return {}
+        if not content or not isinstance(content, str):
+            return content
         
-        content = content.strip()
-        
-        # Try to extract JSON from markdown code blocks
-        json_block_pattern = r'```json\s*\n?(.*?)\n?```'
-        match = re.search(json_block_pattern, content, re.DOTALL | re.IGNORECASE)
-        
-        if match:
-            json_str = match.group(1).strip()
-        else:
-            # Check for generic code blocks
-            generic_block_pattern = r'```\s*\n?(.*?)\n?```'
-            match = re.search(generic_block_pattern, content, re.DOTALL)
-            
-            if match and match.group(1).strip().startswith('{'):
-                json_str = match.group(1).strip()
-            else:
-                # Assume the whole content is JSON
-                json_str = content
-        
-        # Try to parse the JSON
         try:
-            return json.loads(json_str)
-        except json.JSONDecodeError:
-            # Try to add missing closing braces
-            try:
-                # Count opening and closing braces
-                open_braces = json_str.count('{')
-                close_braces = json_str.count('}')
-                
-                if open_braces > close_braces:
-                    # Add missing closing braces
-                    missing_braces = open_braces - close_braces
-                    json_str_fixed = json_str + '}' * missing_braces
-                    return json.loads(json_str_fixed)
-            except json.JSONDecodeError:
-                pass
-            
-            # If all else fails, return the original content wrapped
-            return {"content": content}
+            # Use the robust JSON parser from utils
+            parsed = robust_json_loads(content)
+            return parsed
+        except (json.JSONDecodeError, ValueError):
+            # If parsing fails, return original content
+            return content
+    
+    def harmonize_response(self, raw_response: Dict[str, Any], request_start_time: float) -> HarmonizedResponse:
+        """Convert OpenRouter response to standardized Pydantic model"""
+        import json
+        
+        # Extract message content
+        message = raw_response.get("choices", [{}])[0].get("message", {})
+        choice = raw_response.get("choices", [{}])[0]
+        
+        # Enhanced content parsing: try to parse JSON from content
+        content = message.get("content")
+        if content and content.strip():
+            content = self._extract_json_from_content(content)
+            # If it's a dict, convert back to JSON string for consistency
+            if isinstance(content, dict):
+                content = json.dumps(content)
+        
+        # Build tool calls
+        tool_calls = []
+        for tc in message.get("tool_calls", []):
+            tool_calls.append(ToolCall(
+                id=tc.get("id", ""),
+                type=tc.get("type", "function"),
+                function=tc.get("function", {})
+            ))
+        
+        # Build usage info
+        usage_data = raw_response.get("usage", {})
+        usage = None
+        if usage_data:
+            usage = UsageInfo(
+                prompt_tokens=usage_data.get("prompt_tokens"),
+                completion_tokens=usage_data.get("completion_tokens"),
+                total_tokens=usage_data.get("total_tokens"),
+                reasoning_tokens=usage_data.get("reasoning_tokens")  # OpenRouter reasoning
+            )
+        
+        # Build metadata with OpenRouter-specific fields
+        metadata = ResponseMetadata(
+            provider="openrouter",
+            model=raw_response.get("model", self.model_name),
+            request_id=raw_response.get("id"),
+            created=raw_response.get("created"),
+            usage=usage,
+            finish_reason=choice.get("finish_reason"),
+            response_time=time.time() - request_start_time,
+            reasoning_effort=getattr(self, 'reasoning_effort', None),
+            thinking_budget=getattr(self, 'thinking_budget', None),
+            site_info={
+                "site_url": getattr(self, 'site_url', None),
+                "site_name": getattr(self, 'site_name', None)
+            } if hasattr(self, 'site_url') or hasattr(self, 'site_name') else None
+        )
+        
+        # Build harmonized response
+        return HarmonizedResponse(
+            role=message.get("role", "assistant"),
+            content=content,
+            tool_calls=tool_calls,
+            reasoning=message.get("reasoning"),  # OpenRouter reasoning
+            metadata=metadata
+        )
 
 
 class AnthropicAdapter(APIProviderAdapter):
@@ -422,12 +535,17 @@ class AnthropicAdapter(APIProviderAdapter):
             else:
                 user_messages.append(msg)
         
+        # Build base payload with required fields
         payload = {
             "model": self.model_name,
             "messages": user_messages,
-            "max_tokens": kwargs.get("max_tokens", self.max_tokens),
-            "temperature": kwargs.get("temperature", self.temperature)
+            "max_tokens": kwargs.get("max_tokens") or self.max_tokens,  # Ensure we always have a valid integer
         }
+        
+        # Only add temperature if explicitly provided in kwargs and not None
+        temperature = kwargs.get("temperature")
+        if temperature is not None:
+            payload["temperature"] = temperature
         
         if system_message:
             payload["system"] = system_message
@@ -443,9 +561,47 @@ class AnthropicAdapter(APIProviderAdapter):
     def get_endpoint_url(self) -> str:
         return f"{self.base_url.rstrip('/')}/messages"
     
-    def parse_raw_response(self, raw_response: Dict) -> Dict[str, Any]:
+    def handle_api_error(self, error: Exception, response=None) -> ErrorResponse:
+        error_msg = str(error)
+        error_code = None
+        error_type = None
+        request_id = None
+        
+        if response:
+            try:
+                error_data = response.json()
+                print(f"DEBUG - Anthropic Error Data: {error_data}")
+                
+                # Anthropic error format: {"type": "error", "error": {"type": "...", "message": "..."}}
+                if "error" in error_data:
+                    error_info = error_data["error"]
+                    error_msg = error_info.get("message", str(error))
+                    error_type = error_info.get("type")
+                    error_code = error_info.get("code")
+                
+                # Try to get request ID
+                request_id = response.headers.get("request-id") or error_data.get("request_id")
+                
+            except Exception as parse_error:
+                print(f"DEBUG - Failed to parse error response: {parse_error}")
+                print(f"DEBUG - Raw response text: {response.text}")
+        
+        return ErrorResponse(
+            error=error_msg,
+            error_code=error_code,
+            error_type=error_type,
+            provider="anthropic",
+            model=self.model_name,
+            request_id=request_id
+        )
+    
+    def harmonize_response(self, raw_response: Dict[str, Any], request_start_time: float) -> HarmonizedResponse:
+        """Convert Anthropic response to standardized Pydantic model"""
+        import json
+        
         content_blocks = raw_response.get("content", [])
         
+        # Extract text content and tool calls
         text_content = ""
         tool_calls = []
         
@@ -453,31 +609,45 @@ class AnthropicAdapter(APIProviderAdapter):
             if block.get("type") == "text":
                 text_content += block.get("text", "")
             elif block.get("type") == "tool_use":
-                # Convert Claude tool use to OpenAI format
-                tool_calls.append({
-                    "id": block.get("id"),
-                    "type": "function",
-                    "function": {
-                        "name": block.get("name"),
-                        "arguments": json.dumps(block.get("input", {}))
+                # Convert Claude tool use to standardized format
+                tool_calls.append(ToolCall(
+                    id=block.get("id", ""),
+                    type="function",
+                    function={
+                        "name": block.get("name", ""),
+                        "arguments": block.get("input", {})
                     }
-                })
+                ))
         
-        return {
-            "role": "assistant",
-            "content": text_content if text_content else None,
-            "tool_calls": tool_calls
-        }
-    
-    def handle_api_error(self, error: Exception, response=None) -> Dict[str, Any]:
-        print(f"Anthropic API request failed: {error}")
-        if response is not None:
-            try:
-                error_detail = response.json()
-                print(f"Error details: {error_detail}")
-            except:
-                print(f"Response text: {response.text}")
-        raise error
+        # Build usage info
+        usage_data = raw_response.get("usage", {})
+        usage = None
+        if usage_data:
+            usage = UsageInfo(
+                prompt_tokens=usage_data.get("input_tokens"),
+                completion_tokens=usage_data.get("output_tokens"),
+                total_tokens=usage_data.get("input_tokens", 0) + usage_data.get("output_tokens", 0)
+            )
+        
+        # Build metadata with Anthropic-specific fields
+        metadata = ResponseMetadata(
+            provider="anthropic",
+            model=raw_response.get("model", self.model_name),
+            request_id=raw_response.get("id"),
+            usage=usage,
+            finish_reason=raw_response.get("stop_reason"),
+            response_time=time.time() - request_start_time,
+            stop_reason=raw_response.get("stop_reason"),
+            stop_sequence=raw_response.get("stop_sequence")
+        )
+        
+        # Build harmonized response
+        return HarmonizedResponse(
+            role=raw_response.get("role", "assistant"),
+            content=text_content if text_content else None,
+            tool_calls=tool_calls,
+            metadata=metadata
+        )
 
 
 class GoogleAdapter(APIProviderAdapter):
@@ -702,10 +872,61 @@ class GoogleAdapter(APIProviderAdapter):
     def get_endpoint_url(self) -> str:
         return f"{self.base_url.rstrip('/')}/models/{self.model_name}:generateContent?key={self.api_key}"
     
-    def parse_raw_response(self, raw_response: Dict) -> Dict[str, Any]:
+    def handle_api_error(self, error: Exception, response=None) -> ErrorResponse:
+        error_msg = str(error)
+        error_code = None
+        error_type = None
+        
+        if response:
+            try:
+                error_data = response.json()
+                error_info = error_data.get("error", {})
+                error_msg = error_info.get("message", str(error))
+                error_code = error_info.get("code")
+                error_type = error_info.get("status")
+            except:
+                pass
+        
+        return ErrorResponse(
+            error=error_msg,
+            error_code=error_code,
+            error_type=error_type,
+            provider="google",
+            model=self.model_name
+        )
+    
+    def harmonize_response(self, raw_response: Dict[str, Any], request_start_time: float) -> HarmonizedResponse:
+        """Convert Google response to standardized Pydantic model"""
+        
         candidates = raw_response.get("candidates", [])
         if not candidates:
-            return {"role": "assistant", "content": None, "tool_calls": []}
+            # Handle case with no candidates
+            usage_data = raw_response.get("usageMetadata", {})
+            usage = None
+            if usage_data:
+                usage = UsageInfo(
+                    prompt_tokens=usage_data.get("promptTokenCount"),
+                    completion_tokens=usage_data.get("candidatesTokenCount", 0),
+                    total_tokens=usage_data.get("totalTokenCount")
+                )
+            
+            metadata = ResponseMetadata(
+                provider="google",
+                model=self.model_name,
+                usage=usage,
+                finish_reason="no_candidates",
+                response_time=time.time() - request_start_time,
+                candidates_count=0,
+                prompt_feedback=raw_response.get("promptFeedback", {}),
+                thinking_budget=getattr(self, 'thinking_budget', None)
+            )
+            
+            return HarmonizedResponse(
+                role="assistant",
+                content=None,
+                tool_calls=[],
+                metadata=metadata
+            )
         
         # Get the first candidate's content
         candidate = candidates[0]
@@ -718,21 +939,37 @@ class GoogleAdapter(APIProviderAdapter):
             if isinstance(part, dict) and "text" in part:
                 text_content += part["text"]
         
-        return {
-            "role": "assistant", 
-            "content": text_content if text_content else None,
-            "tool_calls": []  # Google function calling would be implemented here
-        }
-    
-    def handle_api_error(self, error: Exception, response=None) -> Dict[str, Any]:
-        print(f"Google API request failed: {error}")
-        if response is not None:
-            try:
-                error_detail = response.json()
-                print(f"Error details: {error_detail}")
-            except:
-                print(f"Response text: {response.text}")
-        raise error
+        # Build usage info
+        usage_data = raw_response.get("usageMetadata", {})
+        usage = None
+        if usage_data:
+            usage = UsageInfo(
+                prompt_tokens=usage_data.get("promptTokenCount"),
+                completion_tokens=usage_data.get("candidatesTokenCount"),
+                total_tokens=usage_data.get("totalTokenCount")
+            )
+        
+        # Build metadata with Google-specific fields
+        metadata = ResponseMetadata(
+            provider="google",
+            model=self.model_name,
+            usage=usage,
+            finish_reason=candidate.get("finishReason"),
+            response_time=time.time() - request_start_time,
+            candidates_count=len(candidates),
+            safety_ratings=candidate.get("safetyRatings", []),
+            citation_metadata=candidate.get("citationMetadata", {}),
+            prompt_feedback=raw_response.get("promptFeedback", {}),
+            thinking_budget=getattr(self, 'thinking_budget', None)
+        )
+        
+        # Build harmonized response
+        return HarmonizedResponse(
+            role="assistant",
+            content=text_content if text_content else None,
+            tool_calls=[],  # Google function calling would be implemented here
+            metadata=metadata
+        )
     
 
     
@@ -1200,8 +1437,9 @@ class BaseAPIModel:
             temperature: The default sampling temperature.
             top_p: The default top_p parameter.
             provider: The API provider ("openai", "anthropic", "google", "openrouter", "groq").
-            thinking_budget: Token budget for thinking (Google Gemini only). Set to 0 to disable.
+            thinking_budget: Token budget for thinking (Google Gemini and OpenRouter). Set to 0 to disable.
             response_processor: Optional callable to post-process model responses.
+
             **kwargs: Additional parameters passed to the adapter.
         """
         self._response_processor = response_processor
@@ -1220,325 +1458,14 @@ class BaseAPIModel:
             **kwargs
         )
 
-    @staticmethod
-    def _robust_json_loads(src: str, max_depth: int = 3) -> Dict[str, Any]:
-        """
-        Attempts to load JSON with support for recursive/nested JSON strings.
-        
-        This method handles cases where:
-        1. JSON wrapped in markdown code blocks (```json...```)
-        2. JSON might have missing closing braces (auto-closes them)
-        3. JSON content might be nested/double-encoded as strings
-        4. Multiple levels of JSON encoding exist
-        5. Multiple concatenated JSON objects (invalid format)
-        
-        Args:
-            src: The source string to parse
-            max_depth: Maximum recursion depth to prevent infinite loops
-            
-        Returns:
-            Parsed dictionary
-            
-        Raises:
-            json.JSONDecodeError: If parsing fails after all attempts
-            ValueError: If multiple concatenated JSON objects are detected
-        """
-        def extract_json_from_markdown(content: str) -> str:
-            """Extract JSON content from markdown code blocks."""
-            import re
-            
-            # Pattern to match ```json ... ``` with optional whitespace
-            json_block_pattern = r'```json\s*\n?(.*?)\n?```'
-            match = re.search(json_block_pattern, content, re.DOTALL | re.IGNORECASE)
-            
-            if match:
-                return match.group(1).strip()
-            
-            # Check for ``` ... ``` without json specifier (fallback)
-            generic_block_pattern = r'```\s*\n?(.*?)\n?```'
-            match = re.search(generic_block_pattern, content, re.DOTALL)
-            
-            if match:
-                extracted = match.group(1).strip()
-                # Only use if it looks like JSON (starts with { or [)
-                if extracted.startswith(('{', '[')):
-                    return extracted
-            
-            # Return original content if no code block found
-            return content
+    # REMOVED: _robust_json_loads method - moved to src/utils/parsing.py
+    # REMOVED: _close_json_braces method - moved to src/utils/parsing.py
+    # REMOVED: parse_model_response method - action parsing handled in coordination validation
 
-        def parse_multiple_json_objects(content: str) -> List[Dict[str, Any]]:
-            """Parse multiple concatenated JSON objects into a list."""
-            json_str_clean = content.strip()
-            
-            # Only check if it looks like JSON
-            if not json_str_clean.startswith('{'):
-                return []
-            
-            json_objects = []
-            current_pos = 0
-            
-            while current_pos < len(json_str_clean):
-                # Skip whitespace
-                while current_pos < len(json_str_clean) and json_str_clean[current_pos].isspace():
-                    current_pos += 1
-                
-                if current_pos >= len(json_str_clean):
-                    break
-                
-                # Find the end of the current JSON object
-                brace_count = 0
-                object_start = current_pos
-                object_end = -1
-                
-                for i in range(current_pos, len(json_str_clean)):
-                    char = json_str_clean[i]
-                    if char == '{':
-                        brace_count += 1
-                    elif char == '}':
-                        brace_count -= 1
-                        if brace_count == 0:
-                            object_end = i + 1
-                            break
-                
-                if object_end == -1:
-                    # Incomplete JSON object, try to close it
-                    remaining_content = json_str_clean[object_start:]
-                    closed_content = BaseAPIModel._close_json_braces(remaining_content)
-                    try:
-                        parsed_obj = json.loads(closed_content)
-                        if isinstance(parsed_obj, dict):
-                            json_objects.append(parsed_obj)
-                    except json.JSONDecodeError:
-                        pass  # Skip invalid JSON
-                    break
-                
-                # Extract and parse the JSON object
-                json_str = json_str_clean[object_start:object_end]
-                try:
-                    parsed_obj = json.loads(json_str)
-                    if isinstance(parsed_obj, dict):
-                        json_objects.append(parsed_obj)
-                except json.JSONDecodeError:
-                    pass  # Skip invalid JSON
-                
-                current_pos = object_end
-            
-            return json_objects
-        
-        def merge_multiple_json_objects(objects: List[Dict[str, Any]]) -> Dict[str, Any]:
-            """
-            Merge multiple JSON objects by extracting their actions into appropriate fields.
-            
-            Args:
-                objects: List of parsed JSON objects
-                
-            Returns:
-                A single merged object with combined tool_calls and agent_calls
-            """
-            merged_tool_calls = []
-            merged_agent_calls = []
-            thoughts = []
-            final_response = None
-            
-            for obj in objects:
-                next_action = obj.get("next_action")
-                action_input = obj.get("action_input", {})
-                thought = obj.get("thought")
-                
-                if thought:
-                    thoughts.append(thought)
-                
-                # Handle standard call_tool action
-                if next_action == "call_tool" and isinstance(action_input, dict):
-                    tool_calls = action_input.get("tool_calls", [])
-                    if isinstance(tool_calls, list):
-                        merged_tool_calls.extend(tool_calls)
-
-                elif next_action == "invoke_agent" and isinstance(action_input, dict):
-                    agent_name = action_input.get("agent_name")
-                    request = action_input.get("request")
-                    if agent_name:
-                        merged_agent_calls.append({
-                            "agent_name": agent_name,
-                            "request": request
-                        })
-                
-                elif next_action == "final_response" and isinstance(action_input, dict):
-                    if final_response is None:  # Use the first final_response found
-                        final_response = action_input.get("response")
-            
-            # Build the merged result
-            if final_response is not None:
-                # If there's a final response, prioritize that
-                return {
-                    "thought": " | ".join(thoughts) if thoughts else None,
-                    "next_action": "final_response",
-                    "action_input": {"response": final_response}
-                }
-            elif merged_tool_calls:
-                # If there are tool calls, return them
-                return {
-                    "thought": " | ".join(thoughts) if thoughts else None,
-                    "next_action": "call_tool",
-                    "action_input": {"tool_calls": merged_tool_calls}
-                }
-            elif merged_agent_calls:
-                # If there are agent calls, return the first one (agents typically handle one at a time)
-                return {
-                    "thought": " | ".join(thoughts) if thoughts else None,
-                    "next_action": "invoke_agent",
-                    "action_input": merged_agent_calls[0]
-                }
-            else:
-                # No valid actions found, return an error structure
-                raise ValueError(
-                    f"Multiple JSON objects detected but no valid actions found. "
-                    f"Objects: {objects}"
-                )
-        
-        def try_parse_recursive(content: str, depth: int = 0) -> Dict[str, Any]:
-            if depth >= max_depth:
-                raise json.JSONDecodeError("Maximum recursion depth reached", content, 0)
-            
-            # Extract JSON from markdown code blocks on first attempt
-            if depth == 0:
-                content = extract_json_from_markdown(content)
-                
-                # Check for multiple JSON objects
-                multiple_objects = parse_multiple_json_objects(content)
-                if len(multiple_objects) >= 1:
-                    # Process objects and merge their actions (works for single or multiple)
-                    return merge_multiple_json_objects(multiple_objects)
-            
-            try:
-                parsed = json.loads(content)
-                
-                # If we got a dictionary, check if any values are JSON strings that need parsing
-                if isinstance(parsed, dict):
-                    for key, value in parsed.items():
-                        if isinstance(value, str) and value.strip().startswith(('{', '[')):
-                            try:
-                                # Try to recursively parse this value
-                                parsed[key] = try_parse_recursive(value, depth + 1)
-                            except json.JSONDecodeError:
-                                # If parsing fails, keep the original string value
-                                pass
-                
-                return parsed if isinstance(parsed, dict) else {"content": parsed}
-                
-            except json.JSONDecodeError as e:
-                if depth == 0:
-                    # Only try auto-closing braces on the first attempt
-                    try:
-                        closed_content = BaseAPIModel._close_json_braces(content)
-                        return try_parse_recursive(closed_content, depth + 1)
-                    except json.JSONDecodeError:
-                        raise e
-                else:
-                    raise e
-        
-        return try_parse_recursive(src)
-
-    @staticmethod
-    def _close_json_braces(src: str) -> str:
-        """
-        Appends missing closing braces/brackets so that a truncation at the end of
-        a model response does not break json.loads.
-        """
-        stack: list[str] = []
-        pairs = {"{": "}", "[": "]"}
-        for ch in src:
-            if ch in pairs:
-                stack.append(pairs[ch])
-            elif ch in pairs.values() and stack and stack[-1] == ch:
-                stack.pop()
-        return src + "".join(reversed(stack))
-
-    def parse_model_response(self, message_obj: Dict[str, Any]) -> Dict[str, Any]:
-        """
-        Parse and harmonize model response to consistent format.
-        
-        Handles different response formats from API models:
-        1. Tool calls in separate field vs embedded in JSON content
-        2. Agent calls embedded in JSON content
-        3. Content cleanup when tool_calls/agent_calls are extracted
-        
-        Args:
-            message_obj: Raw message object from API response
-            
-        Returns:
-            Dictionary with consistent format: {"role": "assistant", "content": "...", "tool_calls": [...], "agent_calls": [...]}
-        """
-        # Extract basic fields
-        tool_calls = message_obj.get("tool_calls", [])
-        content = message_obj.get("content")
-        message_role = message_obj.get("role", "assistant")
-        agent_calls: Optional[List[Dict[str, Any]]] = None
-
-        # Attempt to parse content as JSON if it's a string (handles both raw JSON and markdown-wrapped JSON)
-        parsed_content: Optional[Dict[str, Any]] = None
-        if isinstance(content, str) and content.strip():
-            try:
-                parsed_content = self._robust_json_loads(content)
-            except json.JSONDecodeError:
-                parsed_content = None  # Leave as-is if JSON parsing fails
-            except ValueError as e:
-                # Re-raise ValueError for other validation errors
-                raise e
-
-        # Process structured content to extract tool_calls/agent_call
-        if isinstance(parsed_content, dict):
-            next_action_val = parsed_content.get("next_action")
-            action_input_val = parsed_content.get("action_input", {})
-
-            # Handle call_tool action inside content
-            if (
-                next_action_val == "call_tool"
-                and isinstance(action_input_val, dict)
-                and "tool_calls" in action_input_val
-            ):
-                embedded_tool_calls = action_input_val.get("tool_calls")
-                # If tool_calls field from API is empty, promote embedded ones
-                if not tool_calls and embedded_tool_calls:
-                    tool_calls = embedded_tool_calls
-                    # Keep only the "thought" in content if present, else set to None
-                    thought_only = parsed_content.get("thought")
-                    content = thought_only if thought_only else None
-                elif tool_calls and embedded_tool_calls:
-                    # Already have tool_calls separately → remove duplication in content
-                    thought_only = parsed_content.get("thought")
-                    content = thought_only if thought_only else None
-
-            # Handle invoke_agent action inside content
-            elif (
-                next_action_val == "invoke_agent"
-                and isinstance(action_input_val, dict)
-                and "agent_name" in action_input_val
-            ):
-                if not agent_calls:
-                    agent_calls = [{
-                        "agent_name": action_input_val.get("agent_name"),
-                        "request": action_input_val.get("request"),
-                    }]
-                    # Similar clean-up of content keeping only thought
-                    thought_only = parsed_content.get("thought")
-                    content = thought_only if thought_only else None
-
-        # Ensure OpenAI compatibility: if tool_calls present for assistant, content must be null
-        if message_role == "assistant" and tool_calls:
-            content = None
-
-        # Build response payload
-        response_payload: Dict[str, Any] = {
-            "role": message_role,
-            "content": content,  # Can be None for assistant with tool_calls
-            "tool_calls": tool_calls,
-        }
-        if agent_calls:
-            response_payload["agent_calls"] = agent_calls
-
-        return response_payload
+    @property
+    def provider(self) -> str:
+        """Get the provider name from the adapter."""
+        return self.adapter.__class__.__name__.replace("Adapter", "").lower()
 
     def run(
         self,
@@ -1548,8 +1475,9 @@ class BaseAPIModel:
         temperature: Optional[float] = None,
         top_p: Optional[float] = None,
         tools: Optional[List[Dict[str, Any]]] = None,
+
         **kwargs,
-    ) -> Dict[str, Any]:
+    ) -> HarmonizedResponse:
         """
         Sends messages to the API endpoint and returns the model's response.
         Uses the adapter pattern to support multiple providers.
@@ -1561,17 +1489,18 @@ class BaseAPIModel:
             temperature: Overrides the default temperature for this specific call.
             top_p: Overrides the default top_p for this specific call.
             tools: Optional list of tools for function calling.
+
             **kwargs: Additional parameters to pass to the API.
 
         Returns:
-            Dictionary with consistent format: {"role": "assistant", "content": "...", "tool_calls": [...]}
+            HarmonizedResponse object with standardized format and metadata
         """
         try:
             # Include instance thinking_budget if not provided in kwargs and instance has it
             if "thinking_budget" not in kwargs and hasattr(self, 'thinking_budget') and self.thinking_budget is not None:
                 kwargs["thinking_budget"] = self.thinking_budget
             
-            # 1. Adapter converts to basic standard format
+            # Call adapter which will use harmonization method
             adapter_response = self.adapter.run(
                 messages=messages,
                 json_mode=json_mode,
@@ -1582,12 +1511,11 @@ class BaseAPIModel:
                 **kwargs
             )
             
-            # 2. Apply custom response processor if provided, otherwise use default parsing
+            # Apply custom response processor if provided
             if self._response_processor:
                 return self._response_processor(adapter_response)
             else:
-                # 3. Framework-specific harmonization (handles embedded JSON, agent_calls, etc.)
-                return self.parse_model_response(adapter_response)
+                return adapter_response
             
         except Exception as e:
             print(f"BaseAPIModel.run failed: {e}")

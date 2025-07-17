@@ -93,6 +93,51 @@ class BaseLearnableAgent(BaseAgent, ABC):
                 )
             self.model = PeftHead(model=self.model)
             self.model.prepare_peft_model(**learning_head_config)
+    
+    async def run_step(
+        self, 
+        request: Any, 
+        context: Dict[str, Any]
+    ) -> Dict[str, Any]:
+        """
+        Execute one step of agent reasoning with learning-aware context.
+        
+        This method extends BaseAgent.run_step() to add support for learning-specific
+        operations like training iterations, loss tracking, and PEFT state management.
+        
+        Args:
+            request: The request for this step
+            context: Execution context from the coordination system
+        
+        Returns:
+            Dictionary containing response and optional context selection
+        """
+        # Extract learning-specific context if present
+        learning_context = context.get('learning_context', {})
+        training_iteration = learning_context.get('iteration', 0)
+        is_training = learning_context.get('is_training', False)
+        
+        # Log learning context if in training mode
+        if is_training and hasattr(self, 'logger'):
+            self.logger.debug(
+                f"LearnableAgent '{self.name}' in training mode, iteration {training_iteration}"
+            )
+        
+        # Call parent run_step to handle standard agent operations
+        result = await super().run_step(request, context)
+        
+        # Add learning-specific metadata to result if in training mode
+        if is_training:
+            result['learning_metadata'] = {
+                'iteration': training_iteration,
+                'has_peft': self._learning_head_name == 'peft',
+                'model_type': type(self.model).__name__
+            }
+            
+            # Future: Add hooks for PEFT gradient updates, loss calculation, etc.
+            # This will be implemented when StateManager supports model checkpoints
+            
+        return result
 
 
 
@@ -252,155 +297,148 @@ class LearnableAgent(BaseLearnableAgent):
             return result
 
         return transform_to_llm
-
-    async def _run(
-        self, prompt: Any, request_context: RequestContext, run_mode: str, **kwargs: Any
-    ) -> Message:
+    
+    async def run_step(
+        self, 
+        request: Any, 
+        context: Dict[str, Any]
+    ) -> Dict[str, Any]:
         """
-        Core execution logic for the LearnableAgent.
-        Processes input prompt, interacts with the model, updates memory, and returns a Message.
-
+        Execute one step of agent reasoning for LearnableAgent.
+        
+        This method handles all memory management, context extraction, and logging,
+        then calls the pure _run() method for model interaction.
+        
         Args:
-            prompt: The input prompt or data for this run step.
-            request_context: The context for this specific run.
-            run_mode: A string indicating the type of operation.
-            **kwargs: Additional keyword arguments.
-
+            request: The request for this step. Can be a prompt string, dict with
+                    'prompt' and 'passed_referenced_context', or other formats.
+            context: Execution context from the coordination system
+        
         Returns:
-            A `Message` object representing the agent's response.
+            Dictionary containing response and optional context selection
         """
-        user_actual_prompt_content: Optional[str] = None
-        passed_context_messages: List[Message] = []
-        # Use standard OpenAI role, store agent name separately
+        # Extract context information
+        step_id = context.get('step_id')
+        session_id = context.get('session_id')
+        is_continuation = context.get('is_continuation', False)
+        execution_mode = context.get('execution_mode', 'auto_step')
+        request_context = context['request_context']  # Must be provided by ExecutionEngine
+        
+        # Apply memory retention policy (handled by BaseAgent.run_step if we call super())
+        # But we need custom handling for LearnableAgent's prompt extraction
+        
+        # Extract prompt and context messages
+        user_actual_prompt_content, passed_context_messages = self._extract_prompt_and_context(request)
         prompt_sender_name = request_context.caller_agent_name or "user"
-
-        # --- use common helper ---
-        user_actual_prompt_content, passed_context_messages = (
-            self._extract_prompt_and_context(prompt)
-        )
-
+        
+        # Log the execution start
         await self._log_progress(
             request_context,
             LogLevel.DETAILED,
-            f"LearnableAgent executing _run with mode='{run_mode}'. Actual prompt: {str(user_actual_prompt_content)[:100]}...",
+            f"LearnableAgent executing run_step with mode='{execution_mode}'. Actual prompt: {str(user_actual_prompt_content)[:100]}...",
             data={"has_passed_context": bool(passed_context_messages)},
         )
-
-        # 1. Add passed_referenced_context to memory first
+        
+        # Add passed context messages to memory
         for ref_msg in passed_context_messages:
-            # These messages come with their original IDs and content
             self.memory.update_memory(message=ref_msg)
             await self._log_progress(
                 request_context,
                 LogLevel.DEBUG,
                 f"LearnableAgent added referenced message ID {ref_msg.message_id} (Role: {ref_msg.role}) to memory.",
             )
-
-        # 2. Add the current user prompt to memory
-        if (
-            user_actual_prompt_content
-        ):  # TO-DO: when an agent invoke another agent, inside the _run() method we add the response from the callee agent to the memory. And here again we pass a summary of that response as a user message when we call the model. This is duplicate.
+        
+        # Add the current user prompt to memory
+        if user_actual_prompt_content:
             self.memory.update_memory(
-                role="user",  # Always use standard role "user" for incoming prompt
+                role="user",
                 content=user_actual_prompt_content,
-                name=prompt_sender_name,  # Add sender's name
+                name=prompt_sender_name,
             )
-
+        
+        # Get base description for this run mode
         base_description_for_run = getattr(
             self,
-            f"description_{run_mode}",
-            self.description,  # Use mode-specific or default description
+            f"description_{execution_mode}",
+            self.description,
         )
-
-        # FIX: Separate JSON guidelines (shown in prompt) from native JSON mode (API feature)
-        # json_mode_for_guidelines: True only for auto_step mode (to show JSON format instructions)
-        # json_mode_for_llm_native: True only when we want JSON AND have no tools (to avoid OpenAI's tool-calling envelope)
-        json_mode_for_guidelines = run_mode == "auto_step"
+        
+        # Determine JSON mode settings
+        json_mode_for_guidelines = execution_mode == "auto_step"
         has_tools = bool(self.tools_schema)
         json_mode_for_llm_native = (
-            json_mode_for_guidelines or run_mode == "plan"
+            json_mode_for_guidelines or execution_mode == "plan"
         ) and not has_tools
-
-        # FIX: Only pass tools_schema when tools are actually available
-        current_tools_schema = self.tools_schema if has_tools else None
-
+        
+        # Construct system prompt
         operational_system_prompt = self._construct_full_system_prompt(
             base_description=base_description_for_run,
-            # FIX: Use json_mode_for_guidelines to control whether JSON instructions appear in prompt
             json_mode_for_output=json_mode_for_guidelines,
         )
-
+        
+        # Get messages from memory and prepare for LLM
         llm_messages_for_model = self.memory.to_llm_format()
-        system_message_found_and_updated = False
+        
+        # Update or insert system message
+        system_message_found = False
         for i, msg_dict in enumerate(llm_messages_for_model):
             if msg_dict["role"] == "system":
-                llm_messages_for_model[i] = Message(
-                    role="system", content=operational_system_prompt
-                ).to_llm_dict()
-                system_message_found_and_updated = True
+                llm_messages_for_model[i] = {
+                    "role": "system", 
+                    "content": operational_system_prompt
+                }
+                system_message_found = True
                 break
-        if not system_message_found_and_updated:
+        
+        if not system_message_found:
             llm_messages_for_model.insert(
                 0,
-                Message(role="system", content=operational_system_prompt).to_llm_dict(),
+                {"role": "system", "content": operational_system_prompt},
             )
-
-        max_tokens_override = kwargs.pop("max_tokens", self.max_tokens)
-        # LearnableAgent typically doesn't have _model_config, use default temperature
-        temperature_override = kwargs.pop("temperature", 0.7)
-
+        
+        # Extract model parameters
+        model_kwargs = context.get('model_kwargs', {})
+        max_tokens_override = model_kwargs.pop("max_tokens", self.max_tokens)
+        temperature_override = model_kwargs.pop("temperature", 0.7)  # Default for learnable
+        
+        # Log before calling the model
         await self._log_progress(
             request_context,
             LogLevel.DETAILED,
-            f"LearnableAgent calling internal LLM (mode: {run_mode}, LLM_JSON_mode: {json_mode_for_llm_native})",
+            f"LearnableAgent calling internal LLM (mode: {execution_mode}, LLM_JSON_mode: {json_mode_for_llm_native})",
             data={"system_prompt_length": len(operational_system_prompt)},
         )
+        
         try:
-            # Assuming self.model is BaseLLM or BaseVLM which has a run method
-            raw_model_output: Any = self.model.run(  # type: ignore
+            # Call pure _run() method
+            assistant_message = await self._run(
                 messages=llm_messages_for_model,
+                request_context=request_context,
+                run_mode=execution_mode,
                 max_tokens=max_tokens_override,
                 temperature=temperature_override,
-                # FIX: Use json_mode_for_llm_native instead of json_mode_for_output
                 json_mode=json_mode_for_llm_native,
-                tools=current_tools_schema,  # Pass the determined tools_schema
-                **kwargs,
+                tools_schema=self.tools_schema if has_tools else None,
+                **model_kwargs
             )
             
-            # Generate message ID for the response
-            new_message_id = str(uuid.uuid4())
-            
-            # Handle the response based on its type
-            if isinstance(raw_model_output, dict) and "role" in raw_model_output:
-                # Use the new update_from_response method which handles transformations
+            # Update memory with the response
+            if isinstance(assistant_message.content, dict) or (
+                isinstance(assistant_message.content, str) and assistant_message.content
+            ):
                 self.memory.update_from_response(
-                    raw_model_output,
-                    message_id=new_message_id,
+                    {
+                        "role": assistant_message.role,
+                        "content": assistant_message.content,
+                        "name": assistant_message.name,
+                        "tool_calls": assistant_message.tool_calls,
+                    },
+                    message_id=assistant_message.message_id,
                     default_role="assistant",
                     default_name=self.name
                 )
-                # Retrieve the stored message to return
-                assistant_message = self.memory.retrieve_by_id(new_message_id)
-                if not assistant_message:
-                    # Fallback if retrieval fails
-                    assistant_message = Message.from_response_dict(
-                        raw_model_output,
-                        default_id=new_message_id,
-                        default_role="assistant",
-                        default_name=self.name,
-                        processor=self._input_message_processor()
-                    )
-            else:
-                # String response or other format - create message directly
-                content = str(raw_model_output) if raw_model_output else None
-                assistant_message = Message(
-                    role="assistant",
-                    content=content,
-                    name=self.name,
-                    message_id=new_message_id
-                )
-                self.memory.update_memory(message=assistant_message)
-
+            
+            # Log successful completion
             await self._log_progress(
                 request_context,
                 LogLevel.DETAILED,
@@ -410,6 +448,7 @@ class LearnableAgent(BaseLearnableAgent):
                     "message_id": assistant_message.message_id
                 },
             )
+            
         except Exception as e:
             await self._log_progress(
                 request_context,
@@ -417,13 +456,97 @@ class LearnableAgent(BaseLearnableAgent):
                 f"LearnableAgent LLM call failed: {e}",
                 data={"error": str(e)},
             )
-            return Message(
+            # Create error message
+            assistant_message = Message(
                 role="error", content=f"LLM call failed: {e}", name=self.name
             )
-
+        
+        # Log run completion
         await self._log_progress(
             request_context,
             LogLevel.DETAILED,
-            f"LearnableAgent _run mode='{run_mode}' finished.",
+            f"LearnableAgent run_step mode='{execution_mode}' finished.",
         )
-        return assistant_message
+        
+        # Return result in coordination format
+        return {
+            "response": assistant_message,
+            "context_selection": None  # LearnableAgent doesn't use context selection yet
+        }
+
+    async def _run(
+        self, 
+        messages: List[Dict[str, Any]], 
+        request_context: RequestContext, 
+        run_mode: str, 
+        **kwargs: Any
+    ) -> Message:
+        """
+        PURE execution logic for the LearnableAgent.
+        
+        This method ONLY handles:
+        1. Calling the language model with the provided messages
+        2. Creating a Message object from the model's output
+        
+        All message preparation including system prompt is handled by run_step().
+        All memory operations are handled by run_step().
+
+        Args:
+            messages: List of message dictionaries ready for the LLM (including system prompt)
+            request_context: The context for this specific run (managed by ExecutionEngine)
+            run_mode: A string indicating the type of operation (e.g., 'chat', 'plan', 'think', 'auto_step')
+            **kwargs: Additional keyword arguments specific to the run mode or model call
+
+        Returns:
+            A Message object representing the agent's raw response.
+        """
+        # Extract model parameters from kwargs
+        max_tokens = kwargs.pop("max_tokens", self.max_tokens)
+        temperature = kwargs.pop("temperature", 0.7)  # Default for learnable models
+        json_mode = kwargs.pop("json_mode", False)
+        tools_schema = kwargs.pop("tools_schema", None)
+        
+        try:
+            # Call the model with prepared messages
+            raw_model_output: Any = self.model.run(
+                messages=messages,
+                max_tokens=max_tokens,
+                temperature=temperature,
+                json_mode=json_mode,
+                tools=tools_schema,
+                **kwargs,
+            )
+            
+            # Generate message ID for the response
+            new_message_id = str(uuid.uuid4())
+            
+            # Create Message from response
+            if isinstance(raw_model_output, dict) and "role" in raw_model_output:
+                # Use Message.from_response_dict which handles transformations
+                assistant_message = Message.from_response_dict(
+                    raw_model_output,
+                    default_id=new_message_id,
+                    default_role="assistant",
+                    default_name=self.name,
+                    processor=self._input_message_processor()
+                )
+            else:
+                # String response or other format - create message directly
+                content = str(raw_model_output) if raw_model_output else None
+                assistant_message = Message(
+                    role="assistant",
+                    content=content,
+                    name=self.name,
+                    message_id=new_message_id
+                )
+            
+            return assistant_message
+            
+        except Exception as e:
+            # Return error as a Message
+            error_message = Message(
+                role="error", 
+                content=f"LLM call failed: {e}", 
+                name=self.name
+            )
+            return error_message
