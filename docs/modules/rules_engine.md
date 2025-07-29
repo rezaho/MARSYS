@@ -20,11 +20,14 @@ RulesEngine
 │   ├── ReflexiveStateTrackingRule
 │   ├── ReflexiveReturnRule
 │   ├── AlternatingAgentRule
-│   └── SymmetricAccessRule
+│   ├── SymmetricAccessRule
+│   └── ParallelRule
 ├── RuleFactory
 │   └── Creates rules from topology
-└── RuleContext
-    └── Execution context for rules
+├── RuleContext
+│   └── Execution context for rules
+└── RuleResult
+    └── Rule check outcome
 ```
 
 ## Core Components
@@ -51,7 +54,7 @@ class Rule(ABC):
 - **SPAWN_CONTROL**: Controls dynamic branch spawning
 - **FLOW_CONTROL**: Modifies execution flow
 - **RESOURCE_LIMIT**: Enforces resource constraints
-- **AGGREGATION**: Controls result aggregation
+- **VALIDATION**: Validates data and context
 
 ### Rule Priority
 
@@ -137,7 +140,7 @@ The RuleFactory automatically generates rules from topology definitions:
 factory = RuleFactory()
 rules_engine = factory.create_rules_engine(
     topology_graph=graph,
-    topology_def=topology_definition
+    topology=topology  # Accepts dict, Topology object, or PatternConfig
 )
 ```
 
@@ -148,10 +151,12 @@ rules_engine = factory.create_rules_engine(
    - `<~>` edges → AlternatingAgentRule
    - `<|>` edges → SymmetricAccessRule
 
-2. **From Rule Strings**:
-   - `"timeout(300)"` → TimeoutRule
-   - `"max_agents(5)"` → MaxAgentsRule
-   - `"max_turns(A <-> B, 10)"` → Turn limit rule
+2. **From Rule Strings in Topology**:
+   - `"timeout(300)"` → TimeoutRule with 300 second limit
+   - `"max_agents(5)"` → MaxAgentsRule allowing max 5 concurrent agents
+   - `"max_turns(A <-> B, 10)"` → Turn limit rule for conversation edges
+   - `"max_steps(100)"` → MaxStepsRule limiting total execution steps
+   - `"parallel(Agent1, Agent2)"` → ParallelRule for concurrent execution
 
 ## Usage Examples
 
@@ -169,6 +174,8 @@ engine.register_rule(MaxStepsRule(max_steps=100))
 
 # Check rules during execution
 context = RuleContext(
+    rule_type=RuleType.PRE_EXECUTION,
+    session_id="session_123",
     branch_id="branch_1",
     current_agent="Agent1",
     target_agents=["Agent2"],
@@ -216,6 +223,82 @@ composite = CompositeRule(
     rules=[timeout_rule, resource_rule, step_rule],
     operator="AND"  # All must pass
 )
+```
+
+## Orchestra Integration
+
+### Defining Rules in Topology
+
+Rules are defined in the topology's `rules` array and automatically applied by Orchestra:
+
+```python
+from src.coordination import Orchestra
+
+# Define topology with rules
+topology = {
+    "nodes": ["Coordinator", "Worker1", "Worker2", "Analyzer"],
+    "edges": [
+        "Coordinator -> Worker1",
+        "Coordinator -> Worker2",
+        "Worker1 -> Analyzer",
+        "Worker2 -> Analyzer"
+    ],
+    "rules": [
+        "timeout(300)",                    # 5 minute timeout
+        "max_agents(3)",                   # Max 3 concurrent agents
+        "max_steps(50)",                   # Max 50 total steps
+        "parallel(Worker1, Worker2)"       # Workers run in parallel
+    ]
+}
+
+# Execute with Orchestra - rules are automatically enforced
+result = await Orchestra.run(
+    task="Process data",
+    topology=topology,
+    max_steps=100  # Orchestra max_steps is separate from rule
+)
+```
+
+### Conversation Turn Limits
+
+```python
+# Limit conversation turns between agents
+topology = {
+    "nodes": ["Agent1", "Agent2", "Agent3"],
+    "edges": [
+        "Agent1 <-> Agent2",  # Bidirectional conversation
+        "Agent2 -> Agent3"
+    ],
+    "rules": [
+        "max_turns(Agent1 <-> Agent2, 5)"  # Max 5 conversation turns
+    ]
+}
+```
+
+### Resource Constraints with Orchestra
+
+```python
+# Create custom rule factory config
+from src.coordination.rules import RuleFactoryConfig, ResourceLimitRule
+
+# Add resource limit rule
+resource_rule = ResourceLimitRule(
+    name="memory_limit",
+    max_memory_mb=2048,  # 2GB limit
+    max_cpu_percent=80   # 80% CPU limit
+)
+
+# Create Orchestra with custom rules
+rule_config = RuleFactoryConfig()
+rule_config.register_custom_rule(resource_rule)
+
+orchestra = Orchestra(
+    agent_registry,
+    rule_factory_config=rule_config
+)
+
+# Execute with resource monitoring
+result = await orchestra.execute(task, topology)
 ```
 
 ## Integration with Coordination System
@@ -271,6 +354,9 @@ Rules can return different actions:
 3. **Idempotency**: Rules should be idempotent for reliability
 4. **Performance**: Keep rule checks lightweight
 5. **Logging**: Log rule decisions for debugging
+6. **Topology Rules**: Define rules in topology for automatic enforcement
+7. **Rule Combinations**: Use composite rules for complex logic
+8. **Failsafe Rules**: Always include timeout rules to prevent infinite execution
 
 ## Advanced Features
 
@@ -326,9 +412,88 @@ import logging
 logging.getLogger("src.coordination.rules").setLevel(logging.DEBUG)
 ```
 
+### Analyzing Rule Impacts in Orchestra Results
+
+```python
+# Run with Orchestra
+result = await Orchestra.run(task, topology)
+
+# Check if rules affected execution
+for branch in result.branch_results:
+    if "rule" in branch.metadata:
+        print(f"Branch {branch.branch_id} was affected by rules:")
+        print(f"  - {branch.metadata['rule']}")
+    
+    # Check execution trace for rule decisions
+    for step in branch.execution_trace:
+        if step.get("rule_applied"):
+            print(f"Rule applied at step {step['step']}: {step['rule_applied']}")
+```
+
+## Complete Example with Orchestra
+
+```python
+from src.coordination import Orchestra
+from src.agents import Agent
+from src.agents.registry import AgentRegistry
+
+# Create agents
+coordinator = Agent(name="Coordinator", model_config={...})
+worker1 = Agent(name="Worker1", model_config={...})
+worker2 = Agent(name="Worker2", model_config={...})
+analyzer = Agent(name="Analyzer", model_config={...})
+
+# Define topology with comprehensive rules
+topology = {
+    "nodes": [coordinator, worker1, worker2, analyzer],
+    "edges": [
+        "Coordinator -> Worker1",
+        "Coordinator -> Worker2",
+        "Worker1 -> Analyzer",
+        "Worker2 -> Analyzer"
+    ],
+    "rules": [
+        "timeout(300)",                    # 5 minute overall timeout
+        "max_agents(3)",                   # Max 3 agents running concurrently
+        "max_steps(100)",                  # Max 100 steps total
+        "parallel(Worker1, Worker2)",      # Workers execute in parallel
+        "max_branch_depth(3)"              # Prevent deep nesting
+    ]
+}
+
+# Execute with Orchestra - all rules automatically enforced
+try:
+    result = await Orchestra.run(
+        task="Analyze dataset and generate report",
+        topology=topology,
+        context={
+            "dataset": "sales_2024",
+            "format": "detailed"
+        },
+        max_steps=150  # Orchestra's own limit (separate from rules)
+    )
+    
+    if result.success:
+        print(f"Analysis completed in {result.total_duration:.2f}s")
+        print(f"Total steps: {result.total_steps}")
+        print(f"Final report: {result.final_response}")
+    else:
+        print(f"Analysis failed: {result.error}")
+        # Check if rules caused the failure
+        for branch in result.branch_results:
+            if not branch.success and "rule" in str(branch.error):
+                print(f"Branch {branch.branch_id} failed due to rule violation")
+                
+except Exception as e:
+    print(f"Execution error: {e}")
+    # May be due to rule violations preventing execution
+```
+
 ## Future Enhancements
 
 1. **ML-based Rules**: Rules that adapt based on execution history
 2. **Distributed Rules**: Rules that work across multiple nodes
 3. **Rule Versioning**: Support for rule evolution
 4. **Rule Templates**: Reusable rule patterns
+5. **Dynamic Rule Adjustment**: Rules that adjust limits based on system load
+6. **Rule Composition Language**: DSL for complex rule definitions
