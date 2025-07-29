@@ -30,8 +30,25 @@ StateManager
 class StateManager:
     def __init__(self, storage_backend: StorageBackend):
         self.storage = storage_backend
-        self._checkpoints: Dict[str, Checkpoint] = {}
-        self._lock = asyncio.Lock()
+        self._active_sessions: Dict[str, StateSnapshot] = {}
+```
+
+### StateSnapshot Class
+
+```python
+@dataclass
+class StateSnapshot:
+    session_id: str
+    timestamp: float
+    branches: Dict[str, Dict[str, Any]]  # Serialized branches
+    active_branches: Set[str]
+    completed_branches: Set[str]
+    waiting_branches: Dict[str, Set[str]]
+    branch_results: Dict[str, Dict[str, Any]]
+    parent_child_map: Dict[str, List[str]]
+    child_parent_map: Dict[str, str]
+    metadata: Dict[str, Any] = field(default_factory=dict)
+    checksum: Optional[str] = None
 ```
 
 ### Storage Backend Interface
@@ -57,41 +74,34 @@ class StorageBackend(ABC):
 
 ## File Storage Backend
 
-The default implementation uses JSON files with atomic writes:
+The default implementation uses JSON files:
 
 ```python
-from src.coordination.state.storage_backends import FileStorageBackend
+from src.coordination.state.state_manager import FileStorageBackend
 
-backend = FileStorageBackend(
-    base_path="/path/to/state/storage",
-    use_compression=True,
-    compression_level=6  # 1-9, default is 6
-)
-
+backend = FileStorageBackend(base_path="/path/to/state/storage")
 state_manager = StateManager(storage_backend=backend)
 ```
 
 ### Features
-- **Atomic file operations**: Write to temp file, then rename for safety
-- **Optional gzip compression**: Reduce storage size for large states
-- **Directory structure organization**: Automatic directory creation
-- **File locking**: Prevents concurrent access corruption
+- **Simple file operations**: Direct JSON read/write
+- **Directory structure organization**: Automatic directory creation  
 - **Human-readable format**: JSON files can be inspected manually
+- **Separate directories**: Sessions and checkpoints stored separately
 
 ### Implementation Details
 
 ```python
 class FileStorageBackend(StorageBackend):
-    def __init__(
-        self,
-        base_path: str,
-        use_compression: bool = False,
-        compression_level: int = 6
-    ):
+    def __init__(self, base_path: Path):
         self.base_path = Path(base_path)
         self.base_path.mkdir(parents=True, exist_ok=True)
-        self.use_compression = use_compression
-        self.compression_level = compression_level
+        
+        # Create subdirectories
+        self.sessions_dir = self.base_path / "sessions"
+        self.checkpoints_dir = self.base_path / "checkpoints"
+        self.sessions_dir.mkdir(exist_ok=True)
+        self.checkpoints_dir.mkdir(exist_ok=True)
 ```
 
 ### File Organization
@@ -100,12 +110,10 @@ class FileStorageBackend(StorageBackend):
 state_storage/
 ├── sessions/
 │   ├── session_abc123.json
-│   └── session_def456.json.gz
-├── checkpoints/
-│   ├── checkpoint_1234567890.json
-│   └── checkpoint_0987654321.json.gz
-└── metadata/
-    └── index.json
+│   └── session_def456.json
+└── checkpoints/
+    ├── checkpoint_session_abc123_phase1_1234567890.json
+    └── checkpoint_session_def456_final_0987654321.json
 ```
 
 ### Error Handling
@@ -122,36 +130,40 @@ The FileStorageBackend includes robust error handling:
 
 ```python
 # Save complete session state
-session_state = {
+state = {
     "session_id": "session_123",
-    "topology": topology_def.dict(),
-    "branches": {
-        branch_id: branch.to_dict() 
-        for branch_id, branch in branches.items()
-    },
-    "execution_state": {
-        "current_step": 42,
-        "total_steps": 100,
-        "start_time": start_time.isoformat()
-    },
+    "task": task,
+    "context": context,
+    "branches": serialized_branches,  # Dict of serialized ExecutionBranch
+    "active_branches": ["branch_1", "branch_2"],
+    "completed_branches": ["branch_0"],
+    "waiting_branches": {"parent_1": {"child_1", "child_2"}},
+    "branch_results": serialized_results,  # Dict of serialized BranchResult
+    "parent_child_map": {"parent_1": ["child_1", "child_2"]},
+    "child_parent_map": {"child_1": "parent_1", "child_2": "parent_1"},
     "metadata": {
-        "user_id": "user_456",
-        "task": "data_analysis"
+        "start_time": time.time(),
+        "topology_nodes": 5,
+        "status": "running"
     }
 }
 
-await state_manager.save_session("session_123", session_state)
+await state_manager.save_session("session_123", state)
 ```
 
 ### Loading Session State
 
 ```python
 # Resume from saved state
-session_state = await state_manager.load_session("session_123")
-if session_state:
-    topology = TopologyDefinition(**session_state["topology"])
-    branches = restore_branches(session_state["branches"])
-    execution_state = session_state["execution_state"]
+state = await state_manager.load_session("session_123")
+if state:
+    # State includes checksum validation
+    branches = state_manager._deserialize_branches(state["branches"])
+    results = state_manager._deserialize_results(state["branch_results"])
+    
+    # Access execution metadata
+    print(f"Session status: {state['metadata']['status']}")
+    print(f"Active branches: {state['active_branches']}")
 ```
 
 ## Checkpoint System
@@ -162,36 +174,34 @@ if session_state:
 # Create checkpoint during execution
 checkpoint_id = await state_manager.create_checkpoint(
     session_id="session_123",
-    branch_id="branch_456",
-    checkpoint_data={
-        "step": 25,
-        "memory": memory_snapshot,
-        "metadata": {"reason": "before_risky_operation"}
-    }
+    checkpoint_name="phase_1_complete"
 )
+# Returns: "checkpoint_session_123_phase_1_complete_1234567890"
 ```
 
 ### Restoring from Checkpoint
 
 ```python
 # Restore to previous state
-checkpoint = await state_manager.restore_checkpoint(checkpoint_id)
-if checkpoint:
-    memory = checkpoint.data["memory"]
-    step = checkpoint.data["step"]
+state = await state_manager.restore_checkpoint(checkpoint_id)
+if state:
+    # Full session state is restored
+    session_id = state["session_id"]
+    branches = state["branches"]
+    metadata = state["metadata"]
 ```
 
-### Checkpoint Management
+### Listing Sessions
 
 ```python
-# List checkpoints for a session
-checkpoints = await state_manager.list_checkpoints("session_123")
+# List all sessions with optional filtering
+sessions = await state_manager.list_sessions(include_paused=True)
 
-# Delete old checkpoints
-await state_manager.cleanup_checkpoints(
-    session_id="session_123",
-    keep_last=3
-)
+for session in sessions:
+    print(f"Session: {session['session_id']}")
+    print(f"Status: {'paused' if session['paused'] else 'active'}")
+    print(f"Branches: {session['branches_count']}")
+    print(f"Completed: {session['completed_count']}")
 ```
 
 ## Pause and Resume
@@ -199,55 +209,25 @@ await state_manager.cleanup_checkpoints(
 ### Pausing Execution
 
 ```python
-async def pause_execution(
-    orchestra_session: Session,
-    state_manager: StateManager
-) -> None:
-    """Pause execution and save state."""
-    # Gather current state
-    state = {
-        "session_id": orchestra_session.id,
-        "branches": serialize_branches(orchestra_session.branches),
-        "execution_context": orchestra_session.context,
-        "pause_time": datetime.now().isoformat(),
-        "pause_reason": "user_requested"
-    }
-    
-    # Save state
-    await state_manager.save_session(orchestra_session.id, state)
-    
-    # Create checkpoint for safety
-    await state_manager.create_checkpoint(
-        session_id=orchestra_session.id,
-        branch_id="main",
-        checkpoint_data=state
-    )
+# Using StateManager directly
+await state_manager.pause_execution(session_id, current_state)
+
+# This automatically:
+# - Marks state as paused
+# - Adds pause timestamp
+# - Saves complete execution state
 ```
 
 ### Resuming Execution
 
 ```python
-async def resume_execution(
-    session_id: str,
-    state_manager: StateManager
-) -> Optional[Session]:
-    """Resume paused execution."""
-    # Load saved state
-    state = await state_manager.load_session(session_id)
-    if not state:
-        return None
-    
-    # Restore session
-    session = Session(
-        session_id=session_id,
-        topology=TopologyDefinition(**state["topology"]),
-        context=state["execution_context"]
-    )
-    
-    # Restore branches
-    session.branches = deserialize_branches(state["branches"])
-    
-    return session
+# Resume a paused session
+state = await state_manager.resume_execution(session_id)
+
+# Returns state with:
+# - paused flag cleared
+# - resume timestamp added
+# - All execution data preserved
 ```
 
 ## Integration with Orchestra
@@ -255,18 +235,39 @@ async def resume_execution(
 The Orchestra component integrates StateManager for automatic state management:
 
 ```python
-# Initialize Orchestra with state management
-state_manager = StateManager(
-    FileStorageBackend("./state_storage")
-)
+# Initialize StateManager
+backend = FileStorageBackend("./state_storage")
+state_manager = StateManager(backend)
 
+# Option 1: Pass to Orchestra.run()
 result = await Orchestra.run(
     task="Complex analysis",
     topology=topology,
-    state_manager=state_manager,
-    enable_checkpoints=True,
-    checkpoint_interval=10  # Every 10 steps
+    state_manager=state_manager
 )
+
+# Option 2: Create Orchestra instance
+orchestra = Orchestra(
+    agent_registry=AgentRegistry,
+    state_manager=state_manager
+)
+
+# Create pausable session
+session = await orchestra.create_session(
+    task="Long-running task",
+    enable_pause=True
+)
+
+# Run with automatic state saving
+result = await session.run(topology)
+
+# Pause/resume capabilities
+await session.pause()
+await session.resume()
+
+# Checkpoint management
+checkpoint_id = await orchestra.create_checkpoint(session.id, "milestone")
+restored = await orchestra.restore_checkpoint(checkpoint_id)
 ```
 
 ## Error Recovery
@@ -324,27 +325,30 @@ async def transactional_update(
 
 ## Performance Optimization
 
-### Compression
+### State Checksums
+
+The StateManager automatically calculates checksums for data integrity:
 
 ```python
-# Enable compression for large states
-backend = FileStorageBackend(
-    base_path="./state",
-    use_compression=True,
-    compression_level=6  # 1-9, higher = better compression
-)
+# Checksum is calculated on save
+snapshot.checksum = snapshot.calculate_checksum()
+
+# Validated on load
+if not snapshot.validate_checksum():
+    logger.error(f"Session {session_id} failed checksum validation")
 ```
 
-### Selective State Saving
+### In-Memory Caching
+
+Active sessions are cached for fast access:
 
 ```python
-# Save only essential state
-essential_state = {
-    "session_id": session_id,
-    "current_branch": current_branch_id,
-    "step": current_step,
-    "checksum": calculate_checksum(full_state)
-}
+# Sessions are cached on first load
+self._active_sessions[session_id] = snapshot
+
+# Subsequent loads use cache
+if session_id in self._active_sessions:
+    return self._active_sessions[session_id]
 ```
 
 ### Async I/O
@@ -355,7 +359,7 @@ All operations are async for non-blocking execution:
 await asyncio.gather(
     state_manager.save_session(session1_id, state1),
     state_manager.save_session(session2_id, state2),
-    state_manager.create_checkpoint(session3_id, "main", data)
+    state_manager.create_checkpoint(session1_id, "checkpoint1")
 )
 ```
 
@@ -418,11 +422,118 @@ class SecureStateManager(StateManager):
 ## Best Practices
 
 1. **Regular Checkpoints**: Create checkpoints at critical execution points
-2. **State Versioning**: Include version info for backward compatibility
-3. **Cleanup Policy**: Implement automatic cleanup of old states
-4. **Error Handling**: Always handle state load failures gracefully
-5. **Compression**: Use compression for large states
-6. **Atomic Operations**: Ensure all state updates are atomic
+   ```python
+   # After completing major phases
+   checkpoint_id = await state_manager.create_checkpoint(
+       session_id, "phase_complete"
+   )
+   ```
+
+2. **Error Handling**: Always handle state load failures gracefully
+   ```python
+   state = await state_manager.load_session(session_id)
+   if not state:
+       # Handle missing state
+       logger.warning(f"Session {session_id} not found")
+       return None
+   ```
+
+3. **Cleanup Policy**: Regularly clean up old sessions
+   ```python
+   # Delete completed sessions
+   await state_manager.delete_session(session_id)
+   ```
+
+4. **Session Naming**: Use descriptive session IDs
+   ```python
+   session_id = f"analysis_{user_id}_{timestamp}"
+   ```
+
+5. **Metadata Usage**: Store useful metadata for debugging
+   ```python
+   state["metadata"]["error_count"] = error_count
+   state["metadata"]["last_agent"] = current_agent
+   ```
+
+## Complete Example
+
+Here's a full example of using StateManager with Orchestra for a pausable workflow:
+
+```python
+import asyncio
+from pathlib import Path
+from src.coordination import Orchestra
+from src.coordination.state.state_manager import StateManager, FileStorageBackend
+from src.agents.registry import AgentRegistry
+
+async def long_running_analysis():
+    # Set up state management
+    state_dir = Path("./workflow_states")
+    backend = FileStorageBackend(state_dir)
+    state_manager = StateManager(backend)
+    
+    # Create Orchestra with state support
+    orchestra = Orchestra(
+        agent_registry=AgentRegistry,
+        state_manager=state_manager
+    )
+    
+    # Define workflow topology
+    topology = {
+        "nodes": ["DataCollector", "Analyzer", "Reporter"],
+        "edges": [
+            "DataCollector -> Analyzer",
+            "Analyzer -> Reporter"
+        ],
+        "rules": ["timeout(3600)", "max_steps(1000)"]
+    }
+    
+    # Create pausable session
+    session = await orchestra.create_session(
+        task="Analyze quarterly data",
+        context={"quarter": "Q4", "year": 2024},
+        enable_pause=True
+    )
+    
+    # Start execution
+    print(f"Starting session: {session.id}")
+    
+    # Run in background
+    task = asyncio.create_task(session.run(topology))
+    
+    # Simulate pause after some time
+    await asyncio.sleep(10)
+    if not task.done():
+        print("Pausing execution...")
+        await session.pause()
+        task.cancel()
+        
+        # Create checkpoint
+        checkpoint_id = await orchestra.create_checkpoint(
+            session.id,
+            "paused_for_review"
+        )
+        print(f"Created checkpoint: {checkpoint_id}")
+    
+    # List sessions
+    sessions = await state_manager.list_sessions()
+    print(f"Active sessions: {len(sessions)}")
+    
+    # Resume later
+    print("Resuming execution...")
+    result = await orchestra.resume_session(session.id)
+    
+    if result.success:
+        print(f"Analysis completed: {result.final_response}")
+    else:
+        print(f"Analysis failed: {result.error}")
+    
+    # Cleanup
+    await state_manager.delete_session(session.id)
+
+# Run the example
+asyncio.run(long_running_analysis())
+```
 
 ## Future Enhancements
 
@@ -430,3 +541,6 @@ class SecureStateManager(StateManager):
 2. **State Migration**: Tools for migrating states between versions
 3. **Real-time Sync**: Live state synchronization for monitoring
 4. **State Analytics**: Built-in analytics for execution patterns
+5. **Compression Support**: Add optional gzip compression for large states
+6. **Encryption**: Support for encrypted state storage
+7. **Redis Backend**: Implement Redis storage backend for scalability

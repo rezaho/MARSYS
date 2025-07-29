@@ -11,7 +11,8 @@ The Orchestra is the high-level coordination API for the MARS framework, providi
 3. **Component Integration**: Wires together all coordination components
 4. **Dynamic Execution**: Manages branch creation and execution lifecycle
 5. **Synchronization**: Handles convergence points and result aggregation
-6. **Session Management**: Supports pause/resume capabilities (future)
+6. **Session Management**: Supports pause/resume capabilities with StateManager
+7. **Rules Integration**: Enforces execution rules through RulesEngine
 
 ## Architecture
 
@@ -39,7 +40,8 @@ The main orchestration component that provides the high-level API.
 ```python
 orchestra = Orchestra(
     agent_registry,
-    rule_factory_config=None  # Optional rules configuration
+    rule_factory_config=None,  # Optional rules configuration
+    state_manager=None         # Optional state manager for persistence
 )
 result = await orchestra.execute(task, topology, context, max_steps)
 ```
@@ -185,9 +187,18 @@ for branch in result.branch_results:
     print(f"Success: {branch.success}")
 ```
 
-### 3. Session-Based Execution (Future)
+### 3. Session-Based Execution with StateManager
 
 ```python
+from src.coordination.state.state_manager import StateManager, FileStorageBackend
+
+# Create StateManager with file-based storage
+backend = FileStorageBackend("/path/to/state/storage")
+state_manager = StateManager(backend)
+
+# Create Orchestra with StateManager
+orchestra = Orchestra(agent_registry, state_manager=state_manager)
+
 # Create session for pause/resume
 session = await orchestra.create_session(
     task="Long-running analysis",
@@ -198,9 +209,29 @@ session = await orchestra.create_session(
 # Run with topology
 result = await session.run(topology)
 
-# Pause capability (future implementation)
-await session.pause()
-await session.resume()
+# Pause capability
+await session.pause()  # Saves current state
+
+# Resume later
+await session.resume()  # Continues from saved state
+```
+
+### 4. Checkpoint and Restore
+
+```python
+# Create checkpoint during execution
+checkpoint_id = await orchestra.create_checkpoint(
+    session.id,
+    "milestone_1"  # Checkpoint name
+)
+
+# Restore from checkpoint
+restored_state = await orchestra.restore_checkpoint(checkpoint_id)
+
+# List available sessions
+sessions = await state_manager.list_sessions()
+for session in sessions:
+    print(f"Session {session['session_id']}: {session['status']}")
 ```
 
 ## Key Features
@@ -330,6 +361,21 @@ self.rules_engine = self.rule_factory.create_rules_engine(
 )
 ```
 
+### StateManager Integration
+```python
+# Save execution state automatically
+if self.state_manager:
+    await self._save_execution_state(
+        session_id,
+        branch_states,
+        completed_branches,
+        active_tasks,
+        total_steps,
+        task,
+        context
+    )
+```
+
 ## Configuration Options
 
 ### Max Steps
@@ -456,9 +502,49 @@ except Exception as e:
     print(f"Orchestra error: {e}")
 ```
 
+## State Persistence Features
+
+With StateManager integration, the Orchestra supports:
+
+### Automatic State Saving
+- Execution state saved after each branch completion
+- Branch states, results, and metadata preserved
+- Parent-child relationships tracked
+- Synchronization points maintained
+
+### Pause and Resume
+```python
+# Pause during execution
+success = await orchestra.pause_session(session_id)
+
+# Resume later (even after restart)
+result = await orchestra.resume_session(session_id)
+```
+
+### Checkpointing
+```python
+# Create named checkpoints
+checkpoint_id = await orchestra.create_checkpoint(
+    session_id, 
+    "phase_1_complete"
+)
+
+# Restore to checkpoint
+state = await orchestra.restore_checkpoint(checkpoint_id)
+```
+
+### Session Management
+```python
+# List all sessions
+sessions = await state_manager.list_sessions(include_paused=True)
+
+# Delete old sessions
+await state_manager.delete_session(session_id)
+```
+
 ## Future Enhancements
 
-1. **Pause/Resume**: Full session persistence and recovery
+1. **Enhanced Pause/Resume**: Support for resuming with modified topology
 2. **Streaming Results**: Real-time execution updates
 3. **Cost Tracking**: Token usage and cost estimation
 4. **Execution Replay**: Replay executions for debugging
@@ -529,7 +615,8 @@ async def run(
     topology: Any,  # Accepts dict, PatternConfig, or Topology
     agent_registry: Optional[AgentRegistry] = None,
     context: Optional[Dict[str, Any]] = None,
-    max_steps: int = 100
+    max_steps: int = 100,
+    state_manager: Optional[StateManager] = None
 ) -> OrchestraResult
 ```
 
@@ -568,4 +655,44 @@ async def create_session(
 ) -> Session
 ```
 
-The Orchestra component represents the culmination of the MARS coordination system, providing a simple yet powerful interface for orchestrating complex multi-agent workflows with automatic topology format detection and dynamic execution patterns.
+### Orchestra.pause_session()
+```python
+async def pause_session(self, session_id: str) -> bool:
+    """
+    Pause an active session.
+    Requires StateManager to be configured.
+    """
+```
+
+### Orchestra.resume_session()
+```python
+async def resume_session(self, session_id: str) -> OrchestraResult:
+    """
+    Resume a paused session.
+    Requires StateManager to be configured.
+    """
+```
+
+### Orchestra.create_checkpoint()
+```python
+async def create_checkpoint(
+    self, 
+    session_id: str, 
+    checkpoint_name: str
+) -> str:
+    """
+    Create a named checkpoint of current session state.
+    Returns checkpoint ID.
+    """
+```
+
+### Orchestra.restore_checkpoint()
+```python
+async def restore_checkpoint(self, checkpoint_id: str) -> Dict[str, Any]:
+    """
+    Restore state from a checkpoint.
+    Returns the restored state dictionary.
+    """
+```
+
+The Orchestra component represents the culmination of the MARS coordination system, providing a simple yet powerful interface for orchestrating complex multi-agent workflows with automatic topology format detection, dynamic execution patterns, and comprehensive state management capabilities.
