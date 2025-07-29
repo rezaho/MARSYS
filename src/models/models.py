@@ -1511,12 +1511,34 @@ class BaseAPIModel:
                 **kwargs
             )
             
+            # Check if response is an ErrorResponse and convert to exception
+            if isinstance(adapter_response, ErrorResponse):
+                # Import here to avoid circular import
+                from src.agents.exceptions import ModelError
+                
+                # Convert ErrorResponse to ModelError exception
+                # Pass all error details to the exception
+                raise ModelError(
+                    message=f"API Error: {adapter_response.error}",
+                    error_code=adapter_response.error_code,
+                    context={
+                        "error_type": adapter_response.error_type,
+                        "provider": adapter_response.provider,
+                        "model": adapter_response.model,
+                        "request_id": adapter_response.request_id,
+                        "original_error": adapter_response.error
+                    }
+                )
+            
             # Apply custom response processor if provided
             if self._response_processor:
                 return self._response_processor(adapter_response)
             else:
                 return adapter_response
             
+        except ModelError:
+            # Re-raise ModelError without additional wrapping
+            raise
         except Exception as e:
             print(f"BaseAPIModel.run failed: {e}")
             raise

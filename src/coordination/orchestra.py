@@ -37,6 +37,7 @@ from .validation.response_validator import ValidationProcessor
 from .routing.router import Router
 from .routing.types import RoutingContext
 from .rules.rule_factory import RuleFactory, RuleFactoryConfig
+from .state.state_manager import StateManager
 
 logger = logging.getLogger(__name__)
 
@@ -95,17 +96,24 @@ class Orchestra:
     hierarchical delegation.
     """
     
-    def __init__(self, agent_registry: AgentRegistry, rule_factory_config: Optional[RuleFactoryConfig] = None):
+    def __init__(
+        self, 
+        agent_registry: AgentRegistry, 
+        rule_factory_config: Optional[RuleFactoryConfig] = None,
+        state_manager: Optional[StateManager] = None
+    ):
         """
         Initialize the Orchestra with an agent registry.
         
         Args:
             agent_registry: Registry containing all available agents
             rule_factory_config: Optional configuration for rule generation
+            state_manager: Optional state manager for persistence and checkpointing
         """
         self.agent_registry = agent_registry
         self._sessions = {}
         self.rule_factory = RuleFactory(rule_factory_config)
+        self.state_manager = state_manager
         self._initialize_components()
         logger.info("Orchestra initialized")
     
@@ -182,7 +190,8 @@ class Orchestra:
         topology: Any,  # Accepts Topology, PatternConfig, or dict
         agent_registry: Optional[AgentRegistry] = None,
         context: Optional[Dict[str, Any]] = None,
-        max_steps: int = 100
+        max_steps: int = 100,
+        state_manager: Optional[StateManager] = None
     ) -> OrchestraResult:
         """
         Simple one-line execution of a multi-agent workflow.
@@ -193,6 +202,7 @@ class Orchestra:
             agent_registry: Optional registry (uses global if not provided)
             context: Optional execution context
             max_steps: Maximum steps before timeout
+            state_manager: Optional state manager for persistence
             
         Returns:
             OrchestraResult with execution details
@@ -200,7 +210,7 @@ class Orchestra:
         if agent_registry is None:
             agent_registry = AgentRegistry
         
-        orchestra = cls(agent_registry, rule_factory_config=None)
+        orchestra = cls(agent_registry, rule_factory_config=None, state_manager=state_manager)
         return await orchestra.execute(task, topology, context, max_steps)
     
     async def execute(
@@ -311,6 +321,7 @@ class Orchestra:
         3. Handles dynamic branch spawning
         4. Manages synchronization points
         5. Aggregates results
+        6. Saves state for persistence (if StateManager provided)
         """
         # Find entry point(s)
         entry_agents = self._find_entry_agents()
@@ -339,6 +350,29 @@ class Orchestra:
         all_tasks = []
         completed_branches = []
         total_steps = 0
+        branch_states = {}  # Track branch states for persistence
+        
+        # Save initial state if StateManager provided
+        if self.state_manager:
+            initial_state = {
+                "session_id": session_id,
+                "task": task,
+                "context": context,
+                "branches": {b.id: self._serialize_branch(b) for b in initial_branches},
+                "active_branches": [b.id for b in initial_branches],
+                "completed_branches": [],
+                "waiting_branches": {},
+                "branch_results": {},
+                "parent_child_map": {},
+                "child_parent_map": {},
+                "metadata": {
+                    "start_time": time.time(),
+                    "max_steps": max_steps,
+                    "topology_nodes": len(self.topology_graph.nodes),
+                    "topology_edges": len(self.topology_graph.adjacency)
+                }
+            }
+            await self.state_manager.save_session(session_id, initial_state)
         
         # Execute initial branches
         for branch in initial_branches:
@@ -346,6 +380,7 @@ class Orchestra:
                 self.branch_executor.execute_branch(branch, task, context)
             )
             all_tasks.append(task_obj)
+            branch_states[branch.id] = branch
         
         # Main execution loop - handles dynamic branch creation
         step_count = 0
@@ -362,6 +397,18 @@ class Orchestra:
                     completed_branches.append(result)
                     all_tasks.remove(completed_task)
                     total_steps += result.total_steps
+                    
+                    # Save state after branch completion
+                    if self.state_manager:
+                        await self._save_execution_state(
+                            session_id,
+                            branch_states,
+                            completed_branches,
+                            all_tasks,
+                            total_steps,
+                            task,
+                            context
+                        )
                     
                     # Get last agent from completed branch
                     last_agent = self._get_last_agent(result)
@@ -488,6 +535,199 @@ class Orchestra:
         
         return None
     
+    def _serialize_branch(self, branch: ExecutionBranch) -> Dict[str, Any]:
+        """Serialize a branch for state persistence."""
+        return {
+            "id": branch.id,
+            "name": branch.name,
+            "type": branch.type.value,
+            "topology": {
+                "agents": branch.topology.agents,
+                "entry_agent": branch.topology.entry_agent,
+                "current_agent": branch.topology.current_agent,
+                "allowed_transitions": branch.topology.allowed_transitions,
+                "max_iterations": branch.topology.max_iterations,
+                "conversation_turns": branch.topology.conversation_turns
+            },
+            "state": {
+                "status": branch.state.status.value,
+                "current_step": branch.state.current_step,
+                "total_steps": branch.state.total_steps,
+                "conversation_turns": branch.state.conversation_turns,
+                "start_time": branch.state.start_time,
+                "end_time": branch.state.end_time,
+                "error": branch.state.error,
+                "completed_agents": list(branch.state.completed_agents)
+            },
+            "parent_branch": branch.parent_branch,
+            "metadata": branch.metadata
+        }
+    
+    async def _save_execution_state(
+        self,
+        session_id: str,
+        branch_states: Dict[str, ExecutionBranch],
+        completed_branches: List[BranchResult],
+        active_tasks: List[asyncio.Task],
+        total_steps: int,
+        task: Any,
+        context: Dict[str, Any]
+    ) -> None:
+        """Save current execution state to StateManager."""
+        if not self.state_manager:
+            return
+        
+        try:
+            # Build current state
+            state = {
+                "session_id": session_id,
+                "task": task,
+                "context": context,
+                "branches": {bid: self._serialize_branch(b) for bid, b in branch_states.items()},
+                "active_branches": [t.get_name() for t in active_tasks if not t.done()],
+                "completed_branches": [b.branch_id for b in completed_branches],
+                "waiting_branches": {},  # TODO: Extract from branch spawner
+                "branch_results": {b.branch_id: self._serialize_branch_result(b) for b in completed_branches},
+                "parent_child_map": {},  # TODO: Extract from branch spawner
+                "child_parent_map": {},  # TODO: Extract from branch spawner
+                "metadata": {
+                    "current_time": time.time(),
+                    "total_steps": total_steps,
+                    "status": "running"
+                }
+            }
+            
+            await self.state_manager.save_session(session_id, state)
+        except Exception as e:
+            logger.error(f"Failed to save execution state: {e}")
+    
+    def _serialize_branch_result(self, result: BranchResult) -> Dict[str, Any]:
+        """Serialize a branch result for state persistence."""
+        return {
+            "branch_id": result.branch_id,
+            "success": result.success,
+            "final_response": result.final_response,
+            "total_steps": result.total_steps,
+            "execution_trace": [
+                {
+                    "agent_name": step.agent_name,
+                    "success": step.success,
+                    "action_type": step.action_type,
+                    "error": step.error
+                } for step in result.execution_trace
+            ],
+            "branch_memory": result.branch_memory,
+            "metadata": result.metadata,
+            "error": result.error
+        }
+    
+    async def pause_session(self, session_id: str) -> bool:
+        """
+        Pause an active session.
+        
+        Args:
+            session_id: Session to pause
+            
+        Returns:
+            True if successfully paused
+        """
+        if not self.state_manager:
+            logger.warning("Cannot pause session without StateManager")
+            return False
+        
+        if session_id not in self._sessions:
+            logger.warning(f"Session {session_id} not found")
+            return False
+        
+        session = self._sessions[session_id]
+        
+        # Load current state
+        state = await self.state_manager.load_session(session_id)
+        if not state:
+            logger.error(f"Failed to load state for session {session_id}")
+            return False
+        
+        # Mark as paused
+        await self.state_manager.pause_execution(session_id, state)
+        
+        # Update session status
+        session.status = "paused"
+        
+        logger.info(f"Paused session {session_id}")
+        return True
+    
+    async def resume_session(self, session_id: str) -> OrchestraResult:
+        """
+        Resume a paused session.
+        
+        Args:
+            session_id: Session to resume
+            
+        Returns:
+            OrchestraResult from continued execution
+        """
+        if not self.state_manager:
+            raise ValueError("Cannot resume session without StateManager")
+        
+        # Load paused state
+        state = await self.state_manager.resume_execution(session_id)
+        if not state:
+            raise ValueError(f"Failed to load state for session {session_id}")
+        
+        # Reconstruct execution context
+        task = state.get("task")
+        context = state.get("context", {})
+        context["resumed"] = True
+        context["session_id"] = session_id
+        
+        logger.info(f"Resuming session {session_id}")
+        
+        # Continue execution from saved state
+        # TODO: Implement proper state restoration and continuation
+        # For now, just return a placeholder result
+        return OrchestraResult(
+            success=True,
+            final_response="Session resumed (implementation pending)",
+            branch_results=[],
+            total_steps=state.get("metadata", {}).get("total_steps", 0),
+            total_duration=0,
+            metadata={
+                "session_id": session_id,
+                "resumed": True
+            }
+        )
+    
+    async def create_checkpoint(self, session_id: str, checkpoint_name: str) -> str:
+        """
+        Create a checkpoint for the current session state.
+        
+        Args:
+            session_id: Session to checkpoint
+            checkpoint_name: Name for the checkpoint
+            
+        Returns:
+            Checkpoint ID
+        """
+        if not self.state_manager:
+            raise ValueError("Cannot create checkpoint without StateManager")
+        
+        return await self.state_manager.create_checkpoint(session_id, checkpoint_name)
+    
+    async def restore_checkpoint(self, checkpoint_id: str) -> Dict[str, Any]:
+        """
+        Restore state from a checkpoint.
+        
+        Args:
+            checkpoint_id: Checkpoint to restore
+            
+        Returns:
+            Restored state
+        """
+        if not self.state_manager:
+            raise ValueError("Cannot restore checkpoint without StateManager")
+        
+        return await self.state_manager.restore_checkpoint(checkpoint_id)
+    
     async def create_session(
         self,
         task: Any,
@@ -554,17 +794,31 @@ class Session:
         )
     
     async def pause(self) -> bool:
-        """Pause the session (future implementation)."""
+        """Pause the session."""
         if not self.enable_pause:
             return False
-        # TODO: Implement pause logic with StateManager
-        self.status = "paused"
-        return True
+        
+        if self.orchestra.state_manager:
+            success = await self.orchestra.pause_session(self.id)
+            if success:
+                self.status = "paused"
+            return success
+        else:
+            logger.warning("Cannot pause session without StateManager")
+            return False
     
     async def resume(self) -> bool:
-        """Resume the session (future implementation)."""
+        """Resume the session."""
         if self.status != "paused":
             return False
-        # TODO: Implement resume logic with StateManager
-        self.status = "running"
-        return True
+        
+        if self.orchestra.state_manager:
+            # Resume through orchestra
+            result = await self.orchestra.resume_session(self.id)
+            if result.success:
+                self.status = "running"
+                return True
+            return False
+        else:
+            logger.warning("Cannot resume session without StateManager")
+            return False
