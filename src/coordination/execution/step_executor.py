@@ -171,6 +171,11 @@ class StepExecutor:
                         # Add tool results to response
                         step_result.tool_results = tool_result.tool_results
                         self.stats[agent_name]["tool_executions"] += len(tool_result.tool_results)
+                        
+                        # Add tool responses to agent's memory
+                        # This ensures proper message sequencing for API calls
+                        if hasattr(agent, 'add_tool_responses') and tool_result.tool_results:
+                            agent.add_tool_responses(tool_result.tool_results)
                 
                 # Update statistics
                 duration = time.time() - start_time
@@ -272,7 +277,28 @@ class StepExecutor:
                 
                 # Extract next agent for invoke_agent action
                 if result.action_type == "invoke_agent" and "action_input" in raw_response:
-                    result.next_agent = raw_response["action_input"]
+                    action_input = raw_response["action_input"]
+                    
+                    # Handle unified array format
+                    if isinstance(action_input, list) and len(action_input) > 0:
+                        # For single agent, extract the first one
+                        first_agent = action_input[0]
+                        if isinstance(first_agent, dict) and "agent_name" in first_agent:
+                            result.next_agent = first_agent["agent_name"]
+                        else:
+                            # Fallback if array contains strings
+                            result.next_agent = str(first_agent)
+                    # Handle legacy format (string or dict)
+                    elif isinstance(action_input, dict):
+                        # Enhanced format with agent_name
+                        if "agent_name" in action_input:
+                            result.next_agent = action_input["agent_name"]
+                        else:
+                            # Very old format where action_input is agent name
+                            result.next_agent = str(action_input)
+                    else:
+                        # Legacy format - action_input is agent name
+                        result.next_agent = str(action_input)
             
             # Store parsed response
             result.parsed_response = raw_response

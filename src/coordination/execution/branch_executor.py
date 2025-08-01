@@ -254,10 +254,19 @@ class BranchExecutor:
             # Check if this is a final response
             if step_result.action_type == "final_response" and not step_result.next_agent:
                 # Only end if there's no next_agent override from rules
+                # Extract the actual content from parsed response if available
+                final_content = step_result.response
+                if step_result.parsed_response and isinstance(step_result.parsed_response, dict):
+                    # Check for final_response field in parsed data
+                    if "final_response" in step_result.parsed_response:
+                        final_content = step_result.parsed_response["final_response"]
+                    elif "content" in step_result.parsed_response:
+                        final_content = step_result.parsed_response["content"]
+                
                 return BranchResult(
                     branch_id=branch.id,
                     success=True,
-                    final_response=step_result.response,
+                    final_response=final_content,
                     total_steps=branch.state.current_step,
                     execution_trace=execution_trace,
                     branch_memory=context.branch_memory
@@ -272,10 +281,19 @@ class BranchExecutor:
             
             if not next_agent:
                 # No next agent - branch completes
+                # Extract the actual content from parsed response if available
+                final_content = step_result.response
+                if step_result.parsed_response and isinstance(step_result.parsed_response, dict):
+                    # Check for final_response field in parsed data
+                    if "final_response" in step_result.parsed_response:
+                        final_content = step_result.parsed_response["final_response"]
+                    elif "content" in step_result.parsed_response:
+                        final_content = step_result.parsed_response["content"]
+                
                 return BranchResult(
                     branch_id=branch.id,
                     success=True,
-                    final_response=step_result.response,
+                    final_response=final_content,
                     total_steps=branch.state.current_step,
                     execution_trace=execution_trace,
                     branch_memory=context.branch_memory
@@ -758,14 +776,6 @@ class BranchExecutor:
                              f"but it's not in allowed transitions: {allowed}")
                 return None
         
-        # If router is available, use it
-        if self.router:
-            return await self.router.determine_next_agent(
-                current_agent,
-                step_result,
-                allowed_transitions
-            )
-        
         # Default: take first allowed transition
         allowed = allowed_transitions.get(current_agent, [])
         return allowed[0] if allowed else None
@@ -992,10 +1002,19 @@ class BranchExecutor:
             
             # Check if this is a final response
             if step_result.action_type == "final_response":
+                # Extract the actual content from parsed response if available
+                final_content = step_result.response
+                if step_result.parsed_response and isinstance(step_result.parsed_response, dict):
+                    # Check for final_response field in parsed data
+                    if "final_response" in step_result.parsed_response:
+                        final_content = step_result.parsed_response["final_response"]
+                    elif "content" in step_result.parsed_response:
+                        final_content = step_result.parsed_response["content"]
+                
                 return BranchResult(
                     branch_id=branch.id,
                     success=True,
-                    final_response=step_result.response,
+                    final_response=final_content,
                     total_steps=branch.state.current_step,
                     execution_trace=execution_trace,
                     branch_memory=context.branch_memory
@@ -1024,10 +1043,19 @@ class BranchExecutor:
             
             if not next_agent:
                 # No next agent - branch completes
+                # Extract the actual content from parsed response if available
+                final_content = step_result.response
+                if step_result.parsed_response and isinstance(step_result.parsed_response, dict):
+                    # Check for final_response field in parsed data
+                    if "final_response" in step_result.parsed_response:
+                        final_content = step_result.parsed_response["final_response"]
+                    elif "content" in step_result.parsed_response:
+                        final_content = step_result.parsed_response["content"]
+                
                 return BranchResult(
                     branch_id=branch.id,
                     success=True,
-                    final_response=step_result.response,
+                    final_response=final_content,
                     total_steps=branch.state.current_step,
                     execution_trace=execution_trace,
                     branch_memory=context.branch_memory

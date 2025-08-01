@@ -127,6 +127,11 @@ class DynamicBranchSpawner:
         
         new_tasks = []
         
+        # Check if this is a final response - if so, no branching should occur
+        if isinstance(response, dict) and response.get("next_action") == "final_response":
+            logger.info(f"Agent '{agent_name}' returned final_response - no branching needed")
+            return []
+        
         # 1. Check for agent-initiated parallelism
         if await self._check_for_parallel_invoke(response):
             logger.info(f"Agent '{agent_name}' requested parallel invocation")
@@ -153,6 +158,10 @@ class DynamicBranchSpawner:
             parallel_tasks = await self._spawn_parallel_branches(
                 parallel_group, response, context, agent_name
             )
+            if parallel_tasks:
+                logger.info(f"Spawned {len(parallel_tasks)} branches from parallel group (rule-based)")
+            else:
+                logger.info(f"No new branches spawned from parallel group (may already exist from divergence)")
             new_tasks.extend(parallel_tasks)
         
         # 4. Check if we're in a conversation that should continue
@@ -221,7 +230,7 @@ class DynamicBranchSpawner:
                     trigger_type="divergence"
                 ))
         
-        logger.info(f"Spawned {len(new_tasks)} branches from divergence point '{divergence_agent}'")
+        logger.info(f"Spawned {len(new_tasks)} branches from divergence point '{divergence_agent}' (topology-based)")
         return new_tasks
     
     async def _spawn_parallel_branches(
@@ -436,25 +445,32 @@ class DynamicBranchSpawner:
         # 2. Check for completed parent branches waiting for children
         completed_parents = []
         for parent_id, waiting_children in list(self.waiting_branches.items()):
+            logger.debug(f"Checking parent branch '{parent_id}' with {len(waiting_children)} waiting children")
             if not waiting_children:  # All children completed
                 # Get parent branch info to resume
                 parent_branch = self.branch_info.get(parent_id)
-                if parent_branch and parent_branch.topology.current_agent:
-                    # Aggregate child results
-                    child_results = self._aggregate_child_results(parent_id)
-                    
-                    # Add to ready list with special context
-                    ready_agents.append((
-                        parent_branch.topology.current_agent,
-                        {
-                            "child_results": child_results,
-                            "parent_branch_id": parent_id,
-                            "resume_parent": True
-                        }
-                    ))
-                    
-                    completed_parents.append(parent_id)
-                    logger.info(f"Parent branch '{parent_id}' ready to resume - all children completed")
+                if parent_branch:
+                    logger.debug(f"Found parent branch '{parent_id}', current_agent: {parent_branch.topology.current_agent}")
+                    if parent_branch.topology.current_agent:
+                        # Aggregate child results
+                        child_results = self._aggregate_child_results(parent_id)
+                        
+                        # Add to ready list with special context
+                        ready_agents.append((
+                            parent_branch.topology.current_agent,
+                            {
+                                "child_results": child_results,
+                                "parent_branch_id": parent_id,
+                                "resume_parent": True
+                            }
+                        ))
+                        
+                        completed_parents.append(parent_id)
+                        logger.info(f"Parent branch '{parent_id}' ready to resume - all children completed")
+                    else:
+                        logger.warning(f"Parent branch '{parent_id}' has no current_agent set")
+                else:
+                    logger.error(f"Parent branch '{parent_id}' not found in branch_info!")
         
         # Clean up completed parent waiting states
         for parent_id in completed_parents:
@@ -539,11 +555,19 @@ class DynamicBranchSpawner:
         """
         # Check various response formats
         if isinstance(response, dict):
-            # Check for explicit parallel_invoke action
+            # Check for explicit parallel_invoke action (legacy)
             if response.get("action") == "parallel_invoke":
                 return True
             if response.get("next_action") == "parallel_invoke":
                 return True
+            
+            # Check for unified format - invoke_agent with array of multiple agents
+            if response.get("next_action") == "invoke_agent":
+                action_input = response.get("action_input", {})
+                if isinstance(action_input, list) and len(action_input) > 1:
+                    # Multiple agents in array = parallel invocation
+                    return True
+            
             # Check for tool calls that indicate parallel invocation
             tool_calls = response.get("tool_calls", [])
             for call in tool_calls:
@@ -625,6 +649,7 @@ class DynamicBranchSpawner:
         if child_branch_ids:
             self.parent_child_map[parent_branch_id] = child_branch_ids
             self.waiting_branches[parent_branch_id] = set(child_branch_ids)
+            logger.info(f"Spawned {len(child_branch_ids)} parallel branches from agent '{agent_name}' (agent-initiated)")
             logger.info(f"Parent branch '{parent_branch_id}' waiting for {len(child_branch_ids)} children")
         
         return child_tasks
@@ -634,7 +659,18 @@ class DynamicBranchSpawner:
         target_agents = []
         
         if isinstance(response, dict):
-            # Check various formats
+            # Check unified format first
+            if response.get("next_action") == "invoke_agent":
+                action_input = response.get("action_input", {})
+                if isinstance(action_input, list):
+                    # Extract agent names from array
+                    for item in action_input:
+                        if isinstance(item, dict) and "agent_name" in item:
+                            target_agents.append(item["agent_name"])
+                    if target_agents:
+                        return target_agents
+            
+            # Check various legacy formats
             if "target_agents" in response:
                 target_agents = response["target_agents"]
             elif "agents" in response:

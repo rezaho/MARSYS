@@ -74,11 +74,29 @@ class ResponseProcessor(ABC):
 class StructuredJSONProcessor(ResponseProcessor):
     """Handles JSON responses with next_action/action_input structure."""
     
+    def _extract_json_from_code_block(self, text: str) -> Optional[str]:
+        """Extract JSON from markdown code blocks."""
+        # Pattern to match ```json ... ``` or ``` ... ```
+        code_block_pattern = r'```(?:json)?\s*\n?(.*?)```'
+        match = re.search(code_block_pattern, text, re.DOTALL)
+        if match:
+            return match.group(1).strip()
+        return None
+    
     def can_process(self, response: Any) -> bool:
         """Check for expected JSON structure."""
         if isinstance(response, dict):
             return "next_action" in response
         if isinstance(response, str):
+            # First try to extract from code block
+            json_str = self._extract_json_from_code_block(response)
+            if json_str:
+                try:
+                    data = json.loads(json_str)
+                    return isinstance(data, dict) and "next_action" in data
+                except:
+                    return False
+            # Then try direct JSON parsing
             try:
                 data = json.loads(response)
                 return isinstance(data, dict) and "next_action" in data
@@ -90,7 +108,13 @@ class StructuredJSONProcessor(ResponseProcessor):
         """Parse and validate JSON structure."""
         try:
             if isinstance(response, str):
-                data = json.loads(response)
+                # First try to extract from code block
+                json_str = self._extract_json_from_code_block(response)
+                if json_str:
+                    data = json.loads(json_str)
+                else:
+                    # Try direct JSON parsing
+                    data = json.loads(response)
             else:
                 data = response
             
@@ -101,23 +125,80 @@ class StructuredJSONProcessor(ResponseProcessor):
             
             # Handle different action types
             if data.get("next_action") == "invoke_agent":
-                # Check for new format first
-                if "target_agent" in data:
-                    result["target_agent"] = data["target_agent"]
-                    # Preserve action_input as data
-                    result["action_input"] = data.get("action_input", {})
+                action_input = data.get("action_input", {})
+                
+                # Check for unified array format (new standard)
+                if isinstance(action_input, list):
+                    # Extract agent names and requests from array
+                    result["target_agents"] = []
+                    result["agent_requests"] = {}
+                    
+                    for item in action_input:
+                        if isinstance(item, dict) and "agent_name" in item:
+                            agent_name = item["agent_name"]
+                            result["target_agents"].append(agent_name)
+                            result["agent_requests"][agent_name] = item.get("request", {})
+                    
+                    # Flag if this is parallel (multiple agents)
+                    result["is_parallel"] = len(result["target_agents"]) > 1
+                    
+                    # For backward compatibility with single agent flow
+                    if len(result["target_agents"]) == 1:
+                        result["target_agent"] = result["target_agents"][0]
+                        result["action_input"] = result["agent_requests"].get(result["target_agent"], {})
+                
+                # Legacy format support
+                elif isinstance(action_input, dict):
+                    # Check for enhanced single agent format
+                    if "agent_name" in action_input:
+                        result["target_agent"] = action_input["agent_name"]
+                        result["action_input"] = action_input.get("request", {})
+                        result["target_agents"] = [result["target_agent"]]
+                        result["agent_requests"] = {result["target_agent"]: result["action_input"]}
+                    # Check for target_agent at top level
+                    elif "target_agent" in data:
+                        result["target_agent"] = data["target_agent"]
+                        result["action_input"] = action_input
+                        result["target_agents"] = [result["target_agent"]]
+                        result["agent_requests"] = {result["target_agent"]: action_input}
+                    else:
+                        # Very legacy - just agent name as string
+                        result["target_agent"] = str(action_input)
+                        result["action_input"] = {}
+                        result["target_agents"] = [result["target_agent"]]
+                        result["agent_requests"] = {result["target_agent"]: {}}
                 else:
-                    # Legacy format - action_input is agent name
-                    result["target_agent"] = data.get("action_input")
-                    result["action_input"] = ""  # No data in legacy format
+                    # Legacy format - action_input is agent name string
+                    result["target_agent"] = str(action_input)
+                    result["action_input"] = {}
+                    result["target_agents"] = [result["target_agent"]]
+                    result["agent_requests"] = {result["target_agent"]: {}}
+                
+                result["is_parallel"] = len(result.get("target_agents", [])) > 1
+                
             elif data.get("next_action") == "parallel_invoke":
-                # NEW: Handle parallel invocation
+                # Legacy parallel_invoke support for backward compatibility
                 result["target_agents"] = data.get("agents", [])
                 result["wait_for_all"] = data.get("wait_for_all", True)
+                result["is_parallel"] = True
+                
+                # Extract agent requests if provided
+                result["agent_requests"] = {}
+                action_input = data.get("action_input", {})
+                if isinstance(action_input, dict):
+                    for agent in result["target_agents"]:
+                        if agent in action_input:
+                            result["agent_requests"][agent] = action_input[agent]
             elif data.get("next_action") == "call_tool":
                 result["tool_calls"] = data.get("tool_calls", [])
             elif data.get("next_action") == "final_response":
-                result["final_response"] = data.get("final_response", data.get("content", ""))
+                # Check for response in action_input first (new format)
+                action_input = data.get("action_input", {})
+                if isinstance(action_input, dict) and "response" in action_input:
+                    result["final_response"] = action_input["response"]
+                else:
+                    # Fallback to old format
+                    result["final_response"] = data.get("final_response", data.get("content", ""))
             
             # Include all fields from original data
             result["content"] = data.get("content", "")
@@ -363,7 +444,9 @@ class ValidationProcessor:
             # Add parsed response to result
             if validation_result.is_valid:
                 validation_result.parsed_response = parsed
-                validation_result.action_type = action_type
+                # Only set action_type if validator didn't already set it
+                if validation_result.action_type is None:
+                    validation_result.action_type = action_type
             
             return validation_result
         
@@ -381,29 +464,41 @@ class ValidationProcessor:
         branch: ExecutionBranch,
         exec_state: ExecutionState
     ) -> ValidationResult:
-        """Validate single agent invocation."""
-        target_agent = parsed.get("target_agent")
+        """Validate agent invocation (single or multiple)."""
+        target_agents = parsed.get("target_agents", [])
         
-        if not target_agent:
+        # Fall back to single target_agent for backward compatibility
+        if not target_agents and "target_agent" in parsed:
+            target_agents = [parsed["target_agent"]]
+        
+        if not target_agents:
             return ValidationResult(
                 is_valid=False,
-                error_message="Missing target agent for invocation",
-                retry_suggestion="Specify which agent to invoke"
+                error_message="Missing target agent(s) for invocation",
+                retry_suggestion="Specify which agent(s) to invoke"
             )
         
-        # Check topology permissions
-        # Check if target_agent is in the next agents from current agent
+        # Check topology permissions for all targets
         next_agents = self.topology_graph.get_next_agents(agent.name)
-        if target_agent not in next_agents:
+        invalid_targets = []
+        for target in target_agents:
+            if target not in next_agents:
+                invalid_targets.append(target)
+        
+        if invalid_targets:
             return ValidationResult(
                 is_valid=False,
-                error_message=f"Agent {agent.name} cannot invoke {target_agent}",
+                error_message=f"Agent {agent.name} cannot invoke: {invalid_targets}",
                 retry_suggestion=f"Valid targets: {next_agents}"
             )
         
+        # Check if this is parallel invocation
+        is_parallel = parsed.get("is_parallel", len(target_agents) > 1)
+        
         return ValidationResult(
             is_valid=True,
-            next_agents=[target_agent]
+            next_agents=target_agents,
+            action_type=ActionType.PARALLEL_INVOKE if is_parallel else ActionType.INVOKE_AGENT
         )
     
     async def _validate_parallel_invocation(

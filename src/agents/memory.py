@@ -159,6 +159,7 @@ class Message:
     agent_calls: Optional[List[AgentCallMsg]] = None  # For assistant requesting agent invocations
     structured_data: Optional[Dict[str, Any]] = None  # For storing structured data when agent returns a dictionary from auto_run
     images: Optional[List[str]] = None  # For storing image paths/URLs for vision models
+    tool_call_id: Optional[str] = None  # For tool response messages, links to the original tool call
 
     def __post_init__(self):
         """Automatically convert dictionaries to proper dataclasses with validation."""
@@ -447,6 +448,37 @@ class Message:
             tool_calls=tool_calls,
             images=images,
         )
+    
+    def to_api_format(self) -> Dict[str, Any]:
+        """Convert message to OpenAI API format."""
+        msg_dict = {"role": self.role}
+        
+        # Add content if present
+        if self.content is not None:
+            if isinstance(self.content, dict):
+                # For structured content, convert to string
+                msg_dict["content"] = json.dumps(self.content)
+            else:
+                msg_dict["content"] = self.content
+        
+        # Add name for tool responses or assistant messages
+        if self.name:
+            msg_dict["name"] = self.name
+        
+        # Add tool calls for assistant messages
+        if self.tool_calls:
+            msg_dict["tool_calls"] = []
+            for tc in self.tool_calls:
+                if hasattr(tc, 'to_dict'):
+                    msg_dict["tool_calls"].append(tc.to_dict())
+                elif isinstance(tc, dict):
+                    msg_dict["tool_calls"].append(tc)
+        
+        # Add tool_call_id for tool response messages
+        if self.role == "tool" and self.tool_call_id:
+            msg_dict["tool_call_id"] = self.tool_call_id
+        
+        return msg_dict
 
 
 # --- Memory Classes ---
@@ -475,6 +507,7 @@ class BaseMemory(ABC):
         tool_calls: Optional[List[Union[Dict[str, Any], ToolCallMsg]]] = None,
         agent_calls: Optional[List[Union[Dict[str, Any], AgentCallMsg]]] = None,
         images: Optional[List[str]] = None,
+        tool_call_id: Optional[str] = None,
     ) -> str:
         """
         Adds a new message to memory and returns the message ID.
@@ -487,6 +520,7 @@ class BaseMemory(ABC):
             tool_calls: Optional list of tool calls (can be dicts or ToolCallMsg objects).
             agent_calls: Optional list of agent calls (can be dicts or AgentCallMsg objects).
             images: Optional list of image paths/URLs for vision models.
+            tool_call_id: Optional ID linking tool response to original tool call.
             
         Returns:
             str: The message ID of the added message
@@ -651,20 +685,9 @@ class ConversationMemory(BaseMemory):
         if msg.tool_calls:
             result["tool_calls"] = [tc.to_dict() for tc in msg.tool_calls]
         
-        # Special handling for tool role messages
-        if msg.role == "tool" and msg.content:
-            try:
-                # Try to extract tool_call_id from content
-                if isinstance(msg.content, str):
-                    content_data = json.loads(msg.content)
-                    if isinstance(content_data, dict) and "tool_call_id" in content_data:
-                        result["tool_call_id"] = content_data["tool_call_id"]
-                        result["content"] = content_data.get("output", "")
-                elif isinstance(msg.content, dict) and "tool_call_id" in msg.content:
-                    result["tool_call_id"] = msg.content["tool_call_id"]
-                    result["content"] = msg.content.get("output", "")
-            except (json.JSONDecodeError, TypeError):
-                pass
+        # Add tool_call_id for tool response messages
+        if msg.role == "tool" and msg.tool_call_id:
+            result["tool_call_id"] = msg.tool_call_id
         
         # Note: agent_calls and structured_data not included in standard AI format
         return result
@@ -679,6 +702,7 @@ class ConversationMemory(BaseMemory):
         tool_calls: Optional[List[Union[Dict[str, Any], ToolCallMsg]]] = None,
         agent_calls: Optional[List[Union[Dict[str, Any], AgentCallMsg]]] = None,
         images: Optional[List[str]] = None,
+        tool_call_id: Optional[str] = None,
     ) -> str:
         """
         Adds a new message to the conversation history and returns the message ID.
@@ -699,6 +723,7 @@ class ConversationMemory(BaseMemory):
                 tool_calls=tool_calls,
                 agent_calls=agent_calls,
                 images=images,
+                tool_call_id=tool_call_id,
             )
             self.memory.append(new_message)
             return new_message.message_id
@@ -897,6 +922,7 @@ class KGMemory(BaseMemory):
         tool_calls: Optional[List[Union[Dict[str, Any], ToolCallMsg]]] = None,
         agent_calls: Optional[List[Union[Dict[str, Any], AgentCallMsg]]] = None,
         images: Optional[List[str]] = None,
+        tool_call_id: Optional[str] = None,
     ) -> str:
         """
         Adds a raw content entry to KG memory and schedules fact extraction.
@@ -1208,6 +1234,7 @@ class MemoryManager:
         tool_calls: Optional[List[Union[Dict[str, Any], ToolCallMsg]]] = None,
         agent_calls: Optional[List[Union[Dict[str, Any], AgentCallMsg]]] = None,
         images: Optional[List[str]] = None,
+        tool_call_id: Optional[str] = None,
     ) -> str:
         """Delegates to the underlying memory module's add method and returns the message ID."""
         return self.memory_module.add(
@@ -1218,6 +1245,7 @@ class MemoryManager:
             tool_calls=tool_calls,
             agent_calls=agent_calls,
             images=images,
+            tool_call_id=tool_call_id,
         )
     
     def update(

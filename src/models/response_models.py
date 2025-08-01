@@ -92,6 +92,12 @@ class HarmonizedResponse(BaseModel):
     @model_validator(mode='after')
     def validate_content_or_tool_calls(self):
         """Ensure we have either content or tool_calls."""
+        # Allow empty content if the response was truncated due to length limits
+        if hasattr(self.metadata, 'finish_reason') and self.metadata.finish_reason == 'length':
+            # Response was truncated, allow empty content
+            return self
+        
+        # Otherwise, require either content or tool_calls
         if not self.content and not self.tool_calls:
             raise ValueError("Response must have either content or tool_calls")
         return self

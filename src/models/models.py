@@ -3,9 +3,9 @@ import io
 import json
 import logging
 import os
+import time
 import uuid
 import warnings
-import time
 from abc import ABC, abstractmethod
 from typing import Any, Callable, Dict, List, Literal, Optional, Union
 
@@ -23,9 +23,6 @@ from pydantic import (  # root_validator, # Ensure root_validator is removed or 
     field_validator,
     model_validator,  # Keep model_validator
 )
-
-# Import the new response models
-from src.models.response_models import HarmonizedResponse, ResponseMetadata, UsageInfo, ToolCall, ErrorResponse
 from transformers import (
     AutoModelForCausalLM,
     AutoModelForVision2Seq,
@@ -37,6 +34,15 @@ from transformers import (
 )
 
 from src.models.processors import process_vision_info
+
+# Import the new response models
+from src.models.response_models import (
+    ErrorResponse,
+    HarmonizedResponse,
+    ResponseMetadata,
+    ToolCall,
+    UsageInfo,
+)
 from src.models.utils import apply_tools_template
 
 # PEFT imports if used later in the file
@@ -49,28 +55,29 @@ except ImportError:
 
 # --- Provider Adapter Pattern ---
 
+
 class APIProviderAdapter(ABC):
     """Abstract base class for API provider adapters"""
-    
+
     def __init__(self, model_name: str, **provider_config):
         self.model_name = model_name
         # Each adapter handles its own config in __init__
-    
+
     def run(self, messages: List[Dict], **kwargs) -> HarmonizedResponse:
         """Common orchestration flow - calls abstract methods"""
         response = None
         try:
             # Record start time for response time calculation
             request_start_time = time.time()
-            
+
             # 1. Build request components using abstract methods
             headers = self.get_headers()
             payload = self.format_request_payload(messages, **kwargs)
             url = self.get_endpoint_url()
-            
+
             # 2. Make request (common logic)
             response = requests.post(url, headers=headers, json=payload, timeout=180)
-            
+
             # Debug: Print the actual response for debugging
             if response.status_code != 200:
                 print(f"DEBUG - API Error Response:")
@@ -79,21 +86,21 @@ class APIProviderAdapter(ABC):
                 print(f"  Request URL: {url}")
                 print(f"  Request Headers: {headers}")
                 print(f"  Request Payload: {payload}")
-            
+
             response.raise_for_status()
-            
+
             # 3. Get raw response and harmonize
             raw_response = response.json()
-            
+
             # 4. Always use harmonize_response - it's the only method now
             return self.harmonize_response(raw_response, request_start_time)
-            
+
         except requests.exceptions.RequestException as e:
             # Enhanced error handling with response content
             print(f"DEBUG - Request Exception occurred:")
             print(f"  Exception: {e}")
             print(f"  Exception type: {type(e)}")
-            
+
             if response is not None:
                 print(f"  Response status code: {response.status_code}")
                 print(f"  Response headers: {dict(response.headers)}")
@@ -104,56 +111,58 @@ class APIProviderAdapter(ABC):
                     print(f"  Response text: {response.text}")
             else:
                 print(f"  No response object available")
-            
+
             return self.handle_api_error(e, response)
         except Exception as e:
             # Catch any other exceptions (like Pydantic validation errors)
             print(f"DEBUG - Unexpected Exception occurred:")
             print(f"  Exception: {e}")
             print(f"  Exception type: {type(e)}")
-            
+
             if response is not None:
                 print(f"  Response status code: {response.status_code}")
                 print(f"  Response text: {response.text}")
-            
+
             # Convert unexpected exceptions to ErrorResponse
             return ErrorResponse(
                 error=f"Unexpected error: {str(e)}",
                 error_type=type(e).__name__,
-                provider=getattr(self, 'provider', 'unknown'),
-                model=getattr(self, 'model_name', 'unknown')
+                provider=getattr(self, "provider", "unknown"),
+                model=getattr(self, "model_name", "unknown"),
             )
-    
+
     # Abstract methods that each provider must implement
     @abstractmethod
     def get_headers(self) -> Dict[str, str]:
         """Return provider-specific headers"""
         pass
-    
+
     @abstractmethod
     def format_request_payload(self, messages: List[Dict], **kwargs) -> Dict[str, Any]:
         """Convert standard format to provider-specific request payload"""
         pass
-    
+
     @abstractmethod
     def get_endpoint_url(self) -> str:
         """Return provider-specific endpoint URL"""
         pass
-    
+
     @abstractmethod
     def handle_api_error(self, error: Exception, response=None) -> ErrorResponse:
         """Handle provider-specific errors"""
         pass
-    
+
     @abstractmethod
-    def harmonize_response(self, raw_response: Dict[str, Any], request_start_time: float) -> HarmonizedResponse:
+    def harmonize_response(
+        self, raw_response: Dict[str, Any], request_start_time: float
+    ) -> HarmonizedResponse:
         """
         Convert provider response to standardized Pydantic model with validation.
-        
+
         Args:
             raw_response: Original API response
             request_start_time: Unix timestamp when request started
-            
+
         Returns:
             HarmonizedResponse: Validated Pydantic model with standardized structure
         """
@@ -162,71 +171,130 @@ class APIProviderAdapter(ABC):
 
 class OpenAIAdapter(APIProviderAdapter):
     """Adapter for OpenAI and OpenAI-compatible APIs (OpenRouter, Groq)"""
-    
-    def __init__(self, model_name: str, api_key: str, base_url: str, 
-                 max_tokens: int = 1024, temperature: float = 0.7, top_p: float = None, **kwargs):
+
+    def __init__(
+        self,
+        model_name: str,
+        api_key: str,
+        base_url: str,
+        max_tokens: int = 1024,
+        temperature: float = 0.7,
+        top_p: float = None,
+        **kwargs,
+    ):
         super().__init__(model_name)
         self.api_key = api_key
         self.base_url = base_url
         self.max_tokens = max_tokens
         self.temperature = temperature
         self.top_p = top_p
-    
+
     def get_headers(self) -> Dict[str, str]:
         return {
             "Authorization": f"Bearer {self.api_key}",
-            "Content-Type": "application/json"
+            "Content-Type": "application/json",
         }
-    
+
     def format_request_payload(self, messages: List[Dict], **kwargs) -> Dict[str, Any]:
+        import re
+        
+        # Check if this is an O-series model using regex pattern
+        is_o_series = bool(re.match(r'^o\d-', self.model_name))
+        
+        # Handle temperature for O-series models
+        temperature = kwargs.get("temperature", self.temperature)
+        if is_o_series and temperature != 1:
+            import warnings
+            warnings.warn(
+                f"OpenAI {self.model_name} only supports temperature=1. "
+                f"Ignoring provided temperature={temperature} and using temperature=1."
+            )
+            temperature = 1
+        
+        # Convert None content to empty string for compatibility
+        cleaned_messages = []
+        for msg in messages:
+            cleaned_msg = msg.copy()
+            if cleaned_msg.get("content") is None:
+                cleaned_msg["content"] = ""
+            cleaned_messages.append(cleaned_msg)
+        
         payload = {
             "model": self.model_name,
-            "messages": messages,
-            "max_tokens": kwargs.get("max_tokens", self.max_tokens),
-            "temperature": kwargs.get("temperature", self.temperature),
+            "messages": cleaned_messages,
+            "temperature": temperature,
         }
         
+        # Handle max tokens - always use max_completion_tokens for OpenAI
+        if "max_completion_tokens" in kwargs:
+            payload["max_completion_tokens"] = kwargs["max_completion_tokens"]
+        elif "max_tokens" in kwargs:
+            payload["max_completion_tokens"] = kwargs["max_tokens"]
+        else:
+            # Default to 2048 if not specified
+            payload["max_completion_tokens"] = 2048
+
         if kwargs.get("top_p") is not None:
             payload["top_p"] = kwargs["top_p"]
         elif self.top_p is not None:
             payload["top_p"] = self.top_p
-        
+
         # Handle structured output (takes precedence over simple json_mode)
         if kwargs.get("response_format"):
             payload["response_format"] = kwargs["response_format"]
         elif kwargs.get("json_mode"):
             payload["response_format"] = {"type": "json_object"}
-            
+
         if kwargs.get("tools"):
             payload["tools"] = kwargs["tools"]
-        
+
         # Handle OpenAI reasoning (effort-based only)
         reasoning_effort = kwargs.get("reasoning_effort")
         if reasoning_effort and reasoning_effort.lower() in ["high", "medium", "low"]:
             payload["reasoning"] = {"effort": reasoning_effort.lower()}
-            
+
         # Only accept known OpenAI API parameters - warn about unknown ones
         valid_openai_params = {
-            "max_tokens", "temperature", "top_p", "json_mode", "tools", "response_format", 
-            "reasoning_effort", "frequency_penalty", "presence_penalty", "logit_bias", 
-            "logprobs", "top_logprobs", "n", "seed", "stop", "stream", "suffix", "user"
+            "max_tokens",
+            "max_completion_tokens",
+            "temperature",
+            "top_p",
+            "json_mode",
+            "tools",
+            "response_format",
+            "reasoning_effort",
+            "thinking_budget",  # Used by other providers but ignored for OpenAI
+            "frequency_penalty",
+            "presence_penalty",
+            "logit_bias",
+            "logprobs",
+            "top_logprobs",
+            "n",
+            "seed",
+            "stop",
+            "stream",
+            "suffix",
+            "user",
         }
-        
+
         for key, value in kwargs.items():
             if key not in valid_openai_params and value is not None:
                 import warnings
-                warnings.warn(f"Unknown parameter '{key}' passed to OpenAI API - this parameter will be ignored")
-        
+
+                warnings.warn(
+                    f"Unknown parameter '{key}' passed to OpenAI API - this parameter will be ignored"
+                )
+
         return payload
-    
+
     def get_endpoint_url(self) -> str:
         return f"{self.base_url.rstrip('/')}/chat/completions"
-    
+
     def handle_api_error(self, error: Exception, response=None) -> ErrorResponse:
         error_msg = str(error)
         error_code = None
         error_type = None
-        
+
         if response:
             try:
                 error_data = response.json()
@@ -236,31 +304,35 @@ class OpenAIAdapter(APIProviderAdapter):
                 error_type = error_info.get("type")
             except:
                 pass
-        
+
         return ErrorResponse(
             error=error_msg,
             error_code=error_code,
             error_type=error_type,
             provider="openai",
-            model=self.model_name
+            model=self.model_name,
         )
-    
-    def harmonize_response(self, raw_response: Dict[str, Any], request_start_time: float) -> HarmonizedResponse:
+
+    def harmonize_response(
+        self, raw_response: Dict[str, Any], request_start_time: float
+    ) -> HarmonizedResponse:
         """Convert OpenAI response to standardized Pydantic model"""
-        
+
         # Extract message content
         message = raw_response.get("choices", [{}])[0].get("message", {})
         choice = raw_response.get("choices", [{}])[0]
-        
+
         # Build tool calls
         tool_calls = []
         for tc in message.get("tool_calls", []):
-            tool_calls.append(ToolCall(
-                id=tc.get("id", ""),
-                type=tc.get("type", "function"),
-                function=tc.get("function", {})
-            ))
-        
+            tool_calls.append(
+                ToolCall(
+                    id=tc.get("id", ""),
+                    type=tc.get("type", "function"),
+                    function=tc.get("function", {}),
+                )
+            )
+
         # Build usage info
         usage_data = raw_response.get("usage", {})
         usage = None
@@ -269,9 +341,9 @@ class OpenAIAdapter(APIProviderAdapter):
                 prompt_tokens=usage_data.get("prompt_tokens"),
                 completion_tokens=usage_data.get("completion_tokens"),
                 total_tokens=usage_data.get("total_tokens"),
-                reasoning_tokens=usage_data.get("reasoning_tokens")  # o1 models
+                reasoning_tokens=usage_data.get("reasoning_tokens"),  # o1 models
             )
-        
+
         # Build metadata
         metadata = ResponseMetadata(
             provider="openai",
@@ -280,26 +352,41 @@ class OpenAIAdapter(APIProviderAdapter):
             created=raw_response.get("created"),
             usage=usage,
             finish_reason=choice.get("finish_reason"),
-            response_time=time.time() - request_start_time
+            response_time=time.time() - request_start_time,
         )
+
+        # Handle content - provide a default message if truncated
+        content = message.get("content", "")
+        if not content and choice.get("finish_reason") == "length":
+            content = "[Response truncated due to token limit. Please increase max_completion_tokens or continue the conversation.]"
         
         # Build harmonized response
         return HarmonizedResponse(
             role=message.get("role", "assistant"),
-            content=message.get("content"),
+            content=content,
             tool_calls=tool_calls,
             reasoning=message.get("reasoning"),  # o1 models
-            metadata=metadata
+            metadata=metadata,
         )
 
 
 class OpenRouterAdapter(APIProviderAdapter):
     """Adapter for OpenRouter API (independent implementation with OpenRouter-specific features)"""
-    
-    def __init__(self, model_name: str, api_key: str, base_url: str, 
-                 max_tokens: int = 1024, temperature: float = 0.7, top_p: float = None,
-                 site_url: Optional[str] = None, site_name: Optional[str] = None, 
-                 thinking_budget: Optional[int] = None, reasoning_effort: Optional[str] = None, **kwargs):
+
+    def __init__(
+        self,
+        model_name: str,
+        api_key: str,
+        base_url: str,
+        max_tokens: int = 1024,
+        temperature: float = 0.7,
+        top_p: float = None,
+        site_url: Optional[str] = None,
+        site_name: Optional[str] = None,
+        thinking_budget: Optional[int] = None,
+        reasoning_effort: Optional[str] = None,
+        **kwargs,
+    ):
         super().__init__(model_name)
         self.api_key = api_key
         self.base_url = base_url
@@ -310,64 +397,73 @@ class OpenRouterAdapter(APIProviderAdapter):
         self.site_name = site_name
         self.thinking_budget = thinking_budget
         self.reasoning_effort = reasoning_effort  # "high", "medium", "low"
-    
+
     def get_headers(self) -> Dict[str, str]:
         headers = {
             "Authorization": f"Bearer {self.api_key}",
-            "Content-Type": "application/json"
+            "Content-Type": "application/json",
         }
-        
+
         # Add OpenRouter-specific headers for rankings
         if self.site_url:
             headers["HTTP-Referer"] = self.site_url
         if self.site_name:
             headers["X-Title"] = self.site_name
-            
+
         return headers
-    
+
     def format_request_payload(self, messages: List[Dict], **kwargs) -> Dict[str, Any]:
+        # Convert None content to empty string for compatibility
+        cleaned_messages = []
+        for msg in messages:
+            cleaned_msg = msg.copy()
+            if cleaned_msg.get("content") is None:
+                cleaned_msg["content"] = ""
+            cleaned_messages.append(cleaned_msg)
+        
         payload = {
             "model": self.model_name,
-            "messages": messages,
+            "messages": cleaned_messages,
             "max_tokens": kwargs.get("max_tokens", self.max_tokens),
             "temperature": kwargs.get("temperature", self.temperature),
         }
-        
+
         if kwargs.get("top_p") is not None:
             payload["top_p"] = kwargs["top_p"]
         elif self.top_p is not None:
             payload["top_p"] = self.top_p
-        
+
         # OpenRouter + Gemini fix: Can't combine tools with json_mode
         # Force json_mode=False when tools are present to avoid API errors
         has_tools = bool(kwargs.get("tools"))
         wants_json_mode = bool(kwargs.get("json_mode"))
-        
+
         if has_tools and wants_json_mode:
             # Disable json_mode when tools are present
             import warnings
+
             warnings.warn(
                 "OpenRouter: Disabling json_mode when tools are present to avoid API conflicts. "
                 "The response will still be parsed appropriately."
             )
             wants_json_mode = False
-        
+
         # Handle structured output (takes precedence over simple json_mode)
         if kwargs.get("response_format"):
             payload["response_format"] = kwargs["response_format"]
         elif wants_json_mode:
             payload["response_format"] = {"type": "json_object"}
-            
+
         if kwargs.get("tools"):
             payload["tools"] = kwargs["tools"]
-        
+
         # Handle OpenRouter-specific reasoning configuration
         thinking_budget = kwargs.get("thinking_budget") or self.thinking_budget
         reasoning_effort = kwargs.get("reasoning_effort") or self.reasoning_effort
         exclude_reasoning = kwargs.get("exclude_reasoning", False)
-        
+
         reasoning_config = {}
-        
+
         if reasoning_effort:
             # Use effort-based reasoning (OpenAI-style)
             if reasoning_effort.lower() in ["high", "medium", "low"]:
@@ -375,38 +471,57 @@ class OpenRouterAdapter(APIProviderAdapter):
         elif thinking_budget is not None and thinking_budget >= 0:
             # Use max_tokens-based reasoning (OpenRouter-specific)
             reasoning_config["max_tokens"] = thinking_budget
-        
+
         # Add exclude parameter if needed (defaults to False)
         if exclude_reasoning:
             reasoning_config["exclude"] = True
-            
+
         # Add reasoning config to payload if we have any settings
         if reasoning_config:
             payload["reasoning"] = reasoning_config
-            
+
         # Only accept known OpenRouter API parameters - warn about unknown ones
         valid_openrouter_params = {
-            "max_tokens", "temperature", "top_p", "json_mode", "tools", "response_format", 
-            "thinking_budget", "reasoning_effort", "exclude_reasoning",
-            "frequency_penalty", "presence_penalty", "logit_bias", 
-            "logprobs", "top_logprobs", "n", "seed", "stop", "stream", "suffix", "user"
+            "max_tokens",
+            "temperature",
+            "top_p",
+            "json_mode",
+            "tools",
+            "response_format",
+            "thinking_budget",
+            "reasoning_effort",
+            "exclude_reasoning",
+            "frequency_penalty",
+            "presence_penalty",
+            "logit_bias",
+            "logprobs",
+            "top_logprobs",
+            "n",
+            "seed",
+            "stop",
+            "stream",
+            "suffix",
+            "user",
         }
-        
+
         for key, value in kwargs.items():
             if key not in valid_openrouter_params and value is not None:
                 import warnings
-                warnings.warn(f"Unknown parameter '{key}' passed to OpenRouter API - this parameter will be ignored")
-        
+
+                warnings.warn(
+                    f"Unknown parameter '{key}' passed to OpenRouter API - this parameter will be ignored"
+                )
+
         return payload
-    
+
     def get_endpoint_url(self) -> str:
         return f"{self.base_url.rstrip('/')}/chat/completions"
-    
+
     def handle_api_error(self, error: Exception, response=None) -> ErrorResponse:
         error_msg = str(error)
         error_code = None
         error_type = None
-        
+
         if response:
             try:
                 error_data = response.json()
@@ -416,25 +531,24 @@ class OpenRouterAdapter(APIProviderAdapter):
                 error_type = error_info.get("type")
             except:
                 pass
-        
+
         return ErrorResponse(
             error=error_msg,
             error_code=error_code,
             error_type=error_type,
             provider="openrouter",
-            model=self.model_name
+            model=self.model_name,
         )
-        
-    
-    
+
     def _extract_json_from_content(self, content: str) -> dict:
         """Extract JSON from content using robust parsing utilities."""
-        from src.utils.parsing import robust_json_loads
         import json
-        
+
+        from src.utils.parsing import robust_json_loads
+
         if not content or not isinstance(content, str):
             return content
-        
+
         try:
             # Use the robust JSON parser from utils
             parsed = robust_json_loads(content)
@@ -442,15 +556,17 @@ class OpenRouterAdapter(APIProviderAdapter):
         except (json.JSONDecodeError, ValueError):
             # If parsing fails, return original content
             return content
-    
-    def harmonize_response(self, raw_response: Dict[str, Any], request_start_time: float) -> HarmonizedResponse:
+
+    def harmonize_response(
+        self, raw_response: Dict[str, Any], request_start_time: float
+    ) -> HarmonizedResponse:
         """Convert OpenRouter response to standardized Pydantic model"""
         import json
-        
+
         # Extract message content
         message = raw_response.get("choices", [{}])[0].get("message", {})
         choice = raw_response.get("choices", [{}])[0]
-        
+
         # Enhanced content parsing: try to parse JSON from content
         content = message.get("content")
         if content and content.strip():
@@ -458,16 +574,18 @@ class OpenRouterAdapter(APIProviderAdapter):
             # If it's a dict, convert back to JSON string for consistency
             if isinstance(content, dict):
                 content = json.dumps(content)
-        
+
         # Build tool calls
         tool_calls = []
         for tc in message.get("tool_calls", []):
-            tool_calls.append(ToolCall(
-                id=tc.get("id", ""),
-                type=tc.get("type", "function"),
-                function=tc.get("function", {})
-            ))
-        
+            tool_calls.append(
+                ToolCall(
+                    id=tc.get("id", ""),
+                    type=tc.get("type", "function"),
+                    function=tc.get("function", {}),
+                )
+            )
+
         # Build usage info
         usage_data = raw_response.get("usage", {})
         usage = None
@@ -476,9 +594,11 @@ class OpenRouterAdapter(APIProviderAdapter):
                 prompt_tokens=usage_data.get("prompt_tokens"),
                 completion_tokens=usage_data.get("completion_tokens"),
                 total_tokens=usage_data.get("total_tokens"),
-                reasoning_tokens=usage_data.get("reasoning_tokens")  # OpenRouter reasoning
+                reasoning_tokens=usage_data.get(
+                    "reasoning_tokens"
+                ),  # OpenRouter reasoning
             )
-        
+
         # Build metadata with OpenRouter-specific fields
         metadata = ResponseMetadata(
             provider="openrouter",
@@ -488,137 +608,159 @@ class OpenRouterAdapter(APIProviderAdapter):
             usage=usage,
             finish_reason=choice.get("finish_reason"),
             response_time=time.time() - request_start_time,
-            reasoning_effort=getattr(self, 'reasoning_effort', None),
-            thinking_budget=getattr(self, 'thinking_budget', None),
-            site_info={
-                "site_url": getattr(self, 'site_url', None),
-                "site_name": getattr(self, 'site_name', None)
-            } if hasattr(self, 'site_url') or hasattr(self, 'site_name') else None
+            reasoning_effort=getattr(self, "reasoning_effort", None),
+            thinking_budget=getattr(self, "thinking_budget", None),
+            site_info=(
+                {
+                    "site_url": getattr(self, "site_url", None),
+                    "site_name": getattr(self, "site_name", None),
+                }
+                if hasattr(self, "site_url") or hasattr(self, "site_name")
+                else None
+            ),
         )
-        
+
         # Build harmonized response
         return HarmonizedResponse(
             role=message.get("role", "assistant"),
             content=content,
             tool_calls=tool_calls,
             reasoning=message.get("reasoning"),  # OpenRouter reasoning
-            metadata=metadata
+            metadata=metadata,
         )
 
 
 class AnthropicAdapter(APIProviderAdapter):
     """Adapter for Anthropic Claude API"""
-    
-    def __init__(self, model_name: str, api_key: str, base_url: str,
-                 max_tokens: int = 1024, temperature: float = 0.7, **kwargs):
+
+    def __init__(
+        self,
+        model_name: str,
+        api_key: str,
+        base_url: str,
+        max_tokens: int = 1024,
+        temperature: float = 0.7,
+        **kwargs,
+    ):
         super().__init__(model_name)
         self.api_key = api_key
         self.base_url = base_url
         self.max_tokens = max_tokens
         self.temperature = temperature
-    
+
     def get_headers(self) -> Dict[str, str]:
         return {
             "x-api-key": self.api_key,
             "Content-Type": "application/json",
-            "anthropic-version": "2023-06-01"
+            "anthropic-version": "2023-06-01",
         }
-    
+
     def format_request_payload(self, messages: List[Dict], **kwargs) -> Dict[str, Any]:
         # Extract system message if present (Claude handles it differently)
         system_message = None
         user_messages = []
-        
+
         for msg in messages:
             if msg.get("role") == "system":
                 system_message = msg.get("content")
             else:
-                user_messages.append(msg)
-        
+                # Convert None content to empty string for compatibility
+                cleaned_msg = msg.copy()
+                if cleaned_msg.get("content") is None:
+                    cleaned_msg["content"] = ""
+                user_messages.append(cleaned_msg)
+
         # Build base payload with required fields
         payload = {
             "model": self.model_name,
             "messages": user_messages,
-            "max_tokens": kwargs.get("max_tokens") or self.max_tokens,  # Ensure we always have a valid integer
+            "max_tokens": kwargs.get("max_tokens")
+            or self.max_tokens,  # Ensure we always have a valid integer
         }
-        
+
         # Only add temperature if explicitly provided in kwargs and not None
         temperature = kwargs.get("temperature")
         if temperature is not None:
             payload["temperature"] = temperature
-        
+
         if system_message:
             payload["system"] = system_message
-            
+
         # Claude doesn't support OpenAI's response_format, handle JSON mode differently
         if kwargs.get("json_mode") and user_messages:
             last_msg = user_messages[-1]
             if last_msg.get("role") == "user":
                 last_msg["content"] += "\n\nPlease respond with valid JSON only."
-        
+
         return payload
-    
+
     def get_endpoint_url(self) -> str:
         return f"{self.base_url.rstrip('/')}/messages"
-    
+
     def handle_api_error(self, error: Exception, response=None) -> ErrorResponse:
         error_msg = str(error)
         error_code = None
         error_type = None
         request_id = None
-        
+
         if response:
             try:
                 error_data = response.json()
                 print(f"DEBUG - Anthropic Error Data: {error_data}")
-                
+
                 # Anthropic error format: {"type": "error", "error": {"type": "...", "message": "..."}}
                 if "error" in error_data:
                     error_info = error_data["error"]
                     error_msg = error_info.get("message", str(error))
                     error_type = error_info.get("type")
                     error_code = error_info.get("code")
-                
+
                 # Try to get request ID
-                request_id = response.headers.get("request-id") or error_data.get("request_id")
-                
+                request_id = response.headers.get("request-id") or error_data.get(
+                    "request_id"
+                )
+
             except Exception as parse_error:
                 print(f"DEBUG - Failed to parse error response: {parse_error}")
                 print(f"DEBUG - Raw response text: {response.text}")
-        
+
         return ErrorResponse(
             error=error_msg,
             error_code=error_code,
             error_type=error_type,
             provider="anthropic",
             model=self.model_name,
-            request_id=request_id
+            request_id=request_id,
         )
-    
-    def harmonize_response(self, raw_response: Dict[str, Any], request_start_time: float) -> HarmonizedResponse:
+
+    def harmonize_response(
+        self, raw_response: Dict[str, Any], request_start_time: float
+    ) -> HarmonizedResponse:
         """Convert Anthropic response to standardized Pydantic model"""
         import json
-        
+
         content_blocks = raw_response.get("content", [])
-        
+
         # Extract text content and tool calls
         text_content = ""
         tool_calls = []
-        
+
         for block in content_blocks:
             if block.get("type") == "text":
                 text_content += block.get("text", "")
             elif block.get("type") == "tool_use":
                 # Convert Claude tool use to standardized format
-                tool_calls.append(ToolCall(
-                    id=block.get("id", ""),
-                    type="function",
-                    function={
-                        "name": block.get("name", ""),
-                        "arguments": block.get("input", {})
-                    }
-                ))
-        
+                tool_calls.append(
+                    ToolCall(
+                        id=block.get("id", ""),
+                        type="function",
+                        function={
+                            "name": block.get("name", ""),
+                            "arguments": block.get("input", {}),
+                        },
+                    )
+                )
+
         # Build usage info
         usage_data = raw_response.get("usage", {})
         usage = None
@@ -626,9 +768,10 @@ class AnthropicAdapter(APIProviderAdapter):
             usage = UsageInfo(
                 prompt_tokens=usage_data.get("input_tokens"),
                 completion_tokens=usage_data.get("output_tokens"),
-                total_tokens=usage_data.get("input_tokens", 0) + usage_data.get("output_tokens", 0)
+                total_tokens=usage_data.get("input_tokens", 0)
+                + usage_data.get("output_tokens", 0),
             )
-        
+
         # Build metadata with Anthropic-specific fields
         metadata = ResponseMetadata(
             provider="anthropic",
@@ -638,43 +781,54 @@ class AnthropicAdapter(APIProviderAdapter):
             finish_reason=raw_response.get("stop_reason"),
             response_time=time.time() - request_start_time,
             stop_reason=raw_response.get("stop_reason"),
-            stop_sequence=raw_response.get("stop_sequence")
+            stop_sequence=raw_response.get("stop_sequence"),
         )
-        
+
         # Build harmonized response
         return HarmonizedResponse(
             role=raw_response.get("role", "assistant"),
             content=text_content if text_content else None,
             tool_calls=tool_calls,
-            metadata=metadata
+            metadata=metadata,
         )
 
 
 class GoogleAdapter(APIProviderAdapter):
     """Adapter for Google Gemini API"""
-    
-    def __init__(self, model_name: str, api_key: str, base_url: str,
-                 max_tokens: int = 1024, temperature: float = 0.7, thinking_budget: Optional[int] = 2000, **kwargs):
+
+    def __init__(
+        self,
+        model_name: str,
+        api_key: str,
+        base_url: str,
+        max_tokens: int = 1024,
+        temperature: float = 0.7,
+        thinking_budget: Optional[int] = 2000,
+        **kwargs,
+    ):
         super().__init__(model_name)
         self.api_key = api_key
         self.base_url = base_url
         self.max_tokens = max_tokens
         self.temperature = temperature
         self.thinking_budget = thinking_budget
-    
+
     def get_headers(self) -> Dict[str, str]:
         # Google uses API key in URL params, not headers
         return {"Content-Type": "application/json"}
-    
+
     def format_request_payload(self, messages: List[Dict], **kwargs) -> Dict[str, Any]:
         # Convert OpenAI messages to Google format
         google_messages = []
         for msg in messages:
-            # Skip messages with empty or None content
+            # Convert None content to empty string for compatibility
             content = msg.get("content")
-            if not content:
+            if content is None:
+                content = ""
+            # Skip completely empty messages (empty string after conversion)
+            if not content and not msg.get("tool_calls"):
                 continue
-                
+
             # Convert role names: OpenAI uses "assistant", Google uses "model"
             # Note: Google doesn't have a separate "system" role, so convert system to user
             msg_role = msg.get("role")
@@ -684,7 +838,7 @@ class GoogleAdapter(APIProviderAdapter):
                 role = "model"
             else:  # system or any other role
                 role = "user"
-            
+
             # Handle different content types
             parts = []
             if isinstance(content, str):
@@ -713,15 +867,12 @@ class GoogleAdapter(APIProviderAdapter):
                                     parts.append(image_data)
                     elif isinstance(part, str):
                         parts.append({"text": part})
-            
+
             # Only add message if it has parts
             if parts:
-                google_msg = {
-                    "role": role,
-                    "parts": parts
-                }
+                google_msg = {"role": role, "parts": parts}
                 google_messages.append(google_msg)
-        
+
         # Check if we need to add images from the message context
         # This handles cases where images are referenced separately
         images = kwargs.get("images", [])
@@ -732,49 +883,46 @@ class GoogleAdapter(APIProviderAdapter):
                 if msg["role"] == "user":
                     last_msg = msg
                     break
-            
+
             if last_msg:
                 for image in images:
                     image_data = self._process_image_for_google(image)
                     if image_data:
                         last_msg["parts"].append(image_data)
-        
+
         # Build generation config
         generation_config = {
             "maxOutputTokens": kwargs.get("max_tokens", self.max_tokens),
-            "temperature": kwargs.get("temperature", self.temperature)
+            "temperature": kwargs.get("temperature", self.temperature),
         }
-        
+
         # Add thinking configuration if thinking budget is provided
         thinking_budget = kwargs.get("thinking_budget", self.thinking_budget)
         if thinking_budget is not None:
-            generation_config["thinkingConfig"] = {
-                "thinkingBudget": thinking_budget
-            }
-        
+            generation_config["thinkingConfig"] = {"thinkingBudget": thinking_budget}
+
         # Add structured output schema if provided
         response_schema = kwargs.get("response_schema")
         if response_schema:
             # Convert JSON Schema to Google's format
             generation_config["responseMimeType"] = "application/json"
-            generation_config["responseSchema"] = self._convert_to_google_schema(response_schema)
+            generation_config["responseSchema"] = self._convert_to_google_schema(
+                response_schema
+            )
         elif kwargs.get("json_mode"):
             # Fallback to basic JSON mode
             generation_config["responseMimeType"] = "application/json"
-        
-        payload = {
-            "contents": google_messages,
-            "generationConfig": generation_config
-        }
-        
+
+        payload = {"contents": google_messages, "generationConfig": generation_config}
+
         return payload
-    
+
     def _process_image_for_google(self, image_input) -> Dict[str, Any]:
         """Convert image input to Google API format with base64 encoding"""
         import base64
         import os
         from urllib.parse import urlparse
-        
+
         try:
             if isinstance(image_input, str):
                 if image_input.startswith("data:image"):
@@ -785,10 +933,7 @@ class GoogleAdapter(APIProviderAdapter):
                         # Extract mime type from header: "data:image/png;" -> "image/png"
                         mime_type = header.split(":", 1)[1].rstrip(";")
                         return {
-                            "inline_data": {
-                                "mime_type": mime_type,
-                                "data": base64_data
-                            }
+                            "inline_data": {"mime_type": mime_type, "data": base64_data}
                         }
                 elif image_input.startswith(("http://", "https://")):
                     # URL - would need to download and convert
@@ -800,23 +945,20 @@ class GoogleAdapter(APIProviderAdapter):
                     with open(image_input, "rb") as image_file:
                         image_data = image_file.read()
                         base64_data = base64.b64encode(image_data).decode("utf-8")
-                        
+
                         # Determine MIME type from file extension
                         ext = os.path.splitext(image_input)[1].lower()
                         mime_type_map = {
                             ".jpg": "image/jpeg",
-                            ".jpeg": "image/jpeg", 
+                            ".jpeg": "image/jpeg",
                             ".png": "image/png",
                             ".gif": "image/gif",
-                            ".webp": "image/webp"
+                            ".webp": "image/webp",
                         }
                         mime_type = mime_type_map.get(ext, "image/jpeg")
-                        
+
                         return {
-                            "inline_data": {
-                                "mime_type": mime_type,
-                                "data": base64_data
-                            }
+                            "inline_data": {"mime_type": mime_type, "data": base64_data}
                         }
                 else:
                     print(f"Unrecognized image input format: {image_input[:100]}...")
@@ -824,59 +966,64 @@ class GoogleAdapter(APIProviderAdapter):
         except Exception as e:
             print(f"Error processing image for Google API: {e}")
             return None
-        
+
         return None
-    
-    def _convert_to_google_schema(self, openai_schema: Dict[str, Any]) -> Dict[str, Any]:
+
+    def _convert_to_google_schema(
+        self, openai_schema: Dict[str, Any]
+    ) -> Dict[str, Any]:
         """Convert OpenAI JSON Schema to Google Gemini schema format"""
+
         def convert_type(schema_type: str) -> str:
             """Convert JSON Schema types to Google types"""
             type_mapping = {
                 "object": "OBJECT",
-                "array": "ARRAY", 
+                "array": "ARRAY",
                 "string": "STRING",
                 "integer": "INTEGER",
                 "number": "NUMBER",
-                "boolean": "BOOLEAN"
+                "boolean": "BOOLEAN",
             }
             return type_mapping.get(schema_type, "STRING")
-        
+
         def convert_schema_recursive(schema: Dict[str, Any]) -> Dict[str, Any]:
             """Recursively convert schema properties"""
             google_schema = {}
-            
+
             if "type" in schema:
                 google_schema["type"] = convert_type(schema["type"])
-            
+
             if "description" in schema:
                 google_schema["description"] = schema["description"]
-            
+
             if "properties" in schema:
                 google_schema["properties"] = {}
                 for prop_name, prop_schema in schema["properties"].items():
-                    google_schema["properties"][prop_name] = convert_schema_recursive(prop_schema)
-            
+                    google_schema["properties"][prop_name] = convert_schema_recursive(
+                        prop_schema
+                    )
+
             if "items" in schema:
                 google_schema["items"] = convert_schema_recursive(schema["items"])
-            
+
             if "required" in schema:
                 google_schema["required"] = schema["required"]
-            
+
             if "enum" in schema:
                 google_schema["enum"] = schema["enum"]
-                
+
             return google_schema
-        
+
         return convert_schema_recursive(openai_schema)
-    
+
     def get_endpoint_url(self) -> str:
         return f"{self.base_url.rstrip('/')}/models/{self.model_name}:generateContent?key={self.api_key}"
-    
+
     def handle_api_error(self, error: Exception, response=None) -> ErrorResponse:
         error_msg = str(error)
         error_code = None
         error_type = None
-        
+
         if response:
             try:
                 error_data = response.json()
@@ -886,18 +1033,20 @@ class GoogleAdapter(APIProviderAdapter):
                 error_type = error_info.get("status")
             except:
                 pass
-        
+
         return ErrorResponse(
             error=error_msg,
             error_code=error_code,
             error_type=error_type,
             provider="google",
-            model=self.model_name
+            model=self.model_name,
         )
-    
-    def harmonize_response(self, raw_response: Dict[str, Any], request_start_time: float) -> HarmonizedResponse:
+
+    def harmonize_response(
+        self, raw_response: Dict[str, Any], request_start_time: float
+    ) -> HarmonizedResponse:
         """Convert Google response to standardized Pydantic model"""
-        
+
         candidates = raw_response.get("candidates", [])
         if not candidates:
             # Handle case with no candidates
@@ -907,9 +1056,9 @@ class GoogleAdapter(APIProviderAdapter):
                 usage = UsageInfo(
                     prompt_tokens=usage_data.get("promptTokenCount"),
                     completion_tokens=usage_data.get("candidatesTokenCount", 0),
-                    total_tokens=usage_data.get("totalTokenCount")
+                    total_tokens=usage_data.get("totalTokenCount"),
                 )
-            
+
             metadata = ResponseMetadata(
                 provider="google",
                 model=self.model_name,
@@ -918,27 +1067,24 @@ class GoogleAdapter(APIProviderAdapter):
                 response_time=time.time() - request_start_time,
                 candidates_count=0,
                 prompt_feedback=raw_response.get("promptFeedback", {}),
-                thinking_budget=getattr(self, 'thinking_budget', None)
+                thinking_budget=getattr(self, "thinking_budget", None),
             )
-            
+
             return HarmonizedResponse(
-                role="assistant",
-                content=None,
-                tool_calls=[],
-                metadata=metadata
+                role="assistant", content=None, tool_calls=[], metadata=metadata
             )
-        
+
         # Get the first candidate's content
         candidate = candidates[0]
         content = candidate.get("content", {})
         parts = content.get("parts", [])
-        
+
         # Extract text content from all parts
         text_content = ""
         for part in parts:
             if isinstance(part, dict) and "text" in part:
                 text_content += part["text"]
-        
+
         # Build usage info
         usage_data = raw_response.get("usageMetadata", {})
         usage = None
@@ -946,9 +1092,9 @@ class GoogleAdapter(APIProviderAdapter):
             usage = UsageInfo(
                 prompt_tokens=usage_data.get("promptTokenCount"),
                 completion_tokens=usage_data.get("candidatesTokenCount"),
-                total_tokens=usage_data.get("totalTokenCount")
+                total_tokens=usage_data.get("totalTokenCount"),
             )
-        
+
         # Build metadata with Google-specific fields
         metadata = ResponseMetadata(
             provider="google",
@@ -960,40 +1106,38 @@ class GoogleAdapter(APIProviderAdapter):
             safety_ratings=candidate.get("safetyRatings", []),
             citation_metadata=candidate.get("citationMetadata", {}),
             prompt_feedback=raw_response.get("promptFeedback", {}),
-            thinking_budget=getattr(self, 'thinking_budget', None)
+            thinking_budget=getattr(self, "thinking_budget", None),
         )
-        
+
         # Build harmonized response
         return HarmonizedResponse(
             role="assistant",
             content=text_content if text_content else None,
             tool_calls=[],  # Google function calling would be implemented here
-            metadata=metadata
+            metadata=metadata,
         )
-    
-
-    
-
 
 
 class ProviderAdapterFactory:
     """Factory to create the right adapter based on provider"""
-    
+
     @staticmethod
-    def create_adapter(provider: str, model_name: str, api_key: str, base_url: str, **kwargs) -> APIProviderAdapter:
+    def create_adapter(
+        provider: str, model_name: str, api_key: str, base_url: str, **kwargs
+    ) -> APIProviderAdapter:
         adapters = {
             "openai": OpenAIAdapter,
-            "anthropic": AnthropicAdapter, 
+            "anthropic": AnthropicAdapter,
             "google": GoogleAdapter,
             "openrouter": OpenRouterAdapter,  # OpenRouter with additional headers support
-            "groq": OpenAIAdapter,        # Groq uses OpenAI format
+            "groq": OpenAIAdapter,  # Groq uses OpenAI format
         }
-        
+
         adapter_class = adapters.get(provider)
         if not adapter_class:
             # Default to OpenAI adapter for unknown providers
             adapter_class = OpenAIAdapter
-            
+
         return adapter_class(model_name, api_key, base_url, **kwargs)
 
 
@@ -1040,10 +1184,13 @@ class ModelConfig(BaseModel):
         0.7, ge=0.0, le=2.0, description="Default sampling temperature"
     )
     thinking_budget: Optional[int] = Field(
-        2000, ge=0, description="Token budget for thinking (Google Gemini and OpenRouter). Set to 0 to disable thinking."
+        2000,
+        ge=0,
+        description="Token budget for thinking (Google Gemini and OpenRouter). Set to 0 to disable thinking.",
     )
     reasoning_effort: Optional[str] = Field(
-        None, description="OpenRouter reasoning effort: 'high', 'medium', or 'low'. Takes precedence over thinking_budget for OpenRouter."
+        None,
+        description="OpenRouter reasoning effort: 'high', 'medium', or 'low'. Takes precedence over thinking_budget for OpenRouter.",
     )
 
     # Local model specific fields
@@ -1183,7 +1330,7 @@ class BaseLLM:
         """
         Run the model with a hardcoded prompt and messages, format the input with the tokenizer,
         generate output, and decode the result.
-        
+
         Returns:
             Dictionary with consistent format: {"role": "assistant", "content": "...", "tool_calls": []}
         """
@@ -1218,7 +1365,7 @@ class BaseLLM:
 
         # Return consistent dictionary format
         result_content = decoded[0]
-        
+
         # Handle json_mode tool scenarios for future compatibility
         # Local models don't support tool calls yet, but maintain consistent interface
         if json_mode and isinstance(result_content, dict):
@@ -1228,11 +1375,11 @@ class BaseLLM:
                 pass
             # Content is already a dict - convert back to JSON string for consistency
             result_content = json.dumps(result_content)
-        
+
         return {
             "role": "assistant",
             "content": result_content,
-            "tool_calls": []  # Local models don't support tool calls yet
+            "tool_calls": [],  # Local models don't support tool calls yet
         }
 
 
@@ -1265,7 +1412,7 @@ class BaseVLM:
     ) -> Dict[str, Any]:
         """
         Run the vision model with messages and optional images.
-        
+
         Returns:
             Dictionary with consistent format: {"role": "assistant", "content": "...", "tool_calls": []}
         """
@@ -1325,16 +1472,16 @@ class BaseVLM:
 
         # Return consistent dictionary format
         result_content = decoded[0]
-        
+
         # Handle json_mode scenarios for consistency with other models
         if json_mode and isinstance(result_content, dict):
             # If the model returned a dict, convert back to JSON string for consistency
             result_content = json.dumps(result_content)
-        
+
         return {
             "role": role,  # Use the specified role (default is "assistant")
             "content": result_content,
-            "tool_calls": []  # Local VLMs don't support tool calls yet
+            "tool_calls": [],  # Local VLMs don't support tool calls yet
         }
 
     def fetch_image(self, image: str | dict | Image.Image) -> bytes:
@@ -1443,8 +1590,10 @@ class BaseAPIModel:
             **kwargs: Additional parameters passed to the adapter.
         """
         self._response_processor = response_processor
-        self.thinking_budget = thinking_budget  # Store thinking_budget as instance attribute
-        
+        self.thinking_budget = (
+            thinking_budget  # Store thinking_budget as instance attribute
+        )
+
         # Create appropriate adapter based on provider
         self.adapter = ProviderAdapterFactory.create_adapter(
             provider=provider,
@@ -1455,7 +1604,7 @@ class BaseAPIModel:
             temperature=temperature,
             top_p=top_p,
             thinking_budget=thinking_budget,
-            **kwargs
+            **kwargs,
         )
 
     # REMOVED: _robust_json_loads method - moved to src/utils/parsing.py
@@ -1475,7 +1624,6 @@ class BaseAPIModel:
         temperature: Optional[float] = None,
         top_p: Optional[float] = None,
         tools: Optional[List[Dict[str, Any]]] = None,
-
         **kwargs,
     ) -> HarmonizedResponse:
         """
@@ -1497,9 +1645,13 @@ class BaseAPIModel:
         """
         try:
             # Include instance thinking_budget if not provided in kwargs and instance has it
-            if "thinking_budget" not in kwargs and hasattr(self, 'thinking_budget') and self.thinking_budget is not None:
+            if (
+                "thinking_budget" not in kwargs
+                and hasattr(self, "thinking_budget")
+                and self.thinking_budget is not None
+            ):
                 kwargs["thinking_budget"] = self.thinking_budget
-            
+
             # Call adapter which will use harmonization method
             adapter_response = self.adapter.run(
                 messages=messages,
@@ -1508,14 +1660,14 @@ class BaseAPIModel:
                 temperature=temperature,
                 top_p=top_p,
                 tools=tools,
-                **kwargs
+                **kwargs,
             )
-            
+
             # Check if response is an ErrorResponse and convert to exception
             if isinstance(adapter_response, ErrorResponse):
                 # Import here to avoid circular import
                 from src.agents.exceptions import ModelError
-                
+
                 # Convert ErrorResponse to ModelError exception
                 # Pass all error details to the exception
                 raise ModelError(
@@ -1526,16 +1678,16 @@ class BaseAPIModel:
                         "provider": adapter_response.provider,
                         "model": adapter_response.model,
                         "request_id": adapter_response.request_id,
-                        "original_error": adapter_response.error
-                    }
+                        "original_error": adapter_response.error,
+                    },
                 )
-            
+
             # Apply custom response processor if provided
             if self._response_processor:
                 return self._response_processor(adapter_response)
             else:
                 return adapter_response
-            
+
         except ModelError:
             # Re-raise ModelError without additional wrapping
             raise
