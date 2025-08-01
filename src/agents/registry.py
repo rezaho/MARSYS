@@ -57,7 +57,7 @@ class AgentRegistry:
                     raise AgentConfigurationError(
                         f"Agent name '{final_name}' already exists and refers to a different agent instance.",
                         agent_name=final_name,
-                        config_key="name",
+                        config_field="name",
                         config_value=final_name
                     )
             cls._agents[final_name] = agent
