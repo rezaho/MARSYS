@@ -19,8 +19,7 @@ from .basic_rules import (
     TimeoutRule,
     MaxAgentsRule,
     MaxStepsRule,
-    ConditionalRule,
-    ParallelRule
+    ConditionalRule
 )
 from ..topology.graph import TopologyGraph, TopologyEdge
 from ..topology.core import Topology
@@ -55,14 +54,6 @@ class RuleFactory:
     def __init__(self, config: Optional[RuleFactoryConfig] = None):
         """Initialize rule factory with configuration."""
         self.config = config or RuleFactoryConfig()
-        self._rule_parsers = {
-            "timeout": self._parse_timeout_rule,
-            "max_agents": self._parse_max_agents_rule,
-            "max_steps": self._parse_max_steps_rule,
-            "max_turns": self._parse_max_turns_rule,
-            "parallel": self._parse_parallel_rule,
-            "conditional": self._parse_conditional_rule
-        }
     
     def create_rules_engine(
         self,
@@ -91,8 +82,8 @@ class RuleFactory:
         if self.config.enable_symmetric_rules:
             self._add_symmetric_rules(engine, topology_graph)
         
-        # 2. Generate rules from rule strings
-        self._add_rules_from_strings(engine, topology_def.rules)
+        # 2. Add rules from topology definition
+        self._add_rules(engine, topology_def.rules)
         
         # 3. Add default safety rules
         self._add_default_safety_rules(engine, topology_graph)
@@ -200,128 +191,16 @@ class RuleFactory:
                 engine.register_rule(rule)
                 logger.debug(f"Added symmetric rule for agents: {agents}")
     
-    def _add_rules_from_strings(
+    def _add_rules(
         self,
         engine: RulesEngine,
-        rule_strings: List[str]
+        rules: List[Rule]
     ) -> None:
-        """Parse and add rules from string definitions."""
-        for rule_str in rule_strings:
-            try:
-                rule = self._parse_rule_string(rule_str)
-                if rule:
-                    engine.register_rule(rule)
-                    logger.debug(f"Added rule from string: {rule_str}")
-            except Exception as e:
-                logger.warning(f"Failed to parse rule '{rule_str}': {e}")
+        """Add rules from topology definition."""
+        for rule in rules:
+            engine.register_rule(rule)
+            logger.debug(f"Added rule: {rule.name}")
     
-    def _parse_rule_string(self, rule_str: str) -> Optional[Rule]:
-        """
-        Parse a rule string into a Rule object.
-        
-        Examples:
-        - "timeout(300)"
-        - "max_agents(5)"
-        - "max_steps(100)"
-        - "max_turns(Agent1 <-> Agent2, 10)"
-        - "parallel(Agent1, Agent2)"
-        """
-        rule_str = rule_str.strip()
-        
-        # Extract rule type and parameters
-        if "(" not in rule_str or ")" not in rule_str:
-            return None
-        
-        rule_type = rule_str[:rule_str.index("(")].strip()
-        params_str = rule_str[rule_str.index("(") + 1:rule_str.rindex(")")].strip()
-        
-        # Get appropriate parser
-        parser = self._rule_parsers.get(rule_type)
-        if parser:
-            return parser(params_str)
-        
-        logger.warning(f"Unknown rule type: {rule_type}")
-        return None
-    
-    def _parse_timeout_rule(self, params: str) -> Optional[Rule]:
-        """Parse timeout rule: timeout(seconds)"""
-        try:
-            seconds = float(params)
-            return TimeoutRule(
-                name=f"timeout_{int(seconds)}s",
-                max_duration_seconds=seconds
-            )
-        except ValueError:
-            return None
-    
-    def _parse_max_agents_rule(self, params: str) -> Optional[Rule]:
-        """Parse max agents rule: max_agents(count)"""
-        try:
-            count = int(params)
-            return MaxAgentsRule(
-                name=f"max_agents_{count}",
-                max_agents=count
-            )
-        except ValueError:
-            return None
-    
-    def _parse_max_steps_rule(self, params: str) -> Optional[Rule]:
-        """Parse max steps rule: max_steps(count)"""
-        try:
-            count = int(params)
-            return MaxStepsRule(
-                name=f"max_steps_{count}",
-                max_steps=count
-            )
-        except ValueError:
-            return None
-    
-    def _parse_max_turns_rule(self, params: str) -> Optional[Rule]:
-        """Parse max turns rule: max_turns(Agent1 <-> Agent2, count)"""
-        parts = [p.strip() for p in params.split(",")]
-        if len(parts) != 2:
-            return None
-        
-        edge_str, count_str = parts
-        
-        # Parse edge pattern
-        if "<->" in edge_str:
-            agents = [a.strip() for a in edge_str.split("<->")]
-            if len(agents) == 2:
-                try:
-                    max_turns = int(count_str)
-                    # This becomes an alternating rule with turn limit
-                    return AlternatingAgentRule(
-                        name=f"max_turns_{agents[0]}_{agents[1]}",
-                        agents=agents,
-                        max_turns=max_turns
-                    )
-                except ValueError:
-                    pass
-        
-        return None
-    
-    def _parse_parallel_rule(self, params: str) -> Optional[Rule]:
-        """Parse parallel rule: parallel(Agent1, Agent2, ...)"""
-        try:
-            # Parse comma-separated agent names
-            agents = [a.strip() for a in params.split(',') if a.strip()]
-            if len(agents) < 2:
-                logger.warning(f"Parallel rule requires at least 2 agents, got {len(agents)}")
-                return None
-            
-            return ParallelRule(
-                agents=agents,
-                name=f"parallel_{','.join(agents)}"
-            )
-        except Exception as e:
-            logger.error(f"Failed to parse parallel rule '{params}': {e}")
-            return None
-    
-    def _parse_conditional_rule(self, params: str) -> Optional[Rule]:
-        """Parse conditional rule (placeholder for future)"""
-        logger.debug(f"Conditional rule noted but not implemented: {params}")
-        return None
     
     def _add_default_safety_rules(
         self,

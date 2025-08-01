@@ -38,7 +38,7 @@ from src.environment.utils import generate_openai_tool_schema
 from src.models.models import BaseAPIModel, BaseLLM, BaseVLM, ModelConfig, PeftHead
 from src.utils.monitoring import default_progress_monitor
 
-from .memory import ConversationMemory, MemoryManager, Message
+from .memory import ConversationMemory, MemoryManager, Message, ToolCallMsg
 from .registry import AgentRegistry
 from .utils import (
     LogLevel,
@@ -260,7 +260,8 @@ class BaseAgent(ABC):
         self,  # current_tools_schema: Optional[List[Dict[str, Any]]] # Parameter removed
     ) -> str:
         """Generates the tool usage instructions part of the system prompt."""
-        if not self.tools_schema:  # Use self.tools_schema
+        # Double-check: if tools is None, return empty instructions
+        if self.tools is None or not self.tools_schema:
             return ""
 
         prompt_lines = ["\n\n--- AVAILABLE TOOLS ---"]
@@ -469,27 +470,53 @@ Example:
 Detailed structure for the JSON object:
 1. `thought` (String, optional) – your internal reasoning.
 2. `next_action` (String, required) – `'invoke_agent'`, `'call_tool'`, or `'final_response'`.
-3. `action_input` (Object, required) – parameters specific to `next_action`.
+3. `action_input` (Array/Object, required) – parameters specific to `next_action`.
    - If `next_action` is `"call_tool"`:
      `{"tool_calls": [{"id": "...", "type": "function", "function": {"name": "tool_name", "arguments": "{\"param\": ...}"}}]}`
      • The list **must** stay inside `action_input`.  
    - If `next_action` is `"invoke_agent"`:
-     `{"agent_name": "TargetAgentName", "request": <request_payload>}`
+     An ARRAY of agent invocation objects: `[{"agent_name": "AgentName", "request": {...}}, ...]`
+     • Single agent: array with one object (sequential execution)
+     • Multiple agents: array with multiple objects (parallel execution)
    - If `next_action` is `"final_response"`:
      `{"response": "Your final textual answer..."}`
 
-Example for `invoke_agent`:
+Example for single agent invocation (sequential):
 ```json
 {
   "thought": "I need to delegate this task to a specialist.",
   "next_action": "invoke_agent",
-  "action_input": {
-    "agent_name": "ResearcherAgent",
-    "request": {
-      "task": "analyze this data",
-      "data": ["item1", "item2"]
+  "action_input": [
+    {
+      "agent_name": "ResearcherAgent",
+      "request": {
+        "task": "analyze this data",
+        "data": ["item1", "item2"]
+      }
     }
-  }
+  ]
+}
+```
+
+Example for multiple agent invocation (parallel):
+```json
+{
+  "thought": "I need multiple perspectives on this topic.",
+  "next_action": "invoke_agent",
+  "action_input": [
+    {
+      "agent_name": "AnalystAgent",
+      "request": {"task": "analyze market trends"}
+    },
+    {
+      "agent_name": "ResearcherAgent",
+      "request": {"task": "gather competitor data"}
+    },
+    {
+      "agent_name": "StrategistAgent",
+      "request": {"task": "propose strategic options"}
+    }
+  ]
 }
 ```
 
@@ -1142,6 +1169,11 @@ Example for `final_response`:
 
     def _add_context_selection_tools(self) -> None:
         """Add context selection as special tools that agents can use."""
+        # Skip adding context tools if the agent was initialized with tools=None
+        if self.tools is None:
+            self.tools = {}  # Ensure it's an empty dict, not None
+            return
+        
         # Get context selection tool schemas
         context_tools = get_context_selection_tools()
 
@@ -1160,7 +1192,7 @@ Example for `final_response`:
             }
 
         # Add tools if not already present
-        if "save_to_context" not in self.tools:
+        if self.tools and "save_to_context" not in self.tools:
             self.tools["save_to_context"] = save_to_context
             # Add schema
             for tool_schema in context_tools:
@@ -1168,7 +1200,7 @@ Example for `final_response`:
                     self.tools_schema.append(tool_schema)
                     break
 
-        if "preview_saved_context" not in self.tools:
+        if self.tools and "preview_saved_context" not in self.tools:
             self.tools["preview_saved_context"] = preview_saved_context
             # Add schema
             for tool_schema in context_tools:
@@ -1253,8 +1285,16 @@ Example for `final_response`:
             # Use cached system prompt
             system_prompt = self._last_system_prompt_context["system_prompt"]
 
+        # Filter out error messages as they are not valid roles for LLM APIs
+        # OpenAI and other providers only accept: 'system', 'assistant', 'user', 'function', 'tool'
+        valid_roles_for_llm = {"system", "assistant", "user", "function", "tool"}
+        filtered_messages = [
+            msg for msg in memory_messages 
+            if msg.get("role") in valid_roles_for_llm
+        ]
+
         # Prepare messages - don't modify the input
-        prepared_messages = memory_messages.copy()
+        prepared_messages = filtered_messages.copy()
 
         # Find and update system message, or add one if not present
         system_message_found = False
@@ -1482,6 +1522,7 @@ Example for `final_response`:
             )
 
         # Handle context selection tool calls in the response
+        # TO-DO: This should be handled in the execution engine not inside the run_step() method
         if raw_response.tool_calls:
             for tool_call in raw_response.tool_calls:
                 # Extract tool name based on object type
@@ -1546,6 +1587,67 @@ Example for `final_response`:
 
         # Return response with context information
         return {"response": raw_response, "context_selection": context_for_next}
+    
+    def add_tool_responses(self, tool_results: List[Dict[str, Any]]) -> None:
+        """
+        Add tool response messages to memory after tool execution.
+        
+        This is called by the coordination system after tool execution
+        to ensure proper message sequencing for the OpenAI API.
+        
+        Args:
+            tool_results: List of tool execution results, where each result contains:
+                - tool_name: Name of the tool that was executed
+                - result: The tool's response/output
+                - tool_call_id: (optional) If provided, use this ID
+        """
+        if not hasattr(self, "memory") or not self.memory:
+            return
+        
+        # Find the most recent assistant message with tool calls
+        messages = self.memory.retrieve_all()
+        last_assistant_msg = None
+        
+        for msg in reversed(messages):
+            if msg.get("role") == "assistant" and msg.get("tool_calls"):
+                last_assistant_msg = msg
+                break
+        
+        if not last_assistant_msg:
+            self.logger.warning("No assistant message with tool calls found")
+            return
+        
+        # Create a mapping of tool names to tool call IDs
+        tool_id_map = {}
+        for tool_call in last_assistant_msg.get("tool_calls", []):
+            if isinstance(tool_call, ToolCallMsg):
+                tool_id_map[tool_call.name] = tool_call.id
+            elif isinstance(tool_call, dict):
+                # Handle dict format
+                func_name = tool_call.get("function", {}).get("name")
+                if func_name:
+                    tool_id_map[func_name] = tool_call.get("id")
+        
+        # Add one tool response message for each tool result
+        for result in tool_results:
+            tool_name = result.get("tool_name")
+            
+            # Get tool_call_id from result or from mapping
+            tool_call_id = result.get("tool_call_id") or tool_id_map.get(tool_name)
+            
+            if not tool_call_id:
+                self.logger.warning(f"No tool_call_id found for tool: {tool_name}")
+                continue
+            
+            # Add tool response message
+            self.memory.add(
+                role="tool",
+                content=str(result.get("result", "")),
+                name=tool_name,
+                tool_call_id=tool_call_id
+            )
+            
+            self.logger.debug(f"Added tool response for {tool_name} with id {tool_call_id}")
 
     def _apply_context_template(
         self, response: Message, context_data: Dict[str, List[Dict]]
