@@ -268,10 +268,18 @@ def create_agents(configs: Dict[str, ModelConfig]) -> Dict[str, Agent]:
         agent_name="ContentExtractor",
         description="""You are a Content Extraction Specialist. Your role is to extract relevant content from web pages.
 
-When you receive a request with 'url' and 'query' fields, you should:
+You will receive requests in one of these formats:
+1. A dictionary with 'url' and 'query' fields: {"url": "...", "query": "..."}
+2. A dictionary with other fields from the invoking agent
+
+When you receive a valid request:
 1. Use the 'extract_content_from_url' tool to extract and summarize content from the URL
 2. Focus on information relevant to the provided query
 3. Return a concise summary of the relevant findings
+
+If you receive an invalid request (missing URL or query):
+- Return a clear error message explaining what's needed
+- Request format: {"url": "https://example.com", "query": "what to extract"}
 
 IMPORTANT:
 - Focus on extracting factual information relevant to the query
@@ -284,15 +292,16 @@ IMPORTANT:
 - When citing specific data, include page section or paragraph reference if possible
 
 WORKFLOW:
-1. First response: Use tool_calls to extract content from URLs
-2. After tool results: Provide final_response with synthesized data
-3. Your final response MUST contain actual extracted content, not descriptions
+1. First validate the request has URL and query
+2. Use tool_calls to extract content from URLs
+3. After tool results: Provide final_response with synthesized data
+4. Your final response MUST contain actual extracted content, not descriptions
 
 FINAL RESPONSE FORMAT after tools:
 {
   "next_action": "final_response",
   "action_input": {
-    "response": "## Extracted Content\n\n[Actual data and quotes from pages]\n\n### Sources:\n- [URL]: [Key findings]"
+    "response": "Source: [URL]\n\n## Extracted Content\n\n[Actual data and quotes from pages]\n\n### Key Findings:\n- [Finding 1]\n- [Finding 2]"
   }
 }""",
         headless=True,
@@ -358,9 +367,10 @@ WORKFLOW:
 1. First, use the google_search tool to find relevant URLs about competitors
    - Search for market share data, competitor news, and industry analysis
    - Use call_tool action: {"next_action": "call_tool", "action_input": {"tool_calls": [{"id": "search_1", "type": "function", "function": {"name": "google_search", "arguments": "{\"query\": \"...\", \"num_results\": 10}"}}]}}
-2. For the most promising URLs (top 2-3), invoke ContentExtractor to get full content
-   - Use invoke_agent action: {"next_action": "invoke_agent", "action_input": {"agent_name": "ContentExtractor", "request": {"url": "...", "query": "..."}}}
-3. Analyze the extracted content for competitive insights
+2. After receiving search results, analyze them and identify the most promising URLs
+3. For the top 2-3 URLs, invoke ContentExtractor to get full content
+   - Use invoke_agent action: {"next_action": "invoke_agent", "action_input": {"agent_name": "ContentExtractor", "request": {"url": "...", "query": "competitor information and market share"}}}
+4. Analyze the extracted content for competitive insights
 
 Provide structured analysis including:
 - Top 3-5 competitors with brief profiles (based on search results)
@@ -390,9 +400,10 @@ Your focus areas:
 WORKFLOW:
 1. Use google_search to find articles and reports about market trends
    - Use call_tool action: {"next_action": "call_tool", "action_input": {"tool_calls": [{"id": "search_1", "type": "function", "function": {"name": "google_search", "arguments": "{\"query\": \"...\", \"num_results\": 10}"}}]}}
-2. For detailed trend reports or analysis (top 2-3 URLs), invoke ContentExtractor
-   - Use invoke_agent action: {"next_action": "invoke_agent", "action_input": {"agent_name": "ContentExtractor", "request": {"url": "...", "query": "..."}}}
-3. Synthesize the extracted content into trend insights
+2. After receiving search results, identify the most relevant trend reports and analyses
+3. For detailed trend reports or analysis (top 2-3 URLs), invoke ContentExtractor
+   - Use invoke_agent action: {"next_action": "invoke_agent", "action_input": {"agent_name": "ContentExtractor", "request": {"url": "...", "query": "market trends and forecasts"}}}
+4. Synthesize the extracted content into trend insights
 
 Search topics should include:
 - EV charging infrastructure trends and developments
@@ -431,9 +442,10 @@ WORKFLOW:
    - Look for review aggregators, customer forums, and satisfaction surveys  
    - Include both positive and negative feedback sources
    - Use call_tool action: {"next_action": "call_tool", "action_input": {"tool_calls": [{"id": "search_1", "type": "function", "function": {"name": "google_search", "arguments": "{\"query\": \"...\", \"num_results\": 10}"}}]}}
-2. For detailed review pages or survey results (top 2-3 URLs), invoke ContentExtractor
-   - Use invoke_agent action: {"next_action": "invoke_agent", "action_input": {"agent_name": "ContentExtractor", "request": {"url": "...", "query": "..."}}}
-3. Analyze the extracted content for sentiment patterns
+2. After receiving search results, identify the most valuable review sources
+3. For detailed review pages or survey results (top 2-3 URLs), invoke ContentExtractor
+   - Use invoke_agent action: {"next_action": "invoke_agent", "action_input": {"agent_name": "ContentExtractor", "request": {"url": "...", "query": "customer reviews and satisfaction feedback"}}}
+4. Analyze the extracted content for sentiment patterns
 
 Search topics should include:
 - EV charging station customer reviews and ratings
@@ -558,7 +570,7 @@ async def run_market_analysis(market: str, product_category: str) -> Dict[str, A
                 f.write(f"Success: {result.success}\n")
 
         # Debug logging
-        print(f"\n=== DEBUG: OrchestraResult ===")
+        print("\n=== DEBUG: OrchestraResult ===")
         print(f"Success: {result.success}")
         print(f"Final response type: {type(result.final_response)}")
         print(
