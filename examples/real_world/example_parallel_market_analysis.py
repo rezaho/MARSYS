@@ -23,6 +23,7 @@ import asyncio
 import json
 import logging
 import os
+import re
 import sys
 from datetime import datetime
 from pathlib import Path
@@ -44,28 +45,16 @@ from src.models import ModelConfig
 # Load environment variables
 load_dotenv()
 
-# Setup logging with file output
-log_dir = Path("examples/real_world/logs")
-log_dir.mkdir(parents=True, exist_ok=True)
-log_file = log_dir / f"market_analysis_{datetime.now().strftime('%Y%m%d_%H%M%S')}.log"
-
-# Configure both file and console logging
+# Setup basic console logging only
 logging.basicConfig(
     level=logging.INFO,
     format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
-    handlers=[logging.FileHandler(log_file), logging.StreamHandler()],
+    handlers=[logging.StreamHandler()],
 )
 logger = logging.getLogger(__name__)
 
-# Create a separate detailed agent interaction logger
-agent_logger = logging.getLogger("agent_interactions")
-agent_log_file = (
-    log_dir / f"agent_interactions_{datetime.now().strftime('%Y%m%d_%H%M%S')}.log"
-)
-agent_handler = logging.FileHandler(agent_log_file)
-agent_handler.setFormatter(logging.Formatter("%(asctime)s | %(message)s"))
-agent_logger.addHandler(agent_handler)
-agent_logger.setLevel(logging.INFO)
+# Global variable to store the agent response file path
+AGENT_RESPONSE_FILE = None
 
 
 def create_model_configs() -> Dict[str, ModelConfig]:
@@ -108,63 +97,162 @@ def create_model_configs() -> Dict[str, ModelConfig]:
     return configs
 
 
-class LoggingAgentWrapper:
-    """Wrapper to log agent interactions"""
-
-    def __init__(self, agent):
-        self.agent = agent
+class LoggingAgent(Agent):
+    """Agent with built-in logging of all interactions"""
+    
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
         self.call_count = 0
-
+    
     async def run_step(self, request, context):
+        """Override run_step to add logging"""
         self.call_count += 1
-        agent_name = self.agent.name
+        
+        # Prepare log entry
+        log_entry = {
+            "agent_call_number": self.call_count,
+            "agent_name": self.name,
+            "timestamp": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+            "caller": context.get("caller_agent", "System"),
+            "request": None,
+            "response": None,
+            "duration_seconds": None
+        }
 
-        # Log the incoming request
-        agent_logger.info(f"\n{'='*60}")
-        agent_logger.info(f"AGENT CALL #{self.call_count}: {agent_name}")
-        agent_logger.info(f"{'='*60}")
-        agent_logger.info(f"Request type: {type(request).__name__}")
-
+        # Log the request
         if isinstance(request, dict):
-            agent_logger.info(f"Request keys: {list(request.keys())}")
-            if "prompt" in request:
-                agent_logger.info(f"Prompt: {str(request['prompt'])[:500]}...")
-            if "url" in request:
-                agent_logger.info(f"URL requested: {request['url']}")
-            if "query" in request:
-                agent_logger.info(f"Query: {request['query']}")
+            log_entry["request"] = request
         else:
-            agent_logger.info(f"Request: {str(request)[:500]}...")
+            log_entry["request"] = str(request)
 
-        # Call the actual agent
+        # Call the parent's run_step
         start_time = datetime.now()
-        result = await self.agent.run_step(request, context)
+        result = await super().run_step(request, context)
         duration = (datetime.now() - start_time).total_seconds()
+        log_entry["duration_seconds"] = round(duration, 2)
 
         # Log the response
-        agent_logger.info(f"\nResponse from {agent_name} (took {duration:.2f}s):")
-        if isinstance(result, dict):
-            if "response" in result:
-                response = result["response"]
-                if hasattr(response, "content"):
-                    agent_logger.info(
-                        f"Response content type: {type(response.content).__name__}"
-                    )
-                    agent_logger.info(
-                        f"Response preview: {str(response.content)[:500]}..."
-                    )
-                else:
-                    agent_logger.info(f"Response: {str(response)[:500]}...")
-        else:
-            agent_logger.info(f"Result: {str(result)[:500]}...")
-
-        agent_logger.info(f"{'='*60}\n")
+        log_entry["response"] = result
+        
+        # Write to the response file
+        if AGENT_RESPONSE_FILE and AGENT_RESPONSE_FILE.exists():
+            with open(AGENT_RESPONSE_FILE, "a") as f:
+                f.write("\n" + "="*100 + "\n")
+                f.write(f"AGENT CALL #{self.call_count}: {self.name}\n")
+                f.write("="*100 + "\n\n")
+                f.write(f"Agent: {self.name}\n")
+                f.write(f"Called by: {log_entry['caller']}\n")
+                f.write(f"Timestamp: {log_entry['timestamp']}\n")
+                f.write(f"Duration: {duration:.2f} seconds\n\n")
+                
+                f.write("REQUEST:\n")
+                f.write("-" * 50 + "\n")
+                try:
+                    f.write(json.dumps(log_entry["request"], indent=2, default=str) + "\n")
+                except:
+                    f.write(str(log_entry["request"]) + "\n")
+                
+                f.write("\nRESPONSE:\n")
+                f.write("-" * 50 + "\n")
+                try:
+                    f.write(json.dumps(log_entry["response"], indent=2, default=str) + "\n")
+                except:
+                    f.write(str(log_entry["response"]) + "\n")
+                
+                # Add a summary of the agent's action
+                if isinstance(result, dict):
+                    f.write("\nACTION SUMMARY:\n")
+                    f.write("-" * 50 + "\n")
+                    
+                    # Check for response field (which contains the actual agent response)
+                    if "response" in result and hasattr(result["response"], "content"):
+                        content = result["response"].content
+                        if isinstance(content, dict):
+                            if "next_action" in content:
+                                f.write(f"Action: {content['next_action']}\n")
+                                if "action_input" in content:
+                                    f.write(f"Action Input: {json.dumps(content['action_input'], indent=2)}\n")
+                        elif isinstance(content, str):
+                            # Try to parse as JSON
+                            try:
+                                parsed = json.loads(content)
+                                if isinstance(parsed, dict) and "next_action" in parsed:
+                                    f.write(f"Action: {parsed['next_action']}\n")
+                                    if "action_input" in parsed:
+                                        f.write(f"Action Input: {json.dumps(parsed['action_input'], indent=2)}\n")
+                            except:
+                                f.write(f"Response: {content[:200]}...\n")
+                
+                f.write("\n")
 
         return result
 
-    def __getattr__(self, name):
-        """Delegate all other attributes to the wrapped agent"""
-        return getattr(self.agent, name)
+
+class LoggingBrowserAgent(BrowserAgent):
+    """BrowserAgent with built-in logging of all interactions"""
+    
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        self.call_count = 0
+    
+    async def run_step(self, request, context):
+        """Override run_step to add logging"""
+        self.call_count += 1
+        
+        # Prepare log entry
+        log_entry = {
+            "agent_call_number": self.call_count,
+            "agent_name": self.name,
+            "timestamp": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+            "caller": context.get("caller_agent", "System"),
+            "request": None,
+            "response": None,
+            "duration_seconds": None
+        }
+
+        # Log the request
+        if isinstance(request, dict):
+            log_entry["request"] = request
+        else:
+            log_entry["request"] = str(request)
+
+        # Call the parent's run_step
+        start_time = datetime.now()
+        result = await super().run_step(request, context)
+        duration = (datetime.now() - start_time).total_seconds()
+        log_entry["duration_seconds"] = round(duration, 2)
+
+        # Log the response
+        log_entry["response"] = result
+        
+        # Write to the response file
+        if AGENT_RESPONSE_FILE and AGENT_RESPONSE_FILE.exists():
+            with open(AGENT_RESPONSE_FILE, "a") as f:
+                f.write("\n" + "="*100 + "\n")
+                f.write(f"AGENT CALL #{self.call_count}: {self.name} (BrowserAgent)\n")
+                f.write("="*100 + "\n\n")
+                f.write(f"Agent: {self.name}\n")
+                f.write(f"Called by: {log_entry['caller']}\n")
+                f.write(f"Timestamp: {log_entry['timestamp']}\n")
+                f.write(f"Duration: {duration:.2f} seconds\n\n")
+                
+                f.write("REQUEST:\n")
+                f.write("-" * 50 + "\n")
+                try:
+                    f.write(json.dumps(log_entry["request"], indent=2, default=str) + "\n")
+                except:
+                    f.write(str(log_entry["request"]) + "\n")
+                
+                f.write("\nRESPONSE:\n")
+                f.write("-" * 50 + "\n")
+                try:
+                    f.write(json.dumps(log_entry["response"], indent=2, default=str) + "\n")
+                except:
+                    f.write(str(log_entry["response"]) + "\n")
+                
+                f.write("\n")
+
+        return result
 
 
 def create_agents(configs: Dict[str, ModelConfig]) -> Dict[str, Agent]:
@@ -173,13 +261,12 @@ def create_agents(configs: Dict[str, ModelConfig]) -> Dict[str, Agent]:
 
     # Create a shared BrowserAgent for content extraction
     # This agent will be invoked by the specialist agents to extract full content from URLs
-    agents["ContentExtractor"] = LoggingAgentWrapper(
-        BrowserAgent(
-            model_config=configs[
-                "gpt4_1_mini"
-            ],  # Use efficient model for content extraction
-            agent_name="ContentExtractor",
-            description="""You are a Content Extraction Specialist. Your role is to extract relevant content from web pages.
+    agents["ContentExtractor"] = LoggingBrowserAgent(
+        model_config=configs[
+            "gpt4_1_mini"
+        ],  # Use efficient model for content extraction
+        agent_name="ContentExtractor",
+        description="""You are a Content Extraction Specialist. Your role is to extract relevant content from web pages.
 
 When you receive a request with 'url' and 'query' fields, you should:
 1. Use the 'extract_content_from_url' tool to extract and summarize content from the URL
@@ -192,29 +279,42 @@ IMPORTANT:
 - Cite specific statistics and quotes when found
 - If the page doesn't load or has no relevant content, report that clearly
 - Set appropriate parameters like max_text_length and return_markdown based on the content type
-- Always provide clear reasoning for your extraction approach""",
-            headless=True,
-            viewport_width=1440,
-            viewport_height=900,
-            auto_screenshot=False,  # Don't need screenshots for content extraction
-            timeout=10000,  # 10 second timeout for page operations
-        )
+- Always provide clear reasoning for your extraction approach
+- CRITICAL: Always include the source URL at the beginning of your response in format: "Source: [URL]"
+- When citing specific data, include page section or paragraph reference if possible
+
+WORKFLOW:
+1. First response: Use tool_calls to extract content from URLs
+2. After tool results: Provide final_response with synthesized data
+3. Your final response MUST contain actual extracted content, not descriptions
+
+FINAL RESPONSE FORMAT after tools:
+{
+  "next_action": "final_response",
+  "action_input": {
+    "response": "## Extracted Content\n\n[Actual data and quotes from pages]\n\n### Sources:\n- [URL]: [Key findings]"
+  }
+}""",
+        headless=True,
+        viewport_width=1440,
+        viewport_height=900,
+        auto_screenshot=False,  # Don't need screenshots for content extraction
+        timeout=10000  # 10 second timeout for page operations
     )
 
     # Market Coordinator - Makes strategic decisions
-    agents["MarketCoordinator"] = LoggingAgentWrapper(
-        Agent(
-            model_config=configs["o4_mini"],
-            agent_name="MarketCoordinator",
-            tools=None,  # Disable tools to avoid tool call errors
-            description="""You are the Market Coordinator, responsible for strategic market analysis coordination.
+    agents["MarketCoordinator"] = LoggingAgent(
+        model_config=configs["o4_mini"],
+        agent_name="MarketCoordinator",
+        tools=None,  # Disable tools to avoid tool call errors
+        description="""You are the Market Coordinator, responsible for strategic market analysis coordination.
         
 Your responsibilities:
 1. Analyze market research requests and determine what information is needed
 2. Decide which specialist agents to invoke in parallel for comprehensive analysis
 3. Aggregate and synthesize results from multiple analysts
 4. Provide strategic insights based on combined intelligence
-5. Create actionable recommendations
+5. Create actionable recommendations with proper source attribution
 
 IMPORTANT COORDINATION RULES:
 - You are a pure coordinator - DO NOT use any tools
@@ -224,28 +324,28 @@ IMPORTANT COORDINATION RULES:
 
 IMPORTANT: When you receive a market analysis request, you should:
 - Identify the key areas to investigate (competitors, trends, customer sentiment)
-- Use invoke_agent with multiple agents to gather information simultaneously
-- When invoking multiple agents, include all of them in a single action_input array
-- Each agent in the array should have an agent_name and a specific request
-- The agents you specify will be executed in parallel
-- When you specify multiple agents in the array, they will be executed in parallel
+- Use invoke_agent with the EXACT agent names: CompetitorAnalyst, TrendAnalyst, CustomerSentimentAnalyst
+- When invoking multiple agents, use parallel_invoke action with an array of agent names
+- Example: {"next_action": "parallel_invoke", "agents": ["CompetitorAnalyst", "TrendAnalyst", "CustomerSentimentAnalyst"]}
+- Each agent will receive the same request data when invoked in parallel
 - After receiving parallel results, synthesize them into strategic insights
 
 IMPORTANT: When you are resumed with child_results after parallel execution:
 - You will receive the aggregated results from all parallel agents
 - Synthesize these results into a comprehensive market analysis report
-- Use the final_response action to return your synthesized report""",
-        )
+- CRITICAL: Include ALL source URLs and references from the specialist agents' reports
+- For every claim, statistic, or piece of information, include the source URL in brackets [URL]
+- Create a "References" section at the end listing all sources used
+- Use the final_response action to return your synthesized report with full source attribution"""
     )
 
     # Competitor Analyst
-    agents["CompetitorAnalyst"] = LoggingAgentWrapper(
-        Agent(
-            model_config=configs["grok"],
-            agent_name="CompetitorAnalyst",
-            tools={"google_search": tool_google_search_api},
-            allowed_peers=["ContentExtractor"],  # Allow invoking ContentExtractor
-            description="""You are the Competitor Analyst, specialized in competitive intelligence.
+    agents["CompetitorAnalyst"] = LoggingAgent(
+        model_config=configs["grok"],
+        agent_name="CompetitorAnalyst",
+        tools={"google_search": tool_google_search_api},
+        allowed_peers=["ContentExtractor"],  # Allow invoking ContentExtractor
+        description="""You are the Competitor Analyst, specialized in competitive intelligence.
         
 Your focus areas:
 1. Identify main competitors in the market
@@ -257,28 +357,28 @@ Your focus areas:
 WORKFLOW:
 1. First, use the google_search tool to find relevant URLs about competitors
    - Search for market share data, competitor news, and industry analysis
-   - Request sufficient results (e.g., 10) to find quality sources
+   - Use call_tool action: {"next_action": "call_tool", "action_input": {"tool_calls": [{"id": "search_1", "type": "function", "function": {"name": "google_search", "arguments": "{\"query\": \"...\", \"num_results\": 10}"}}]}}
 2. For the most promising URLs (top 2-3), invoke ContentExtractor to get full content
-   - Pass the URL and a specific query about what competitive information to extract
+   - Use invoke_agent action: {"next_action": "invoke_agent", "action_input": {"agent_name": "ContentExtractor", "request": {"url": "...", "query": "..."}}}
 3. Analyze the extracted content for competitive insights
 
 Provide structured analysis including:
 - Top 3-5 competitors with brief profiles (based on search results)
-- Key competitive strategies (with sources)
-- Market positioning analysis
-- Recent competitive moves (from news/announcements)
-- Threats and opportunities""",
-        )
+- Key competitive strategies (ALWAYS include source URL)
+- Market positioning analysis (with source URLs)
+- Recent competitive moves (from news/announcements with URLs)
+- Threats and opportunities
+
+CRITICAL: For EVERY fact, statistic, or claim you make, include the source URL in brackets [URL] immediately after the information."""
     )
 
     # Trend Analyst
-    agents["TrendAnalyst"] = LoggingAgentWrapper(
-        Agent(
-            model_config=configs["gemini_pro"],
-            agent_name="TrendAnalyst",
-            tools={"google_search": tool_google_search_api},
-            allowed_peers=["ContentExtractor"],  # Allow invoking ContentExtractor
-            description="""You are the Trend Analyst, specialized in identifying market trends.
+    agents["TrendAnalyst"] = LoggingAgent(
+        model_config=configs["gemini_pro"],
+        agent_name="TrendAnalyst",
+        tools={"google_search": tool_google_search_api},
+        allowed_peers=["ContentExtractor"],  # Allow invoking ContentExtractor
+        description="""You are the Trend Analyst, specialized in identifying market trends.
         
 Your focus areas:
 1. Identify emerging market trends
@@ -289,8 +389,9 @@ Your focus areas:
 
 WORKFLOW:
 1. Use google_search to find articles and reports about market trends
+   - Use call_tool action: {"next_action": "call_tool", "action_input": {"tool_calls": [{"id": "search_1", "type": "function", "function": {"name": "google_search", "arguments": "{\"query\": \"...\", \"num_results\": 10}"}}]}}
 2. For detailed trend reports or analysis (top 2-3 URLs), invoke ContentExtractor
-   - Provide the URL and specify what trend information to extract
+   - Use invoke_agent action: {"next_action": "invoke_agent", "action_input": {"agent_name": "ContentExtractor", "request": {"url": "...", "query": "..."}}}
 3. Synthesize the extracted content into trend insights
 
 Search topics should include:
@@ -301,22 +402,22 @@ Search topics should include:
 - Consumer adoption patterns and behavior shifts
 
 Provide structured analysis including:
-- Top emerging trends with evidence (cite sources)
-- Technology disruptions on the horizon
-- Changing consumer preferences
-- Regulatory landscape changes
-- 6-12 month trend forecast based on current data""",
-        )
+- Top emerging trends with evidence (MUST cite source URLs)
+- Technology disruptions on the horizon [include URL sources]
+- Changing consumer preferences [with source URLs]
+- Regulatory landscape changes [with policy source URLs]
+- 6-12 month trend forecast based on current data [cite all sources]
+
+CRITICAL: Every trend, statistic, forecast, or claim MUST include the source URL in brackets [URL]."""
     )
 
     # Customer Sentiment Analyst
-    agents["CustomerSentimentAnalyst"] = LoggingAgentWrapper(
-        Agent(
-            model_config=configs["gpt4_1_mini"],
-            agent_name="CustomerSentimentAnalyst",
-            tools={"google_search": tool_google_search_api},
-            allowed_peers=["ContentExtractor"],  # Allow invoking ContentExtractor
-            description="""You are the Customer Sentiment Analyst, specialized in understanding customer feedback.
+    agents["CustomerSentimentAnalyst"] = LoggingAgent(
+        model_config=configs["gpt4_1_mini"],
+        agent_name="CustomerSentimentAnalyst",
+        tools={"google_search": tool_google_search_api},
+        allowed_peers=["ContentExtractor"],  # Allow invoking ContentExtractor
+        description="""You are the Customer Sentiment Analyst, specialized in understanding customer feedback.
         
 Your focus areas:
 1. Analyze customer sentiment and satisfaction
@@ -326,11 +427,12 @@ Your focus areas:
 5. Segment customer feedback by demographics
 
 WORKFLOW:
-1. Use google_search to find customer reviews, forums, and feedback sites
-   - Look for review aggregators, customer forums, and satisfaction surveys
+1. Use the google_search tool to find customer reviews, forums, and feedback sites
+   - Look for review aggregators, customer forums, and satisfaction surveys  
    - Include both positive and negative feedback sources
+   - Use call_tool action: {"next_action": "call_tool", "action_input": {"tool_calls": [{"id": "search_1", "type": "function", "function": {"name": "google_search", "arguments": "{\"query\": \"...\", \"num_results\": 10}"}}]}}
 2. For detailed review pages or survey results (top 2-3 URLs), invoke ContentExtractor
-   - Request extraction of reviews, ratings, and specific customer feedback
+   - Use invoke_agent action: {"next_action": "invoke_agent", "action_input": {"agent_name": "ContentExtractor", "request": {"url": "...", "query": "..."}}}
 3. Analyze the extracted content for sentiment patterns
 
 Search topics should include:
@@ -341,12 +443,13 @@ Search topics should include:
 - Brand-specific charging station reviews and feedback
 
 Provide structured analysis including:
-- Overall sentiment score/rating (based on actual reviews)
-- Key positive themes (with quotes from reviews)
-- Major pain points and issues (with specific examples)
-- Customer segment analysis (business vs personal, EV type)
-- Recommendations for improvement based on feedback""",
-        )
+- Overall sentiment score/rating (based on actual reviews from [URL])
+- Key positive themes (with quotes and review source URLs)
+- Major pain points and issues (with specific examples and URLs)
+- Customer segment analysis (business vs personal, EV type) [cite sources]
+- Recommendations for improvement based on feedback
+
+CRITICAL: Include the source URL for EVERY review quote, rating, or customer feedback data point."""
     )
 
     # Return agents - registration will happen in main()
@@ -356,12 +459,26 @@ Provide structured analysis including:
 async def run_market_analysis(market: str, product_category: str) -> Dict[str, Any]:
     """Run the parallel market analysis workflow."""
 
-    # Log the start of analysis
-    agent_logger.info("=" * 80)
-    agent_logger.info(f"STARTING NEW MARKET ANALYSIS")
-    agent_logger.info(f"Market: {market}")
-    agent_logger.info(f"Product Category: {product_category}")
-    agent_logger.info("=" * 80)
+    # Create a clean agent response log file in the output directory
+    output_dir = Path("examples/real_world/output")
+    output_dir.mkdir(parents=True, exist_ok=True)
+    
+    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+    agent_response_file = output_dir / f"agent_responses_{timestamp}.txt"
+    
+    # Initialize the response file with header
+    with open(agent_response_file, "w") as f:
+        f.write("=" * 100 + "\n")
+        f.write(f"AGENT INTERACTION LOG - {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}\n")
+        f.write(f"Market: {market}\n")
+        f.write(f"Product Category: {product_category}\n")
+        f.write("=" * 100 + "\n\n")
+    
+    # Store the file path globally so agents can access it
+    global AGENT_RESPONSE_FILE
+    AGENT_RESPONSE_FILE = agent_response_file
+    
+    logger.info(f"Agent responses will be logged to: {agent_response_file}")
 
     # Define the topology for parallel execution
     topology = {
@@ -381,17 +498,16 @@ async def run_market_analysis(market: str, product_category: str) -> Dict[str, A
             "CompetitorAnalyst -> MarketCoordinator",
             "TrendAnalyst -> MarketCoordinator",
             "CustomerSentimentAnalyst -> MarketCoordinator",
-            "MarketCoordinator -> User",  # Restored for bidirectional communication
-            # ContentExtractor edges - allow specialist agents to invoke it
-            "CompetitorAnalyst <-> ContentExtractor",
-            "TrendAnalyst <-> ContentExtractor",
-            "CustomerSentimentAnalyst <-> ContentExtractor",
+            "MarketCoordinator -> User",
+            # ContentExtractor edges - only one direction to prevent loops
+            "CompetitorAnalyst -> ContentExtractor",
+            "TrendAnalyst -> ContentExtractor",
+            "CustomerSentimentAnalyst -> ContentExtractor",
         ],
         "rules": [
-            "timeout(600)",  # 10 minute timeout (increased for content extraction)
-            "max_steps(60)",  # Maximum 60 steps (increased for content extraction)
+            "timeout(300)",  # 5 minute timeout
+            "max_steps(30)",  # Maximum 30 steps  
             "parallel(CompetitorAnalyst, TrendAnalyst, CustomerSentimentAnalyst)",  # Enable parallel execution
-            # TODO: Implement max_invocations rule to limit ContentExtractor calls
         ],
     }
 
@@ -416,6 +532,8 @@ async def run_market_analysis(market: str, product_category: str) -> Dict[str, A
             "product_category": product_category,
             "analysis_type": "comprehensive",
             "output_format": "structured",
+            "response_file": str(agent_response_file),
+            "caller_agent": "User",  # Initial caller
         }
 
         # Run with Orchestra and capture detailed execution
@@ -428,44 +546,16 @@ async def run_market_analysis(market: str, product_category: str) -> Dict[str, A
 
         logger.info(f"Market analysis completed. Success: {result.success}")
 
-        # Log detailed branch results
-        agent_logger.info("\n" + "=" * 80)
-        agent_logger.info("EXECUTION SUMMARY")
-        agent_logger.info("=" * 80)
-        agent_logger.info(f"Total branches executed: {len(result.branch_results)}")
-
-        for i, branch_result in enumerate(result.branch_results):
-            agent_logger.info(f"\nBranch {i+1}: {branch_result.branch_id}")
-            agent_logger.info(f"  Success: {branch_result.success}")
-            agent_logger.info(f"  Total steps: {branch_result.total_steps}")
-
-            if (
-                hasattr(branch_result, "execution_trace")
-                and branch_result.execution_trace
-            ):
-                for j, step in enumerate(branch_result.execution_trace):
-                    agent_logger.info(f"\n  Step {j+1}:")
-                    agent_logger.info(f"    Agent: {step.agent_name}")
-                    agent_logger.info(f"    Success: {step.success}")
-
-                    # Log the response preview
-                    if hasattr(step, "response") and step.response:
-                        response_preview = (
-                            str(step.response)[:200]
-                            if isinstance(step.response, str)
-                            else str(step.response)
-                        )
-                        agent_logger.info(
-                            f"    Response preview: {response_preview}..."
-                        )
-
-                    # Log next agent if present
-                    if hasattr(step, "next_agent") and step.next_agent:
-                        agent_logger.info(f"    Next agent: {step.next_agent}")
-
-                    # Log action type
-                    if hasattr(step, "action_type") and step.action_type:
-                        agent_logger.info(f"    Action type: {step.action_type}")
+        # Add execution summary to the response file
+        if AGENT_RESPONSE_FILE and AGENT_RESPONSE_FILE.exists():
+            with open(AGENT_RESPONSE_FILE, "a") as f:
+                f.write("\n" + "=" * 100 + "\n")
+                f.write("EXECUTION SUMMARY\n")
+                f.write("=" * 100 + "\n\n")
+                f.write(f"Total branches executed: {len(result.branch_results)}\n")
+                f.write(f"Total steps: {result.total_steps}\n")
+                f.write(f"Duration: {result.total_duration:.2f} seconds\n")
+                f.write(f"Success: {result.success}\n")
 
         # Debug logging
         print(f"\n=== DEBUG: OrchestraResult ===")
@@ -502,10 +592,14 @@ async def run_market_analysis(market: str, product_category: str) -> Dict[str, A
 
     except Exception as e:
         logger.error(f"Market analysis failed: {e}")
-        agent_logger.info(f"\nERROR: Market analysis failed: {e}")
-        import traceback
-
-        agent_logger.info(f"Traceback:\n{traceback.format_exc()}")
+        if AGENT_RESPONSE_FILE and AGENT_RESPONSE_FILE.exists():
+            with open(AGENT_RESPONSE_FILE, "a") as f:
+                f.write("\n" + "=" * 100 + "\n")
+                f.write("ERROR\n")
+                f.write("=" * 100 + "\n\n")
+                f.write(f"Market analysis failed: {e}\n")
+                import traceback
+                f.write(f"\nTraceback:\n{traceback.format_exc()}")
         return {"success": False, "error": str(e)}
 
 
@@ -517,6 +611,26 @@ def save_results(results: Dict[str, Any], market: str, product_category: str):
     # Ensure output directory exists
     output_dir = Path("examples/real_world/output")
     output_dir.mkdir(parents=True, exist_ok=True)
+    
+    # Extract all URLs from the agent response file if it exists
+    if AGENT_RESPONSE_FILE and AGENT_RESPONSE_FILE.exists():
+        urls_found = set()
+        with open(AGENT_RESPONSE_FILE, "r") as f:
+            content = f.read()
+            # Find all URLs in the content
+            import re
+            url_pattern = r'https?://[^\s"\']+'  # Basic URL pattern
+            urls = re.findall(url_pattern, content)
+            urls_found.update(urls)
+        
+        # Append URL summary to the response file
+        with open(AGENT_RESPONSE_FILE, "a") as f:
+            f.write("\n" + "=" * 100 + "\n")
+            f.write("ALL URLS REFERENCED\n")
+            f.write("=" * 100 + "\n\n")
+            for i, url in enumerate(sorted(urls_found), 1):
+                f.write(f"{i}. {url}\n")
+            f.write(f"\nTotal URLs: {len(urls_found)}\n")
 
     # Save the final analysis
     if results.get("success") and results.get("final_response"):
@@ -578,17 +692,8 @@ async def main():
     # Create model configurations
     configs = create_model_configs()
 
-    # Create agents
+    # Create agents - they will auto-register via BaseAgent.__init__
     agents = create_agents(configs)
-
-    # Register all agents with the global registry
-    for name, agent in agents.items():
-        try:
-            # Register the wrapped agent with its name
-            AgentRegistry.register(agent, name=name)
-            logger.info(f"Successfully registered agent: {name}")
-        except Exception as e:
-            logger.error(f"Failed to register agent {name}: {e}")
 
     # Log registration info
     logger.info(f"Total agents created: {len(agents)}")
