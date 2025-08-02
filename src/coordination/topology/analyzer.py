@@ -75,7 +75,7 @@ class TopologyAnalyzer:
         for node_item in nodes:
             # Use shared parsing to handle any node format
             node = parse_node(node_item)
-            graph.add_node(node.name, agent=node.agent_ref)
+            graph.add_node(node.name, agent=node.agent_ref, node_type=node.node_type)
     
     def _add_edges(self, graph: TopologyGraph, topology_def: Union[Topology, Dict[str, Any]]) -> None:
         """Add edges from topology definition to graph."""

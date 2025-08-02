@@ -7,7 +7,8 @@ branch execution, and step-level execution.
 
 from .branch_spawner import DynamicBranchSpawner, BranchCreatedEvent, BranchCompletedEvent
 from .branch_executor import BranchExecutor, BranchExecutionContext
-from .step_executor import StepExecutor, StepContext, ToolExecutor, ToolExecutionResult
+from .step_executor import StepExecutor, StepContext, ToolExecutionResult
+from .tool_executor import RealToolExecutor
 
 __all__ = [
     "DynamicBranchSpawner",
@@ -17,6 +18,6 @@ __all__ = [
     "BranchExecutionContext",
     "StepExecutor",
     "StepContext",
-    "ToolExecutor",
+    "RealToolExecutor",
     "ToolExecutionResult",
 ]

@@ -51,6 +51,20 @@ class AgentRegistry:
             else:
                 final_name = name  # Use the provided name directly
 
+            # Check against reserved names
+            try:
+                from ..coordination.topology.core import RESERVED_NODE_NAMES
+                if final_name.lower() in RESERVED_NODE_NAMES:
+                    raise AgentConfigurationError(
+                        f"Cannot register agent with reserved name '{final_name}'. "
+                        f"Reserved names: {', '.join(sorted(RESERVED_NODE_NAMES))}",
+                        agent_name=final_name,
+                        config_field="name"
+                    )
+            except ImportError:
+                # If coordination module not available, skip validation
+                pass
+
             if final_name in cls._agents:
                 existing_agent = cls._agents.get(final_name)
                 if existing_agent is not None and existing_agent is not agent:
