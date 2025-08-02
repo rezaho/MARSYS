@@ -25,6 +25,10 @@ class NodeType(Enum):
     TOOL = "tool"
 
 
+# Reserved node names that cannot be used for agents
+RESERVED_NODE_NAMES = frozenset({"user", "system", "tool"})  # lowercase for case-insensitive
+
+
 class EdgeType(Enum):
     """Types of edges in the topology."""
     INVOKE = "invoke"      # Standard agent invocation

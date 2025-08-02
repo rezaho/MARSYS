@@ -216,6 +216,21 @@ class BaseAgent(ABC):
         self._compiled_output_schema = compile_schema(output_schema)
         # --- End Schema Handling ---
 
+        # Validate agent name against reserved names
+        if agent_name:
+            try:
+                from ..coordination.topology.core import RESERVED_NODE_NAMES
+                if agent_name.lower() in RESERVED_NODE_NAMES:
+                    raise AgentConfigurationError(
+                        f"Agent name '{agent_name}' is reserved and cannot be used. "
+                        f"Reserved names: {', '.join(sorted(RESERVED_NODE_NAMES))}",
+                        agent_name=agent_name,
+                        config_field="agent_name"
+                    )
+            except ImportError:
+                # If coordination module not available, skip validation
+                pass
+
         self.name = AgentRegistry.register(
             self, agent_name, prefix=self.__class__.__name__
         )
@@ -654,14 +669,14 @@ Example for `final_response`:
         self, target_agent_name: str, request: Any, request_context: RequestContext
     ) -> Message:  # Changed return type
         """
-        Invokes another registered agent asynchronously.
-        Handles permission checks, depth/interaction limits, context propagation, and logging.
-        The invoked agent will run its multi-step auto_run process.
+        DEPRECATED: This method is deprecated as agents should not directly invoke other agents.
+        
+        The orchestration framework (Orchestra) now handles all agent-to-agent communication.
+        Agents should return appropriate action responses (e.g., invoke_agent) and let the
+        coordination system handle the actual invocation.
 
-        The 'request' can be a simple prompt (string) or a dictionary.
-        If 'request' is a dictionary, it can optionally include:
-        - 'prompt': The main prompt for the callee.
-        - 'context_message_ids': A list of message_ids from the caller's memory to pass as context.
+        This method will raise a DeprecationWarning to prevent direct agent invocations
+        that bypass the orchestration system.
 
         Args:
             target_agent_name: The name of the agent to invoke.
@@ -669,275 +684,40 @@ Example for `final_response`:
             request_context: The current request context.
 
         Returns:
-            A Message object representing the final response from the target agent's auto_run.
+            An error Message indicating this method is deprecated.
 
         Raises:
-            PermissionError: If the invocation is not allowed based on `allowed_peers`.
-            ValueError: If depth/interaction limits are exceeded or the target agent is not found.
-            Exception: Propagates exceptions raised by the target agent's `auto_run`.
+            DeprecationWarning: Always raised to indicate this method should not be used.
         """
-        interaction_id = str(uuid.uuid4())
+        # Log deprecation warning
+        import warnings
+        warnings.warn(
+            f"invoke_agent() is deprecated. Agent '{self.name}' attempted to directly invoke '{target_agent_name}'. "
+            "Direct agent invocation bypasses the orchestration framework. "
+            "Agents should return 'invoke_agent' actions and let the Orchestra handle invocations.",
+            DeprecationWarning,
+            stacklevel=2
+        )
+        
         await self._log_progress(
             request_context,
             LogLevel.MINIMAL,
-            f"Attempting to invoke agent: {target_agent_name} for multi-step execution.",
-            interaction_id=interaction_id,
+            f"DEPRECATED: Agent '{self.name}' attempted to use deprecated invoke_agent() to call '{target_agent_name}'"
         )
-
-        # --- NEW: verify the target agent is registered & alive ------------------
-        target_agent = AgentRegistry.get(target_agent_name)
-        if not target_agent:
-            error_msg = f"Target agent '{target_agent_name}' not found."
-            await self._log_progress(
-                request_context,
-                LogLevel.MINIMAL,
-                f"Error: {error_msg}",
-                interaction_id=interaction_id,
-                data={"error": "AgentNotFound"},
-            )
-            return Message(
-                role="error",
-                content=error_msg,
-                name=self.name,
-                message_id=str(uuid.uuid4()),
-            )
-        # -------------------------------------------------------------------------
-
-        # --- Input Schema Validation ---
-        if target_agent._compiled_input_schema:
-            is_valid, error = validate_data(
-                request, target_agent._compiled_input_schema
-            )
-            if not is_valid:
-                error_msg = (
-                    f"Input validation failed for agent '{target_agent_name}': {error}"
-                )
-                await self._log_progress(
-                    request_context,
-                    LogLevel.MINIMAL,
-                    f"Error: {error_msg}",
-                    interaction_id=interaction_id,
-                    data={"error": "InputValidationError"},
-                )
-                return Message(
-                    role="error",
-                    content=error_msg,
-                    name=self.name,
-                    message_id=str(uuid.uuid4()),
-                )
-        # --- End Input Schema Validation ---
-
-        # Permission check now runs only after confirming existence
-        if target_agent_name not in self.allowed_peers:
-            error_msg = f"Agent '{self.name}' is not allowed to call agent '{target_agent_name}'."
-            await self._log_progress(
-                request_context,
-                LogLevel.MINIMAL,
-                f"Permission denied: {error_msg}",
-                interaction_id=interaction_id,
-                data={"error": "PermissionError"},
-            )
-            # Return an error Message object
-            return Message(
-                role="error",
-                content=error_msg,
-                name=self.name,
-                message_id=str(uuid.uuid4()),
-            )
-
-        if request_context.depth + 1 > request_context.max_depth:
-            error_msg = (
-                f"Maximum invocation depth ({request_context.max_depth}) reached."
-            )
-            await self._log_progress(
-                request_context,
-                LogLevel.MINIMAL,
-                f"Limit reached: {error_msg}",
-                interaction_id=interaction_id,
-                data={"error": "DepthLimitExceeded"},
-            )
-            return Message(
-                role="error",
-                content=error_msg,
-                name=self.name,
-                message_id=str(uuid.uuid4()),
-            )
-
-        if request_context.interaction_count + 1 > request_context.max_interactions:
-            error_msg = f"Maximum interaction count ({request_context.max_interactions}) reached."
-            await self._log_progress(
-                request_context,
-                LogLevel.MINIMAL,
-                f"Limit reached: {error_msg}",
-                interaction_id=interaction_id,
-                data={"error": "InteractionLimitExceeded"},
-            )
-            return Message(
-                role="error",
-                content=error_msg,
-                name=self.name,
-                message_id=str(uuid.uuid4()),
-            )
-
-        new_request_context = dataclasses.replace(
-            request_context,
-            interaction_id=interaction_id,
-            depth=request_context.depth + 1,
-            interaction_count=request_context.interaction_count + 1,
-            caller_agent_name=self.name,
-            callee_agent_name=target_agent_name,
-            max_tokens_soft_limit=request_context.max_tokens_soft_limit,
-            max_tokens_hard_limit=request_context.max_tokens_hard_limit,
+        
+        # Return an error message
+        error_msg = (
+            f"invoke_agent() is deprecated. Agent '{self.name}' should not directly invoke other agents. "
+            f"Instead, return {{\"next_action\": \"invoke_agent\", \"action_input\": \"{target_agent_name}\"}} "
+            "and let the orchestration framework handle the invocation."
         )
-
-        # Prepare the payload for the callee
-        request_payload_for_callee: Any = request
-        if isinstance(
-            request, dict
-        ):  # TO-DO: Is there any instance where request is not a dict? If no, do we need to have dict in any other case? If yes, what is the type? and we need to prompt the agent properly in self._get_peer_agent_instructions()
-            main_prompt_for_callee = request.get("prompt")
-            context_message_ids = request.get("context_message_ids")
-            passed_referenced_context: List[Message] = []
-
-            if (
-                context_message_ids
-                and hasattr(self, "memory")
-                and hasattr(self.memory, "retrieve_by_id")
-            ):  # Ensure agent has memory and retrieve_by_id
-                for msg_id in context_message_ids:
-                    referenced_msg = self.memory.retrieve_by_id(msg_id)
-                    if referenced_msg:
-                        passed_referenced_context.append(referenced_msg)
-                    else:
-                        await self._log_progress(
-                            request_context,  # Log against the original request context
-                            LogLevel.MINIMAL,
-                            f"Could not find message_id '{msg_id}' in {self.name}'s memory to pass as context to {target_agent_name}.",
-                            interaction_id=interaction_id,  # Log against the current invocation's interaction_id
-                        )
-
-            # Construct the payload for the callee
-            if passed_referenced_context:
-                request_payload_for_callee = {
-                    "prompt": main_prompt_for_callee,  # This could be None if request was just context_message_ids
-                    "passed_referenced_context": passed_referenced_context,
-                    # Include other original request fields if necessary, e.g., 'action', 'kwargs'
-                    **{
-                        k: v
-                        for k, v in request.items()
-                        if k not in ["prompt", "context_message_ids"]
-                    },
-                }
-            # else: No context_message_ids or no messages found, pass original request dict or string
-            # request_payload_for_callee is already 'request' in this case.
-
-        log_entry_caller = {
-            "interaction_id": interaction_id,
-            "timestamp": time.time(),
-            "type": "invoke_auto_run",  # Changed type to reflect calling auto_run
-            "caller": self.name,
-            "callee": target_agent_name,
-            "request": request_payload_for_callee,  # Log the payload being sent
-            "depth": new_request_context.depth,
-            "status": "pending",
-        }
-        self._add_interaction_to_log(request_context.task_id, log_entry_caller)
-
-        await self._log_progress(
-            new_request_context,
-            LogLevel.SUMMARY,
-            f"Invoking agent '{target_agent_name}' for auto_run (Depth: {new_request_context.depth}, Interaction: {new_request_context.interaction_count})",
+        
+        return Message(
+            role="error",
+            content=error_msg,
+            name=self.name,
+            message_id=str(uuid.uuid4())
         )
-        if new_request_context.log_level >= LogLevel.DEBUG:
-            await self._log_progress(
-                new_request_context,
-                LogLevel.DEBUG,
-                "Initial request details for callee's auto_run",
-                data={"request_payload_for_callee": request_payload_for_callee},
-            )
-
-        try:
-            # Call auto_run on the target agent for multi-step execution
-            final_answer_data: Union[Dict[str, Any], str] = await target_agent.auto_run(
-                initial_request=request_payload_for_callee,
-                request_context=new_request_context,
-                # max_steps and max_re_prompts for callee will use defaults in its auto_run
-                # or could be passed via request_payload_for_callee if needed in future
-            )
-
-            # Wrap the response from auto_run into a Message object
-            # If it's a dictionary (structured response), store it properly
-            if isinstance(final_answer_data, dict):
-                response_message = Message(
-                    role="assistant",  # The callee acts as an assistant to the caller
-                    content=json.dumps(
-                        final_answer_data, indent=2
-                    ),  # Convert dict to JSON string for content
-                    name=target_agent_name,  # Name of the agent that produced this answer
-                    message_id=str(
-                        uuid.uuid4()
-                    ),  # New message ID for this final response
-                )
-                # Store the original dictionary in a custom field for easy access
-                response_message.structured_data = final_answer_data
-            else:
-                # Legacy string response
-                response_message = Message(
-                    role="assistant",  # The callee acts as an assistant to the caller
-                    content=final_answer_data,
-                    name=target_agent_name,  # Name of the agent that produced this answer
-                    message_id=str(
-                        uuid.uuid4()
-                    ),  # New message ID for this final response
-                )
-
-            # Update status in the log
-            for entry in reversed(
-                self.communication_log.get(request_context.task_id, [])
-            ):
-                if (
-                    entry.get("interaction_id") == interaction_id
-                    and entry.get("type") == "invoke_auto_run"  # Match updated type
-                ):
-                    entry["status"] = "success"
-                    entry["response"] = (
-                        response_message.to_llm_dict()
-                    )  # Log Message content
-                    break
-
-            await self._log_progress(
-                new_request_context,  # Log against the context of this invocation
-                LogLevel.SUMMARY,
-                f"Received final response from '{target_agent_name}' after auto_run (ID: {response_message.message_id})",
-            )
-            if new_request_context.log_level >= LogLevel.DEBUG:
-                await self._log_progress(
-                    new_request_context,
-                    LogLevel.DEBUG,
-                    "Final response Message details from callee's auto_run",
-                    data={"response_message": response_message.to_llm_dict()},
-                )
-
-            return response_message
-        except Exception as e:
-            # Update status in the log
-            for entry in reversed(
-                self.communication_log.get(request_context.task_id, [])
-            ):
-                if (
-                    entry.get("interaction_id") == interaction_id
-                    and entry.get("type") == "invoke_auto_run"  # Match updated type
-                ):
-                    entry["status"] = "error"
-                    entry["error"] = str(e)
-                    break
-            await self._log_progress(
-                new_request_context,
-                LogLevel.MINIMAL,
-                f"Error during auto_run of agent '{target_agent_name}': {e}",
-                data={"error": str(e), "exception_type": type(e).__name__},
-            )
-            raise  # Propagate the exception, to be handled by the caller's auto_run loop
 
     async def handle_invocation(
         self, request: Any, request_context: RequestContext

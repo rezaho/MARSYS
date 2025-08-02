@@ -9,6 +9,7 @@ infrastructure concerns.
 from __future__ import annotations
 
 import asyncio
+import json
 import logging
 import time
 from dataclasses import dataclass, field
@@ -17,6 +18,7 @@ from collections import defaultdict
 
 from ...agents.memory import Message
 from ..branches.types import StepResult
+from .tool_executor import RealToolExecutor
 
 if TYPE_CHECKING:
     from ...agents import BaseAgent
@@ -71,11 +73,12 @@ class StepExecutor:
     
     def __init__(
         self,
-        tool_executor: Optional['ToolExecutor'] = None,
+        tool_executor: Optional['RealToolExecutor'] = None,
         max_retries: int = 3,
         retry_delay: float = 1.0
     ):
-        self.tool_executor = tool_executor
+        # Use RealToolExecutor by default if none provided
+        self.tool_executor = tool_executor or RealToolExecutor()
         self.max_retries = max_retries
         self.retry_delay = retry_delay
         
@@ -172,10 +175,72 @@ class StepExecutor:
                         step_result.tool_results = tool_result.tool_results
                         self.stats[agent_name]["tool_executions"] += len(tool_result.tool_results)
                         
-                        # Add tool responses to agent's memory
-                        # This ensures proper message sequencing for API calls
-                        if hasattr(agent, 'add_tool_responses') and tool_result.tool_results:
-                            agent.add_tool_responses(tool_result.tool_results)
+                        # IMPORTANT: Re-run agent to process tool results
+                        # This allows the agent to generate a final response based on tool data
+                        if tool_result.tool_results:
+                            # Add tool results to context memory as tool messages
+                            tool_messages = []
+                            for tr in tool_result.tool_results:
+                                tool_messages.append({
+                                    "role": "tool",
+                                    "content": json.dumps(tr['result']),
+                                    "tool_call_id": tr['tool_call_id'],
+                                    "name": tr['tool_name']
+                                })
+                            
+                            # Update context memory with tool results
+                            step_context.memory.extend(tool_messages)
+                            
+                            # Re-run agent with updated memory
+                            logger.info(f"Re-running agent '{agent_name}' with {len(tool_result.tool_results)} tool results")
+                            
+                            # Prepare agent memory again with tool results
+                            await self._prepare_agent_memory(agent, step_context)
+                            
+                            # Create a prompt to process tool results
+                            process_prompt = (
+                                "Based on the tool results above, provide your analysis and final response. "
+                                "Synthesize the information from the tools into a comprehensive answer."
+                            )
+                            
+                            # Execute agent again to process tool results
+                            try:
+                                final_response = await agent.run_step(
+                                    process_prompt,
+                                    {"request_context": step_context.to_request_context()}
+                                )
+                                
+                                # Update step result with final response
+                                if isinstance(final_response, dict) and 'response' in final_response:
+                                    # Extract the actual response from agent result
+                                    final_raw_response = final_response['response']
+                                else:
+                                    final_raw_response = final_response
+                                
+                                # Process the final response
+                                final_step_result = await self._process_agent_response(
+                                    agent,
+                                    final_raw_response,
+                                    step_context
+                                )
+                                
+                                # Update the original step result with the final processed response
+                                step_result.response = final_step_result.response
+                                step_result.parsed_response = final_step_result.parsed_response
+                                step_result.action_type = final_step_result.action_type
+                                step_result.next_agent = final_step_result.next_agent
+                                
+                                # Add final response to memory updates
+                                if final_step_result.memory_updates:
+                                    if not step_result.memory_updates:
+                                        step_result.memory_updates = []
+                                    step_result.memory_updates.extend(final_step_result.memory_updates)
+                                    
+                                logger.info(f"Agent '{agent_name}' successfully processed tool results")
+                                
+                            except Exception as e:
+                                logger.error(f"Error re-running agent '{agent_name}' with tool results: {e}")
+                                # Keep the original response with tool results
                 
                 # Update statistics
                 duration = time.time() - start_time
@@ -275,8 +340,14 @@ class StepExecutor:
             if "next_action" in raw_response:
                 result.action_type = raw_response["next_action"]
                 
+                # Handle call_tool action
+                if result.action_type == "call_tool" and "action_input" in raw_response:
+                    action_input = raw_response["action_input"]
+                    if isinstance(action_input, dict) and "tool_calls" in action_input:
+                        result.tool_calls = action_input["tool_calls"]
+                
                 # Extract next agent for invoke_agent action
-                if result.action_type == "invoke_agent" and "action_input" in raw_response:
+                elif result.action_type == "invoke_agent" and "action_input" in raw_response:
                     action_input = raw_response["action_input"]
                     
                     # Handle unified array format
@@ -308,6 +379,46 @@ class StepExecutor:
             result.response = raw_response.content
             if raw_response.tool_calls:
                 result.tool_calls = raw_response.tool_calls
+            
+            # Try to parse JSON content if it's a string that looks like JSON
+            if isinstance(raw_response.content, str):
+                content = raw_response.content.strip()
+                
+                # Check for markdown code blocks
+                if content.startswith('```'):
+                    # Extract JSON from markdown
+                    import re
+                    json_match = re.search(r'```(?:json)?\s*\n?(.*?)```', content, re.DOTALL)
+                    if json_match:
+                        content = json_match.group(1).strip()
+                
+                # Try to parse as JSON
+                if content.startswith('{') and content.endswith('}'):
+                    try:
+                        parsed = json.loads(content)
+                        
+                        # Extract structured action information
+                        if isinstance(parsed, dict) and "next_action" in parsed:
+                            result.action_type = parsed["next_action"]
+                            result.parsed_response = parsed
+                            
+                            # Handle call_tool action
+                            if parsed["next_action"] == "call_tool" and "action_input" in parsed:
+                                action_input = parsed["action_input"]
+                                if isinstance(action_input, dict) and "tool_calls" in action_input:
+                                    result.tool_calls = action_input["tool_calls"]
+                            
+                            # Handle invoke_agent action
+                            elif parsed["next_action"] == "invoke_agent" and "action_input" in parsed:
+                                action_input = parsed["action_input"]
+                                if isinstance(action_input, dict) and "agent_name" in action_input:
+                                    result.next_agent = action_input["agent_name"]
+                                elif isinstance(action_input, str):
+                                    result.next_agent = action_input
+                                    
+                    except json.JSONDecodeError:
+                        # Not valid JSON, keep as string
+                        pass
             
             # Create memory update
             result.memory_updates = [{
@@ -447,35 +558,3 @@ class StepExecutor:
                 processed_results.append(result)
         
         return processed_results
-
-
-class ToolExecutor:
-    """
-    Placeholder for tool executor.
-    
-    This would handle the actual execution of tools, maintaining
-    separation from agent logic.
-    """
-    
-    async def execute_tools(
-        self,
-        tool_calls: List[Dict[str, Any]],
-        agent: BaseAgent,
-        context: Dict[str, Any]
-    ) -> List[Dict[str, Any]]:
-        """Execute tool calls and return results."""
-        # This is a placeholder - actual implementation would:
-        # 1. Look up tools from registry
-        # 2. Validate tool calls
-        # 3. Execute tools with proper sandboxing
-        # 4. Format results for agent consumption
-        
-        results = []
-        for tool_call in tool_calls:
-            results.append({
-                "tool_call_id": tool_call.get("id", ""),
-                "tool_name": tool_call.get("function", {}).get("name", ""),
-                "result": f"Mock result for {tool_call.get('function', {}).get('name', 'unknown')}"
-            })
-        
-        return results

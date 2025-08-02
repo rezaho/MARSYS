@@ -38,6 +38,7 @@ class NodeInfo:
     """Information about a node (agent) in the topology graph."""
     name: str
     agent: Optional[Any] = None  # Reference to actual agent instance
+    node_type: Optional['NodeType'] = None  # Type of node (USER, AGENT, etc.)
     incoming_edges: List[str] = field(default_factory=list)
     outgoing_edges: List[str] = field(default_factory=list)
     capabilities: List[str] = field(default_factory=list)
@@ -121,10 +122,10 @@ class TopologyGraph:
         self.conversation_loops: Set[Tuple[str, str]] = set()
         self.sync_requirements: Dict[str, SyncRequirement] = {}
         
-    def add_node(self, name: str, agent: Optional[Any] = None, **metadata) -> NodeInfo:
+    def add_node(self, name: str, agent: Optional[Any] = None, node_type: Optional['NodeType'] = None, **metadata) -> NodeInfo:
         """Add a node to the graph."""
         if name not in self.nodes:
-            self.nodes[name] = NodeInfo(name=name, agent=agent, metadata=metadata)
+            self.nodes[name] = NodeInfo(name=name, agent=agent, node_type=node_type, metadata=metadata)
         return self.nodes[name]
     
     def add_edge(self, edge: TopologyEdge) -> None:

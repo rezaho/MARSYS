@@ -332,20 +332,44 @@ class Orchestra:
         
         # Create initial branch(es)
         initial_branches = []
+        from .topology.core import NodeType
+        
         for entry in entry_agents:
-            branch = ExecutionBranch(
-                id=f"main_{entry}_{uuid.uuid4().hex[:8]}",
-                name=f"Main: {entry}",
-                type=BranchType.SIMPLE,
-                topology=BranchTopology(
-                    agents=[entry],
-                    entry_agent=entry,
-                    current_agent=entry,  # Set current_agent to entry agent
-                    allowed_transitions=dict(self.topology_graph.adjacency)
-                ),
-                state=BranchState(status=BranchStatus.PENDING)
-            )
-            initial_branches.append(branch)
+            # Check if this is a User node
+            node_info = self.topology_graph.nodes.get(entry)
+            if node_info and node_info.node_type == NodeType.USER:
+                # Skip creating branch for User node, go directly to its children
+                next_agents = self.topology_graph.get_next_agents(entry)
+                for next_agent in next_agents:
+                    branch = ExecutionBranch(
+                        id=f"main_{next_agent}_{uuid.uuid4().hex[:8]}",
+                        name=f"Main: {next_agent}",
+                        type=BranchType.SIMPLE,
+                        topology=BranchTopology(
+                            agents=[next_agent],
+                            entry_agent=next_agent,
+                            current_agent=next_agent,
+                            allowed_transitions=dict(self.topology_graph.adjacency)
+                        ),
+                        state=BranchState(status=BranchStatus.PENDING),
+                        metadata={"source": "user_entry", "session_id": session_id}
+                    )
+                    initial_branches.append(branch)
+            else:
+                # Regular agent entry point
+                branch = ExecutionBranch(
+                    id=f"main_{entry}_{uuid.uuid4().hex[:8]}",
+                    name=f"Main: {entry}",
+                    type=BranchType.SIMPLE,
+                    topology=BranchTopology(
+                        agents=[entry],
+                        entry_agent=entry,
+                        current_agent=entry,  # Set current_agent to entry agent
+                        allowed_transitions=dict(self.topology_graph.adjacency)
+                    ),
+                    state=BranchState(status=BranchStatus.PENDING)
+                )
+                initial_branches.append(branch)
         
         # Start execution
         all_tasks = []
@@ -514,16 +538,23 @@ class Orchestra:
         }
     
     def _find_entry_agents(self) -> List[str]:
-        """Find agents with no incoming edges (entry points)."""
+        """Find agents with no incoming edges (entry points) or User nodes."""
         all_agents = set(self.topology_graph.nodes)
         has_incoming = set()
+        user_nodes = []
         
         # Find all agents that have incoming edges
         for source, targets in self.topology_graph.adjacency.items():
             has_incoming.update(targets)
         
-        # Entry agents are those with no incoming edges
-        entry_agents = list(all_agents - has_incoming)
+        # Find User nodes (they're always entry points)
+        from .topology.core import NodeType
+        for node_name, node_info in self.topology_graph.nodes.items():
+            if node_info.node_type == NodeType.USER:
+                user_nodes.append(node_name)
+        
+        # Entry agents are those with no incoming edges OR user nodes
+        entry_agents = user_nodes + list(all_agents - has_incoming - set(user_nodes))
         
         # If no clear entry points, use divergence points
         if not entry_agents and self.topology_graph.divergence_points:
@@ -531,7 +562,7 @@ class Orchestra:
         
         # If still none, use first agent in nodes
         if not entry_agents and self.topology_graph.nodes:
-            entry_agents = [self.topology_graph.nodes[0]]
+            entry_agents = [next(iter(self.topology_graph.nodes))]
         
         return entry_agents
     
