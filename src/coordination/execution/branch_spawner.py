@@ -68,23 +68,37 @@ class DynamicBranchSpawner:
     topology graph analysis.
     """
     
+    # Default limits to prevent unbounded memory growth
+    DEFAULT_MAX_COMPLETED_AGENTS = 1000
+    DEFAULT_MAX_COMPLETED_BRANCHES = 500
+    DEFAULT_MAX_BRANCH_RESULTS = 100
+    DEFAULT_CLEANUP_INTERVAL = 50  # Cleanup after every N branch completions
+    
     def __init__(
         self,
         topology_graph: TopologyGraph,
         branch_executor: BranchExecutor,
         event_bus: Optional[EventBus] = None,
-        agent_registry: Optional[AgentRegistry] = None
+        agent_registry: Optional[AgentRegistry] = None,
+        max_completed_agents: Optional[int] = None,
+        max_completed_branches: Optional[int] = None,
+        max_branch_results: Optional[int] = None
     ):
         self.graph = topology_graph
         self.branch_executor = branch_executor
         self.event_bus = event_bus
         self.agent_registry = agent_registry
         
+        # Memory management configuration
+        self.max_completed_agents = max_completed_agents or self.DEFAULT_MAX_COMPLETED_AGENTS
+        self.max_completed_branches = max_completed_branches or self.DEFAULT_MAX_COMPLETED_BRANCHES
+        self.max_branch_results = max_branch_results or self.DEFAULT_MAX_BRANCH_RESULTS
+        
         # Track active branches and their tasks
         self.active_branches: Dict[str, asyncio.Task] = {}
         self.branch_info: Dict[str, ExecutionBranch] = {}
         
-        # Track completed agents and branches
+        # Track completed agents and branches with bounded size
         self.completed_agents: Set[str] = set()
         self.completed_branches: Set[str] = set()
         self.branch_results: Dict[str, BranchResult] = {}
@@ -96,6 +110,10 @@ class DynamicBranchSpawner:
         self.parent_child_map: Dict[str, List[str]] = {}  # parent_id -> [child_ids]
         self.child_parent_map: Dict[str, str] = {}  # child_id -> parent_id
         self.waiting_branches: Dict[str, Set[str]] = {}  # parent_id -> set of child_ids to wait for
+        
+        # Cleanup tracking
+        self._cleanup_counter = 0
+        self._branch_completion_times: Dict[str, float] = {}  # Track when branches completed
         
     async def handle_agent_completion(
         self,
@@ -142,6 +160,14 @@ class DynamicBranchSpawner:
             # Put parent branch in waiting state if tasks were created
             if parallel_tasks:
                 return new_tasks  # Parent branch will be resumed when children complete
+        
+        # Check if targeting User - don't spawn branches for User interactions
+        if response and isinstance(response, dict):
+            target_agents = response.get("target_agents", [])
+            if len(target_agents) == 1 and target_agents[0] == "User":
+                # Don't spawn branches for User interactions
+                logger.info("Continuing in same branch for User interaction")
+                return []
         
         # 2. Check if this is a divergence point
         if self.graph.is_divergence_point(agent_name):
@@ -195,6 +221,17 @@ class DynamicBranchSpawner:
         next_agents = self.graph.get_next_agents(divergence_agent)
         new_tasks = []
         
+        # Special handling for User divergence points
+        if divergence_agent == "User":
+            # Check if there's an entry_point specified in topology metadata
+            agent_after_user = self.graph.metadata.get("agent_after_user")
+            if agent_after_user and agent_after_user in next_agents:
+                # Only spawn branch to the designated entry agent
+                logger.info(f"User divergence point - spawning only to entry_point '{agent_after_user}'")
+                next_agents = [agent_after_user]
+            else:
+                logger.warning(f"User is divergence point but no valid entry_point found. Available agents: {next_agents}")
+        
         for next_agent in next_agents:
             # Check if this is a conversation loop
             if self.graph.is_in_conversation_loop(divergence_agent, next_agent):
@@ -212,9 +249,26 @@ class DynamicBranchSpawner:
             self.branch_info[branch.id] = branch
             self._track_agent_in_branch(next_agent, branch.id)
             
+            # Extract appropriate content for the next agent
+            # For divergence points, we typically want to pass an empty request
+            # unless there's specific data to pass
+            initial_request = ""
+            
+            # If the response has content that should be passed, extract it
+            if hasattr(response, 'content'):
+                initial_request = response.content or ""
+            elif isinstance(response, dict):
+                # Check for content in dict format
+                if 'content' in response:
+                    initial_request = response.get('content', "")
+                elif 'message' in response:
+                    initial_request = response.get('message', "")
+            elif isinstance(response, str):
+                initial_request = response
+            
             # Create async task
             task = asyncio.create_task(
-                self._execute_branch_with_monitoring(branch, response, context)
+                self._execute_branch_with_monitoring(branch, initial_request, context)
             )
             
             self.active_branches[branch.id] = task
@@ -268,9 +322,21 @@ class DynamicBranchSpawner:
             self.branch_info[branch.id] = branch
             self._track_agent_in_branch(agent, branch.id)
             
+            # Extract appropriate content for parallel agents
+            initial_request = ""
+            if hasattr(response, 'content'):
+                initial_request = response.content or ""
+            elif isinstance(response, dict):
+                if 'content' in response:
+                    initial_request = response.get('content', "")
+                elif 'message' in response:
+                    initial_request = response.get('message', "")
+            elif isinstance(response, str):
+                initial_request = response
+            
             # Create async task
             task = asyncio.create_task(
-                self._execute_branch_with_monitoring(branch, response, context)
+                self._execute_branch_with_monitoring(branch, initial_request, context)
             )
             
             self.active_branches[branch.id] = task
@@ -299,6 +365,13 @@ class DynamicBranchSpawner:
         """Create a simple execution branch."""
         branch_id = f"branch_{source_agent}_to_{target_agent}_{uuid.uuid4().hex[:8]}"
         
+        # Check if this is a reflexive edge
+        is_reflexive = False
+        edge = self.graph.get_edge(source_agent, target_agent)
+        if edge and (edge.metadata.get("reflexive") or edge.metadata.get("pattern") == "boomerang"):
+            is_reflexive = True
+            logger.debug(f"Creating reflexive branch from {source_agent} to {target_agent}")
+        
         # Get allowed transitions from this agent forward
         allowed_transitions = self.graph.get_subgraph_from(target_agent)
         
@@ -317,7 +390,8 @@ class DynamicBranchSpawner:
             metadata={
                 "source_agent": source_agent,
                 "initial_request": initial_request,
-                "context": context
+                "context": context,
+                "is_reflexive": is_reflexive  # NEW
             }
         )
         
@@ -374,10 +448,16 @@ class DynamicBranchSpawner:
             # Record completion
             self.completed_branches.add(branch.id)
             self.branch_results[branch.id] = result
+            self._branch_completion_times[branch.id] = time.time()
             
             # Mark all agents in branch as completed
             for agent in branch.topology.agents:
                 self.completed_agents.add(agent)
+            
+            # Increment cleanup counter and run cleanup if needed
+            self._cleanup_counter += 1
+            if self._should_run_cleanup():
+                await self._cleanup_completed_data()
             
             # Handle child branch completion
             if branch.id in self.child_parent_map:
@@ -609,12 +689,15 @@ class DynamicBranchSpawner:
         child_branch_ids = []
         
         for target_agent in target_agents:
+            # Extract agent-specific request data
+            agent_request = self._extract_agent_request(response, target_agent)
+            
             # Create child branch with parent reference
             child_branch = self._create_child_branch(
                 parent_agent=agent_name,
                 target_agent=target_agent,
                 parent_branch_id=parent_branch_id,
-                initial_request=response,
+                initial_request=agent_request,
                 context=context
             )
             
@@ -628,7 +711,7 @@ class DynamicBranchSpawner:
             
             # Create async task
             task = asyncio.create_task(
-                self._execute_branch_with_monitoring(child_branch, response, context)
+                self._execute_branch_with_monitoring(child_branch, agent_request, context)
             )
             
             self.active_branches[child_branch.id] = task
@@ -694,6 +777,27 @@ class DynamicBranchSpawner:
             target_agents = []
         
         return target_agents
+    
+    def _extract_agent_request(self, response: Any, target_agent: str) -> Any:
+        """Extract agent-specific request data from the response."""
+        # Default to empty dict if no specific request
+        agent_request = {}
+        
+        if isinstance(response, dict):
+            # Check for agent_requests mapping
+            if "agent_requests" in response and isinstance(response["agent_requests"], dict):
+                agent_request = response["agent_requests"].get(target_agent, {})
+            
+            # Also check the action_input for the unified format
+            elif "action_input" in response and isinstance(response["action_input"], list):
+                # Find the request for this specific agent
+                for item in response["action_input"]:
+                    if isinstance(item, dict) and item.get("agent_name") == target_agent:
+                        agent_request = item.get("request", {})
+                        break
+        
+        logger.debug(f"Extracted request for agent '{target_agent}': {agent_request}")
+        return agent_request
     
     def _create_child_branch(
         self,
@@ -809,3 +913,123 @@ class DynamicBranchSpawner:
                         aggregated["combined_memory"][agent] = memories
         
         return aggregated
+    
+    def _should_run_cleanup(self) -> bool:
+        """Check if cleanup should run based on counter."""
+        return self._cleanup_counter >= self.DEFAULT_CLEANUP_INTERVAL
+    
+    async def _cleanup_completed_data(self) -> None:
+        """
+        Perform cleanup of completed data to prevent unbounded memory growth.
+        
+        This method:
+        1. Removes oldest completed agents if over limit
+        2. Removes oldest branch results if over limit
+        3. Cleans up agent-to-branch mappings for inactive branches
+        """
+        # Clean up completed agents if over limit
+        if len(self.completed_agents) > self.max_completed_agents:
+            # Since sets don't maintain order, we can only remove arbitrary items
+            # In practice, agent names are likely unique per session so this is acceptable
+            excess = len(self.completed_agents) - self.max_completed_agents
+            for _ in range(excess):
+                self.completed_agents.pop()
+            logger.debug(f"Cleaned up {excess} completed agents")
+        
+        # Clean up branch results if over limit
+        if len(self.branch_results) > self.max_branch_results:
+            # Sort by completion time and remove oldest
+            sorted_branches = sorted(
+                self._branch_completion_times.items(),
+                key=lambda x: x[1]
+            )
+            
+            excess = len(self.branch_results) - self.max_branch_results
+            branches_to_remove = [branch_id for branch_id, _ in sorted_branches[:excess]]
+            
+            for branch_id in branches_to_remove:
+                # Remove from all tracking structures
+                if branch_id in self.branch_results:
+                    del self.branch_results[branch_id]
+                if branch_id in self._branch_completion_times:
+                    del self._branch_completion_times[branch_id]
+                if branch_id in self.branch_info:
+                    del self.branch_info[branch_id]
+                self.completed_branches.discard(branch_id)
+                
+                # Clean up parent-child mappings
+                if branch_id in self.parent_child_map:
+                    del self.parent_child_map[branch_id]
+                if branch_id in self.child_parent_map:
+                    del self.child_parent_map[branch_id]
+                if branch_id in self.waiting_branches:
+                    del self.waiting_branches[branch_id]
+            
+            logger.info(f"Cleaned up {excess} old branch results")
+        
+        # Clean up completed branches set if over limit
+        if len(self.completed_branches) > self.max_completed_branches:
+            excess = len(self.completed_branches) - self.max_completed_branches
+            # Remove branches that no longer have results stored
+            branches_to_remove = []
+            for branch_id in self.completed_branches:
+                if branch_id not in self.branch_results:
+                    branches_to_remove.append(branch_id)
+                    if len(branches_to_remove) >= excess:
+                        break
+            
+            for branch_id in branches_to_remove:
+                self.completed_branches.discard(branch_id)
+        
+        # Clean up agent-to-branches mapping for inactive branches
+        for agent_name in list(self.agent_to_branches.keys()):
+            active_branch_ids = set()
+            for branch_id in self.agent_to_branches[agent_name]:
+                if branch_id in self.active_branches or branch_id in self.branch_results:
+                    active_branch_ids.add(branch_id)
+            
+            if active_branch_ids:
+                self.agent_to_branches[agent_name] = active_branch_ids
+            else:
+                del self.agent_to_branches[agent_name]
+        
+        # Reset cleanup counter
+        self._cleanup_counter = 0
+        logger.debug("Completed memory cleanup cycle")
+    
+    def get_memory_stats(self) -> Dict[str, int]:
+        """
+        Get current memory usage statistics.
+        
+        Returns:
+            Dictionary with counts of tracked data structures
+        """
+        return {
+            "active_branches": len(self.active_branches),
+            "completed_agents": len(self.completed_agents),
+            "completed_branches": len(self.completed_branches),
+            "branch_results": len(self.branch_results),
+            "agent_to_branches": len(self.agent_to_branches),
+            "parent_child_mappings": len(self.parent_child_map),
+            "waiting_branches": len(self.waiting_branches)
+        }
+    
+    def clear_all_data(self) -> None:
+        """
+        Clear all tracked data. Useful for session cleanup.
+        
+        This should be called when an orchestration session completes
+        to ensure no data leaks between sessions.
+        """
+        self.active_branches.clear()
+        self.branch_info.clear()
+        self.completed_agents.clear()
+        self.completed_branches.clear()
+        self.branch_results.clear()
+        self.agent_to_branches.clear()
+        self.parent_child_map.clear()
+        self.child_parent_map.clear()
+        self.waiting_branches.clear()
+        self._branch_completion_times.clear()
+        self._cleanup_counter = 0
+        logger.info("Cleared all branch spawner data")

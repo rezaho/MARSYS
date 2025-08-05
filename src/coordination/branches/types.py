@@ -20,6 +20,7 @@ class BranchType(Enum):
     CONVERSATION = "conversation"  # Multi-agent dialogue (e.g., Agent2 <-> Agent3)
     NESTED = "nested"              # Contains sub-branches
     AGGREGATION = "aggregation"    # Waits for multiple branches and aggregates
+    USER_INTERACTION = "user_interaction"  # User interaction branch
 
 
 class BranchStatus(Enum):
@@ -90,6 +91,15 @@ class BranchState:
     # Track which agents have completed in this branch
     completed_agents: Set[str] = field(default_factory=set)
     
+    # User interaction tracking
+    awaiting_user_response: bool = False
+    interaction_id: Optional[str] = None
+    calling_agent: Optional[str] = None
+    resume_agent: Optional[str] = None
+    interaction_context: Dict[str, Any] = field(default_factory=dict)
+    memory_snapshot: List[Dict[str, Any]] = field(default_factory=list)
+    _execution_trace: List['StepResult'] = field(default_factory=list)  # Temp storage for trace
+    
     def record_agent_completion(self, agent_name: str) -> None:
         """Record that an agent has completed in this branch."""
         self.completed_agents.add(agent_name)
@@ -122,6 +132,7 @@ class StepResult:
     parsed_response: Optional[Dict[str, Any]] = None  # Parsed structured response
     waiting_for_children: bool = False  # Signal that branch should wait
     child_branch_ids: List[str] = field(default_factory=list)  # IDs of spawned child branches
+    context_selection: Optional[Dict[str, Any]] = None  # Context saved by agent to pass to next
 
 
 @dataclass

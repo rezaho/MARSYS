@@ -130,7 +130,11 @@ class Router:
             )
         
         # Create execution step for agent invocation
-        action_input = validation_result.parsed_response.get("action_input", "")
+        # Use agent_requests for User interactions
+        if target_agent == "User" and "agent_requests" in validation_result.parsed_response:
+            action_input = validation_result.parsed_response["agent_requests"].get("User", "")
+        else:
+            action_input = validation_result.parsed_response.get("action_input", "")
         
         step = ExecutionStep(
             step_type=StepType.AGENT,

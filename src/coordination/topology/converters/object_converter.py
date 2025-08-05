@@ -55,6 +55,13 @@ class ObjectNotationConverter:
         if "metadata" in notation:
             topology.metadata.update(notation["metadata"])
         
+        # Extract entry_point and exit_points if specified
+        if "entry_point" in notation:
+            topology.metadata["entry_point"] = notation["entry_point"]
+        
+        if "exit_points" in notation:
+            topology.metadata["exit_points"] = notation["exit_points"]
+        
         # Convert and add nodes
         nodes = notation.get("nodes", [])
         if not isinstance(nodes, list):

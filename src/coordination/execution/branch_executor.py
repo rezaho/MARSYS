@@ -20,6 +20,7 @@ from ...agents.registry import AgentRegistry
 if TYPE_CHECKING:
     from .step_executor import StepExecutor
     from ..routing.router import Router
+    from ..topology.graph import TopologyGraph
 from ..branches.types import (
     ExecutionBranch,
     BranchType,
@@ -84,13 +85,15 @@ class BranchExecutor:
         step_executor: Optional['StepExecutor'] = None,
         response_validator: Optional[ValidationProcessor] = None,
         router: Optional['Router'] = None,
-        rules_engine: Optional[RulesEngine] = None
+        rules_engine: Optional[RulesEngine] = None,
+        topology_graph: Optional['TopologyGraph'] = None
     ):
         self.agent_registry = agent_registry
         self.step_executor = step_executor
         self.response_validator = response_validator
         self.router = router
         self.rules_engine = rules_engine
+        self.topology_graph = topology_graph
         
         # Track execution metrics
         self.execution_metrics = defaultdict(lambda: {
@@ -104,6 +107,55 @@ class BranchExecutor:
         self.waiting_for_children: Dict[str, Set[str]] = {}  # branch_id -> set of child_ids
         self.child_results: Dict[str, Dict[str, Any]] = {}  # branch_id -> aggregated results
         self.branch_continuation: Dict[str, Dict[str, Any]] = {}  # branch_id -> continuation state
+        
+        # Track last step result for User node message extraction
+        self._last_step_result: Optional[StepResult] = None
+        self._last_agent_name: Optional[str] = None
+    
+    def _update_agent_constraints(self, branch: ExecutionBranch) -> None:
+        """
+        Update agent constraints based on topology.
+        
+        This sets which agents can return final responses based on
+        their connections to User nodes.
+        """
+        if not self.topology_graph:
+            # Need reference to topology graph
+            logger.warning("No topology_graph available for constraint setting")
+            return
+        
+        # Get agents that can return final response
+        agents_with_user_access = self.topology_graph.get_agents_with_user_access()
+        
+        # NEW: Check for agents in reflexive edges (they can also return final response)
+        agents_in_reflexive_edges = set()
+        for edge in self.topology_graph.edges:
+            if edge.metadata.get("reflexive") or edge.metadata.get("pattern") == "boomerang":
+                # Target of reflexive edge can return final response
+                agents_in_reflexive_edges.add(edge.target)
+        
+        logger.info(f"Agents with User access: {agents_with_user_access}")
+        logger.info(f"Agents in reflexive edges: {agents_in_reflexive_edges}")
+        
+        # Update each agent in the branch
+        for agent_name in branch.topology.agents:
+            agent = self.agent_registry.get(agent_name)
+            if agent and hasattr(agent, 'set_topology_constraints'):
+                # Agent can return final if connected to User OR is target of reflexive edge
+                can_return_final = (
+                    agent_name in agents_with_user_access or 
+                    agent_name in agents_in_reflexive_edges
+                )
+                agent.set_topology_constraints({
+                    "can_return_final_response": can_return_final
+                })
+                logger.info(f"Set constraints for {agent_name}: can_return_final={can_return_final}")
+            else:
+                logger.warning(f"Agent {agent_name} not found or doesn't support constraints")
+    
+    def _is_reflexive_branch(self, branch: ExecutionBranch) -> bool:
+        """Check if this branch was created from a reflexive edge."""
+        return branch.metadata.get("is_reflexive", False)
     
     async def execute_branch(
         self,
@@ -145,6 +197,9 @@ class BranchExecutor:
         branch.state.status = BranchStatus.RUNNING
         branch.state.start_time = start_time
         
+        # Set agent constraints based on topology
+        self._update_agent_constraints(branch)
+        
         try:
             # Route to appropriate executor based on branch type
             if branch.type == BranchType.SIMPLE:
@@ -153,6 +208,9 @@ class BranchExecutor:
                 result = await self._execute_conversation_branch(branch, exec_context)
             elif branch.type == BranchType.NESTED:
                 result = await self._execute_nested_branch(branch, exec_context)
+            elif branch.type == BranchType.USER_INTERACTION:
+                # Handle user interaction branch like a simple branch
+                result = await self._execute_simple_branch(branch, exec_context)
             else:
                 raise ValueError(f"Unknown branch type: {branch.type}")
             
@@ -221,6 +279,11 @@ class BranchExecutor:
             execution_trace.append(step_result)
             branch.state.current_step += 1
             
+            # Update branch execution trace for User node
+            if not hasattr(branch, '_execution_trace'):
+                branch._execution_trace = []
+            branch._execution_trace.append(step_result)
+            
             if not step_result.success:
                 # Handle failure
                 if step_result.requires_retry and branch.state.current_step < 3:
@@ -262,6 +325,20 @@ class BranchExecutor:
                         final_content = step_result.parsed_response["final_response"]
                     elif "content" in step_result.parsed_response:
                         final_content = step_result.parsed_response["content"]
+                
+                # Check if this is a reflexive edge - need to route back to parent
+                if self._is_reflexive_branch(branch):
+                    logger.info(f"Reflexive branch completing - routing response back to parent")
+                    # The branch spawner will handle routing this back
+                    return BranchResult(
+                        branch_id=branch.id,
+                        success=True,
+                        final_response=final_content,
+                        total_steps=branch.state.current_step,
+                        execution_trace=execution_trace,
+                        branch_memory=context.branch_memory,
+                        metadata={"reflexive_completion": True}
+                    )
                 
                 return BranchResult(
                     branch_id=branch.id,
@@ -379,6 +456,11 @@ class BranchExecutor:
             execution_trace.append(step_result)
             branch.state.current_step += 1
             
+            # Update branch execution trace for User node
+            if not hasattr(branch, '_execution_trace'):
+                branch._execution_trace = []
+            branch._execution_trace.append(step_result)
+            
             if not step_result.success:
                 return BranchResult(
                     branch_id=branch.id,
@@ -490,7 +572,66 @@ class BranchExecutor:
         """Execute a single agent step."""
         logger.debug(f"Executing agent '{agent_name}' in branch '{branch.name}'")
         
-        # Get agent instance
+        # Special handling for User node
+        if agent_name.lower() == "user":
+            if self.step_executor and self.step_executor.user_node_handler:
+                # Prepare the request with message if available
+                user_request = request
+                
+                # If request is a dict with message field, use it directly
+                if isinstance(request, dict) and "message" in request:
+                    user_request = request
+                # If request is a dict with request field (from agent_requests)
+                elif isinstance(request, dict) and "request" in request:
+                    user_request = request["request"]
+                # If request is a string, wrap it
+                elif isinstance(request, str):
+                    user_request = {"message": request}
+                    
+                # Add from_agent info if we have it
+                if self._last_agent_name:
+                    if isinstance(user_request, dict):
+                        user_request["from_agent"] = self._last_agent_name
+                    else:
+                        user_request = {
+                            "message": str(user_request),
+                            "from_agent": self._last_agent_name
+                        }
+                
+                # Store execution trace on branch for UserNodeHandler
+                if not hasattr(branch, '_execution_trace'):
+                    branch._execution_trace = []
+                
+                # Pass branch object in context
+                context_with_branch = {
+                    **context.shared_context,
+                    "branch": branch,
+                    "branch_id": context.branch_id,
+                    "session_id": context.session_id,
+                    "step_number": branch.state.current_step,
+                    "execution_trace": branch._execution_trace
+                }
+                
+                result = await self.step_executor.execute_step(
+                    agent="User",  # Pass as string
+                    request=user_request,
+                    memory=[],  # Empty memory - let agent use its own state
+                    context=context_with_branch
+                )
+                
+                # Store result for next iteration
+                self._last_step_result = result
+                self._last_agent_name = agent_name
+                
+                return result
+            else:
+                return StepResult(
+                    agent_name="User",
+                    success=False,
+                    error="User node handler not configured"
+                )
+        
+        # Get agent instance for normal agents
         agent = self.agent_registry.get(agent_name)
         if not agent:
             return StepResult(
@@ -530,19 +671,15 @@ class BranchExecutor:
                     return StepResult(
                         agent_name=agent_name,
                         success=False,
-                        error=f"Execution blocked by rules: {[r.rule_name for r in blocking_rules]}",
-                        metadata={"blocked_by_rules": [r.rule_name for r in blocking_rules]}
+                        error=f"Execution blocked by rules: {', '.join([r.rule_name for r in blocking_rules])}"
                     )
-            
-            # Prepare agent-specific memory
-            agent_memory = context.get_agent_memory(agent_name)
             
             # If we have a step executor, use it
             if self.step_executor:
                 result = await self.step_executor.execute_step(
                     agent=agent,
                     request=request,
-                    memory=agent_memory,
+                    memory=[],  # Empty memory - let agent use its own state
                     context={
                         **context.shared_context,
                         "branch_id": context.branch_id,
@@ -569,13 +706,22 @@ class BranchExecutor:
                     action_type="continue"
                 )
             
-            # Add to branch memory
-            context.add_memory(agent_name, {
-                "role": "assistant",
-                "content": result.response,
-                "name": agent_name,
-                "timestamp": time.time()
-            })
+            # Use memory updates from step result to preserve complete message sequence
+            if hasattr(result, 'memory_updates') and result.memory_updates:
+                # Add each memory update to branch memory
+                for memory_update in result.memory_updates:
+                    # Ensure timestamp exists
+                    if 'timestamp' not in memory_update:
+                        memory_update['timestamp'] = time.time()
+                    context.add_memory(agent_name, memory_update)
+            else:
+                # Fallback for backward compatibility
+                context.add_memory(agent_name, {
+                    "role": "assistant",
+                    "content": result.response,
+                    "name": agent_name,
+                    "timestamp": time.time()
+                })
             
             # Validate response if validator available
             if self.response_validator and result.success:
@@ -720,6 +866,10 @@ class BranchExecutor:
                             context.metadata.update(rule_result.modifications["update_state"])
                             logger.debug(f"Post-execution rule {rule_result.rule_name} updated state: {rule_result.modifications['update_state']}")
             
+            # Store result for potential User node invocation
+            self._last_step_result = result
+            self._last_agent_name = agent_name
+            
             return result
             
         except Exception as e:
@@ -785,27 +935,119 @@ class BranchExecutor:
         step_result: StepResult,
         context: BranchExecutionContext
     ) -> Any:
-        """Prepare request for next agent based on step result."""
-        # For final_response, use the content/response
+        """Prepare request for next agent including saved context."""
+        
+        # Check if the step result contains an error - don't propagate errors as requests
+        if not step_result.success and step_result.error:
+            # Return a clean request that indicates the previous agent had an issue
+            error_msg = f"Previous agent '{step_result.agent_name}' encountered an error. Please proceed with your task."
+            logger.warning(f"Preventing error propagation from {step_result.agent_name}: {step_result.error}")
+            return error_msg
+        
+        # Get base request using existing logic
+        base_request = self._get_base_request(step_result)
+        
+        # If no context to pass, return base request
+        if not step_result.context_selection:
+            return base_request
+        
+        # Format and include context
+        return self._include_context_in_request(
+            base_request, 
+            step_result.context_selection,
+            step_result.agent_name
+        )
+    
+    def _get_base_request(self, step_result: StepResult) -> Any:
+        """Extract base request from step result (existing logic)."""
         if step_result.action_type == "final_response":
-            # Check if parsed response has content or final_response
             if step_result.parsed_response:
-                return step_result.parsed_response.get("content") or step_result.parsed_response.get("final_response") or step_result.response
+                return (step_result.parsed_response.get("content") or 
+                       step_result.parsed_response.get("final_response") or 
+                       step_result.response)
             return step_result.response
         
-        # Check if we have preserved data from enhanced format
         if (step_result.parsed_response and 
-            "action_input" in step_result.parsed_response and
-            isinstance(step_result.parsed_response["action_input"], dict)):
-            # Return the preserved data object
+            "action_input" in step_result.parsed_response):
             return step_result.parsed_response["action_input"]
         
-        # Legacy behavior - action_input as string
-        if step_result.parsed_response and "action_input" in step_result.parsed_response:
-            return step_result.parsed_response["action_input"]
-        
-        # Otherwise use raw response
         return step_result.response
+    
+    def _include_context_in_request(
+        self, 
+        base_request: Any, 
+        context_selection: Dict[str, Any],
+        from_agent: str
+    ) -> Any:
+        """Include saved context in the request to next agent."""
+        
+        # Format context as readable text
+        context_text = self._format_context_for_agent(context_selection, from_agent)
+        
+        # Handle different request types
+        if isinstance(base_request, str):
+            # String request - append context
+            return f"{base_request}\n\n{context_text}"
+        
+        elif isinstance(base_request, dict):
+            # Dict request - add context fields
+            base_request = base_request.copy()
+            base_request["passed_context"] = context_selection
+            base_request["context_summary"] = context_text
+            return base_request
+        
+        elif isinstance(base_request, list):
+            # Array format (for parallel invocations)
+            updated_requests = []
+            for item in base_request:
+                if isinstance(item, dict):
+                    item = item.copy()
+                    if "request" in item:
+                        # Update the nested request
+                        item["request"] = self._include_context_in_request(
+                            item["request"], 
+                            context_selection,
+                            from_agent
+                        )
+                    updated_requests.append(item)
+                else:
+                    updated_requests.append(item)
+            return updated_requests
+        
+        # Fallback - return with context appended
+        return f"{base_request}\n\n{context_text}"
+    
+    def _format_context_for_agent(
+        self, 
+        context_selection: Dict[str, Any],
+        from_agent: str
+    ) -> str:
+        """Format saved context for readable inclusion."""
+        lines = [f"[Saved Context from {from_agent}]"]
+        
+        for key, messages in context_selection.items():
+            lines.append(f"\n### {key}")
+            
+            # Show first few messages
+            for i, msg in enumerate(messages[:3]):
+                role = msg.get('role', 'unknown')
+                content = str(msg.get('content', ''))
+                
+                # Truncate long content
+                if len(content) > 300:
+                    content = content[:300] + "..."
+                
+                # Format based on role
+                if role == 'tool':
+                    name = msg.get('name', 'unknown_tool')
+                    lines.append(f"{i+1}. Tool [{name}]: {content}")
+                else:
+                    lines.append(f"{i+1}. {role.title()}: {content}")
+            
+            if len(messages) > 3:
+                lines.append(f"... and {len(messages) - 3} more messages")
+        
+        return "\n".join(lines)
     
     def _update_metrics(
         self,
@@ -854,7 +1096,15 @@ class BranchExecutor:
         target_agents = validation.next_agents
         logger.info(f"Agent '{agent_name}' initiating parallel invocation of {target_agents}")
         
-        # Store branch continuation state
+        # Store branch continuation state in branch metadata instead of self.branch_continuation
+        branch.metadata["continuation_state"] = {
+            "agent_name": agent_name,
+            "context": context,
+            "target_agents": target_agents,
+            "parsed_response": validation.parsed_response
+        }
+        
+        # Also store in instance variable for compatibility
         self.branch_continuation[branch.id] = {
             "agent_name": agent_name,
             "context": context,
@@ -989,6 +1239,11 @@ class BranchExecutor:
             execution_trace.append(step_result)
             branch.state.current_step += 1
             
+            # Update branch execution trace for User node
+            if not hasattr(branch, '_execution_trace'):
+                branch._execution_trace = []
+            branch._execution_trace.append(step_result)
+            
             if not step_result.success:
                 return BranchResult(
                     branch_id=branch.id,
@@ -1024,6 +1279,13 @@ class BranchExecutor:
             if step_result.waiting_for_children:
                 # Store updated continuation state
                 self.branch_continuation[branch.id]["parsed_response"] = step_result.parsed_response
+                # Also update branch metadata
+                branch.metadata["continuation_state"] = {
+                    "agent_name": current_agent,
+                    "context": context,
+                    "target_agents": step_result.child_branch_ids,
+                    "parsed_response": step_result.parsed_response
+                }
                 return BranchResult(
                     branch_id=branch.id,
                     success=True,
