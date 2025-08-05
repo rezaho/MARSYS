@@ -99,11 +99,30 @@ class RealToolExecutor:
         logger.info(f"Executing {len(tool_calls)} tool calls for agent {agent.name}")
         
         for tool_call in tool_calls:
+            # Initialize variables at the start to ensure they're always defined
+            tool_id = ""
+            tool_name = "unknown"
+            
             try:
-                tool_id = tool_call.get("id", "")
-                function_data = tool_call.get("function", {})
-                tool_name = function_data.get("name", "")
-                tool_args_str = function_data.get("arguments", "{}")
+                # Handle both dict and ToolCallMsg objects
+                if hasattr(tool_call, 'to_dict'):
+                    # Convert ToolCallMsg to dict format
+                    tool_call_dict = tool_call.to_dict()
+                    tool_id = tool_call_dict.get("id", "")
+                    function_data = tool_call_dict.get("function", {})
+                    tool_name = function_data.get("name", "unknown")
+                    tool_args_str = function_data.get("arguments", "{}")
+                elif isinstance(tool_call, dict):
+                    # Already a dict
+                    tool_id = tool_call.get("id", "")
+                    function_data = tool_call.get("function", {})
+                    tool_name = function_data.get("name", "unknown")
+                    tool_args_str = function_data.get("arguments", "{}")
+                else:
+                    # Try to access attributes directly (for ToolCallMsg objects)
+                    tool_id = getattr(tool_call, 'id', "")
+                    tool_name = getattr(tool_call, 'name', "unknown")
+                    tool_args_str = getattr(tool_call, 'arguments', "{}")
                 
                 # Parse arguments
                 try:
@@ -139,6 +158,43 @@ class RealToolExecutor:
                         tool_func = agent_tools[base_name]
                         tool_source = "agent"
                 
+                # Special handling for context tools
+                if tool_name == "save_to_context":
+                    # Import the implementation function
+                    from ...coordination.context_manager import execute_save_to_context
+                    
+                    # Call with agent injected as first parameter
+                    result = await self._execute_single_tool(
+                        lambda **kwargs: execute_save_to_context(agent, **kwargs),
+                        tool_args,
+                        tool_name
+                    )
+                    
+                    results.append({
+                        "tool_call_id": tool_id,
+                        "tool_name": tool_name,
+                        "result": result
+                    })
+                    continue
+
+                elif tool_name == "preview_saved_context":
+                    # Import the implementation function
+                    from ...coordination.context_manager import execute_preview_saved_context
+                    
+                    # Call with agent injected as first parameter
+                    result = await self._execute_single_tool(
+                        lambda **kwargs: execute_preview_saved_context(agent, **kwargs),
+                        tool_args,
+                        tool_name
+                    )
+                    
+                    results.append({
+                        "tool_call_id": tool_id,
+                        "tool_name": tool_name,
+                        "result": result
+                    })
+                    continue
+                
                 # Try variations of google search tool names
                 if not tool_func and 'google' in tool_name.lower() and 'search' in tool_name.lower():
                     # Try different variations
@@ -168,8 +224,8 @@ class RealToolExecutor:
             except Exception as e:
                 logger.error(f"Error executing tool {tool_name}: {e}", exc_info=True)
                 results.append({
-                    "tool_call_id": tool_call.get("id", ""),
-                    "tool_name": function_data.get("name", "unknown"),
+                    "tool_call_id": tool_id,
+                    "tool_name": tool_name,
                     "result": {"error": str(e), "type": type(e).__name__}
                 })
                 

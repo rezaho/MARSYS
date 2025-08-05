@@ -48,9 +48,17 @@ def parse_node(node: Union[str, Node, Any]) -> Node:
         return node
     
     if isinstance(node, str):
-        # Determine node type from name
-        node_type = NodeType.USER if node.lower() == "user" else NodeType.AGENT
-        return Node(name=node, node_type=node_type)
+        # For backward compatibility, still check for "User" name
+        # but log a deprecation warning
+        if node.lower() == "user":
+            logger.warning(
+                "Creating User node from string 'User' is deprecated. "
+                "Please use explicit format: {'name': 'User', 'type': 'user'}"
+            )
+            return Node(name=node, node_type=NodeType.USER)
+        
+        # Default to AGENT type for string nodes
+        return Node(name=node, node_type=NodeType.AGENT)
     
     if isinstance(node, dict):
         # Parse from dictionary

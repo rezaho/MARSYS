@@ -11,7 +11,7 @@ import logging
 import time
 import uuid
 from dataclasses import dataclass, field
-from typing import Any, Dict, List, Optional, Set, Tuple
+from typing import Any, Dict, List, Optional, Set, Tuple, TYPE_CHECKING
 
 from ..agents.registry import AgentRegistry
 from .branches.types import (
@@ -38,6 +38,9 @@ from .routing.router import Router
 from .routing.types import RoutingContext
 from .rules.rule_factory import RuleFactory, RuleFactoryConfig
 from .state.state_manager import StateManager
+
+if TYPE_CHECKING:
+    from .communication.manager import CommunicationManager
 
 logger = logging.getLogger(__name__)
 
@@ -100,7 +103,8 @@ class Orchestra:
         self, 
         agent_registry: AgentRegistry, 
         rule_factory_config: Optional[RuleFactoryConfig] = None,
-        state_manager: Optional[StateManager] = None
+        state_manager: Optional[StateManager] = None,
+        communication_manager: Optional['CommunicationManager'] = None
     ):
         """
         Initialize the Orchestra with an agent registry.
@@ -114,6 +118,7 @@ class Orchestra:
         self._sessions = {}
         self.rule_factory = RuleFactory(rule_factory_config)
         self.state_manager = state_manager
+        self.communication_manager = communication_manager
         self._initialize_components()
         logger.info("Orchestra initialized")
     
@@ -123,7 +128,12 @@ class Orchestra:
         self.event_bus = EventBus()
         
         # Create execution components
-        self.step_executor = StepExecutor()
+        if self.communication_manager:
+            from .communication.user_node_handler import UserNodeHandler
+            user_node_handler = UserNodeHandler(self.communication_manager)
+            self.step_executor = StepExecutor(user_node_handler=user_node_handler)
+        else:
+            self.step_executor = StepExecutor()
         self.topology_analyzer = TopologyAnalyzer()
         
         # These will be created per-topology
@@ -246,6 +256,15 @@ class Orchestra:
             # Analyze topology and create graph
             self.topology_graph = self.topology_analyzer.analyze(canonical_topology)
             
+            # NEW: Set topology references in all agents
+            for node_name in self.topology_graph.nodes:
+                if node_name == "User":  # Skip User node
+                    continue
+                agent = self.agent_registry.get(node_name)
+                if agent and hasattr(agent, 'set_topology_reference'):
+                    agent.set_topology_reference(self.topology_graph)
+                    logger.debug(f"Set topology reference for agent {node_name}")
+            
             # Create rules engine from topology
             self.rules_engine = self.rule_factory.create_rules_engine(
                 self.topology_graph,
@@ -260,7 +279,8 @@ class Orchestra:
                 step_executor=self.step_executor,
                 response_validator=self.validation_processor,
                 router=self.router,
-                rules_engine=self.rules_engine
+                rules_engine=self.rules_engine,
+                topology_graph=self.topology_graph
             )
             self.branch_spawner = DynamicBranchSpawner(
                 topology_graph=self.topology_graph,
@@ -332,44 +352,27 @@ class Orchestra:
         
         # Create initial branch(es)
         initial_branches = []
-        from .topology.core import NodeType
         
-        for entry in entry_agents:
-            # Check if this is a User node
-            node_info = self.topology_graph.nodes.get(entry)
-            if node_info and node_info.node_type == NodeType.USER:
-                # Skip creating branch for User node, go directly to its children
-                next_agents = self.topology_graph.get_next_agents(entry)
-                for next_agent in next_agents:
-                    branch = ExecutionBranch(
-                        id=f"main_{next_agent}_{uuid.uuid4().hex[:8]}",
-                        name=f"Main: {next_agent}",
-                        type=BranchType.SIMPLE,
-                        topology=BranchTopology(
-                            agents=[next_agent],
-                            entry_agent=next_agent,
-                            current_agent=next_agent,
-                            allowed_transitions=dict(self.topology_graph.adjacency)
-                        ),
-                        state=BranchState(status=BranchStatus.PENDING),
-                        metadata={"source": "user_entry", "session_id": session_id}
-                    )
-                    initial_branches.append(branch)
-            else:
-                # Regular agent entry point
-                branch = ExecutionBranch(
-                    id=f"main_{entry}_{uuid.uuid4().hex[:8]}",
-                    name=f"Main: {entry}",
-                    type=BranchType.SIMPLE,
-                    topology=BranchTopology(
-                        agents=[entry],
-                        entry_agent=entry,
-                        current_agent=entry,  # Set current_agent to entry agent
-                        allowed_transitions=dict(self.topology_graph.adjacency)
-                    ),
-                    state=BranchState(status=BranchStatus.PENDING)
-                )
-                initial_branches.append(branch)
+        # Special handling for User entry point
+        if len(entry_agents) == 1 and entry_agents[0] == "User":
+            # Create User branch first to show initial task
+            user_branch = self._create_initial_branch(
+                "User",
+                {"message": f"Task: {task}", "interaction_type": "task"},
+                context,
+                branch_id="main_user"
+            )
+            initial_branches.append(user_branch)
+            # Don't create agent branches yet - wait for User response
+        else:
+            # Normal entry point handling
+            for idx, agent in enumerate(entry_agents):
+                initial_branches.append(self._create_initial_branch(
+                    agent,
+                    task,
+                    context,
+                    branch_id=f"main_{idx}" if len(entry_agents) > 1 else "main"
+                ))
         
         # Start execution
         all_tasks = []
@@ -456,6 +459,15 @@ class Orchestra:
                         # Add any newly created branches
                         all_tasks.extend(new_tasks)
                         
+                        # Also track the new branches in branch_states
+                        # Get newly created branches from branch_spawner
+                        for task in new_tasks:
+                            # Find corresponding branch in branch_spawner's registry
+                            for branch_id, branch in self.branch_spawner.branch_info.items():
+                                if branch_id not in branch_states:
+                                    branch_states[branch_id] = branch
+                                    logger.debug(f"Added new branch '{branch_id}' to branch_states tracking")
+                        
                         # Check if any convergence points are satisfied
                         ready_convergence_agents = await self.branch_spawner.check_synchronization_points()
                         
@@ -478,7 +490,7 @@ class Orchestra:
                                     resume_task = asyncio.create_task(
                                         self.branch_executor.execute_branch(
                                             parent_branch,
-                                            task,  # Original task
+                                            aggregated_context.get('child_results', {}),  # Pass aggregated results
                                             context,
                                             resume_with_results=aggregated_context
                                         )
@@ -538,33 +550,41 @@ class Orchestra:
         }
     
     def _find_entry_agents(self) -> List[str]:
-        """Find agents with no incoming edges (entry points) or User nodes."""
-        all_agents = set(self.topology_graph.nodes)
-        has_incoming = set()
-        user_nodes = []
+        """Get the entry agent from topology."""
+        try:
+            # Topology layer handles all entry point logic
+            entry_agents = self.topology_graph.find_entry_points()
+            
+            if not entry_agents:
+                # This shouldn't happen after validation, but be defensive
+                raise ValueError("No entry agents found in topology")
+            
+            logger.info(f"Starting execution with entry agent: {entry_agents[0]}")
+            return entry_agents
+            
+        except ValueError as e:
+            logger.error(f"Failed to find entry agents: {e}")
+            raise
+    
+    def _create_initial_branch(self, agent_name: str, task: Any, context: Dict[str, Any], 
+                              branch_id: str = None) -> ExecutionBranch:
+        """Create an initial execution branch for an agent."""
+        if branch_id is None:
+            branch_id = f"main_{agent_name}_{uuid.uuid4().hex[:8]}"
         
-        # Find all agents that have incoming edges
-        for source, targets in self.topology_graph.adjacency.items():
-            has_incoming.update(targets)
-        
-        # Find User nodes (they're always entry points)
-        from .topology.core import NodeType
-        for node_name, node_info in self.topology_graph.nodes.items():
-            if node_info.node_type == NodeType.USER:
-                user_nodes.append(node_name)
-        
-        # Entry agents are those with no incoming edges OR user nodes
-        entry_agents = user_nodes + list(all_agents - has_incoming - set(user_nodes))
-        
-        # If no clear entry points, use divergence points
-        if not entry_agents and self.topology_graph.divergence_points:
-            entry_agents = list(self.topology_graph.divergence_points)
-        
-        # If still none, use first agent in nodes
-        if not entry_agents and self.topology_graph.nodes:
-            entry_agents = [next(iter(self.topology_graph.nodes))]
-        
-        return entry_agents
+        return ExecutionBranch(
+            id=branch_id,
+            name=f"Main: {agent_name}",
+            type=BranchType.SIMPLE,
+            topology=BranchTopology(
+                agents=[agent_name],
+                entry_agent=agent_name,
+                current_agent=agent_name,
+                allowed_transitions=dict(self.topology_graph.adjacency)
+            ),
+            state=BranchState(status=BranchStatus.PENDING),
+            metadata={"initial_task": task, "context": context}
+        )
     
     def _get_last_agent(self, branch_result: BranchResult) -> Optional[str]:
         """Get the last agent that executed in a branch."""

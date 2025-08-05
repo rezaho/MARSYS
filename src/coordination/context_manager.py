@@ -9,9 +9,12 @@ context selection as a special tool that agents can use strategically.
 import json
 import re
 import time
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Dict, List, Optional, Tuple, TYPE_CHECKING
 from dataclasses import dataclass, field
 import logging
+
+if TYPE_CHECKING:
+    from ..agents import BaseAgent
 
 logger = logging.getLogger(__name__)
 
@@ -396,3 +399,134 @@ def get_context_selection_tools() -> List[Dict[str, Any]]:
     ]
     
     return tools
+
+
+# LLM-friendly functions for schema generation and agent's tools dict
+
+def save_to_context(
+    selection_criteria: Dict[str, Any],
+    context_key: str = "default"
+) -> Dict[str, Any]:
+    """
+    Save selected messages to context for passing to next agent or user.
+    
+    Use this to preserve important information like search results, tool outputs, 
+    or key findings that should be included in your final response.
+    
+    Args:
+        selection_criteria: Criteria for selecting messages to save
+            - message_ids: List of specific message IDs to include
+            - role_filter: Include messages with these roles ["user", "assistant", "tool", "system"]
+            - tool_names: Include outputs from these specific tools
+            - last_n_tools: Include last N tool responses
+            - content_pattern: Regex pattern to match in message content
+        context_key: Key to identify this context selection (e.g., 'search_results', 'analysis_data')
+        
+    Returns:
+        Status of the save operation
+    """
+    # This function is never actually called - tool_executor intercepts it
+    raise RuntimeError("This tool should be executed by the tool executor with special handling")
+
+
+def preview_saved_context(
+    include_stats: bool = True
+) -> Dict[str, Any]:
+    """
+    Preview the messages currently saved in context.
+    
+    Shows a summary without full content to help you format your final response appropriately.
+    
+    Args:
+        include_stats: Include statistics about saved messages
+        
+    Returns:
+        Preview of saved context with message summaries
+    """
+    # This function is never actually called - tool_executor intercepts it
+    raise RuntimeError("This tool should be executed by the tool executor with special handling")
+
+
+# Implementation functions for tool executor (with agent parameter)
+
+def execute_save_to_context(
+    agent: 'BaseAgent',
+    selection_criteria: Dict[str, Any],
+    context_key: str = "default"
+) -> Dict[str, Any]:
+    """
+    Execute save_to_context tool with agent context.
+    
+    This is the actual implementation called by tool_executor.
+    The agent parameter is injected by the executor and not exposed to LLM.
+    
+    Args:
+        agent: The agent instance (injected by tool executor)
+        selection_criteria: Criteria for selecting messages
+        context_key: Key to identify this context selection
+        
+    Returns:
+        Status of the save operation
+    """
+    if not hasattr(agent, '_context_selector'):
+        return {
+            "status": "error",
+            "message": "Agent does not support context selection"
+        }
+    
+    try:
+        agent._context_selector.save_selection(
+            selection_criteria,
+            context_key
+        )
+        logger.debug(f"Context saved for agent {agent.name} with key '{context_key}'")
+        return {
+            "status": "success",
+            "message": f"Context saved with key: {context_key}"
+        }
+    except Exception as e:
+        logger.error(f"Error saving context for agent {agent.name}: {e}")
+        return {
+            "status": "error",
+            "message": str(e)
+        }
+
+
+def execute_preview_saved_context(
+    agent: 'BaseAgent',
+    include_stats: bool = True
+) -> Dict[str, Any]:
+    """
+    Execute preview_saved_context tool with agent context.
+    
+    This is the actual implementation called by tool_executor.
+    The agent parameter is injected by the executor and not exposed to LLM.
+    
+    Args:
+        agent: The agent instance (injected by tool executor)
+        include_stats: Include statistics about saved messages
+        
+    Returns:
+        Preview of saved context or error
+    """
+    if not hasattr(agent, '_context_selector') or not hasattr(agent, 'memory'):
+        return {"error": "Context preview not available"}
+    
+    try:
+        messages = agent.memory.retrieve_all()
+        preview = agent._context_selector.get_preview(messages)
+        
+        result = {"preview": preview}
+        
+        if include_stats and preview:
+            stats = {
+                "total_contexts": len(preview),
+                "total_messages": sum(len(msgs) for msgs in preview.values())
+            }
+            result["stats"] = stats
+        
+        logger.debug(f"Context preview generated for agent {agent.name}")
+        return result
+    except Exception as e:
+        logger.error(f"Error previewing context for agent {agent.name}: {e}")
+        return {"error": str(e)}

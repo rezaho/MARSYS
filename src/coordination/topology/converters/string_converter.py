@@ -50,6 +50,20 @@ class StringNotationConverter:
         if "metadata" in notation:
             topology.metadata.update(notation["metadata"])
         
+        # Extract entry_point and exit_points if specified
+        if "entry_point" in notation:
+            if not isinstance(notation["entry_point"], str):
+                raise TypeError("'entry_point' must be a string")
+            topology.metadata["entry_point"] = notation["entry_point"]
+        
+        if "exit_points" in notation:
+            if not isinstance(notation["exit_points"], list):
+                raise TypeError("'exit_points' must be a list of strings")
+            for ep in notation["exit_points"]:
+                if not isinstance(ep, str):
+                    raise TypeError("All exit_points must be strings")
+            topology.metadata["exit_points"] = notation["exit_points"]
+        
         # Convert and add nodes
         nodes = notation.get("nodes", [])
         if not isinstance(nodes, list):

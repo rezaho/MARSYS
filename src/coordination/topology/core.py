@@ -129,6 +129,21 @@ class Edge:
         return hash((self.source, self.target, self.edge_type))
 
 
+class User(Node):
+    """
+    Represents a User node in the topology.
+    
+    User nodes are special nodes that represent human interaction points.
+    They serve as entry points for tasks and destinations for final responses.
+    """
+    def __init__(self, name: str = "User", metadata: Dict[str, Any] = None):
+        super().__init__(
+            name=name,
+            node_type=NodeType.USER,
+            metadata=metadata or {}
+        )
+
+
 @dataclass
 class Topology:
     """

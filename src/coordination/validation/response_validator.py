@@ -190,7 +190,26 @@ class StructuredJSONProcessor(ResponseProcessor):
                         if agent in action_input:
                             result["agent_requests"][agent] = action_input[agent]
             elif data.get("next_action") == "call_tool":
-                result["tool_calls"] = data.get("tool_calls", [])
+                # Extract tool calls from action_input if needed
+                action_input = data.get("action_input", {})
+                if "tool_calls" in action_input:
+                    tool_calls = action_input["tool_calls"]
+                else:
+                    tool_calls = data.get("tool_calls", [])
+                
+                # Clean up tool names - remove "functions." prefix if present
+                cleaned_tool_calls = []
+                for tool_call in tool_calls:
+                    if isinstance(tool_call, dict) and "function" in tool_call:
+                        func_data = tool_call["function"]
+                        if isinstance(func_data, dict) and "name" in func_data:
+                            # Strip "functions." prefix if present
+                            tool_name = func_data["name"]
+                            if isinstance(tool_name, str) and tool_name.startswith("functions."):
+                                func_data["name"] = tool_name.replace("functions.", "", 1)
+                    cleaned_tool_calls.append(tool_call)
+                
+                result["tool_calls"] = cleaned_tool_calls
             elif data.get("next_action") == "final_response":
                 # Check for response in action_input first (new format)
                 action_input = data.get("action_input", {})
@@ -202,6 +221,7 @@ class StructuredJSONProcessor(ResponseProcessor):
             
             # Include all fields from original data
             result["content"] = data.get("content", "")
+            result["message"] = data.get("message", "")  # Extract message field
             # action_input is already handled above per action type
             
             # Preserve any additional fields
@@ -586,8 +606,58 @@ class ValidationProcessor:
         branch: ExecutionBranch,
         exec_state: ExecutionState
     ) -> ValidationResult:
-        """Validate final response."""
-        # Final responses are always valid
+        """
+        Validate final_response action.
+        
+        Checks:
+        1. Agent is allowed to return final response (connected to User)
+        2. Response format is valid
+        """
+        # Check if agent can return final response
+        if self.topology_graph:
+            agents_with_user_access = self.topology_graph.get_agents_with_user_access()
+            
+            if agent.name not in agents_with_user_access:
+                # Get the agent's allowed next agents for better error message
+                next_agents = self.topology_graph.get_next_agents(agent.name)
+                
+                logger.warning(
+                    f"Agent '{agent.name}' attempted final_response but is not connected to User. "
+                    f"Agents with User access: {agents_with_user_access}. "
+                    f"Agent's next options: {next_agents}"
+                )
+                
+                return ValidationResult(
+                    is_valid=False,
+                    error_message=(
+                        f"Agent '{agent.name}' cannot use final_response action. "
+                        f"Only agents with edges to User nodes can complete execution. "
+                        f"This agent can invoke: {next_agents}"
+                    ),
+                    retry_suggestion=(
+                        f"Use 'invoke_agent' to pass control to one of: {next_agents}, "
+                        f"or 'call_tool' if you have tools available."
+                    )
+                )
+        else:
+            logger.debug(f"Agent '{agent.name}' is allowed to use final_response (has User access)")
+        
+        # Validate response format
+        action_input = parsed.get("action_input", {})
+        if not isinstance(action_input, dict):
+            return ValidationResult(
+                is_valid=False,
+                error_message="final_response action_input must be a dictionary",
+                retry_suggestion="Use format: {\"action_input\": {\"response\": \"your answer\"}}"
+            )
+        
+        if "response" not in action_input:
+            return ValidationResult(
+                is_valid=False,
+                error_message="final_response action_input must contain 'response' field",
+                retry_suggestion="Use format: {\"action_input\": {\"response\": \"your answer\"}}"
+            )
+        
         return ValidationResult(is_valid=True)
     
     async def _validate_end_conversation(

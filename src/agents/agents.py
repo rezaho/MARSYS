@@ -21,6 +21,7 @@ from typing import (
     Dict,
     List,  # Added Coroutine
     Optional,
+    Set,
     Tuple,
     Type,
     Union,
@@ -28,10 +29,7 @@ from typing import (
 
 logger = logging.getLogger(__name__)
 
-from src.coordination.context_manager import (
-    ContextSelector,
-    get_context_selection_tools,
-)
+from src.coordination.context_manager import ContextSelector
 
 # --- New Imports ---
 from src.environment.utils import generate_openai_tool_schema
@@ -204,7 +202,10 @@ class BaseAgent(ABC):
                     )
 
         self.max_tokens = max_tokens
-        self.allowed_peers = set(allowed_peers) if allowed_peers else set()
+        # Store initial allowed_peers for backward compatibility  
+        self._allowed_peers_init = set(allowed_peers) if allowed_peers else set()
+        # Reference to topology graph (will be set by Orchestra)
+        self._topology_graph_ref = None
         self.communication_log: Dict[str, List[Dict[str, Any]]] = (
             {}
         )  # Ensure this is initialized
@@ -240,6 +241,9 @@ class BaseAgent(ABC):
         # Store memory retention settings
         self._memory_retention = memory_retention
         self._memory_storage_path = memory_storage_path
+        
+        # Initialize topology constraints
+        self._can_return_final_response = True  # Default to True, will be updated by topology
 
         # Initialize context selector
         self._context_selector = ContextSelector(self.name)
@@ -249,6 +253,9 @@ class BaseAgent(ABC):
 
         # Initialize agent state (including persistent memory if needed)
         self._initialize_agent()
+        
+        # Topology constraints
+        self._can_return_final_response = True  # Default for backward compatibility
 
     def __del__(self) -> None:
         """Safely unregister the agent, even during interpreter shutdown."""
@@ -270,6 +277,33 @@ class BaseAgent(ABC):
                 f"__del__ cleanup for agent '{agent_display_name}' failed: {e}",
                 extra={"agent_name": agent_display_name},
             )
+    
+    @property
+    def allowed_peers(self) -> Set[str]:
+        """Get allowed peers from topology if available, otherwise from init value."""
+        if self._topology_graph_ref:
+            return set(self._topology_graph_ref.get_next_agents(self.name))
+        return self._allowed_peers_init
+    
+    @allowed_peers.setter
+    def allowed_peers(self, value):
+        raise RuntimeError("allowed_peers is immutable after initialization. Use topology edges to define agent relationships.")
+    
+    def set_topology_reference(self, topology_graph):
+        """Set reference to topology graph for dynamic allowed_peers lookup."""
+        self._topology_graph_ref = topology_graph
+        logger.debug(f"Set topology reference for agent {self.name}")
+    
+    def set_topology_constraints(self, constraints: Dict[str, Any]) -> None:
+        """
+        Set topology-based constraints for the agent.
+        
+        Args:
+            constraints: Dict with keys like 'can_return_final_response'
+        """
+        if "can_return_final_response" in constraints:
+            self._can_return_final_response = constraints["can_return_final_response"]
+            logger.debug(f"Agent '{self.name}' can_return_final_response: {self._can_return_final_response}")
 
     def _get_tool_instructions(
         self,  # current_tools_schema: Optional[List[Dict[str, Any]]] # Parameter removed
@@ -338,7 +372,13 @@ class BaseAgent(ABC):
 
     def _get_peer_agent_instructions(self) -> str:  #
         """Generates the peer agent invocation instructions part of the system prompt."""
-        if not self.allowed_peers:
+        # Get allowed peers from topology if available, otherwise use initial value
+        if self._topology_graph_ref:
+            allowed_agents = list(self._topology_graph_ref.get_next_agents(self.name))
+        else:
+            allowed_agents = list(self._allowed_peers_init)
+        
+        if not allowed_agents:
             return ""
 
         prompt_lines = ["\n\n--- AVAILABLE PEER AGENTS ---"]
@@ -373,7 +413,7 @@ class BaseAgent(ABC):
         # Get peer schemas and add schema information
         peer_schemas = self._get_peer_input_schemas()
 
-        for peer_name in self.allowed_peers:
+        for peer_name in allowed_agents:  # Changed from self.allowed_peers
             prompt_lines.append(f"- `{peer_name}`")
 
             # Add schema information if available
@@ -448,9 +488,7 @@ class BaseAgent(ABC):
         return "\n".join(instructions) if instructions else ""
 
     def _get_response_guidelines(self, json_mode_for_output: bool = False) -> str:
-        """
-        Provides guidelines to the agent on how to structure its response.
-        """
+        """Get response format guidelines based on available actions."""
         guidelines = (
             "When responding, ensure your output adheres to the requested format. "
             "Be concise and stick to the persona and task given."
@@ -462,40 +500,77 @@ class BaseAgent(ABC):
             guidelines += schema_instructions
 
         if json_mode_for_output:
-            guidelines += """
+            # Determine available actions based on capabilities
+            available_actions = []
+            action_descriptions = []
+            
+            if self.tools:
+                available_actions.append("'call_tool'")
+                action_descriptions.append(
+                    '- If `next_action` is `"call_tool"`:\n'
+                    '     `{"tool_calls": [{"id": "...", "type": "function", "function": {"name": "tool_name", "arguments": "{\\"param\\": ...}"}}]}`\n'
+                    '     • The list **must** stay inside `action_input`.'
+                )
+            
+            if self.allowed_peers:
+                available_actions.append("'invoke_agent'")
+                action_descriptions.append(
+                    '- If `next_action` is `"invoke_agent"`:\n'
+                    '     An ARRAY of agent invocation objects: `[{"agent_name": "AgentName", "request": {...}}, ...]`\n'
+                    '     • Single agent: array with one object (sequential execution)\n'
+                    '     • Multiple agents: array with multiple objects (parallel execution)'
+                )
+            
+            # Check if agent can return final response
+            if getattr(self, '_can_return_final_response', True):
+                available_actions.append("'final_response'")
+                action_descriptions.append(
+                    '- If `next_action` is `"final_response"`:\n'
+                    '     `{"response": "Your final textual answer..."}`'
+                )
+            
+            # Build actions string
+            if not available_actions:
+                # Shouldn't happen, but be defensive
+                actions_str = "'final_response'"
+                available_actions = ["'final_response'"]
+                action_descriptions = ['- If `next_action` is `"final_response"`:\n     `{"response": "Your final answer..."}`']
+            else:
+                actions_str = ", ".join(available_actions)
+            
+            # Update the guidelines template
+            guidelines += f"""
 
 --- STRICT JSON OUTPUT FORMAT ---
 Your *entire* response MUST be a single, valid JSON object.  This JSON object
 must be enclosed in a JSON markdown code block, e.g.:
 ```json
-{ ... }
+{{ ... }}
 ```
 No other text or additional JSON objects should appear outside this single
 markdown block.
 
 Example:
 ```json
-{
+{{
   "thought": "Your reasoning for the chosen action (optional).",
-  "next_action": "Must be one of: 'invoke_agent', 'call_tool', or 'final_response'.",
-  "action_input": { /* parameters specific to next_action */ }
-}
+  "next_action": "Must be one of: {actions_str}.",
+  "action_input": {{ /* parameters specific to next_action */ }}
+}}
 ```
 
 Detailed structure for the JSON object:
 1. `thought` (String, optional) – your internal reasoning.
-2. `next_action` (String, required) – `'invoke_agent'`, `'call_tool'`, or `'final_response'`.
+2. `next_action` (String, required) – {actions_str}.
 3. `action_input` (Array/Object, required) – parameters specific to `next_action`.
-   - If `next_action` is `"call_tool"`:
-     `{"tool_calls": [{"id": "...", "type": "function", "function": {"name": "tool_name", "arguments": "{\"param\": ...}"}}]}`
-     • The list **must** stay inside `action_input`.  
-   - If `next_action` is `"invoke_agent"`:
-     An ARRAY of agent invocation objects: `[{"agent_name": "AgentName", "request": {...}}, ...]`
-     • Single agent: array with one object (sequential execution)
-     • Multiple agents: array with multiple objects (parallel execution)
-   - If `next_action` is `"final_response"`:
-     `{"response": "Your final textual answer..."}`
+{chr(10).join(action_descriptions)}
+"""
 
+            # Add examples based on available actions
+            examples = []
+            
+            if "'invoke_agent'" in actions_str:
+                examples.append("""
 Example for single agent invocation (sequential):
 ```json
 {
@@ -511,30 +586,10 @@ Example for single agent invocation (sequential):
     }
   ]
 }
-```
+```""")
 
-Example for multiple agent invocation (parallel):
-```json
-{
-  "thought": "I need multiple perspectives on this topic.",
-  "next_action": "invoke_agent",
-  "action_input": [
-    {
-      "agent_name": "AnalystAgent",
-      "request": {"task": "analyze market trends"}
-    },
-    {
-      "agent_name": "ResearcherAgent",
-      "request": {"task": "gather competitor data"}
-    },
-    {
-      "agent_name": "StrategistAgent",
-      "request": {"task": "propose strategic options"}
-    }
-  ]
-}
-```
-
+            if "'call_tool'" in actions_str:
+                examples.append("""
 Example for `call_tool`:
 ```json
 {
@@ -546,13 +601,15 @@ Example for `call_tool`:
       "type": "function",
       "function": {
         "name": "web_search_tool_name",
-        "arguments": "{\"query\": \"search terms\"}"
+        "arguments": "{\\"query\\": \\"search terms\\"}"
       }
     }]
   }
 }
-```
+```""")
 
+            if "'final_response'" in actions_str:
+                examples.append("""
 Example for `final_response`:
 ```json
 {
@@ -562,9 +619,59 @@ Example for `final_response`:
     "response": "Here is my final answer based on the analysis..."
   }
 }
-```
-"""
+```""")
+            
+            if examples:
+                guidelines += "\n" + "\n".join(examples)
+
         return guidelines
+
+    def _get_context_instructions(self) -> str:
+        """Generate instructions for handling passed context."""
+        instructions = []
+        
+        # Instructions for receiving context
+        instructions.append("\n\n--- CONTEXT HANDLING ---")
+        instructions.append(
+            "You may receive saved context from other agents in your request. "
+            "This context contains important information they've preserved for you, "
+            "such as search results, analysis data, or other relevant content."
+        )
+        instructions.append(
+            "Context will appear as '[Saved Context from AgentName]' followed by "
+            "organized sections of saved messages."
+        )
+        
+        # Instructions for saving context
+        if self.tools and "save_to_context" in self.tools:
+            instructions.append(
+                "\nTo pass important information to the next agent or user:"
+            )
+            instructions.append(
+                "1. Use the 'save_to_context' tool to preserve key messages"
+            )
+            instructions.append(
+                "2. Save context BEFORE invoking the next agent or returning final response"
+            )
+            instructions.append(
+                "3. Use descriptive context keys like 'search_results', 'analysis_data', etc."
+            )
+            instructions.append(
+                "4. The saved context will automatically be passed to the next recipient"
+            )
+            
+            instructions.append(
+                "\nExample: After receiving tool results, save them before proceeding:"
+            )
+            instructions.append(
+                '{"next_action": "call_tool", "action_input": {"tool_calls": ['
+                '{"id": "save_1", "type": "function", "function": '
+                '{"name": "save_to_context", "arguments": '
+                '{"selection_criteria": {"role_filter": ["tool"]}, '
+                '"context_key": "search_results"}}}]}}'
+            )
+        
+        return "\n".join(instructions) if instructions else ""
 
     def _construct_full_system_prompt(
         self,
@@ -603,6 +710,11 @@ Example for `final_response`:
         )  # Uses self.allowed_peers
         if peer_instructions:
             full_prompt_parts.append(peer_instructions)
+
+        # Add context handling instructions if agent can receive context
+        context_instructions = self._get_context_instructions()
+        if context_instructions:
+            full_prompt_parts.append(context_instructions)
 
         response_guidelines = self._get_response_guidelines(
             json_mode_for_output=json_mode_for_output
@@ -954,24 +1066,16 @@ Example for `final_response`:
             self.tools = {}  # Ensure it's an empty dict, not None
             return
         
-        # Get context selection tool schemas
+        # Import functions and schemas from context manager
+        from src.coordination.context_manager import (
+            save_to_context,
+            preview_saved_context,
+            get_context_selection_tools
+        )
+        
         context_tools = get_context_selection_tools()
-
-        # Add placeholder functions for these tools
-        # Actual execution will be handled in run_step
-        def save_to_context(*args, **kwargs):
-            """Placeholder for context selection tool."""
-            return {
-                "status": "Context selection will be processed by coordination system"
-            }
-
-        def preview_saved_context(*args, **kwargs):
-            """Placeholder for context preview tool."""
-            return {
-                "status": "Context preview will be generated by coordination system"
-            }
-
-        # Add tools if not already present
+        
+        # Add the LLM-friendly functions (with proper docstrings for schema)
         if self.tools and "save_to_context" not in self.tools:
             self.tools["save_to_context"] = save_to_context
             # Add schema
@@ -1187,8 +1291,14 @@ Example for `final_response`:
         content = actual_request
         name = None
 
+        # Handle Message objects
+        if hasattr(actual_request, 'content'):
+            # This is likely a Message object
+            content = actual_request.content or ""
+            role = getattr(actual_request, 'role', 'user')
+            name = getattr(actual_request, 'name', None)
         # Handle different request types
-        if isinstance(actual_request, dict):
+        elif isinstance(actual_request, dict):
             # Check if this is a tool result
             if actual_request.get("tool_result") is not None:
                 role = "tool"
@@ -1301,46 +1411,8 @@ Example for `final_response`:
                 role="assistant", content=raw_response, name=self.name
             )
 
-        # Handle context selection tool calls in the response
-        # TO-DO: This should be handled in the execution engine not inside the run_step() method
-        if raw_response.tool_calls:
-            for tool_call in raw_response.tool_calls:
-                # Extract tool name based on object type
-                if hasattr(tool_call, "name"):
-                    tool_name = tool_call.name
-                elif isinstance(tool_call, dict):
-                    tool_name = tool_call.get("function", {}).get("name")
-                else:
-                    continue
-
-                # Check for context selection tools
-                if tool_name == "save_to_context":
-                    # Parse arguments
-                    if hasattr(tool_call, "arguments"):
-                        args_str = tool_call.arguments
-                    else:
-                        args_str = tool_call.get("function", {}).get("arguments", "{}")
-
-                    try:
-                        args = (
-                            json.loads(args_str)
-                            if isinstance(args_str, str)
-                            else args_str
-                        )
-                        # Save to context selector
-                        self._context_selector.save_selection(
-                            args.get("selection_criteria", {}),
-                            args.get("context_key", "default"),
-                        )
-                    except json.JSONDecodeError as e:
-                        self.logger.warning(
-                            f"Failed to parse save_to_context arguments: {e}"
-                        )
-
-                elif tool_name == "preview_saved_context":
-                    # This will be handled by ExecutionEngine as a special case
-                    # The engine will call get_preview and return it as a tool result
-                    pass
+        # Context tools are now handled by tool_executor like all other tools
+        # This ensures proper message sequencing for the OpenAI API
 
         # Add response to memory
         if hasattr(self, "memory"):
@@ -1960,6 +2032,61 @@ Example for `final_response`:
     #                     )
     #
     #         return f"Agent '{self.name}' auto_run finished after {current_task_steps} steps without providing an explicit final answer."
+
+    async def auto_run(
+        self, 
+        task: str, 
+        max_steps: int = 30,
+        context: Optional[Dict[str, Any]] = None
+    ) -> Any:
+        """
+        Run agent with automatic topology creation from allowed_peers.
+        
+        This provides backward compatibility for the legacy auto_run interface
+        while using the modern Orchestra coordination system internally.
+        """
+        if not self._allowed_peers_init:
+            raise ValueError(
+                f"Agent {self.name} has no allowed_peers defined. "
+                f"Use allowed_peers parameter during initialization."
+            )
+        
+        # Create minimal topology - edges will be built from allowed_peers
+        topology = {
+            "nodes": [self.name],
+            "edges": [],  # Will be built automatically from allowed_peers
+            "rules": [f"max_steps({max_steps})"]
+        }
+        
+        # Add all peers to topology nodes
+        topology["nodes"].extend(list(self._allowed_peers_init))
+        
+        # Import here to avoid circular imports
+        from ..coordination import Orchestra
+        from .registry import AgentRegistry
+        
+        # Create Orchestra instance
+        orchestra = Orchestra(agent_registry=AgentRegistry)
+        
+        # Merge provided context with auto_run context
+        exec_context = {"initial_agent": self.name}
+        if context:
+            exec_context.update(context)
+        
+        # Execute with Orchestra
+        result = await orchestra.execute(
+            task=task,
+            topology=topology,
+            context=exec_context,
+            max_steps=max_steps
+        )
+        
+        # Return appropriate response based on result
+        if result.success:
+            return result.final_response
+        else:
+            # For backward compatibility, raise exception on failure
+            raise RuntimeError(f"auto_run failed: {result.error}")
 
     async def _execute_tool_calls(
         self, tool_calls: List[Dict[str, Any]], request_context: RequestContext

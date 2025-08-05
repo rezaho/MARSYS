@@ -32,7 +32,12 @@ class TopologyAnalyzer:
         
     def analyze(self, topology_def: Union[Topology, Dict[str, Any]]) -> TopologyGraph:
         """
-        Analyze a topology definition and build an execution graph.
+        Analyze a topology definition and build runtime graph.
+        
+        This method handles:
+        1. Converting various input formats to graph
+        2. Auto-injecting User nodes if needed
+        3. Analyzing patterns and validating structure
         
         Args:
             topology_def: The user-defined topology
@@ -48,14 +53,72 @@ class TopologyAnalyzer:
         # 2. Add edges
         self._add_edges(graph, topology_def)
         
+        # NEW: Build edges from allowed_peers if no edges defined
+        if not graph.edges:
+            # Import here to avoid circular imports
+            from ...agents.registry import AgentRegistry
+            
+            node_names = [n for n in graph.nodes.keys() if n != "User"]
+            has_allowed_peers = any(
+                hasattr(AgentRegistry.get(name), '_allowed_peers_init') and 
+                AgentRegistry.get(name)._allowed_peers_init
+                for name in node_names
+            )
+            
+            if has_allowed_peers:
+                logger.info("No edges defined in topology - building from allowed_peers")
+                self._build_edges_from_allowed_peers(graph, node_names)
+        else:
+            # Validate no mixing of approaches
+            from ...agents.registry import AgentRegistry
+            for node_name in graph.nodes:
+                if node_name == "User":
+                    continue
+                agent = AgentRegistry.get(node_name)
+                if agent and hasattr(agent, '_allowed_peers_init') and agent._allowed_peers_init:
+                    raise ValueError(
+                        f"Cannot mix topology edges with allowed_peers. "
+                        f"Agent '{node_name}' has allowed_peers but topology already has edges. "
+                        f"Use either topology edges OR allowed_peers, not both."
+                    )
+        
         # 3. Process rules to identify patterns
         self._process_rules(graph, topology_def)
         
-        # 4. Analyze the complete graph
+        # 4. Handle entry/exit points and auto-inject User if needed
+        # Get metadata from topology
+        metadata = topology_def.metadata if hasattr(topology_def, 'metadata') else topology_def.get('metadata', {})
+        manual_entry = metadata.get("entry_point")
+        manual_exits = metadata.get("exit_points")
+        
+        try:
+            # Find entry point (with manual override)
+            user_node, entry_agent = graph.find_entry_point_with_manual(manual_entry)
+            
+            if not user_node:
+                # No User node exists - need to auto-inject
+                exit_agents = graph.find_exit_points_with_manual(manual_exits)
+                graph.auto_inject_user_node(entry_agent, exit_agents)
+            else:
+                # User exists - store which agent comes after User if specified
+                if entry_agent != user_node:
+                    graph.metadata["agent_after_user"] = entry_agent
+        except ValueError as e:
+            logger.error(f"Topology structure error: {e}")
+            raise
+        
+        # 5. Analyze the complete graph
         graph.analyze()
         
-        # 5. Validate the graph
+        # 6. Validate the graph
         self._validate_graph(graph)
+        
+        # 7. Validate topology constraints
+        try:
+            graph.validate_topology()
+        except ValueError as e:
+            logger.error(f"Topology validation failed: {e}")
+            raise
         
         logger.info(f"Analyzed topology: {len(graph.nodes)} nodes, "
                    f"{len(graph.edges)} edges, "
@@ -112,6 +175,29 @@ class TopologyAnalyzer:
                 ))
             except ValueError as e:
                 logger.warning(f"Skipping invalid edge {edge_item}: {e}")
+    
+    def _build_edges_from_allowed_peers(self, graph: TopologyGraph, agents: List[str]) -> None:
+        """Build edges from agents' allowed_peers if no edges defined."""
+        from ...agents.registry import AgentRegistry
+        
+        edges_created = 0
+        for agent_name in agents:
+            agent = AgentRegistry.get(agent_name)
+            if agent and hasattr(agent, '_allowed_peers_init') and agent._allowed_peers_init:
+                for peer in agent._allowed_peers_init:
+                    if peer in agents:  # Only add edges to agents in topology
+                        # Check if this is a reflexive relationship (using allowed_peers means reflexive)
+                        graph.add_edge(TopologyEdge(
+                            source=agent_name,
+                            target=peer,
+                            bidirectional=False,  # Reflexive is NOT bidirectional
+                            metadata={"reflexive": True, "pattern": "boomerang"}
+                        ))
+                        edges_created += 1
+                        logger.debug(f"Created reflexive edge from allowed_peers: {agent_name} -> {peer}")
+        
+        if edges_created > 0:
+            logger.info(f"Created {edges_created} reflexive edges from allowed_peers")
     
     def _process_rules(self, graph: TopologyGraph, topology_def: Union[Topology, Dict[str, Any]]) -> None:
         """Process rules to identify execution patterns."""

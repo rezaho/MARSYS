@@ -13,7 +13,7 @@ import json
 import logging
 import time
 from dataclasses import dataclass, field
-from typing import Any, Dict, List, Optional, Set, Tuple, TYPE_CHECKING
+from typing import Any, Dict, List, Optional, Set, Tuple, TYPE_CHECKING, Union
 from collections import defaultdict
 
 from ...agents.memory import Message
@@ -22,6 +22,7 @@ from .tool_executor import RealToolExecutor
 
 if TYPE_CHECKING:
     from ...agents import BaseAgent
+    from ..communication.user_node_handler import UserNodeHandler
 
 logger = logging.getLogger(__name__)
 
@@ -74,11 +75,13 @@ class StepExecutor:
     def __init__(
         self,
         tool_executor: Optional['RealToolExecutor'] = None,
+        user_node_handler: Optional['UserNodeHandler'] = None,
         max_retries: int = 3,
         retry_delay: float = 1.0
     ):
         # Use RealToolExecutor by default if none provided
         self.tool_executor = tool_executor or RealToolExecutor()
+        self.user_node_handler = user_node_handler
         self.max_retries = max_retries
         self.retry_delay = retry_delay
         
@@ -94,7 +97,7 @@ class StepExecutor:
     
     async def execute_step(
         self,
-        agent: BaseAgent,
+        agent: Union['BaseAgent', str],
         request: Any,
         memory: List[Dict[str, Any]],
         context: Dict[str, Any]
@@ -112,7 +115,26 @@ class StepExecutor:
             StepResult with execution outcome
         """
         start_time = time.time()
-        agent_name = agent.name
+        
+        # Check if this is a User node
+        if isinstance(agent, str) and agent.lower() == "user":
+            if self.user_node_handler and context.get("branch"):
+                return await self.user_node_handler.handle_user_node(
+                    branch=context["branch"],
+                    incoming_message=request,
+                    context=context
+                )
+            else:
+                # No handler - skip User node
+                return StepResult(
+                    agent_name="User",
+                    response="User interaction skipped",
+                    action_type="skip",
+                    success=True
+                )
+        
+        # Normal agent handling
+        agent_name = agent.name if hasattr(agent, 'name') else str(agent)
         
         # Create step context
         step_context = StepContext(
@@ -120,7 +142,7 @@ class StepExecutor:
             branch_id=context.get("branch_id", ""),
             step_number=context.get("step_number", 1),
             agent_name=agent_name,
-            memory=memory,
+            memory=[],  # Empty - not used for injection anymore
             tools_enabled=context.get("tools_enabled", True),
             metadata=context
         )
@@ -136,26 +158,26 @@ class StepExecutor:
         
         while retry_count <= self.max_retries:
             try:
-                # 1. Prepare agent memory (inject current memory state)
-                await self._prepare_agent_memory(agent, step_context)
-                
-                # 2. Execute pure agent logic
+                # Execute pure agent logic (agent maintains its own memory)
                 agent_response = await agent.run_step(
                     request,
                     {"request_context": step_context.to_request_context()}
                 )
                 
-                # Extract the actual response from the agent result
-                if isinstance(agent_response, dict) and 'response' in agent_response:
-                    raw_response = agent_response['response']
+                # Extract the actual response and context from the agent result
+                if isinstance(agent_response, dict):
+                    raw_response = agent_response.get('response', agent_response)
+                    context_selection = agent_response.get('context_selection')
                 else:
                     raw_response = agent_response
+                    context_selection = None
                 
                 # 3. Process response
                 step_result = await self._process_agent_response(
                     agent,
                     raw_response,
-                    step_context
+                    step_context,
+                    context_selection
                 )
                 
                 # 4. Handle tool execution if needed
@@ -178,7 +200,17 @@ class StepExecutor:
                         # IMPORTANT: Re-run agent to process tool results
                         # This allows the agent to generate a final response based on tool data
                         if tool_result.tool_results:
-                            # Add tool results to context memory as tool messages
+                            # Add tool results directly to agent's memory (source of truth)
+                            if hasattr(agent, 'memory') and hasattr(agent.memory, 'add'):
+                                for tr in tool_result.tool_results:
+                                    agent.memory.add(
+                                        role="tool",
+                                        content=json.dumps(tr['result']),
+                                        tool_call_id=tr['tool_call_id'],
+                                        name=tr['tool_name']
+                                    )
+                            
+                            # Create tool messages for memory updates (for context sync later)
                             tool_messages = []
                             for tr in tool_result.tool_results:
                                 tool_messages.append({
@@ -188,14 +220,16 @@ class StepExecutor:
                                     "name": tr['tool_name']
                                 })
                             
-                            # Update context memory with tool results
-                            step_context.memory.extend(tool_messages)
+                            # Add tool responses to step result memory updates
+                            # This ensures they propagate to branch memory
+                            if hasattr(step_result, 'memory_updates') and step_result.memory_updates:
+                                step_result.memory_updates.extend(tool_messages)
+                            else:
+                                # This case shouldn't happen, but handle it safely
+                                step_result.memory_updates = tool_messages.copy()
                             
                             # Re-run agent with updated memory
                             logger.info(f"Re-running agent '{agent_name}' with {len(tool_result.tool_results)} tool results")
-                            
-                            # Prepare agent memory again with tool results
-                            await self._prepare_agent_memory(agent, step_context)
                             
                             # Create a prompt to process tool results
                             process_prompt = (
@@ -211,17 +245,20 @@ class StepExecutor:
                                 )
                                 
                                 # Update step result with final response
-                                if isinstance(final_response, dict) and 'response' in final_response:
-                                    # Extract the actual response from agent result
-                                    final_raw_response = final_response['response']
+                                if isinstance(final_response, dict):
+                                    # Extract the actual response and context from agent result
+                                    final_raw_response = final_response.get('response', final_response)
+                                    final_context_selection = final_response.get('context_selection')
                                 else:
                                     final_raw_response = final_response
+                                    final_context_selection = None
                                 
                                 # Process the final response
                                 final_step_result = await self._process_agent_response(
                                     agent,
                                     final_raw_response,
-                                    step_context
+                                    step_context,
+                                    final_context_selection
                                 )
                                 
                                 # Update the original step result with the final processed response
@@ -246,6 +283,17 @@ class StepExecutor:
                 duration = time.time() - start_time
                 self._update_stats(agent_name, step_result, retry_count, duration)
                 
+                # Sync agent memory to context (agent is source of truth)
+                if step_result.success and hasattr(agent, 'memory') and hasattr(agent.memory, 'retrieve_all'):
+                    # Get full agent memory state
+                    agent_memory_state = agent.memory.retrieve_all()
+                    
+                    # Update step result with complete memory state
+                    step_result.memory_updates = agent_memory_state
+                    
+                    # Log the sync
+                    logger.debug(f"Synced {len(agent_memory_state)} messages from agent memory to context")
+                
                 return step_result
                 
             except Exception as e:
@@ -269,47 +317,13 @@ class StepExecutor:
         self._update_stats(agent_name, failed_result, retry_count, duration)
         return failed_result
     
-    async def _prepare_agent_memory(
-        self,
-        agent: BaseAgent,
-        context: StepContext
-    ) -> None:
-        """
-        Prepare agent memory for execution.
-        
-        This injects the current memory state into the agent's memory system
-        without the agent knowing about it (maintaining pure _run()).
-        """
-        if hasattr(agent, 'memory') and hasattr(agent.memory, 'memory'):
-            # Clear existing memory and repopulate
-            if hasattr(agent.memory, 'reset_memory'):
-                agent.memory.reset_memory()
-            
-            # Convert memory format and add to agent's memory
-            for msg in context.memory:
-                if isinstance(msg, dict):
-                    # Convert dict to Message object
-                    message = Message(
-                        role=msg.get("role", "user"),
-                        content=msg.get("content", ""),
-                        name=msg.get("name"),
-                        tool_calls=msg.get("tool_calls")
-                    )
-                    
-                    # Add to memory using the add_message method
-                    if hasattr(agent.memory, 'add_message'):
-                        agent.memory.add_message(message)
-                    elif hasattr(agent.memory, 'memory') and isinstance(agent.memory.memory, list):
-                        # Direct append if no add_message method
-                        agent.memory.memory.append(message)
-            
-            logger.debug(f"Prepared {len(context.memory)} messages for agent '{context.agent_name}'")
     
     async def _process_agent_response(
         self,
         agent: BaseAgent,
         raw_response: Any,
-        context: StepContext
+        context: StepContext,
+        context_selection: Optional[Dict[str, Any]] = None
     ) -> StepResult:
         """
         Process the raw agent response into a StepResult.
@@ -344,7 +358,14 @@ class StepExecutor:
                 if result.action_type == "call_tool" and "action_input" in raw_response:
                     action_input = raw_response["action_input"]
                     if isinstance(action_input, dict) and "tool_calls" in action_input:
-                        result.tool_calls = action_input["tool_calls"]
+                        # Merge tool calls from action_input with any existing tool calls
+                        content_tool_calls = action_input["tool_calls"]
+                        if result.tool_calls:
+                            # Convert to list if needed and merge
+                            existing = result.tool_calls if isinstance(result.tool_calls, list) else [result.tool_calls]
+                            result.tool_calls = existing + content_tool_calls
+                        else:
+                            result.tool_calls = content_tool_calls
                 
                 # Extract next agent for invoke_agent action
                 elif result.action_type == "invoke_agent" and "action_input" in raw_response:
@@ -373,6 +394,10 @@ class StepExecutor:
             
             # Store parsed response
             result.parsed_response = raw_response
+            
+            # Store context selection if available
+            if context_selection:
+                result.context_selection = context_selection
             
         elif isinstance(raw_response, Message):
             # Handle Message objects from agents
@@ -406,7 +431,33 @@ class StepExecutor:
                             if parsed["next_action"] == "call_tool" and "action_input" in parsed:
                                 action_input = parsed["action_input"]
                                 if isinstance(action_input, dict) and "tool_calls" in action_input:
-                                    result.tool_calls = action_input["tool_calls"]
+                                    # Merge tool calls from content with existing Message.tool_calls
+                                    content_tool_calls = action_input["tool_calls"]
+                                    if result.tool_calls:
+                                        # Convert to list if needed and merge
+                                        existing = result.tool_calls if isinstance(result.tool_calls, list) else [result.tool_calls]
+                                        result.tool_calls = existing + content_tool_calls
+                                    else:
+                                        result.tool_calls = content_tool_calls
+                            
+                            # Update the agent's memory with merged tool_calls
+                            if result.tool_calls and hasattr(agent, 'memory') and hasattr(agent.memory, 'memory'):
+                                # Convert any dict tool calls to ToolCallMsg objects
+                                from src.agents.memory import ToolCallMsg
+                                normalized_tool_calls = []
+                                for tc in result.tool_calls:
+                                    if isinstance(tc, dict):
+                                        normalized_tool_calls.append(ToolCallMsg.from_dict(tc))
+                                    else:
+                                        normalized_tool_calls.append(tc)
+                                
+                                # Find the last assistant message in agent's memory
+                                for i in range(len(agent.memory.memory) - 1, -1, -1):
+                                    msg = agent.memory.memory[i]
+                                    if hasattr(msg, 'role') and msg.role == 'assistant':
+                                        # Update its tool_calls with the normalized list
+                                        msg.tool_calls = normalized_tool_calls
+                                        break
                             
                             # Handle invoke_agent action
                             elif parsed["next_action"] == "invoke_agent" and "action_input" in parsed:
@@ -425,7 +476,7 @@ class StepExecutor:
                 "role": raw_response.role,
                 "content": raw_response.content,
                 "name": raw_response.name or context.agent_name,
-                "tool_calls": raw_response.tool_calls,
+                "tool_calls": result.tool_calls,  # Use the MERGED tool calls
                 "timestamp": time.time()
             }]
         
