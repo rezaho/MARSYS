@@ -173,7 +173,8 @@ class RealToolExecutor:
                     results.append({
                         "tool_call_id": tool_id,
                         "tool_name": tool_name,
-                        "result": result
+                        "result": result,
+                        "_origin": tool_call.get('_origin', 'response') if isinstance(tool_call, dict) else 'response'
                     })
                     continue
 
@@ -191,7 +192,8 @@ class RealToolExecutor:
                     results.append({
                         "tool_call_id": tool_id,
                         "tool_name": tool_name,
-                        "result": result
+                        "result": result,
+                        "_origin": tool_call.get('_origin', 'response') if isinstance(tool_call, dict) else 'response'
                     })
                     continue
                 
@@ -218,7 +220,8 @@ class RealToolExecutor:
                 results.append({
                     "tool_call_id": tool_id,
                     "tool_name": tool_name,
-                    "result": result
+                    "result": result,
+                    "_origin": tool_call.get('_origin', 'response') if isinstance(tool_call, dict) else 'response'
                 })
                 
             except Exception as e:
@@ -226,7 +229,8 @@ class RealToolExecutor:
                 results.append({
                     "tool_call_id": tool_id,
                     "tool_name": tool_name,
-                    "result": {"error": str(e), "type": type(e).__name__}
+                    "result": {"error": str(e), "type": type(e).__name__},
+                    "_origin": tool_call.get('_origin', 'response') if isinstance(tool_call, dict) else 'response'
                 })
                 
         return results
