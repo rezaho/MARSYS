@@ -200,24 +200,59 @@ class StepExecutor:
                         # IMPORTANT: Re-run agent to process tool results
                         # This allows the agent to generate a final response based on tool data
                         if tool_result.tool_results:
+                            # Separate tool results by origin
+                            response_origin_results = [tr for tr in tool_result.tool_results if tr.get('_origin') == 'response']
+                            content_origin_results = [tr for tr in tool_result.tool_results if tr.get('_origin') == 'content']
+                            
                             # Add tool results directly to agent's memory (source of truth)
                             if hasattr(agent, 'memory') and hasattr(agent.memory, 'add'):
-                                for tr in tool_result.tool_results:
+                                # Process response-origin tools first (OpenAI requirement)
+                                for tr in response_origin_results:
                                     agent.memory.add(
-                                        role="tool",
+                                        role="tool",  # Correct role for native tool calls
                                         content=json.dumps(tr['result']),
                                         tool_call_id=tr['tool_call_id'],
                                         name=tr['tool_name']
                                     )
+                                
+                                # Process content-origin tools differently
+                                if content_origin_results:
+                                    # Add a bridging assistant message containing tool results
+                                    tool_results_summary = []
+                                    for tr in content_origin_results:
+                                        tool_results_summary.append({
+                                            "tool": tr['tool_name'],
+                                            "result": tr['result']
+                                        })
+                                    
+                                    bridge_content = {
+                                        "tool_execution_results": tool_results_summary
+                                    }
+                                    
+                                    agent.memory.add(
+                                        role="assistant",
+                                        content=json.dumps(bridge_content),
+                                        name=agent.name
+                                    )
                             
                             # Create tool messages for memory updates (for context sync later)
                             tool_messages = []
-                            for tr in tool_result.tool_results:
+                            
+                            # Add response-origin tool messages
+                            for tr in response_origin_results:
                                 tool_messages.append({
                                     "role": "tool",
                                     "content": json.dumps(tr['result']),
                                     "tool_call_id": tr['tool_call_id'],
                                     "name": tr['tool_name']
+                                })
+                            
+                            # Add bridge message for content-origin tools
+                            if content_origin_results:
+                                tool_messages.append({
+                                    "role": "assistant",
+                                    "content": json.dumps(bridge_content),
+                                    "name": agent.name
                                 })
                             
                             # Add tool responses to step result memory updates
@@ -349,6 +384,11 @@ class StepExecutor:
             # Extract tool calls if present
             if "tool_calls" in raw_response:
                 result.tool_calls = raw_response["tool_calls"]
+                # Mark these as response-origin tool calls
+                if isinstance(result.tool_calls, list):
+                    for tc in result.tool_calls:
+                        if isinstance(tc, dict):
+                            tc['_origin'] = 'response'
             
             # Extract next action if present
             if "next_action" in raw_response:
@@ -360,6 +400,11 @@ class StepExecutor:
                     if isinstance(action_input, dict) and "tool_calls" in action_input:
                         # Merge tool calls from action_input with any existing tool calls
                         content_tool_calls = action_input["tool_calls"]
+                        # Mark content-based tool calls with their origin
+                        for tc in content_tool_calls:
+                            if isinstance(tc, dict):
+                                tc['_origin'] = 'content'
+                        
                         if result.tool_calls:
                             # Convert to list if needed and merge
                             existing = result.tool_calls if isinstance(result.tool_calls, list) else [result.tool_calls]
@@ -404,6 +449,11 @@ class StepExecutor:
             result.response = raw_response.content
             if raw_response.tool_calls:
                 result.tool_calls = raw_response.tool_calls
+                # Mark these as response-origin since they came from the agent's response
+                if isinstance(result.tool_calls, list):
+                    for tc in result.tool_calls:
+                        if isinstance(tc, dict) and '_origin' not in tc:
+                            tc['_origin'] = 'response'
             
             # Try to parse JSON content if it's a string that looks like JSON
             if isinstance(raw_response.content, str):
@@ -433,9 +483,18 @@ class StepExecutor:
                                 if isinstance(action_input, dict) and "tool_calls" in action_input:
                                     # Merge tool calls from content with existing Message.tool_calls
                                     content_tool_calls = action_input["tool_calls"]
+                                    # Mark content-based tool calls with their origin
+                                    for tc in content_tool_calls:
+                                        if isinstance(tc, dict):
+                                            tc['_origin'] = 'content'
+                                    
                                     if result.tool_calls:
                                         # Convert to list if needed and merge
                                         existing = result.tool_calls if isinstance(result.tool_calls, list) else [result.tool_calls]
+                                        # Mark existing tool calls (from response.tool_calls) with their origin
+                                        for tc in existing:
+                                            if isinstance(tc, dict) and '_origin' not in tc:
+                                                tc['_origin'] = 'response'
                                         result.tool_calls = existing + content_tool_calls
                                     else:
                                         result.tool_calls = content_tool_calls
@@ -472,13 +531,31 @@ class StepExecutor:
                         pass
             
             # Create memory update
-            result.memory_updates = [{
+            # IMPORTANT: Only include response-origin tool calls in the message's tool_calls field
+            # Content-origin tool calls will be handled separately to avoid OpenAI API errors
+            response_origin_tool_calls = None
+            if result.tool_calls:
+                # Separate tool calls by origin
+                response_origin_tool_calls = [
+                    tc for tc in result.tool_calls 
+                    if isinstance(tc, dict) and tc.get('_origin') == 'response'
+                ]
+                # If no response-origin tool calls, don't include tool_calls field at all
+                if not response_origin_tool_calls:
+                    response_origin_tool_calls = None
+            
+            memory_update = {
                 "role": raw_response.role,
                 "content": raw_response.content,
                 "name": raw_response.name or context.agent_name,
-                "tool_calls": result.tool_calls,  # Use the MERGED tool calls
                 "timestamp": time.time()
-            }]
+            }
+            
+            # Only add tool_calls if we have response-origin ones
+            if response_origin_tool_calls:
+                memory_update["tool_calls"] = response_origin_tool_calls
+                
+            result.memory_updates = [memory_update]
         
         else:
             # Handle string or other responses

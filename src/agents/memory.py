@@ -470,9 +470,15 @@ class Message:
             msg_dict["tool_calls"] = []
             for tc in self.tool_calls:
                 if hasattr(tc, 'to_dict'):
-                    msg_dict["tool_calls"].append(tc.to_dict())
+                    tc_dict = tc.to_dict()
                 elif isinstance(tc, dict):
-                    msg_dict["tool_calls"].append(tc)
+                    tc_dict = tc.copy()
+                else:
+                    continue
+                
+                # Remove internal metadata before sending to API
+                tc_dict.pop('_origin', None)
+                msg_dict["tool_calls"].append(tc_dict)
         
         # Add tool_call_id for tool response messages
         if self.role == "tool" and self.tool_call_id:
