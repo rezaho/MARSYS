@@ -197,8 +197,9 @@ class StepExecutor:
                         step_result.tool_results = tool_result.tool_results
                         self.stats[agent_name]["tool_executions"] += len(tool_result.tool_results)
                         
-                        # IMPORTANT: Re-run agent to process tool results
-                        # This allows the agent to generate a final response based on tool data
+                        # NOTE: We do NOT re-run the agent here. The agent will continue in the next step
+                        # to process the tool results. This maintains the one-call-per-step constraint.
+                        
                         if tool_result.tool_results:
                             # Separate tool results by origin
                             response_origin_results = [tr for tr in tool_result.tool_results if tr.get('_origin') == 'response']
@@ -263,56 +264,14 @@ class StepExecutor:
                                 # This case shouldn't happen, but handle it safely
                                 step_result.memory_updates = tool_messages.copy()
                             
-                            # Re-run agent with updated memory
-                            logger.info(f"Re-running agent '{agent_name}' with {len(tool_result.tool_results)} tool results")
+                            # Mark that agent needs to continue processing tool results
+                            step_result.next_agent = agent_name  # Continue with same agent
+                            if not hasattr(step_result, 'metadata'):
+                                step_result.metadata = {}
+                            step_result.metadata['tool_continuation'] = True
+                            step_result.metadata['has_tool_results'] = True
                             
-                            # Create a prompt to process tool results
-                            process_prompt = (
-                                "Based on the tool results above, provide your analysis and final response. "
-                                "Synthesize the information from the tools into a comprehensive answer."
-                            )
-                            
-                            # Execute agent again to process tool results
-                            try:
-                                final_response = await agent.run_step(
-                                    process_prompt,
-                                    {"request_context": step_context.to_request_context()}
-                                )
-                                
-                                # Update step result with final response
-                                if isinstance(final_response, dict):
-                                    # Extract the actual response and context from agent result
-                                    final_raw_response = final_response.get('response', final_response)
-                                    final_context_selection = final_response.get('context_selection')
-                                else:
-                                    final_raw_response = final_response
-                                    final_context_selection = None
-                                
-                                # Process the final response
-                                final_step_result = await self._process_agent_response(
-                                    agent,
-                                    final_raw_response,
-                                    step_context,
-                                    final_context_selection
-                                )
-                                
-                                # Update the original step result with the final processed response
-                                step_result.response = final_step_result.response
-                                step_result.parsed_response = final_step_result.parsed_response
-                                step_result.action_type = final_step_result.action_type
-                                step_result.next_agent = final_step_result.next_agent
-                                
-                                # Add final response to memory updates
-                                if final_step_result.memory_updates:
-                                    if not step_result.memory_updates:
-                                        step_result.memory_updates = []
-                                    step_result.memory_updates.extend(final_step_result.memory_updates)
-                                    
-                                logger.info(f"Agent '{agent_name}' successfully processed tool results")
-                                
-                            except Exception as e:
-                                logger.error(f"Error re-running agent '{agent_name}' with tool results: {e}")
-                                # Keep the original response with tool results
+                            logger.info(f"Agent '{agent_name}' executed {len(tool_result.tool_results)} tools - will continue in next step")
                 
                 # Update statistics
                 duration = time.time() - start_time
@@ -454,6 +413,17 @@ class StepExecutor:
                     for tc in result.tool_calls:
                         if isinstance(tc, dict) and '_origin' not in tc:
                             tc['_origin'] = 'response'
+                
+                # ENSURE parsed_response exists for tool calls with proper structure
+                if not result.parsed_response:
+                    result.parsed_response = {
+                        'next_action': 'call_tool',  # Add required next_action field
+                        'tool_calls': result.tool_calls,
+                        '_has_tool_calls': True,
+                        'action_input': {
+                            'tool_calls': result.tool_calls
+                        }
+                    }
             
             # Try to parse JSON content if it's a string that looks like JSON
             if isinstance(raw_response.content, str):
@@ -566,6 +536,69 @@ class StepExecutor:
                 "name": context.agent_name,
                 "timestamp": time.time()
             }]
+        
+        # TOOL CONTINUATION RULE:
+        # When an agent returns tool_calls, the agent MUST continue in the next step
+        # This applies regardless of whether next_agent is specified
+        if result.tool_calls and not result.next_agent:
+            result.next_agent = context.agent_name
+            if not hasattr(result, 'metadata'):
+                result.metadata = {}
+            result.metadata['tool_continuation'] = True
+            result.metadata['has_tool_calls'] = True
+            
+            # Ensure parsed_response has continuation markers for branch spawner
+            if not result.parsed_response:
+                result.parsed_response = {}
+            if isinstance(result.parsed_response, dict):
+                result.parsed_response['_tool_continuation'] = True
+                result.parsed_response['_pending_tools_count'] = len(result.tool_calls)
+            logger.info(f"Agent '{context.agent_name}' executed {len(result.tool_calls)} tools - will continue in next step")
+        
+        # INVALID RESPONSE HANDLING:
+        # Special case: content=None with tool_calls is valid
+        if result.tool_calls and (result.response is None or result.response == "None" or result.response == ""):
+            # This is valid - agent wants to execute tools without additional content
+            # Tool continuation is already handled above
+            pass
+        # If no action type, no tools, and no next agent specified, this is an invalid response
+        elif not result.action_type and not result.tool_calls and not result.next_agent:
+            result.next_agent = context.agent_name  # Stay with same agent
+            result.requires_retry = True
+            if not hasattr(result, 'metadata'):
+                result.metadata = {}
+            result.metadata['invalid_response'] = True
+            result.metadata['retry_reason'] = 'format_error'
+            
+            # Generate format instructions
+            format_instructions = """
+Your response must be a JSON object with one of these formats:
+
+1. To invoke another agent:
+{"next_action": "invoke_agent", "action_input": {"agent_name": "AgentName", "request": "your request"}}
+
+2. To call tools:
+{"next_action": "call_tool", "action_input": {"tool_calls": [...]}}
+
+3. To provide final response:
+{"next_action": "final_response", "action_input": {"response": "your final answer"}}
+
+Do not provide thoughts or explanations outside this JSON structure."""
+            
+            # Try to get agent-specific format instructions if available
+            if hasattr(agent, '_get_response_guidelines'):
+                try:
+                    format_instructions = agent._get_response_guidelines()
+                except:
+                    pass  # Use default format
+            elif hasattr(agent, '_get_unified_response_format'):
+                try:
+                    format_instructions = agent._get_unified_response_format()
+                except:
+                    pass  # Use default format
+            
+            result.error = f"Invalid response format. {format_instructions}"
+            logger.warning(f"Agent '{context.agent_name}' provided invalid response - will retry with format instructions")
         
         return result
     

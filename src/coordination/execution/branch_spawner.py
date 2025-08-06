@@ -114,6 +114,113 @@ class DynamicBranchSpawner:
         # Cleanup tracking
         self._cleanup_counter = 0
         self._branch_completion_times: Dict[str, float] = {}  # Track when branches completed
+    
+    def _should_spawn_divergence(
+        self, 
+        agent_name: str, 
+        response: Any
+    ) -> bool:
+        """
+        Determine if divergence spawning should occur based on agent's actual intent.
+        
+        Returns True only if:
+        1. Agent is a topology divergence point AND
+        2. Agent hasn't specified a single next target AND
+        3. Agent doesn't have pending tool execution
+        """
+        # Not a divergence point in topology - no spawning
+        if not self.graph.is_divergence_point(agent_name):
+            return False
+        
+        # Check for tool continuation markers FIRST
+        if isinstance(response, dict):
+            if response.get('_tool_continuation') or response.get('_has_tool_calls'):
+                logger.info(f"Agent '{agent_name}' is divergence point but has pending tools - no spawning")
+                return False
+            if response.get('next_action') == 'continue_with_tools':
+                logger.info(f"Agent '{agent_name}' is divergence point but continuing with tools - no spawning")
+                return False
+        
+        # Check agent's actual intent
+        if self._has_explicit_single_target(response):
+            logger.info(f"Agent '{agent_name}' is divergence point but specified single target - no spawning")
+            return False
+        
+        # Agent didn't specify target - use topology divergence
+        return True
+
+    def _has_explicit_single_target(self, response: Any) -> bool:
+        """Check if response explicitly specifies a single target agent."""
+        if isinstance(response, dict):
+            # Final response - single target (back to parent)
+            if response.get("next_action") == "final_response":
+                return True
+            
+            # Return action - single target (back to coordinator)
+            if response.get("next_action") == "return":
+                return True
+                
+            # Single agent invocation
+            if response.get("next_action") == "invoke_agent":
+                action_input = response.get("action_input")
+                # Check if it's a single agent (not array)
+                if isinstance(action_input, dict) and "agent_name" in action_input:
+                    return True
+                if isinstance(action_input, str):  # Legacy format
+                    return True
+                # Array with single agent
+                if isinstance(action_input, list) and len(action_input) == 1:
+                    return True
+        
+        return False
+    
+    def _extract_explicit_targets(self, response: Any) -> List[str]:
+        """Extract explicitly specified target agents from response."""
+        targets = []
+        
+        if isinstance(response, dict):
+            # Check for multi-agent invocation
+            if response.get("next_action") == "invoke_agent":
+                action_input = response.get("action_input")
+                if isinstance(action_input, list) and len(action_input) > 1:
+                    # Multiple agents specified
+                    for item in action_input:
+                        if isinstance(item, dict) and "agent_name" in item:
+                            targets.append(item["agent_name"])
+            
+            # Legacy format support
+            elif response.get("target_agents"):
+                targets_raw = response["target_agents"]
+                if isinstance(targets_raw, list):
+                    targets = targets_raw
+                elif isinstance(targets_raw, str):
+                    targets = [targets_raw]
+        
+        return targets
+    
+    def _extract_divergence_request(self, response: Any, target_agent: str) -> Any:
+        """Extract request for specific target in divergence."""
+        # Check for agent-specific requests
+        if isinstance(response, dict):
+            # Unified format with per-agent requests
+            if response.get("action_input") and isinstance(response["action_input"], list):
+                for item in response["action_input"]:
+                    if isinstance(item, dict) and item.get("agent_name") == target_agent:
+                        return item.get("request", "")
+            
+            # Check agent_requests mapping
+            if "agent_requests" in response:
+                agent_requests = response["agent_requests"]
+                if isinstance(agent_requests, dict):
+                    return agent_requests.get(target_agent, "")
+        
+        # Default to response content if available
+        if hasattr(response, 'content'):
+            return response.content or ""
+        elif isinstance(response, dict) and 'content' in response:
+            return response.get('content', "")
+        
+        return ""
         
     async def handle_agent_completion(
         self,
@@ -150,6 +257,55 @@ class DynamicBranchSpawner:
             logger.info(f"Agent '{agent_name}' returned final_response - no branching needed")
             return []
         
+        # DIVERGENCE PREVENTION RULES:
+        # Do NOT spawn divergent branches when agent needs continuation
+        needs_continuation = False
+        
+        # First check if this is a Message object with tool_calls
+        if hasattr(response, 'tool_calls') and response.tool_calls:
+            needs_continuation = True
+            logger.debug(f"Response is Message with {len(response.tool_calls)} tool_calls")
+        
+        # Check StepResult object metadata
+        elif hasattr(response, 'metadata'):
+            metadata = response.metadata
+            needs_continuation = (
+                metadata.get('tool_continuation') or
+                metadata.get('invalid_response') or
+                metadata.get('has_tool_calls') or
+                metadata.get('has_tool_results')
+            )
+            if needs_continuation:
+                logger.debug(f"StepResult metadata indicates continuation needed")
+        
+        # Check dict response for tool indicators and our markers
+        elif isinstance(response, dict):
+            # Check for tool continuation markers from step_executor
+            if response.get('_tool_continuation'):
+                needs_continuation = True
+                pending_count = response.get('_pending_tools_count', 0)
+                logger.debug(f"Tool continuation marker found - {pending_count} tools pending")
+            # Check for _has_tool_calls marker
+            elif response.get('_has_tool_calls'):
+                needs_continuation = True
+                logger.debug(f"Has tool calls marker found")
+            # Check for tool calls in the parsed response
+            elif response.get("tool_calls") is not None:
+                needs_continuation = True
+                logger.debug(f"Parsed response has tool_calls")
+            # Check for call_tool action
+            elif response.get("next_action") == "call_tool":
+                needs_continuation = True
+                logger.debug(f"Parsed response has call_tool action")
+            # Check for retry requirement
+            elif response.get("requires_retry") == True:
+                needs_continuation = True
+                logger.debug(f"Response requires retry")
+        
+        if needs_continuation:
+            logger.info(f"Agent '{agent_name}' needs continuation (tools/retry) - no divergence spawning")
+            return []  # No new branches
+        
         # 1. Check for agent-initiated parallelism
         if await self._check_for_parallel_invoke(response):
             logger.info(f"Agent '{agent_name}' requested parallel invocation")
@@ -169,9 +325,9 @@ class DynamicBranchSpawner:
                 logger.info("Continuing in same branch for User interaction")
                 return []
         
-        # 2. Check if this is a divergence point
-        if self.graph.is_divergence_point(agent_name):
-            logger.info(f"Agent '{agent_name}' is a divergence point")
+        # 2. Check if this is a divergence point (dynamic check)
+        if self._should_spawn_divergence(agent_name, response):
+            logger.info(f"Agent '{agent_name}' initiating divergence to multiple targets")
             divergence_tasks = await self._spawn_branches_from_divergence(
                 agent_name, response, context, current_branch
             )
@@ -221,6 +377,19 @@ class DynamicBranchSpawner:
         next_agents = self.graph.get_next_agents(divergence_agent)
         new_tasks = []
         
+        # Check if agent explicitly specified targets
+        explicit_targets = self._extract_explicit_targets(response)
+        if explicit_targets:
+            # Use agent-specified targets instead of all topology edges
+            logger.info(f"Using agent-specified targets: {explicit_targets}")
+            # Validate against topology
+            valid_targets = [t for t in explicit_targets if t in next_agents]
+            if valid_targets:
+                next_agents = valid_targets
+            else:
+                logger.warning(f"Agent specified invalid targets: {explicit_targets}. Valid options: {next_agents}")
+                return []
+        
         # Special handling for User divergence points
         if divergence_agent == "User":
             # Check if there's an entry_point specified in topology metadata
@@ -249,22 +418,8 @@ class DynamicBranchSpawner:
             self.branch_info[branch.id] = branch
             self._track_agent_in_branch(next_agent, branch.id)
             
-            # Extract appropriate content for the next agent
-            # For divergence points, we typically want to pass an empty request
-            # unless there's specific data to pass
-            initial_request = ""
-            
-            # If the response has content that should be passed, extract it
-            if hasattr(response, 'content'):
-                initial_request = response.content or ""
-            elif isinstance(response, dict):
-                # Check for content in dict format
-                if 'content' in response:
-                    initial_request = response.get('content', "")
-                elif 'message' in response:
-                    initial_request = response.get('message', "")
-            elif isinstance(response, str):
-                initial_request = response
+            # Extract appropriate request for each target agent
+            initial_request = self._extract_divergence_request(response, next_agent)
             
             # Create async task
             task = asyncio.create_task(

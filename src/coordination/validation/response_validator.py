@@ -83,6 +83,39 @@ class StructuredJSONProcessor(ResponseProcessor):
             return match.group(1).strip()
         return None
     
+    def _extract_first_json(self, text: str) -> Optional[str]:
+        """
+        Extract the first valid JSON object from text that may contain multiple JSONs.
+        Handles cases where LLM returns multiple concatenated JSON objects.
+        """
+        # Track braces to find complete JSON objects
+        brace_count = 0
+        start_idx = None
+        
+        for i, char in enumerate(text):
+            if char == '{':
+                if brace_count == 0:
+                    start_idx = i
+                brace_count += 1
+            elif char == '}':
+                brace_count -= 1
+                if brace_count == 0 and start_idx is not None:
+                    # Found a complete JSON object
+                    json_str = text[start_idx:i+1]
+                    try:
+                        # Validate it's valid JSON
+                        json.loads(json_str)
+                        # Check if there's more JSON after this
+                        remaining = text[i+1:].strip()
+                        if remaining and remaining[0] == '{':
+                            logger.warning(f"Multiple JSON objects detected. Using first one, ignoring: {remaining[:100]}...")
+                        return json_str
+                    except json.JSONDecodeError:
+                        # Not valid JSON, continue searching
+                        continue
+        
+        return None
+    
     def can_process(self, response: Any) -> bool:
         """Check for expected JSON structure."""
         if isinstance(response, dict):
@@ -94,13 +127,23 @@ class StructuredJSONProcessor(ResponseProcessor):
                 try:
                     data = json.loads(json_str)
                     return isinstance(data, dict) and "next_action" in data
-                except:
+                except json.JSONDecodeError:
                     return False
-            # Then try direct JSON parsing
+            
+            # Try to extract first JSON if multiple JSONs present
+            json_str = self._extract_first_json(response)
+            if json_str:
+                try:
+                    data = json.loads(json_str)
+                    return isinstance(data, dict) and "next_action" in data
+                except json.JSONDecodeError:
+                    return False
+            
+            # Finally try direct JSON parsing
             try:
                 data = json.loads(response)
                 return isinstance(data, dict) and "next_action" in data
-            except:
+            except json.JSONDecodeError:
                 return False
         return False
     
@@ -113,8 +156,13 @@ class StructuredJSONProcessor(ResponseProcessor):
                 if json_str:
                     data = json.loads(json_str)
                 else:
-                    # Try direct JSON parsing
-                    data = json.loads(response)
+                    # Try to extract first JSON if multiple JSONs present
+                    json_str = self._extract_first_json(response)
+                    if json_str:
+                        data = json.loads(json_str)
+                    else:
+                        # Try direct JSON parsing as last resort
+                        data = json.loads(response)
             else:
                 data = response
             
@@ -441,13 +489,19 @@ class ValidationProcessor:
             )
         
         # 2. Determine action type
-        action_str = parsed.get("next_action", "continue")
+        action_str = parsed.get("next_action")
+        
+        # Don't default to "continue" - require explicit action
+        if not action_str:
+            return ValidationResult(
+                is_valid=False,
+                error_message="No action specified in response",
+                retry_suggestion="Please specify 'next_action' with one of: invoke_agent, call_tool, final_response"
+            )
+        
         try:
-            # Map string to enum, with fallback
-            if action_str == "continue":
-                action_type = ActionType.FINAL_RESPONSE
-            else:
-                action_type = ActionType(action_str)
+            # Direct mapping without "continue" fallback
+            action_type = ActionType(action_str)
         except ValueError:
             return ValidationResult(
                 is_valid=False,
