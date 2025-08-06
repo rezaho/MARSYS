@@ -9,6 +9,7 @@ This module handles the execution of different branch types:
 """
 
 import asyncio
+import json
 import logging
 import time
 from dataclasses import dataclass, field
@@ -86,7 +87,8 @@ class BranchExecutor:
         response_validator: Optional[ValidationProcessor] = None,
         router: Optional['Router'] = None,
         rules_engine: Optional[RulesEngine] = None,
-        topology_graph: Optional['TopologyGraph'] = None
+        topology_graph: Optional['TopologyGraph'] = None,
+        max_retries: int = 10
     ):
         self.agent_registry = agent_registry
         self.step_executor = step_executor
@@ -94,6 +96,7 @@ class BranchExecutor:
         self.router = router
         self.rules_engine = rules_engine
         self.topology_graph = topology_graph
+        self.max_retries = max_retries
         
         # Track execution metrics
         self.execution_metrics = defaultdict(lambda: {
@@ -263,6 +266,9 @@ class BranchExecutor:
         # Start with the entry agent
         current_agent = branch.topology.entry_agent
         
+        # Track retry attempts per agent
+        retry_counts = defaultdict(int)
+        
         while True:
             # Check completion condition
             if await self._should_complete(branch, context, execution_trace):
@@ -286,10 +292,13 @@ class BranchExecutor:
             
             if not step_result.success:
                 # Handle failure
-                if step_result.requires_retry and branch.state.current_step < 3:
-                    logger.warning(f"Retrying agent '{current_agent}' after failure")
+                if step_result.requires_retry and retry_counts[current_agent] < self.max_retries:
+                    retry_counts[current_agent] += 1
+                    logger.warning(f"Retrying agent '{current_agent}' after failure (attempt {retry_counts[current_agent]}/{self.max_retries})")
                     continue
                 else:
+                    if retry_counts[current_agent] >= self.max_retries:
+                        logger.error(f"Max retries ({self.max_retries}) reached for agent '{current_agent}'")
                     return BranchResult(
                         branch_id=branch.id,
                         success=False,
@@ -734,7 +743,7 @@ class BranchExecutor:
                 )
                 
                 validation = await self.response_validator.process_response(
-                    raw_response=result.response,
+                    raw_response=result.parsed_response if result.response is None and result.parsed_response else result.response,
                     agent=agent,
                     branch=branch,
                     exec_state=exec_state
@@ -758,6 +767,13 @@ class BranchExecutor:
                     result.success = False
                     result.error = validation.error_message
                     result.requires_retry = True
+                    
+                    # CRITICAL: Add retry flag to parsed_response so branch spawner sees it
+                    if result.parsed_response is None:
+                        result.parsed_response = {}
+                    if isinstance(result.parsed_response, dict):
+                        result.parsed_response['requires_retry'] = True
+                        result.parsed_response['validation_error'] = validation.error_message
             
             # Apply FLOW_CONTROL rules if we have a rules engine
             if self.rules_engine and result.success:
@@ -917,7 +933,28 @@ class BranchExecutor:
         """Determine the next agent based on step result and allowed transitions."""
         # If step result specifies next agent
         if step_result.next_agent:
-            # Validate it's allowed
+            # SPECIAL CASE: Self-continuation
+            # Allow agent to continue with itself for tool processing or retries
+            if step_result.next_agent == current_agent:
+                # Check if this is a valid self-continuation scenario
+                if hasattr(step_result, 'metadata'):
+                    metadata = step_result.metadata
+                    if (metadata.get('tool_continuation') or 
+                        metadata.get('invalid_response') or
+                        metadata.get('has_tool_calls') or
+                        metadata.get('has_tool_results')):
+                        logger.debug(f"Allowing self-continuation for '{current_agent}' (tools/retry)")
+                        return current_agent
+                
+                # Otherwise, check if self-loops are allowed in topology
+                allowed = allowed_transitions.get(current_agent, [])
+                if current_agent in allowed:
+                    return current_agent
+                else:
+                    logger.warning(f"Agent '{current_agent}' attempted self-invocation without valid reason")
+                    return None
+            
+            # Normal validation for other agents
             allowed = allowed_transitions.get(current_agent, [])
             if step_result.next_agent in allowed:
                 return step_result.next_agent
@@ -937,14 +974,45 @@ class BranchExecutor:
     ) -> Any:
         """Prepare request for next agent including saved context."""
         
-        # Check if the step result contains an error - don't propagate errors as requests
+        # CASE 1: Error from previous step - don't propagate
         if not step_result.success and step_result.error:
-            # Return a clean request that indicates the previous agent had an issue
+            # Special handling for invalid response errors
+            if hasattr(step_result, 'metadata') and step_result.metadata.get('invalid_response'):
+                # Return the error which contains format instructions
+                return step_result.error
+            # Regular error - return clean message
             error_msg = f"Previous agent '{step_result.agent_name}' encountered an error. Please proceed with your task."
             logger.warning(f"Preventing error propagation from {step_result.agent_name}: {step_result.error}")
             return error_msg
         
-        # Get base request using existing logic
+        # CASE 2: Tool continuation - include tool results
+        if hasattr(step_result, 'metadata') and step_result.metadata.get('tool_continuation'):
+            if step_result.tool_results:
+                # Format tool results for agent consumption
+                tool_summary = "The following tools have been executed:\n\n"
+                for tr in step_result.tool_results:
+                    tool_summary += f"Tool: {tr['tool_name']}\n"
+                    tool_summary += f"Result: {json.dumps(tr['result'], indent=2)}\n\n"
+                
+                tool_summary += (
+                    "Based on these tool results, please decide your next action:\n"
+                    "- If you need more information, call additional tools\n"
+                    "- If you have enough information, invoke the next agent or provide a final response\n"
+                    "- Follow the standard JSON response format"
+                )
+                return tool_summary
+            else:
+                # Tool execution happened but no results (edge case)
+                return "Tool execution completed. Please decide your next action."
+        
+        # CASE 3: Invalid response retry - return format error
+        if hasattr(step_result, 'metadata') and step_result.metadata.get('invalid_response'):
+            if step_result.error:
+                return step_result.error  # This already contains format instructions
+            else:
+                return "Your previous response was not in the expected format. Please provide a valid JSON response."
+        
+        # CASE 4: Normal continuation
         base_request = self._get_base_request(step_result)
         
         # If no context to pass, return base request

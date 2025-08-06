@@ -133,6 +133,7 @@ class StepResult:
     waiting_for_children: bool = False  # Signal that branch should wait
     child_branch_ids: List[str] = field(default_factory=list)  # IDs of spawned child branches
     context_selection: Optional[Dict[str, Any]] = None  # Context saved by agent to pass to next
+    metadata: Dict[str, Any] = field(default_factory=dict)  # Metadata for tracking continuation states
 
 
 @dataclass
