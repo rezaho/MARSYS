@@ -243,7 +243,7 @@ class BaseAgent(ABC):
         self._memory_storage_path = memory_storage_path
         
         # Initialize topology constraints
-        self._can_return_final_response = True  # Default to True, will be updated by topology
+        self._can_return_final_response = False  # Default to False, require explicit permission from topology
 
         # Initialize context selector
         self._context_selector = ContextSelector(self.name)
@@ -255,7 +255,7 @@ class BaseAgent(ABC):
         self._initialize_agent()
         
         # Topology constraints
-        self._can_return_final_response = True  # Default for backward compatibility
+        self._can_return_final_response = False  # Default to False, require explicit permission
 
     def __del__(self) -> None:
         """Safely unregister the agent, even during interpreter shutdown."""
@@ -487,6 +487,103 @@ class BaseAgent(ABC):
 
         return "\n".join(instructions) if instructions else ""
 
+    def _cleanup_orphaned_tool_calls_in_memory(self):
+        """
+        Remove orphaned tool_calls from memory before retry.
+        
+        This is called when retrying after a failure that may have left
+        orphaned tool_calls in the agent's memory.
+        """
+        if not hasattr(self, 'memory'):
+            return
+        
+        # Check if the last message has orphaned tool_calls
+        if hasattr(self.memory, 'memory') and len(self.memory.memory) > 0:
+            # Get all messages to check for orphaned tool_calls
+            messages = self.memory.retrieve_all()
+            
+            # Find the last assistant message with tool_calls
+            for i in range(len(messages) - 1, -1, -1):
+                msg = messages[i]
+                if msg.get("role") == "assistant" and msg.get("tool_calls"):
+                    # Check if tool responses exist after this message
+                    has_orphaned = False
+                    tool_ids = [tc.get("id") for tc in msg["tool_calls"] if isinstance(tc, dict) and tc.get("id")]
+                    
+                    for tool_id in tool_ids:
+                        found = False
+                        for j in range(i + 1, len(messages)):
+                            next_msg = messages[j]
+                            if next_msg.get("role") == "tool" and next_msg.get("tool_call_id") == tool_id:
+                                found = True
+                                break
+                        
+                        if not found:
+                            has_orphaned = True
+                            break
+                    
+                    # If orphaned, remove tool_calls from the actual memory object
+                    if has_orphaned and hasattr(self.memory, 'memory'):
+                        # Find the corresponding Message object in memory
+                        for mem_msg in self.memory.memory:
+                            if hasattr(mem_msg, 'role') and mem_msg.role == 'assistant' and hasattr(mem_msg, 'tool_calls') and mem_msg.tool_calls:
+                                # Check if this is the same message
+                                if hasattr(mem_msg, 'message_id') and msg.get('message_id') == mem_msg.message_id:
+                                    mem_msg.tool_calls = None
+                                    self.logger.debug(f"Cleared orphaned tool_calls from message in memory")
+                                    break
+                    break
+
+    def _preprocess_passed_context(self, messages: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+        """
+        Preprocess passed context messages before adding to memory.
+        
+        This method applies various transformations to ensure compatibility
+        when passing context between agents, including:
+        - Converting tool messages to assistant messages to avoid API errors
+        - Removing tool_calls to prevent orphaned references
+        - Other context-specific transformations
+        
+        Args:
+            messages: List of message dictionaries from passed context
+            
+        Returns:
+            List of preprocessed message dictionaries
+        """
+        processed_messages = []
+        
+        for msg in messages:
+            if not isinstance(msg, dict):
+                continue
+                
+            # Apply transformation: Convert tool messages to assistant messages
+            # Tool messages require preceding assistant messages with tool_calls,
+            # but when passing context between agents, we only want the content
+            if msg.get("role") == "tool":
+                # Transform tool message to assistant message with the tool result
+                processed_msg = {
+                    "role": "assistant",
+                    "content": msg.get("content"),
+                    "name": msg.get("name", "tool_result")
+                }
+                # Don't include tool_call_id as it's not relevant without the original tool_calls
+                processed_messages.append(processed_msg)
+            else:
+                # For all other messages, pass through essential fields only
+                # This ensures we remove tool_calls to avoid orphaned references
+                processed_msg = {
+                    "role": msg.get("role", "user"),
+                    "content": msg.get("content")
+                }
+                # Only add name if it exists and is not None
+                if msg.get("name"):
+                    processed_msg["name"] = msg["name"]
+                # Explicitly don't include tool_calls field to prevent orphaned references
+                # that would cause API errors in the next agent
+                processed_messages.append(processed_msg)
+                
+        return processed_messages
+    
     def _get_response_guidelines(self, json_mode_for_output: bool = False) -> str:
         """Get response format guidelines based on available actions."""
         guidelines = (
@@ -522,7 +619,7 @@ class BaseAgent(ABC):
                 )
             
             # Check if agent can return final response
-            if getattr(self, '_can_return_final_response', True):
+            if getattr(self, '_can_return_final_response', False):
                 available_actions.append("'final_response'")
                 action_descriptions.append(
                     '- If `next_action` is `"final_response"`:\n'
@@ -1177,8 +1274,43 @@ Example for `final_response`:
             if msg.get("role") in valid_roles_for_llm
         ]
 
+        # Clean orphaned tool_calls from messages inline
+        # This prevents API errors when assistant messages have tool_calls without corresponding tool responses
+        cleaned_messages = []
+        for i, msg in enumerate(filtered_messages):
+            msg_copy = msg.copy()
+            
+            # Remove orphaned tool_calls from assistant messages
+            if msg.get("role") == "assistant" and msg.get("tool_calls"):
+                # Check if tool responses exist
+                tool_ids = [tc.get("id") for tc in msg["tool_calls"] if isinstance(tc, dict) and tc.get("id")]
+                has_orphaned = False
+                
+                for tool_id in tool_ids:
+                    # Look for corresponding tool response
+                    found = False
+                    for j in range(i + 1, len(filtered_messages)):
+                        next_msg = filtered_messages[j]
+                        if next_msg.get("role") == "tool" and next_msg.get("tool_call_id") == tool_id:
+                            found = True
+                            break
+                        # Stop if we hit another assistant/user message
+                        if next_msg.get("role") in ["assistant", "user"]:
+                            break
+                    
+                    if not found:
+                        has_orphaned = True
+                        break
+                
+                # Remove tool_calls if orphaned
+                if has_orphaned:
+                    msg_copy = {k: v for k, v in msg_copy.items() if k != "tool_calls"}
+                    self.logger.debug(f"Removed orphaned tool_calls from message at index {i}")
+            
+            cleaned_messages.append(msg_copy)
+
         # Prepare messages - don't modify the input
-        prepared_messages = filtered_messages.copy()
+        prepared_messages = cleaned_messages.copy()
 
         # Find and update system message, or add one if not present
         system_message_found = False
@@ -1269,19 +1401,43 @@ Example for `final_response`:
 
         # Handle passed context from previous agent
         if isinstance(request, dict) and "passed_context" in request:
-            passed_messages = request["passed_context"]
-            for msg in passed_messages:
-                # Add passed context messages to memory
-                if hasattr(self, "memory"):
-                    self.memory.add(
-                        role=msg.get("role", "user"),
-                        content=msg.get("content"),
-                        name=msg.get("name"),
-                        tool_calls=msg.get("tool_calls"),
-                        # Note: metadata not supported by current memory implementation
-                    )
+            passed_context = request["passed_context"]
+            
+            # Handle different passed_context formats
+            if isinstance(passed_context, dict):
+                # New format: dict with context keys mapping to lists of messages
+                for context_key, messages in passed_context.items():
+                    if isinstance(messages, list):
+                        # Preprocess messages before adding to memory
+                        processed_messages = self._preprocess_passed_context(messages)
+                        for msg in processed_messages:
+                            # Add preprocessed context messages to memory
+                            if hasattr(self, "memory"):
+                                self.memory.add(
+                                    role=msg.get("role", "user"),
+                                    content=msg.get("content"),
+                                    name=msg.get("name"),
+                                    # tool_calls already removed by preprocessing
+                                    # Note: metadata not supported by current memory implementation
+                                )
+            elif isinstance(passed_context, list):
+                # Legacy format: direct list of messages
+                # Preprocess messages before adding to memory
+                processed_messages = self._preprocess_passed_context(passed_context)
+                for msg in processed_messages:
+                    # Add preprocessed context messages to memory
+                    if hasattr(self, "memory"):
+                        self.memory.add(
+                            role=msg.get("role", "user"),
+                            content=msg.get("content"),
+                            name=msg.get("name"),
+                            # tool_calls already removed by preprocessing
+                            # Note: metadata not supported by current memory implementation
+                        )
+            
             # Extract the actual request after removing passed context
-            actual_request = request.get("prompt", request)
+            # Try different common field names for the actual request content
+            actual_request = request.get("prompt") or request.get("task") or request.get("message") or request
         else:
             actual_request = request
 

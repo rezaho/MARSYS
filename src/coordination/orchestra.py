@@ -66,6 +66,60 @@ class OrchestraResult:
     def get_successful_branches(self) -> List[BranchResult]:
         """Get all successful branch results."""
         return [br for br in self.branch_results if br.success]
+    
+    def get_final_response_as_text(self) -> str:
+        """
+        Get final response as text, intelligently formatting structured data.
+        
+        Returns:
+            String representation of the response, formatted as markdown for dicts.
+        """
+        if isinstance(self.final_response, str):
+            return self.final_response
+        elif isinstance(self.final_response, dict):
+            return self._format_structured_response(self.final_response)
+        elif self.final_response is None:
+            return ""
+        else:
+            return str(self.final_response)
+    
+    def _format_structured_response(self, response: dict) -> str:
+        """Format a structured response dict as markdown text."""
+        import json
+        
+        parts = []
+        
+        # Handle common report structure
+        if "title" in response:
+            parts.append(f"# {response['title']}\n")
+        
+        if "summary" in response:
+            parts.append(f"\n{response['summary']}\n")
+        
+        if "sections" in response and isinstance(response["sections"], list):
+            for section in response["sections"]:
+                if isinstance(section, dict):
+                    heading = section.get('heading', 'Section')
+                    content = section.get('content', '')
+                    parts.append(f"\n## {heading}\n{content}\n")
+        
+        if "conclusion" in response:
+            parts.append(f"\n## Conclusion\n{response['conclusion']}\n")
+        
+        if "references" in response and isinstance(response["references"], list):
+            parts.append("\n## References\n")
+            for ref in response["references"]:
+                parts.append(f"- {ref}\n")
+        
+        # If no recognized structure, return JSON
+        if not parts:
+            return json.dumps(response, indent=2)
+        
+        return "".join(parts)
+    
+    def is_structured_response(self) -> bool:
+        """Check if the final response is structured data."""
+        return isinstance(self.final_response, dict)
 
 
 class EventBus:

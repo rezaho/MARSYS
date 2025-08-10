@@ -142,6 +142,9 @@ class BranchExecutor:
         
         # Update each agent in the branch
         for agent_name in branch.topology.agents:
+            # Skip User nodes - they're not real agents
+            if agent_name == "User":
+                continue
             agent = self.agent_registry.get(agent_name)
             if agent and hasattr(agent, 'set_topology_constraints'):
                 # Agent can return final if connected to User OR is target of reflexive edge
@@ -685,6 +688,14 @@ class BranchExecutor:
             
             # If we have a step executor, use it
             if self.step_executor:
+                # Check if this is a tool continuation (agent continuing with itself after tools)
+                is_tool_continuation = (
+                    self._last_agent_name == agent_name and
+                    self._last_step_result and
+                    hasattr(self._last_step_result, 'metadata') and
+                    self._last_step_result.metadata.get('tool_continuation')
+                )
+                
                 result = await self.step_executor.execute_step(
                     agent=agent,
                     request=request,
@@ -694,7 +705,8 @@ class BranchExecutor:
                         "branch_id": context.branch_id,
                         "session_id": context.session_id,
                         "step_number": branch.state.current_step,
-                        "conversation": conversation_context
+                        "conversation": conversation_context,
+                        "tool_continuation": is_tool_continuation
                     }
                 )
             else:
@@ -733,7 +745,8 @@ class BranchExecutor:
                 })
             
             # Validate response if validator available
-            if self.response_validator and result.success:
+            # Skip validation if this is a tool continuation (tools already executed)
+            if self.response_validator and result.success and not (result.tool_results and result.metadata.get('tool_continuation')):
                 # Create a mock ExecutionState for validation
                 from ..branches.types import ExecutionState
                 exec_state = ExecutionState(
@@ -774,6 +787,19 @@ class BranchExecutor:
                     if isinstance(result.parsed_response, dict):
                         result.parsed_response['requires_retry'] = True
                         result.parsed_response['validation_error'] = validation.error_message
+                    
+                    # FIX: Send validation error back to agent as user message
+                    if hasattr(agent, 'memory') and validation.error_message:
+                        error_message = f"Invalid response format. {validation.error_message}"
+                        if validation.retry_suggestion:
+                            error_message += f"\n{validation.retry_suggestion}"
+                        
+                        # Add error message to agent's memory
+                        agent.memory.add(
+                            role="user",
+                            content=error_message
+                        )
+                        logger.debug(f"Added validation error to {agent_name}'s memory for retry")
             
             # Apply FLOW_CONTROL rules if we have a rules engine
             if self.rules_engine and result.success:
@@ -1015,14 +1041,14 @@ class BranchExecutor:
         # CASE 4: Normal continuation
         base_request = self._get_base_request(step_result)
         
-        # If no context to pass, return base request
-        if not step_result.context_selection:
+        # FIX: Check for saved_context instead of context_selection
+        if not hasattr(step_result, 'saved_context') or not step_result.saved_context:
             return base_request
         
-        # Format and include context
+        # Format and include saved context
         return self._include_context_in_request(
             base_request, 
-            step_result.context_selection,
+            step_result.saved_context,
             step_result.agent_name
         )
     

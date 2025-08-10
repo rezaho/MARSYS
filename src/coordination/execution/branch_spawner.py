@@ -252,10 +252,8 @@ class DynamicBranchSpawner:
         
         new_tasks = []
         
-        # Check if this is a final response - if so, no branching should occur
-        if isinstance(response, dict) and response.get("next_action") == "final_response":
-            logger.info(f"Agent '{agent_name}' returned final_response - no branching needed")
-            return []
+        # Let final_response go through normal validation flow
+        # The validation processor will check if agent is allowed to use final_response
         
         # DIVERGENCE PREVENTION RULES:
         # Do NOT spawn divergent branches when agent needs continuation

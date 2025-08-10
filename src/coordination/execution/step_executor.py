@@ -159,9 +159,15 @@ class StepExecutor:
         while retry_count <= self.max_retries:
             try:
                 # Execute pure agent logic (agent maintains its own memory)
+                run_context = {"request_context": step_context.to_request_context()}
+                
+                # Mark as continuation if this is a tool continuation
+                if context.get('tool_continuation'):
+                    run_context["is_continuation"] = True
+                
                 agent_response = await agent.run_step(
                     request,
-                    {"request_context": step_context.to_request_context()}
+                    run_context
                 )
                 
                 # Extract the actual response and context from the agent result
@@ -236,33 +242,13 @@ class StepExecutor:
                                         name=agent.name
                                     )
                             
-                            # Create tool messages for memory updates (for context sync later)
-                            tool_messages = []
+                            # FIX: Remove duplicate tool message creation
+                            # Tool results are already added to agent.memory above (lines 211-237)
+                            # and will be synced to step_result.memory_updates later (line 286)
+                            # So we don't need to create tool_messages separately
                             
-                            # Add response-origin tool messages
-                            for tr in response_origin_results:
-                                tool_messages.append({
-                                    "role": "tool",
-                                    "content": json.dumps(tr['result']),
-                                    "tool_call_id": tr['tool_call_id'],
-                                    "name": tr['tool_name']
-                                })
-                            
-                            # Add bridge message for content-origin tools
-                            if content_origin_results:
-                                tool_messages.append({
-                                    "role": "assistant",
-                                    "content": json.dumps(bridge_content),
-                                    "name": agent.name
-                                })
-                            
-                            # Add tool responses to step result memory updates
-                            # This ensures they propagate to branch memory
-                            if hasattr(step_result, 'memory_updates') and step_result.memory_updates:
-                                step_result.memory_updates.extend(tool_messages)
-                            else:
-                                # This case shouldn't happen, but handle it safely
-                                step_result.memory_updates = tool_messages.copy()
+                            # Note: The memory sync at line 286 will capture all tool results
+                            # that were added to agent.memory, avoiding duplication
                             
                             # Mark that agent needs to continue processing tool results
                             step_result.next_agent = agent_name  # Continue with same agent
@@ -287,6 +273,15 @@ class StepExecutor:
                     
                     # Log the sync
                     logger.debug(f"Synced {len(agent_memory_state)} messages from agent memory to context")
+                
+                # FIX: Extract saved context for passing to next agent
+                if hasattr(agent, '_context_selector'):
+                    messages = agent.memory.retrieve_all() if hasattr(agent, 'memory') else []
+                    saved_context = agent._context_selector.get_saved_context(messages)
+                    if saved_context:
+                        # Store in step result for passing to next agent
+                        step_result.saved_context = saved_context
+                        logger.debug(f"Extracted saved context from {agent_name}: {list(saved_context.keys())}")
                 
                 return step_result
                 

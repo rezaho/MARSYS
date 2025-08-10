@@ -8,11 +8,20 @@ import json
 import logging
 from typing import Any, Dict, List, Optional, TYPE_CHECKING, Callable
 import inspect
+from difflib import get_close_matches
 
 if TYPE_CHECKING:
     from ...agents import BaseAgent
 
 logger = logging.getLogger(__name__)
+
+
+def find_similar_tool_names(tool_name: str, available_tools: List[str], cutoff: float = 0.6) -> List[str]:
+    """Find similar tool names using fuzzy matching."""
+    # Strip common prefixes for matching
+    clean_name = tool_name.replace("functions.", "").replace("tools.", "")
+    matches = get_close_matches(clean_name, available_tools, n=3, cutoff=cutoff)
+    return matches
 
 
 class RealToolExecutor:
@@ -158,8 +167,11 @@ class RealToolExecutor:
                         tool_func = agent_tools[base_name]
                         tool_source = "agent"
                 
-                # Special handling for context tools
-                if tool_name == "save_to_context":
+                # Extract base name for special handling checks
+                base_tool_name = tool_name.split('.')[-1] if '.' in tool_name else tool_name
+                
+                # Special handling for context tools (handle both with and without "functions." prefix)
+                if base_tool_name == "save_to_context":
                     # Import the implementation function
                     from ...coordination.context_manager import execute_save_to_context
                     
@@ -178,7 +190,7 @@ class RealToolExecutor:
                     })
                     continue
 
-                elif tool_name == "preview_saved_context":
+                elif base_tool_name == "preview_saved_context":
                     # Import the implementation function
                     from ...coordination.context_manager import execute_preview_saved_context
                     
@@ -213,9 +225,24 @@ class RealToolExecutor:
                     # Execute the tool
                     result = await self._execute_single_tool(tool_func, tool_args, tool_name)
                 else:
-                    error_msg = f"Tool not found: {tool_name}"
-                    logger.error(f"{error_msg}. Available tools: {list(self.tool_registry.keys())} + {list(agent_tools.keys())}")
-                    result = {"error": error_msg}
+                    # Create helpful error message with fuzzy matching
+                    all_tools = list(self.tool_registry.keys()) + list(agent_tools.keys())
+                    similar_tools = find_similar_tool_names(tool_name, all_tools)
+                    
+                    if similar_tools:
+                        error_msg = f"Tool '{tool_name}' not found. Did you mean: {similar_tools[0]}?"
+                        suggestion = f"Available tools: {', '.join(all_tools[:10])}"
+                        if len(all_tools) > 10:
+                            suggestion += f"... and {len(all_tools) - 10} more"
+                    else:
+                        error_msg = f"Tool '{tool_name}' not found."
+                        suggestion = f"Available tools: {', '.join(all_tools[:10])}"
+                        if len(all_tools) > 10:
+                            suggestion += f"... and {len(all_tools) - 10} more"
+                    
+                    full_error = f"{error_msg} {suggestion}"
+                    logger.error(full_error)
+                    result = {"error": full_error}
                 
                 results.append({
                     "tool_call_id": tool_id,

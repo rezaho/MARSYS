@@ -99,7 +99,8 @@ class ContextSelector:
             'criteria': criteria,
             'timestamp': time.time()
         }
-        self.logger.debug(f"Saved context selection with key '{key}': {criteria}")
+        self.logger.info(f"Saved context selection with key '{key}': {criteria}")
+        self.logger.info(f"Current saved_selections keys: {list(self.saved_selections.keys())}")
         
     def get_saved_context(self, messages: List[Dict[str, Any]]) -> Optional[Dict[str, List[Dict]]]:
         """
@@ -112,7 +113,10 @@ class ContextSelector:
             Dictionary mapping keys to lists of selected messages,
             or None if no selections saved
         """
+        self.logger.info(f"Getting saved context. saved_selections keys: {list(self.saved_selections.keys())}")
+        
         if not self.saved_selections:
+            self.logger.info("No saved selections found")
             return None
             
         context_data = {}
@@ -121,7 +125,7 @@ class ContextSelector:
             selected_messages = self._select_messages(messages, criteria)
             if selected_messages:
                 context_data[key] = selected_messages
-                self.logger.debug(f"Selected {len(selected_messages)} messages for key '{key}'")
+                self.logger.info(f"Selected {len(selected_messages)} messages for key '{key}'")
                 
         return context_data if context_data else None
     
