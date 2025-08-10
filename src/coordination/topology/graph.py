@@ -463,6 +463,35 @@ class TopologyGraph:
         
         return agents_with_access
     
+    def has_user_access(self, agent_name: str) -> bool:
+        """
+        Check if a specific agent has edges to User nodes.
+        
+        Args:
+            agent_name: Name of the agent to check
+            
+        Returns:
+            True if the agent has access to User nodes, False otherwise
+        """
+        from .core import NodeType
+        
+        # Get the agent node
+        node = self.nodes.get(agent_name)
+        if not node:
+            return False
+        
+        # Skip if this is a User node itself
+        if node.node_type == NodeType.USER:
+            return False
+        
+        # Check if this agent has any edge to a User node
+        for target in node.outgoing_edges:
+            target_node = self.nodes.get(target)
+            if target_node and target_node.node_type == NodeType.USER:
+                return True
+        
+        return False
+    
     def validate_topology(self) -> None:
         """
         Validate topology constraints.
