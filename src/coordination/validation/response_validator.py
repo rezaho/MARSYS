@@ -453,8 +453,7 @@ class ValidationProcessor:
             allowed.append("call_tool")
         
         # Check if agent can return final response
-        agents_with_user_access = self.topology_graph.get_agents_with_user_access()
-        if agent.name in agents_with_user_access:
+        if self.topology_graph.has_user_access(agent.name):
             allowed.append("final_response")
         
         return allowed
@@ -705,15 +704,12 @@ class ValidationProcessor:
         """
         # Check if agent can return final response
         if self.topology_graph:
-            agents_with_user_access = self.topology_graph.get_agents_with_user_access()
-            
-            if agent.name not in agents_with_user_access:
+            if not self.topology_graph.has_user_access(agent.name):
                 # Get the agent's allowed next agents for better error message
                 next_agents = self.topology_graph.get_next_agents(agent.name)
                 
                 logger.warning(
                     f"Agent '{agent.name}' attempted final_response but is not connected to User. "
-                    f"Agents with User access: {agents_with_user_access}. "
                     f"Agent's next options: {next_agents}"
                 )
                 

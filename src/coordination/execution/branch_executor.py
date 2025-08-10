@@ -1020,16 +1020,48 @@ class BranchExecutor:
                     tool_summary += f"Tool: {tr['tool_name']}\n"
                     tool_summary += f"Result: {json.dumps(tr['result'], indent=2)}\n\n"
                 
-                tool_summary += (
-                    "Based on these tool results, please decide your next action:\n"
-                    "- If you need more information, call additional tools\n"
-                    "- If you have enough information, invoke the next agent or provide a final response\n"
-                    "- Follow the standard JSON response format"
-                )
+                # Check if agent can provide final response
+                can_final_response = False
+                if self.topology_graph and step_result.agent_name:
+                    can_final_response = self.topology_graph.has_user_access(step_result.agent_name)
+                
+                # Build appropriate action instructions
+                tool_summary += "Based on these tool results, please decide your next action:\n"
+                tool_summary += "- If you need more information, call additional tools\n"
+                
+                if can_final_response:
+                    tool_summary += "- If you have enough information, invoke the next agent or provide a final response\n"
+                else:
+                    # Get next agents this agent can invoke
+                    next_agents = []
+                    if self.topology_graph:
+                        next_agents = self.topology_graph.get_next_agents(step_result.agent_name)
+                    
+                    if next_agents:
+                        tool_summary += f"- If you have enough information, invoke one of these agents: {', '.join(next_agents)}\n"
+                    else:
+                        tool_summary += "- If you have enough information, complete your task\n"
+                
+                tool_summary += "- Follow the standard JSON response format"
                 return tool_summary
             else:
                 # Tool execution happened but no results (edge case)
-                return "Tool execution completed. Please decide your next action."
+                # Check if agent can provide final response for appropriate guidance
+                can_final_response = False
+                if self.topology_graph and step_result.agent_name:
+                    can_final_response = self.topology_graph.has_user_access(step_result.agent_name)
+                
+                if can_final_response:
+                    return "Tool execution completed. Please decide your next action (invoke agent or provide final response)."
+                else:
+                    next_agents = []
+                    if self.topology_graph:
+                        next_agents = self.topology_graph.get_next_agents(step_result.agent_name)
+                    
+                    if next_agents:
+                        return f"Tool execution completed. Please invoke one of these agents: {', '.join(next_agents)}."
+                    else:
+                        return "Tool execution completed. Please decide your next action."
         
         # CASE 3: Invalid response retry - return format error
         if hasattr(step_result, 'metadata') and step_result.metadata.get('invalid_response'):
