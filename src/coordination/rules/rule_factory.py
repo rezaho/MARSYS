@@ -209,24 +209,52 @@ class RuleFactory:
     ) -> None:
         """Add default safety rules if enabled."""
         if self.config.enable_timeout_rules:
-            engine.register_rule(
-                TimeoutRule(
-                    name="default_timeout",
-                    max_duration_seconds=self.config.default_timeout_seconds
-                )
+            # Check if user already provided a timeout rule
+            has_timeout = any(
+                isinstance(rule, TimeoutRule)
+                for rule in engine.rules.values()
             )
+            if not has_timeout:
+                # Only add default timeout if user didn't specify one
+                engine.register_rule(
+                    TimeoutRule(
+                        name="default_timeout",
+                        max_duration_seconds=self.config.default_timeout_seconds
+                    )
+                )
+                logger.debug(f"Added default timeout rule: {self.config.default_timeout_seconds}s")
+            else:
+                logger.debug("Skipping default timeout - user provided custom timeout rule")
         
         if self.config.enable_limit_rules:
-            engine.register_rule(
-                MaxAgentsRule(
-                    name="default_max_agents",
-                    max_agents=self.config.default_max_agents
-                )
+            # Check if user already provided a max_agents rule
+            has_max_agents = any(
+                isinstance(rule, MaxAgentsRule)
+                for rule in engine.rules.values()
             )
+            if not has_max_agents:
+                engine.register_rule(
+                    MaxAgentsRule(
+                        name="default_max_agents",
+                        max_agents=self.config.default_max_agents
+                    )
+                )
+                logger.debug(f"Added default max_agents rule: {self.config.default_max_agents}")
+            else:
+                logger.debug("Skipping default max_agents - user provided custom rule")
             
-            engine.register_rule(
-                MaxStepsRule(
-                    name="default_max_steps",
-                    max_steps=self.config.default_max_steps
-                )
+            # Check if user already provided a max_steps rule
+            has_max_steps = any(
+                isinstance(rule, MaxStepsRule)
+                for rule in engine.rules.values()
             )
+            if not has_max_steps:
+                engine.register_rule(
+                    MaxStepsRule(
+                        name="default_max_steps",
+                        max_steps=self.config.default_max_steps
+                    )
+                )
+                logger.debug(f"Added default max_steps rule: {self.config.default_max_steps}")
+            else:
+                logger.debug("Skipping default max_steps - user provided custom rule")

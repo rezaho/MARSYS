@@ -261,8 +261,14 @@ class StructuredJSONProcessor(ResponseProcessor):
             elif data.get("next_action") == "final_response":
                 # Check for response in action_input first (new format)
                 action_input = data.get("action_input", {})
-                if isinstance(action_input, dict) and "response" in action_input:
-                    result["final_response"] = action_input["response"]
+                if isinstance(action_input, dict):
+                    if "response" in action_input:
+                        result["final_response"] = action_input["response"]
+                    elif "report" in action_input:
+                        result["final_response"] = action_input["report"]
+                    else:
+                        # Fallback to old format
+                        result["final_response"] = data.get("final_response", data.get("content", ""))
                 else:
                     # Fallback to old format
                     result["final_response"] = data.get("final_response", data.get("content", ""))
@@ -433,6 +439,26 @@ class ValidationProcessor:
             ActionType.WAIT_AND_AGGREGATE: self._validate_wait_aggregate
         }
     
+    def _get_allowed_actions(self, agent: BaseAgent) -> List[str]:
+        """Get list of actions this agent is allowed to perform based on topology."""
+        allowed = []
+        
+        # Check if agent can invoke other agents
+        next_agents = self.topology_graph.get_next_agents(agent.name)
+        if next_agents:
+            allowed.append("invoke_agent")
+        
+        # Check if agent has tools
+        if hasattr(agent, 'tools') and agent.tools:
+            allowed.append("call_tool")
+        
+        # Check if agent can return final response
+        agents_with_user_access = self.topology_graph.get_agents_with_user_access()
+        if agent.name in agents_with_user_access:
+            allowed.append("final_response")
+        
+        return allowed
+    
     async def process_response(
         self,
         raw_response: Any,
@@ -493,20 +519,30 @@ class ValidationProcessor:
         
         # Don't default to "continue" - require explicit action
         if not action_str:
+            allowed_actions = self._get_allowed_actions(agent)
             return ValidationResult(
                 is_valid=False,
                 error_message="No action specified in response",
-                retry_suggestion="Please specify 'next_action' with one of: invoke_agent, call_tool, final_response"
+                retry_suggestion=f"Please specify 'next_action' with one of: {', '.join(allowed_actions)}"
             )
         
         try:
             # Direct mapping without "continue" fallback
             action_type = ActionType(action_str)
         except ValueError:
+            allowed_actions = self._get_allowed_actions(agent)
+            valid_action_types = []
+            for action in allowed_actions:
+                if action == "invoke_agent":
+                    valid_action_types.append(ActionType.INVOKE_AGENT.value)
+                elif action == "call_tool":
+                    valid_action_types.append(ActionType.CALL_TOOL.value)
+                elif action == "final_response":
+                    valid_action_types.append(ActionType.FINAL_RESPONSE.value)
             return ValidationResult(
                 is_valid=False,
                 error_message=f"Unknown action type: {action_str}",
-                retry_suggestion=f"Valid actions are: {[a.value for a in ActionType]}"
+                retry_suggestion=f"Valid actions for {agent.name} are: {valid_action_types}"
             )
         
         # 3. Validate specific action
@@ -705,10 +741,10 @@ class ValidationProcessor:
                 retry_suggestion="Use format: {\"action_input\": {\"response\": \"your answer\"}}"
             )
         
-        if "response" not in action_input:
+        if "response" not in action_input and "report" not in action_input:
             return ValidationResult(
                 is_valid=False,
-                error_message="final_response action_input must contain 'response' field",
+                error_message="final_response action_input must contain 'response' or 'report' field",
                 retry_suggestion="Use format: {\"action_input\": {\"response\": \"your answer\"}}"
             )
         
@@ -724,10 +760,20 @@ class ValidationProcessor:
         """Validate conversation end."""
         # Check if we're in a conversation branch
         if branch.type.value != "conversation":
+            allowed_actions = self._get_allowed_actions(agent)
+            if "final_response" in allowed_actions:
+                retry_suggestion = "Use 'final_response' to complete execution"
+            else:
+                next_agents = self.topology_graph.get_next_agents(agent.name)
+                if next_agents:
+                    retry_suggestion = f"Use 'invoke_agent' to pass control to one of: {next_agents}"
+                else:
+                    retry_suggestion = "This agent cannot end conversation (no valid actions available)"
+            
             return ValidationResult(
                 is_valid=False,
                 error_message="Cannot end conversation in non-conversation branch",
-                retry_suggestion="Use 'final_response' to complete execution"
+                retry_suggestion=retry_suggestion
             )
         
         return ValidationResult(is_valid=True)

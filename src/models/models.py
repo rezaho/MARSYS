@@ -182,6 +182,14 @@ class OpenAIAdapter(APIProviderAdapter):
         top_p: float = None,
         **kwargs,
     ):
+        # Strip "openai/" prefix for direct OpenAI API compatibility
+        # OpenRouter uses "openai/gpt-4o" but OpenAI API needs "gpt-4o"
+        if model_name.startswith("openai/"):
+            model_name = model_name[7:]  # Remove "openai/" prefix
+        # Also handle x-ai prefix for xAI models (which use OpenAI-compatible API)
+        elif model_name.startswith("x-ai/"):
+            model_name = model_name[5:]  # Remove "x-ai/" prefix
+        
         super().__init__(model_name)
         self.api_key = api_key
         self.base_url = base_url
@@ -642,6 +650,11 @@ class AnthropicAdapter(APIProviderAdapter):
         temperature: float = 0.7,
         **kwargs,
     ):
+        # Strip "anthropic/" prefix for direct Anthropic API compatibility
+        # OpenRouter uses "anthropic/claude-3.5-sonnet" but Anthropic API needs "claude-3.5-sonnet"
+        if model_name.startswith("anthropic/"):
+            model_name = model_name[10:]  # Remove "anthropic/" prefix
+        
         super().__init__(model_name)
         self.api_key = api_key
         self.base_url = base_url
@@ -806,6 +819,11 @@ class GoogleAdapter(APIProviderAdapter):
         thinking_budget: Optional[int] = 2000,
         **kwargs,
     ):
+        # Strip "google/" prefix for direct Google API compatibility
+        # OpenRouter uses "google/gemini-2.5-flash" but Google API needs "gemini-2.5-flash"
+        if model_name.startswith("google/"):
+            model_name = model_name[7:]  # Remove "google/" prefix
+        
         super().__init__(model_name)
         self.api_key = api_key
         self.base_url = base_url
