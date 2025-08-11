@@ -338,7 +338,7 @@ def get_context_selection_tools() -> List[Dict[str, Any]]:
             "type": "function",
             "function": {
                 "name": "save_to_context",
-                "description": "Save selected messages to context for passing to next agent or user. Use this to preserve important information like search results, tool outputs, or key findings that should be included in your final response.",
+                "description": "Save EXISTING messages from your conversation history to context for passing to next agent. Use this AFTER receiving tool results (like search results) to preserve them. DO NOT reference message IDs that don't exist yet - use tool_names instead to save outputs from specific tools.",
                 "parameters": {
                     "type": "object",
                     "properties": {
@@ -349,7 +349,7 @@ def get_context_selection_tools() -> List[Dict[str, Any]]:
                                 "message_ids": {
                                     "type": "array",
                                     "items": {"type": "string"},
-                                    "description": "Specific message IDs to include"
+                                    "description": "IDs of EXISTING messages in your conversation history. DO NOT use IDs you're about to create - those don't exist yet!"
                                 },
                                 "role_filter": {
                                     "type": "array",
@@ -359,7 +359,7 @@ def get_context_selection_tools() -> List[Dict[str, Any]]:
                                 "tool_names": {
                                     "type": "array",
                                     "items": {"type": "string"},
-                                    "description": "Include outputs from these specific tools"
+                                    "description": "Save all outputs from these tool names (e.g., ['google_search'] to save all search results). Use this instead of message_ids for saving tool outputs."
                                 },
                                 "last_n_tools": {
                                     "type": "integer",
@@ -412,16 +412,16 @@ def save_to_context(
     context_key: str = "default"
 ) -> Dict[str, Any]:
     """
-    Save selected messages to context for passing to next agent or user.
+    Save EXISTING messages from conversation history to context for passing to next agent.
     
-    Use this to preserve important information like search results, tool outputs, 
-    or key findings that should be included in your final response.
+    Use this AFTER receiving tool results to preserve them for the next agent.
+    DO NOT try to save messages that don't exist yet.
     
     Args:
-        selection_criteria: Criteria for selecting messages to save
-            - message_ids: List of specific message IDs to include
+        selection_criteria: Criteria for selecting EXISTING messages to save
+            - message_ids: List of EXISTING message IDs (don't use IDs you're about to create!)
             - role_filter: Include messages with these roles ["user", "assistant", "tool", "system"]
-            - tool_names: Include outputs from these specific tools
+            - tool_names: Include outputs from these specific tools (recommended for saving tool results)
             - last_n_tools: Include last N tool responses
             - content_pattern: Regex pattern to match in message content
         context_key: Key to identify this context selection (e.g., 'search_results', 'analysis_data')
