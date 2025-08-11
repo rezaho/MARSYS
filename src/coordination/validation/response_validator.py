@@ -108,7 +108,10 @@ class StructuredJSONProcessor(ResponseProcessor):
                         # Check if there's more JSON after this
                         remaining = text[i+1:].strip()
                         if remaining and remaining[0] == '{':
-                            logger.warning(f"Multiple JSON objects detected. Using first one, ignoring: {remaining[:100]}...")
+                            # Count how many additional JSON objects there might be
+                            additional_count = remaining.count('{"')
+                            logger.info(f"Multiple JSON actions detected ({additional_count + 1} total). Processing first action, others will be ignored.")
+                            logger.debug("Note: Currently the system processes one action at a time. Consider splitting complex workflows into sequential steps.")
                         return json_str
                     except json.JSONDecodeError:
                         # Not valid JSON, continue searching

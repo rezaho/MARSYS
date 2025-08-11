@@ -305,6 +305,26 @@ class BaseAgent(ABC):
             self._can_return_final_response = constraints["can_return_final_response"]
             logger.debug(f"Agent '{self.name}' can_return_final_response: {self._can_return_final_response}")
 
+    def _format_parameters(self, properties: Dict, required: List[str], indent: int = 2) -> List[str]:
+        """Recursively format parameters including nested structures."""
+        lines = []
+        for p_name, p_spec in properties.items():
+            p_type = p_spec.get("type", "any")
+            p_desc = p_spec.get("description", "")
+            is_required = p_name in required
+            
+            # Base parameter line
+            lines.append(f"{'  ' * indent}- `{p_name}` ({p_type}): {p_desc} {'(required)' if is_required else ''}")
+            
+            # If it's an object with properties, show nested structure
+            if p_type == "object" and "properties" in p_spec:
+                nested_props = p_spec["properties"]
+                nested_required = p_spec.get("required", [])
+                lines.append(f"{'  ' * (indent + 1)}Nested parameters:")
+                lines.extend(self._format_parameters(nested_props, nested_required, indent + 2))
+        
+        return lines
+
     def _get_tool_instructions(
         self,  # current_tools_schema: Optional[List[Dict[str, Any]]] # Parameter removed
     ) -> str:
@@ -350,21 +370,12 @@ class BaseAgent(ABC):
             prompt_lines.append(f"\nTool: `{name}`")
             prompt_lines.append(f"  Description: {description}")
             if parameters and parameters.get("properties"):
-                param_details = []
-                props = parameters.get("properties", {})
-                required_params = parameters.get("required", [])
-                for p_name, p_spec in props.items():
-                    p_type = p_spec.get("type", "any")
-                    p_desc = p_spec.get("description", "")
-                    is_required = p_name in required_params
-                    param_details.append(
-                        f"    - `{p_name}` ({p_type}): {p_desc} {'(required)' if is_required else ''}"
-                    )
-                if param_details:
-                    prompt_lines.append("  Parameters:")
-                    prompt_lines.extend(param_details)
-                else:
-                    prompt_lines.append("  Parameters: None")
+                prompt_lines.append("  Parameters:")
+                param_lines = self._format_parameters(
+                    parameters.get("properties", {}),
+                    parameters.get("required", [])
+                )
+                prompt_lines.extend(param_lines)
             else:
                 prompt_lines.append("  Parameters: None")
         prompt_lines.append("--- END AVAILABLE TOOLS ---")

@@ -297,4 +297,48 @@ class RealToolExecutor:
                 
         except Exception as e:
             logger.error(f"Tool execution failed for {tool_name}: {e}", exc_info=True)
+            
+            # Provide helpful error message for parameter structure issues
+            error_str = str(e)
+            if "unexpected keyword argument" in error_str:
+                # Import re for pattern matching
+                import re
+                match = re.search(r"unexpected keyword argument '(\w+)'", error_str)
+                param_name = match.group(1) if match else "unknown"
+                
+                # Check if this is a known nested parameter issue
+                if tool_name.endswith("save_to_context") and param_name in ["tool_names", "role_filter", "last_n_tools", "message_ids", "content_pattern"]:
+                    return {
+                        "error": f"Parameter '{param_name}' should be nested inside 'selection_criteria'",
+                        "type": "ParameterStructureError",
+                        "hint": f"The '{param_name}' parameter must be inside the 'selection_criteria' object",
+                        "correct_format": {
+                            "description": "Use this structure for save_to_context:",
+                            "example": {
+                                "selection_criteria": {
+                                    param_name: "... your value here ...",
+                                    "# other criteria": "..."
+                                },
+                                "context_key": "your_key_here"
+                            }
+                        },
+                        "full_example": {
+                            "selection_criteria": {
+                                "tool_names": ["google_search"],
+                                "role_filter": ["tool"],
+                                "last_n_tools": 1
+                            },
+                            "context_key": "search_results"
+                        }
+                    }
+                
+                # Generic message for other tools with nested parameters
+                return {
+                    "error": f"Parameter '{param_name}' is not recognized at the top level",
+                    "type": "ParameterStructureError", 
+                    "hint": f"Check if '{param_name}' should be nested inside another parameter object",
+                    "suggestion": "Review the tool's parameter structure in the schema. Parameters marked as 'object' type contain nested parameters."
+                }
+            
+            # Default error for other cases
             return {"error": str(e), "type": type(e).__name__}
