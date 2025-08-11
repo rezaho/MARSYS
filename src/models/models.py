@@ -1661,6 +1661,9 @@ class BaseAPIModel:
         Returns:
             HarmonizedResponse object with standardized format and metadata
         """
+        # Import ModelError at method level to ensure it's always in scope
+        from src.agents.exceptions import ModelError
+        
         try:
             # Include instance thinking_budget if not provided in kwargs and instance has it
             if (
@@ -1683,9 +1686,6 @@ class BaseAPIModel:
 
             # Check if response is an ErrorResponse and convert to exception
             if isinstance(adapter_response, ErrorResponse):
-                # Import here to avoid circular import
-                from src.agents.exceptions import ModelError
-
                 # Convert ErrorResponse to ModelError exception
                 # Pass all error details to the exception
                 raise ModelError(
