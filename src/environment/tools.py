@@ -40,7 +40,7 @@ def tool_google_search_api(query: str, num_results: int = 10, lang: str = "en") 
 
     Args:
         query: The search query.
-        num_results: Number of results to return. Defaults to 10.
+        num_results: Number of results to return (min: 1, max: 10 due to Google API limit). Defaults to 10.
         lang: Language for search (e.g., 'en', 'es'). Defaults to 'en'.
 
     Returns:
@@ -67,6 +67,9 @@ def tool_google_search_api(query: str, num_results: int = 10, lang: str = "en") 
         return json.dumps(
             {"error": "Google Custom Search Engine ID (CX) not configured."}
         )
+
+    # Enforce Google API limit of max 10 results per request
+    num_results = min(max(1, num_results), 10)
 
     results = []
     response_obj = None
@@ -152,7 +155,7 @@ def tool_google_search_community(
 
     Args:
         query: The search query.
-        num_results: Number of results to return. Defaults to 10.
+        num_results: Number of results to return (min: 1, max: 10). Defaults to 10.
         lang: Language for search (e.g., 'en', 'es'). Defaults to 'en'.
 
     Returns:
@@ -171,6 +174,10 @@ def tool_google_search_community(
         f"Tool Google Search (Community Library) for: {query}",
         extra={"agent_name": "Tool"},
     )
+    
+    # Enforce max 10 results for consistency with API version
+    num_results = min(max(1, num_results), 10)
+    
     results = []
     try:
         search_results = list(
