@@ -545,6 +545,46 @@ class BaseAgent(ABC):
                                     break
                     break
 
+    def _should_accept_passed_context(self, passed_context: Any, request: Dict) -> bool:
+        """
+        Determine if passed context should be accepted by this agent.
+        
+        Context should be accepted if:
+        1. It's explicitly marked as important
+        2. It's targeted for this specific agent
+        3. It's the first context pass (not propagated multiple times)
+        
+        Args:
+            passed_context: The context being passed
+            request: The full request dictionary
+            
+        Returns:
+            True if context should be accepted, False otherwise
+        """
+        # Accept if explicitly marked as important
+        if isinstance(passed_context, dict):
+            # Check for explicit importance markers
+            if passed_context.get("important", False):
+                return True
+            
+            # Check if context is targeted for this agent
+            if passed_context.get("target_agent") == self.name:
+                return True
+            
+            # Check for critical context keys
+            if any(key in passed_context for key in ["critical_context", "required_context", "task_context"]):
+                return True
+        
+        # Check request metadata for context targeting
+        if isinstance(request, dict):
+            # If this is the first pass of context (not propagated)
+            if request.get("is_first_context_pass", True):
+                return True
+        
+        # Default: Don't accept context that's not explicitly meant for this agent
+        self.logger.debug(f"Context not accepted: no explicit markers for agent '{self.name}'")
+        return False
+
     def _preprocess_passed_context(self, messages: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
         """
         Preprocess passed context messages before adding to memory.
@@ -1414,37 +1454,44 @@ Example for `final_response`:
         if isinstance(request, dict) and "passed_context" in request:
             passed_context = request["passed_context"]
             
-            # Handle different passed_context formats
-            if isinstance(passed_context, dict):
-                # New format: dict with context keys mapping to lists of messages
-                for context_key, messages in passed_context.items():
-                    if isinstance(messages, list):
-                        # Preprocess messages before adding to memory
-                        processed_messages = self._preprocess_passed_context(messages)
-                        for msg in processed_messages:
-                            # Add preprocessed context messages to memory
-                            if hasattr(self, "memory"):
-                                self.memory.add(
-                                    role=msg.get("role", "user"),
-                                    content=msg.get("content"),
-                                    name=msg.get("name"),
-                                    # tool_calls already removed by preprocessing
-                                    # Note: metadata not supported by current memory implementation
-                                )
-            elif isinstance(passed_context, list):
-                # Legacy format: direct list of messages
-                # Preprocess messages before adding to memory
-                processed_messages = self._preprocess_passed_context(passed_context)
-                for msg in processed_messages:
-                    # Add preprocessed context messages to memory
-                    if hasattr(self, "memory"):
-                        self.memory.add(
-                            role=msg.get("role", "user"),
-                            content=msg.get("content"),
-                            name=msg.get("name"),
-                            # tool_calls already removed by preprocessing
-                            # Note: metadata not supported by current memory implementation
-                        )
+            # FIX: Only accept context if it's meant for this agent
+            # Check if context is explicitly marked for this agent or is important
+            should_accept = self._should_accept_passed_context(passed_context, request)
+            
+            if should_accept:
+                # Handle different passed_context formats
+                if isinstance(passed_context, dict):
+                    # New format: dict with context keys mapping to lists of messages
+                    for context_key, messages in passed_context.items():
+                        if isinstance(messages, list):
+                            # Preprocess messages before adding to memory
+                            processed_messages = self._preprocess_passed_context(messages)
+                            for msg in processed_messages:
+                                # Add preprocessed context messages to memory
+                                if hasattr(self, "memory"):
+                                    self.memory.add(
+                                        role=msg.get("role", "user"),
+                                        content=msg.get("content"),
+                                        name=msg.get("name"),
+                                        # tool_calls already removed by preprocessing
+                                        # Note: metadata not supported by current memory implementation
+                                    )
+                elif isinstance(passed_context, list):
+                    # Legacy format: direct list of messages
+                    # Preprocess messages before adding to memory
+                    processed_messages = self._preprocess_passed_context(passed_context)
+                    for msg in processed_messages:
+                        # Add preprocessed context messages to memory
+                        if hasattr(self, "memory"):
+                            self.memory.add(
+                                role=msg.get("role", "user"),
+                                content=msg.get("content"),
+                                name=msg.get("name"),
+                                # tool_calls already removed by preprocessing
+                                # Note: metadata not supported by current memory implementation
+                            )
+            else:
+                self.logger.debug(f"Agent '{self.name}' skipping context not meant for it")
             
             # Extract the actual request after removing passed context
             # Try different common field names for the actual request content
@@ -1479,8 +1526,9 @@ Example for `final_response`:
             elif "prompt" in actual_request:
                 content = actual_request["prompt"]
 
-        # Add request to memory
-        if hasattr(self, "memory"):
+        # Add request to memory (skip if None or empty - e.g., tool continuation)
+        # FIX: Don't add empty continuation signals to memory
+        if hasattr(self, "memory") and content is not None and content != "":
             request_msg_id = self.memory.add(role=role, content=content, name=name)
 
         # Get memory messages and prepare them for the model
