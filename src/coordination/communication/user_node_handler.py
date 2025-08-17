@@ -302,6 +302,7 @@ class UserNodeHandler:
                 branch.state.interaction_id = interaction.interaction_id
                 branch.state.calling_agent = interaction.calling_agent
                 branch.state.resume_agent = interaction.resume_agent
+                branch.state.user_wait_start_time = time.time()  # Start tracking wait time
                 branch.state.interaction_context = {
                     "timestamp": interaction.timestamp,
                     "mode": interaction.communication_mode.value
@@ -322,9 +323,14 @@ class UserNodeHandler:
             
             logger.info(f"Received sync response for interaction {interaction.interaction_id}")
             
-            # Clear waiting state
+            # Clear waiting state and record wait time
             if hasattr(branch, 'state'):
                 branch.state.awaiting_user_response = False
+                if branch.state.user_wait_start_time:
+                    wait_time = time.time() - branch.state.user_wait_start_time
+                    branch.state.total_user_wait_time += wait_time
+                    branch.state.user_wait_start_time = None
+                    logger.debug(f"User wait time: {wait_time:.2f}s, Total: {branch.state.total_user_wait_time:.2f}s")
             
             return StepResult(
                 agent_name="User",

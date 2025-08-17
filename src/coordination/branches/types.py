@@ -97,6 +97,8 @@ class BranchState:
     calling_agent: Optional[str] = None
     resume_agent: Optional[str] = None
     interaction_context: Dict[str, Any] = field(default_factory=dict)
+    user_wait_start_time: Optional[float] = None  # When we started waiting for user
+    total_user_wait_time: float = 0.0  # Total time spent waiting for user
     memory_snapshot: List[Dict[str, Any]] = field(default_factory=list)
     _execution_trace: List['StepResult'] = field(default_factory=list)  # Temp storage for trace
     
