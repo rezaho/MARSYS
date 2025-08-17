@@ -209,16 +209,16 @@ class RealToolExecutor:
                     })
                     continue
                 
-                # Try variations of google search tool names
-                if not tool_func and 'google' in tool_name.lower() and 'search' in tool_name.lower():
-                    # Try different variations
-                    variations = ['google_search', 'tool_google_search_api', 'tool_google_search_community']
-                    for variant in variations:
-                        if variant in self.tool_registry:
-                            tool_func = self.tool_registry[variant]
-                            tool_source = "registry"
-                            logger.info(f"Found tool {variant} for requested {tool_name}")
-                            break
+                # # Try variations of google search tool names
+                # if not tool_func and 'google' in tool_name.lower() and 'search' in tool_name.lower():
+                #     # Try different variations
+                #     variations = ['google_search', 'tool_google_search_api', 'tool_google_search_community']
+                #     for variant in variations:
+                #         if variant in self.tool_registry:
+                #             tool_func = self.tool_registry[variant]
+                #             tool_source = "registry"
+                #             logger.info(f"Found tool {variant} for requested {tool_name}")
+                #             break
                 
                 if tool_func:
                     logger.debug(f"Found tool {tool_name} from {tool_source}")

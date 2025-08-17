@@ -97,8 +97,9 @@ class HarmonizedResponse(BaseModel):
             # Response was truncated, allow empty content
             return self
         
-        # Otherwise, require either content or tool_calls
-        if not self.content and not self.tool_calls:
+        # Check for None specifically, not empty string
+        # Empty strings are valid responses from some providers like OpenAI
+        if self.content is None and not self.tool_calls:
             raise ValueError("Response must have either content or tool_calls")
         return self
     

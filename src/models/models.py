@@ -425,7 +425,17 @@ class OpenRouterAdapter(APIProviderAdapter):
         cleaned_messages = []
         for msg in messages:
             cleaned_msg = msg.copy()
-            if cleaned_msg.get("content") is None:
+            content = cleaned_msg.get("content")
+            
+            # Gemini-specific fix when using OpenRouter
+            # Serialize arrays/dicts to JSON strings for Gemini compatibility
+            if self.model_name and "gemini" in self.model_name.lower():
+                if isinstance(content, (list, dict)):
+                    import json
+                    cleaned_msg["content"] = json.dumps(content)
+                    content = cleaned_msg["content"]
+            
+            if content is None:
                 cleaned_msg["content"] = ""
             cleaned_messages.append(cleaned_msg)
         
@@ -839,6 +849,33 @@ class GoogleAdapter(APIProviderAdapter):
         # Convert OpenAI messages to Google format
         google_messages = []
         for msg in messages:
+            # Handle tool response messages
+            if msg.get("role") == "tool":
+                # Convert tool response to Google format
+                tool_name = msg.get("name", "")
+                tool_content = msg.get("content", "{}")
+                try:
+                    import json
+                    # Parse the content if it's a JSON string
+                    if isinstance(tool_content, str):
+                        response_data = json.loads(tool_content)
+                    else:
+                        response_data = tool_content
+                except:
+                    response_data = {"result": tool_content}
+                
+                google_msg = {
+                    "role": "user",  # Google expects tool responses as user messages
+                    "parts": [{
+                        "functionResponse": {
+                            "name": tool_name,
+                            "response": response_data
+                        }
+                    }]
+                }
+                google_messages.append(google_msg)
+                continue
+            
             # Convert None content to empty string for compatibility
             content = msg.get("content")
             if content is None:
@@ -862,30 +899,58 @@ class GoogleAdapter(APIProviderAdapter):
             if isinstance(content, str):
                 # Simple text content
                 parts.append({"text": content})
-            elif isinstance(content, list):
-                # Multi-part content (text + images)
-                for part in content:
-                    if isinstance(part, dict):
-                        if part.get("type") == "text":
-                            parts.append({"text": part.get("text", "")})
-                        elif part.get("type") == "image_url":
-                            # Handle OpenAI-style image URLs
-                            image_url = part.get("image_url", {})
-                            url = image_url.get("url", "")
-                            if url:
-                                image_data = self._process_image_for_google(url)
-                                if image_data:
-                                    parts.append(image_data)
-                        elif part.get("type") == "image":
-                            # Handle direct image references
-                            image_path = part.get("image", part.get("image_url", ""))
-                            if image_path:
-                                image_data = self._process_image_for_google(image_path)
-                                if image_data:
-                                    parts.append(image_data)
-                    elif isinstance(part, str):
-                        parts.append({"text": part})
+            elif isinstance(content, (list, dict)):
+                # Check if this is a multi-part content (with type fields) or raw data
+                if isinstance(content, list) and content and isinstance(content[0], dict) and "type" in content[0]:
+                    # Multi-part content (text + images)
+                    for part in content:
+                        if isinstance(part, dict):
+                            if part.get("type") == "text":
+                                parts.append({"text": part.get("text", "")})
+                            elif part.get("type") == "image_url":
+                                # Handle OpenAI-style image URLs
+                                image_url = part.get("image_url", {})
+                                url = image_url.get("url", "")
+                                if url:
+                                    image_data = self._process_image_for_google(url)
+                                    if image_data:
+                                        parts.append(image_data)
+                            elif part.get("type") == "image":
+                                # Handle direct image references
+                                image_path = part.get("image", part.get("image_url", ""))
+                                if image_path:
+                                    image_data = self._process_image_for_google(image_path)
+                                    if image_data:
+                                        parts.append(image_data)
+                        elif isinstance(part, str):
+                            parts.append({"text": part})
+                else:
+                    # Raw array or dict data - serialize to JSON for Gemini compatibility
+                    import json
+                    parts.append({"text": json.dumps(content)})
 
+            # Add tool calls from assistant messages if present
+            if msg_role in ["assistant", "model"] and msg.get("tool_calls"):
+                for tc in msg.get("tool_calls", []):
+                    # Parse the tool call
+                    if isinstance(tc, dict):
+                        function_info = tc.get("function", {})
+                        func_name = function_info.get("name", "")
+                        func_args_str = function_info.get("arguments", "{}")
+                        try:
+                            import json
+                            func_args = json.loads(func_args_str) if isinstance(func_args_str, str) else func_args_str
+                        except:
+                            func_args = {}
+                        
+                        # Add functionCall part
+                        parts.append({
+                            "functionCall": {
+                                "name": func_name,
+                                "args": func_args
+                            }
+                        })
+            
             # Only add message if it has parts
             if parts:
                 google_msg = {"role": role, "parts": parts}
@@ -932,7 +997,26 @@ class GoogleAdapter(APIProviderAdapter):
             generation_config["responseMimeType"] = "application/json"
 
         payload = {"contents": google_messages, "generationConfig": generation_config}
-
+        
+        # Add native function calling support
+        if kwargs.get("tools"):
+            # Convert OpenAI format tools to Google format
+            google_tools = []
+            for tool in kwargs["tools"]:
+                if tool.get("type") == "function":
+                    function_spec = tool.get("function", {})
+                    google_tool = {
+                        "name": function_spec.get("name", ""),
+                        "description": function_spec.get("description", ""),
+                        "parameters": function_spec.get("parameters", {})
+                    }
+                    google_tools.append(google_tool)
+            
+            if google_tools:
+                payload["tools"] = [{
+                    "function_declarations": google_tools
+                }]
+        
         return payload
 
     def _process_image_for_google(self, image_input) -> Dict[str, Any]:
@@ -1097,11 +1181,31 @@ class GoogleAdapter(APIProviderAdapter):
         content = candidate.get("content", {})
         parts = content.get("parts", [])
 
-        # Extract text content from all parts
+        # Extract text content and function calls from all parts
         text_content = ""
+        tool_calls = []
+        
         for part in parts:
-            if isinstance(part, dict) and "text" in part:
-                text_content += part["text"]
+            if isinstance(part, dict):
+                if "text" in part:
+                    text_content += part["text"]
+                elif "functionCall" in part:
+                    # Parse native Google function call
+                    import json
+                    import uuid
+                    fc = part["functionCall"]
+                    # Generate unique ID for this tool call
+                    tool_id = f"call_{uuid.uuid4().hex[:8]}_{fc.get('name', 'unknown')}"
+                    tool_calls.append(
+                        ToolCall(
+                            id=tool_id,
+                            type="function",
+                            function={
+                                "name": fc.get("name", ""),
+                                "arguments": json.dumps(fc.get("args", {}))
+                            }
+                        )
+                    )
 
         # Build usage info
         usage_data = raw_response.get("usageMetadata", {})
@@ -1131,7 +1235,7 @@ class GoogleAdapter(APIProviderAdapter):
         return HarmonizedResponse(
             role="assistant",
             content=text_content if text_content else None,
-            tool_calls=[],  # Google function calling would be implemented here
+            tool_calls=tool_calls,  # Now includes native Google function calls
             metadata=metadata,
         )
 
