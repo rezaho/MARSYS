@@ -41,13 +41,21 @@ class TimeoutRule(Rule):
         self.max_duration = max_duration_seconds
     
     async def check(self, context: RuleContext) -> RuleResult:
-        """Check if execution has exceeded timeout."""
+        """Check if execution has exceeded timeout.
+        
+        Note: elapsed_time already excludes user wait time, as calculated in branch_executor.
+        """
+        # Log additional context for debugging
+        user_wait_time = context.metadata.get("total_user_wait_time", 0.0)
+        if user_wait_time > 0:
+            logger.debug(f"TimeoutRule: elapsed={context.elapsed_time:.1f}s (excludes {user_wait_time:.1f}s user wait)")
+        
         if context.elapsed_time > self.max_duration:
             return RuleResult(
                 rule_name=self.name,
                 passed=False,
                 action="terminate",
-                reason=f"Execution time {context.elapsed_time:.1f}s exceeds limit of {self.max_duration}s",
+                reason=f"Execution time {context.elapsed_time:.1f}s exceeds limit of {self.max_duration}s (user wait time {user_wait_time:.1f}s excluded)",
                 severity="error"
             )
         
