@@ -250,6 +250,12 @@ class BranchExecutor:
                 branch_memory=exec_context.branch_memory,
                 error=str(e)
             )
+        finally:
+            # Release any pool instances used by this branch
+            for agent_name in branch.topology.agents:
+                if self.agent_registry.is_pool(agent_name):
+                    self.agent_registry.release_to_pool(agent_name, branch.id)
+                    logger.debug(f"Released pool instance of '{agent_name}' for branch '{branch.id}'")
     
     async def _execute_simple_branch(
         self,
@@ -643,8 +649,8 @@ class BranchExecutor:
                     error="User node handler not configured"
                 )
         
-        # Get agent instance for normal agents
-        agent = self.agent_registry.get(agent_name)
+        # Get agent instance for normal agents (pool-aware)
+        agent = self.agent_registry.get_or_acquire(agent_name, branch.id)
         if not agent:
             return StepResult(
                 agent_name=agent_name,
@@ -1011,57 +1017,11 @@ class BranchExecutor:
             logger.warning(f"Preventing error propagation from {step_result.agent_name}: {step_result.error}")
             return error_msg
         
-        # CASE 2: Tool continuation - include tool results
+        # CASE 2: Tool continuation - no additional message needed
         if hasattr(step_result, 'metadata') and step_result.metadata.get('tool_continuation'):
-            if step_result.tool_results:
-                # Format tool results for agent consumption
-                tool_summary = "The following tools have been executed:\n\n"
-                for tr in step_result.tool_results:
-                    tool_summary += f"Tool: {tr['tool_name']}\n"
-                    tool_summary += f"Result: {json.dumps(tr['result'], indent=2)}\n\n"
-                
-                # Check if agent can provide final response
-                can_final_response = False
-                if self.topology_graph and step_result.agent_name:
-                    can_final_response = self.topology_graph.has_user_access(step_result.agent_name)
-                
-                # Build appropriate action instructions
-                tool_summary += "Based on these tool results, please decide your next action:\n"
-                tool_summary += "- If you need more information, call additional tools\n"
-                
-                if can_final_response:
-                    tool_summary += "- If you have enough information, invoke the next agent or provide a final response\n"
-                else:
-                    # Get next agents this agent can invoke
-                    next_agents = []
-                    if self.topology_graph:
-                        next_agents = self.topology_graph.get_next_agents(step_result.agent_name)
-                    
-                    if next_agents:
-                        tool_summary += f"- If you have enough information, invoke one of these agents: {', '.join(next_agents)}\n"
-                    else:
-                        tool_summary += "- If you have enough information, complete your task\n"
-                
-                tool_summary += "- Follow the standard JSON response format"
-                return tool_summary
-            else:
-                # Tool execution happened but no results (edge case)
-                # Check if agent can provide final response for appropriate guidance
-                can_final_response = False
-                if self.topology_graph and step_result.agent_name:
-                    can_final_response = self.topology_graph.has_user_access(step_result.agent_name)
-                
-                if can_final_response:
-                    return "Tool execution completed. Please decide your next action (invoke agent or provide final response)."
-                else:
-                    next_agents = []
-                    if self.topology_graph:
-                        next_agents = self.topology_graph.get_next_agents(step_result.agent_name)
-                    
-                    if next_agents:
-                        return f"Tool execution completed. Please invoke one of these agents: {', '.join(next_agents)}."
-                    else:
-                        return "Tool execution completed. Please decide your next action."
+            # Tool results are already in memory from step_executor
+            # No additional continuation message needed
+            return None
         
         # CASE 3: Invalid response retry - return format error
         if hasattr(step_result, 'metadata') and step_result.metadata.get('invalid_response'):
