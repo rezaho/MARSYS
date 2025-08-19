@@ -207,48 +207,26 @@ class StepExecutor:
                         # to process the tool results. This maintains the one-call-per-step constraint.
                         
                         if tool_result.tool_results:
-                            # Separate tool results by origin
-                            response_origin_results = [tr for tr in tool_result.tool_results if tr.get('_origin') == 'response']
-                            content_origin_results = [tr for tr in tool_result.tool_results if tr.get('_origin') == 'content']
-                            
-                            # Add tool results directly to agent's memory (source of truth)
+                            # Add tool results to agent's memory (source of truth)
                             if hasattr(agent, 'memory') and hasattr(agent.memory, 'add'):
-                                # Process response-origin tools first (OpenAI requirement)
-                                for tr in response_origin_results:
-                                    agent.memory.add(
-                                        role="tool",  # Correct role for native tool calls
-                                        content=json.dumps(tr['result']),
-                                        tool_call_id=tr['tool_call_id'],
-                                        name=tr['tool_name']
-                                    )
-                                
-                                # Process content-origin tools differently
-                                if content_origin_results:
-                                    # Add a bridging assistant message containing tool results
-                                    tool_results_summary = []
-                                    for tr in content_origin_results:
-                                        tool_results_summary.append({
-                                            "tool": tr['tool_name'],
-                                            "result": tr['result']
-                                        })
+                                for tr in tool_result.tool_results:
+                                    origin = tr.get('_origin', 'response')
                                     
-                                    bridge_content = {
-                                        "tool_execution_results": tool_results_summary
-                                    }
-                                    
-                                    agent.memory.add(
-                                        role="assistant",
-                                        content=json.dumps(bridge_content),
-                                        name=agent.name
-                                    )
-                            
-                            # FIX: Remove duplicate tool message creation
-                            # Tool results are already added to agent.memory above (lines 211-237)
-                            # and will be synced to step_result.memory_updates later (line 286)
-                            # So we don't need to create tool_messages separately
-                            
-                            # Note: The memory sync at line 286 will capture all tool results
-                            # that were added to agent.memory, avoiding duplication
+                                    if origin == 'response':
+                                        # Response-origin: Standard OpenAI format with role="tool"
+                                        agent.memory.add(
+                                            role="tool",
+                                            content=json.dumps(tr['result']) if not isinstance(tr['result'], str) else tr['result'],
+                                            tool_call_id=tr['tool_call_id'],
+                                            name=tr['tool_name']
+                                        )
+                                    else:  # origin == 'content'
+                                        # Content-origin: Must use role="user" (OpenAI API restriction)
+                                        agent.memory.add(
+                                            role="user",
+                                            content=json.dumps(tr['result']) if not isinstance(tr['result'], str) else tr['result']
+                                            # No tool_call_id or name fields when role != "tool"
+                                        )
                             
                             # Mark that agent needs to continue processing tool results
                             step_result.next_agent = agent_name  # Continue with same agent
