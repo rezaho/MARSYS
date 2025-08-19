@@ -75,12 +75,24 @@ class StructuredJSONProcessor(ResponseProcessor):
     """Handles JSON responses with next_action/action_input structure."""
     
     def _extract_json_from_code_block(self, text: str) -> Optional[str]:
-        """Extract JSON from markdown code blocks."""
-        # Pattern to match ```json ... ``` or ``` ... ```
+        """Extract JSON from markdown code blocks or plain JSON."""
+        # Try markdown blocks first (```json {...}``` or ```{...}```)
         code_block_pattern = r'```(?:json)?\s*\n?(.*?)```'
         match = re.search(code_block_pattern, text, re.DOTALL)
         if match:
             return match.group(1).strip()
+        
+        # If no markdown blocks found, check if the entire text is valid JSON
+        # This handles plain JSON responses without markdown formatting
+        text_stripped = text.strip()
+        if text_stripped.startswith('{') and text_stripped.endswith('}'):
+            try:
+                # Validate it's actually JSON before returning
+                json.loads(text_stripped)
+                return text_stripped
+            except json.JSONDecodeError:
+                pass
+        
         return None
     
     def _extract_first_json(self, text: str) -> Optional[str]:
