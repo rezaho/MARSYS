@@ -253,10 +253,14 @@ class RealToolExecutor:
                 
             except Exception as e:
                 logger.error(f"Error executing tool {tool_name}: {e}", exc_info=True)
+                
+                # Create clear error message for the agent
+                error_msg = f"Tool '{tool_name}' failed: {str(e)}"
+                
                 results.append({
                     "tool_call_id": tool_id,
                     "tool_name": tool_name,
-                    "result": {"error": str(e), "type": type(e).__name__},
+                    "result": {"error": error_msg},
                     "_origin": tool_call.get('_origin', 'response') if isinstance(tool_call, dict) else 'response'
                 })
                 
