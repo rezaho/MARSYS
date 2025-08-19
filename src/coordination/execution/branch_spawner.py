@@ -30,6 +30,7 @@ from ..topology.graph import TopologyGraph, ParallelGroup
 
 if TYPE_CHECKING:
     from ...agents.registry import AgentRegistry
+    from ...agents.agent_pool import AgentPool
     from .branch_executor import BranchExecutor
     from ..event_bus import EventBus
 
@@ -88,6 +89,9 @@ class DynamicBranchSpawner:
         self.branch_executor = branch_executor
         self.event_bus = event_bus
         self.agent_registry = agent_registry
+        
+        # Track pool instance allocations
+        self.pool_allocations: Dict[str, Dict[str, Any]] = {}  # branch_id -> {pool_name, instance}
         
         # Memory management configuration
         self.max_completed_agents = max_completed_agents or self.DEFAULT_MAX_COMPLETED_AGENTS
@@ -607,6 +611,9 @@ class DynamicBranchSpawner:
             for agent in branch.topology.agents:
                 self.completed_agents.add(agent)
             
+            # Release any pool instances allocated to this branch
+            self._release_pool_instance(branch.id)
+            
             # Increment cleanup counter and run cleanup if needed
             self._cleanup_counter += 1
             if self._should_run_cleanup():
@@ -810,6 +817,101 @@ class DynamicBranchSpawner:
         # Could add more sophisticated parsing here
         return False
     
+    async def _acquire_agent_for_branch(
+        self,
+        agent_name: str,
+        branch_id: str,
+        timeout: float = 30.0
+    ) -> Optional[Any]:
+        """
+        Acquire an agent instance for a branch, handling pools if necessary.
+        
+        Args:
+            agent_name: Name of the agent or pool
+            branch_id: ID of the branch requesting the agent
+            timeout: Timeout for acquiring from pool
+            
+        Returns:
+            Agent instance or None if unavailable
+        """
+        if not self.agent_registry:
+            logger.warning("No agent registry available")
+            return None
+        
+        # Import here to avoid circular imports
+        from ...agents.registry import AgentRegistry
+        
+        # Check if it's a pool
+        if AgentRegistry.is_pool(agent_name):
+            # Acquire from pool with timeout
+            instance = await self._acquire_from_pool_async(agent_name, branch_id, timeout)
+            if instance:
+                # Track the allocation
+                self.pool_allocations[branch_id] = {
+                    'pool_name': agent_name,
+                    'instance': instance
+                }
+            return instance
+        else:
+            # Regular agent - just get it
+            return AgentRegistry.get(agent_name)
+    
+    async def _acquire_from_pool_async(
+        self,
+        pool_name: str,
+        branch_id: str,
+        timeout: float = 30.0
+    ) -> Optional[Any]:
+        """
+        Acquire an instance from a pool asynchronously.
+        
+        Args:
+            pool_name: Name of the pool
+            branch_id: ID of the branch
+            timeout: Timeout in seconds
+            
+        Returns:
+            Agent instance or None
+        """
+        from ...agents.registry import AgentRegistry
+        
+        pool = AgentRegistry.get_pool(pool_name)
+        if not pool:
+            logger.error(f"Pool '{pool_name}' not found in registry")
+            return None
+        
+        # Try to acquire with timeout
+        if hasattr(pool, 'acquire_instance_async'):
+            instance = await pool.acquire_instance_async(branch_id, timeout)
+        else:
+            # Fallback to sync acquire
+            instance = pool.acquire_instance(branch_id)
+        
+        if not instance:
+            logger.warning(
+                f"Could not acquire instance from pool '{pool_name}' for branch '{branch_id}' "
+                f"within {timeout}s timeout"
+            )
+        
+        return instance
+    
+    def _release_pool_instance(self, branch_id: str) -> None:
+        """
+        Release any pool instance allocated to a branch.
+        
+        Args:
+            branch_id: ID of the branch
+        """
+        if branch_id in self.pool_allocations:
+            allocation = self.pool_allocations.pop(branch_id)
+            pool_name = allocation['pool_name']
+            
+            from ...agents.registry import AgentRegistry
+            if AgentRegistry.release_to_pool(pool_name, branch_id):
+                logger.debug(f"Released instance from pool '{pool_name}' for branch '{branch_id}'")
+            else:
+                logger.warning(f"Failed to release instance from pool '{pool_name}' for branch '{branch_id}'")
+    
     async def handle_agent_initiated_parallelism(
         self,
         agent_name: str,
@@ -818,7 +920,7 @@ class DynamicBranchSpawner:
         parent_branch_id: str
     ) -> List[asyncio.Task]:
         """
-        Handle agent-initiated parallel invocation.
+        Handle agent-initiated parallel invocation with pool support.
         
         Args:
             agent_name: Name of the agent initiating parallelism
@@ -837,11 +939,44 @@ class DynamicBranchSpawner:
         
         logger.info(f"Agent '{agent_name}' initiating parallel execution of: {target_agents}")
         
-        # Create child branches
+        # Check for pool constraints and acquire instances
+        agent_instances = {}
+        failed_acquisitions = []
+        
+        for target_agent in target_agents:
+            # Try to acquire agent (from pool if necessary)
+            instance = await self._acquire_agent_for_branch(
+                target_agent,
+                f"child_{parent_branch_id}_{target_agent}_{uuid.uuid4().hex[:8]}",
+                timeout=10.0  # Shorter timeout for parallel acquisition
+            )
+            
+            if instance:
+                agent_instances[target_agent] = instance
+            else:
+                failed_acquisitions.append(target_agent)
+                logger.warning(f"Failed to acquire instance for '{target_agent}'")
+        
+        # If some acquisitions failed, handle gracefully
+        if failed_acquisitions:
+            # Release already acquired instances
+            for agent_name, instance in agent_instances.items():
+                if agent_name in self.pool_allocations:
+                    self._release_pool_instance(agent_name)
+            
+            # Return error or handle as needed
+            logger.error(
+                f"Could not acquire all requested agents. Failed: {failed_acquisitions}. "
+                f"Consider increasing pool sizes or reducing parallelism."
+            )
+            # Could optionally return partial results or retry
+            return []
+        
+        # Create child branches with acquired instances
         child_tasks = []
         child_branch_ids = []
         
-        for target_agent in target_agents:
+        for target_agent, instance in agent_instances.items():
             # Extract agent-specific request data
             agent_request = self._extract_agent_request(response, target_agent)
             

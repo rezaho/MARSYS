@@ -392,6 +392,9 @@ class BaseAgent(ABC):
         if not allowed_agents:
             return ""
 
+        # Import here to avoid circular dependency
+        from .registry import AgentRegistry
+        
         prompt_lines = ["\n\n--- AVAILABLE PEER AGENTS ---"]
         prompt_lines.append(
             "You can invoke other agents to assist you. If you choose this path, your JSON response (as described in the general response guidelines) "
@@ -412,10 +415,13 @@ class BaseAgent(ABC):
             """
 ```json
 {
-  "invoke_agent": {
-    "name": "agent_name_here",
-    "request": "Your request or task for the agent"
-  }
+  "next_action": "invoke_agent",
+  "action_input": [
+    {
+      "agent_name": "example_agent_name_here",
+      "request": "Your request or task for the agent"
+    }
+  ]
 }
 ```"""
         )
@@ -425,7 +431,20 @@ class BaseAgent(ABC):
         peer_schemas = self._get_peer_input_schemas()
 
         for peer_name in allowed_agents:  # Changed from self.allowed_peers
-            prompt_lines.append(f"- `{peer_name}`")
+            # Get instance count information
+            total_instances = AgentRegistry.get_instance_count(peer_name)
+            available_instances = AgentRegistry.get_available_count(peer_name)
+            
+            # Format agent name with instance info
+            if total_instances > 1:
+                # It's a pool - show instance availability
+                instance_info = f" (Pool: {available_instances}/{total_instances} instances available)"
+                prompt_lines.append(f"- `{peer_name}`{instance_info}")
+                if available_instances < total_instances:
+                    prompt_lines.append(f"  Note: Some instances are currently in use. You can invoke up to {available_instances} in parallel.")
+            else:
+                # Single instance agent
+                prompt_lines.append(f"- `{peer_name}` (Single instance)")
 
             # Add schema information if available
             if peer_name in peer_schemas and peer_schemas[peer_name]:
@@ -664,9 +683,10 @@ class BaseAgent(ABC):
                 available_actions.append("'invoke_agent'")
                 action_descriptions.append(
                     '- If `next_action` is `"invoke_agent"`:\n'
-                    '     An ARRAY of agent invocation objects: `[{"agent_name": "AgentName", "request": {...}}, ...]`\n'
+                    '     An ARRAY of agent invocation objects: `[{"agent_name": "example_agent_name", "request": {...}}, ...]`\n'
                     '     • Single agent: array with one object (sequential execution)\n'
-                    '     • Multiple agents: array with multiple objects (parallel execution)'
+                    '     • Multiple agents: array with multiple objects (parallel execution)\n'
+                    '     • Same agent multiple times: multiple objects with same agent_name but different requests'
                 )
             
             # Check if agent can return final response
@@ -726,11 +746,33 @@ Example for single agent invocation (sequential):
   "next_action": "invoke_agent",
   "action_input": [
     {
-      "agent_name": "ResearcherAgent",
+      "agent_name": "example_agent_name",
       "request": {
         "task": "analyze this data",
         "data": ["item1", "item2"]
       }
+    }
+  ]
+}
+```
+
+Example for multiple invocations of the same agent (parallel):
+```json
+{
+  "thought": "I need to process multiple items using the same agent type.",
+  "next_action": "invoke_agent",
+  "action_input": [
+    {
+      "agent_name": "example_agent_name",
+      "request": {"url": "first_url", "task": "extract"}
+    },
+    {
+      "agent_name": "example_agent_name", 
+      "request": {"url": "second_url", "task": "extract"}
+    },
+    {
+      "agent_name": "example_agent_name",
+      "request": {"url": "third_url", "task": "extract"}
     }
   ]
 }
@@ -748,7 +790,7 @@ Example for `call_tool`:
       "id": "call_search_123",
       "type": "function",
       "function": {
-        "name": "web_search_tool_name",
+        "name": "example_tool_name",
         "arguments": "{\\"query\\": \\"search terms\\"}"
       }
     }]
