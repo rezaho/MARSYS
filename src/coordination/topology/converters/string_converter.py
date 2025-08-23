@@ -93,7 +93,18 @@ class StringNotationConverter:
             if not isinstance(rule_item, str):
                 raise TypeError(f"In string notation, all rules must be strings, got {type(rule_item)}")
             try:
-                topology.add_rule(rule_item)
+                # Add the rule
+                rule = topology.add_rule(rule_item)
+                
+                # If it's a convergence point rule, also mark the node
+                if hasattr(rule, 'agent_name') and rule.__class__.__name__ == 'ConvergencePointRule':
+                    node = topology.get_node(rule.agent_name)
+                    if node:
+                        node.is_convergence_point = True
+                        logger.info(f"Marked node '{rule.agent_name}' as convergence point")
+                    else:
+                        logger.warning(f"Convergence point rule references non-existent node: {rule.agent_name}")
+                        
             except ValueError as e:
                 logger.warning(f"Skipping invalid rule '{rule_item}': {e}")
         

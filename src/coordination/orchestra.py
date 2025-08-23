@@ -343,6 +343,9 @@ class Orchestra:
                 agent_registry=self.agent_registry
             )
             
+            # Set circular reference - branch_executor needs branch_spawner
+            self.branch_executor.branch_spawner = self.branch_spawner
+            
             # Execute with dynamic branching
             result = await self._execute_with_dynamic_branching(
                 task, context, session_id, max_steps
@@ -580,6 +583,9 @@ class Orchestra:
                 except Exception as e:
                     logger.error(f"Error processing completed branch: {e}")
                     # Continue with other branches
+            
+            # Check for ready convergence points after branch completions
+            await self._check_and_execute_convergence_points(all_tasks, branch_states, context)
             
             step_count += 1
         
@@ -913,6 +919,89 @@ class Orchestra:
         
         self._sessions[session_id] = session
         return session
+    
+    async def _check_and_execute_convergence_points(
+        self,
+        all_tasks: List[asyncio.Task],
+        branch_states: Dict[str, ExecutionBranch],
+        context: Dict[str, Any]
+    ) -> None:
+        """Check for ready convergence points and execute them."""
+        if not hasattr(self.branch_spawner, 'convergence_tracker'):
+            return
+        
+        tracker = self.branch_spawner.convergence_tracker
+        
+        for convergence_point in list(tracker.pending_requests.keys()):
+            if tracker.check_convergence_ready(convergence_point):
+                # All branches have arrived - execute convergence point
+                logger.info(f"Convergence point '{convergence_point}' ready - aggregating {len(tracker.pending_requests[convergence_point])} requests")
+                
+                # Get aggregated requests
+                aggregated_requests = tracker.get_aggregated_requests(convergence_point)
+                
+                # Create convergence context with all requests
+                convergence_context = {
+                    "is_convergence": True,
+                    "aggregated_requests": aggregated_requests,
+                    "source_count": len(aggregated_requests),
+                    "convergence_point": convergence_point
+                }
+                
+                # Create a special convergence branch
+                convergence_branch = self._create_convergence_branch(
+                    convergence_point, convergence_context
+                )
+                
+                # Execute convergence point in its own branch
+                initial_request = self._format_aggregated_request(aggregated_requests)
+                
+                conv_task = asyncio.create_task(
+                    self.branch_executor.execute_branch(
+                        convergence_branch,
+                        initial_request,
+                        context
+                    )
+                )
+                
+                all_tasks.append(conv_task)
+                branch_states[convergence_branch.id] = convergence_branch
+                
+                # Clear pending requests for this convergence point
+                del tracker.pending_requests[convergence_point]
+                if convergence_point in tracker.potential_arrivals:
+                    del tracker.potential_arrivals[convergence_point]
+                
+                logger.info(f"Convergence point '{convergence_point}' execution started")
+    
+    def _create_convergence_branch(
+        self,
+        convergence_point: str,
+        convergence_context: Dict[str, Any]
+    ) -> ExecutionBranch:
+        """Create a branch for convergence point execution."""
+        return ExecutionBranch(
+            id=f"convergence_{convergence_point}_{uuid.uuid4().hex[:8]}",
+            name=f"Convergence: {convergence_point}",
+            type=BranchType.SIMPLE,
+            topology=BranchTopology(
+                agents=[convergence_point],
+                entry_agent=convergence_point,
+                allowed_transitions=dict(self.topology_graph.adjacency),
+                current_agent=convergence_point,
+                metadata=convergence_context
+            ),
+            state=BranchState(status=BranchStatus.PENDING)
+        )
+    
+    def _format_aggregated_request(self, aggregated_requests: List[Any]) -> Dict[str, Any]:
+        """Format aggregated requests for convergence agent."""
+        # Create a structured request with all summaries
+        return {
+            "type": "aggregated_summaries",
+            "summaries": aggregated_requests,
+            "count": len(aggregated_requests)
+        }
 
 
 class Session:

@@ -14,6 +14,7 @@ from dataclasses import dataclass, field
 from typing import Any, Dict, List, Optional, Set, Tuple, TYPE_CHECKING
 import logging
 import time
+from datetime import datetime, timedelta
 
 from ..branches.types import (
     ExecutionBranch,
@@ -27,6 +28,7 @@ from ..branches.types import (
     MaxStepsCompletion,
 )
 from ..topology.graph import TopologyGraph, ParallelGroup
+from ..validation.types import AgentInvocation
 
 if TYPE_CHECKING:
     from ...agents.registry import AgentRegistry
@@ -60,6 +62,99 @@ class BranchCompletedEvent:
     metadata: Dict[str, Any] = field(default_factory=dict)
 
 
+@dataclass
+class PendingRequest:
+    """Request waiting at a convergence point."""
+    branch_id: str
+    from_agent: str
+    request_data: Any
+    timestamp: float
+
+
+class ConvergenceTracker:
+    """Tracks convergence point states and pending requests."""
+    
+    def __init__(self):
+        # Convergence point -> list of pending requests
+        self.pending_requests: Dict[str, List[PendingRequest]] = {}
+        # Branch ID -> current agent position
+        self.branch_positions: Dict[str, str] = {}
+        # Convergence point -> set of branch IDs that could reach it
+        self.potential_arrivals: Dict[str, Set[str]] = {}
+        
+    def update_branch_position(self, branch_id: str, agent_name: str):
+        """Update the current position of a branch."""
+        self.branch_positions[branch_id] = agent_name
+        
+    def add_pending_request(self, convergence_point: str, branch_id: str, 
+                           from_agent: str, request_data: Any):
+        """Add a request to the pending queue for a convergence point."""
+        if convergence_point not in self.pending_requests:
+            self.pending_requests[convergence_point] = []
+        
+        self.pending_requests[convergence_point].append(PendingRequest(
+            branch_id=branch_id,
+            from_agent=from_agent,
+            request_data=request_data,
+            timestamp=time.time()
+        ))
+    
+    def check_convergence_ready(self, convergence_point: str) -> bool:
+        """
+        Check if all branches that could reach this convergence point have arrived.
+        """
+        potential = self.potential_arrivals.get(convergence_point, set()).copy()  # Make a copy to avoid modifying original
+        arrived = {req.branch_id for req in self.pending_requests.get(convergence_point, [])}
+        
+        # Remove branches that have taken different paths
+        for branch_id in list(potential):
+            if branch_id not in self.branch_positions:
+                potential.discard(branch_id)  # Branch completed elsewhere
+        
+        return potential == arrived
+    
+    def get_aggregated_requests(self, convergence_point: str) -> List[Any]:
+        """Get all pending requests for a convergence point."""
+        return [req.request_data for req in self.pending_requests.get(convergence_point, [])]
+
+
+@dataclass
+class ParallelInvocationGroup:
+    """Tracks a group of branches from a single parallel invocation request."""
+    group_id: str
+    parent_branch_id: str
+    requesting_agent: str
+    target_agent: str
+    total_branches: int
+    branch_ids: List[str]
+    completed_branches: Set[str] = field(default_factory=set)
+    failed_branches: Set[str] = field(default_factory=set)
+    convergence_points: Set[str] = field(default_factory=set)
+    aggregated_results: Dict[str, Any] = field(default_factory=dict)
+    created_at: datetime = field(default_factory=datetime.now)
+    convergence_triggered: bool = False
+    convergence_lock: asyncio.Lock = field(default_factory=asyncio.Lock)
+    
+    def is_complete(self) -> bool:
+        """Check if all branches in the group have completed or failed."""
+        return len(self.completed_branches) + len(self.failed_branches) == self.total_branches
+    
+    def get_pending_count(self) -> int:
+        """Get number of branches still pending."""
+        return self.total_branches - len(self.completed_branches) - len(self.failed_branches)
+    
+    def get_successful_count(self) -> int:
+        """Get number of successfully completed branches."""
+        return len(self.completed_branches)
+    
+    def should_trigger_convergence(self, min_success_ratio: float = 0.5) -> bool:
+        """Determine if convergence should trigger based on completion and success ratio."""
+        if not self.is_complete():
+            return False
+        success_ratio = self.get_successful_count() / self.total_branches if self.total_branches > 0 else 0
+        return success_ratio >= min_success_ratio
+
+
 class DynamicBranchSpawner:
     """
     Creates branches on-the-fly during execution.
@@ -74,6 +169,8 @@ class DynamicBranchSpawner:
     DEFAULT_MAX_COMPLETED_BRANCHES = 500
     DEFAULT_MAX_BRANCH_RESULTS = 100
     DEFAULT_CLEANUP_INTERVAL = 50  # Cleanup after every N branch completions
+    DEFAULT_MAX_RESULT_SIZE = 10000  # Max characters per result to store
+    DEFAULT_GROUP_TIMEOUT_SECONDS = 3600  # 1 hour timeout for groups
     
     def __init__(
         self,
@@ -92,6 +189,10 @@ class DynamicBranchSpawner:
         
         # Track pool instance allocations
         self.pool_allocations: Dict[str, Dict[str, Any]] = {}  # branch_id -> {pool_name, instance}
+        
+        # NEW: Track single agent allocations to prevent parallel usage
+        self.single_agent_allocations: Dict[str, str] = {}  # agent_name -> branch_id
+        self.single_agent_lock = asyncio.Lock()  # Async lock for thread-safe access
         
         # Memory management configuration
         self.max_completed_agents = max_completed_agents or self.DEFAULT_MAX_COMPLETED_AGENTS
@@ -115,9 +216,46 @@ class DynamicBranchSpawner:
         self.child_parent_map: Dict[str, str] = {}  # child_id -> parent_id
         self.waiting_branches: Dict[str, Set[str]] = {}  # parent_id -> set of child_ids to wait for
         
+        # Dynamic instance tracking for convergence points
+        self.convergence_points: Set[str] = set()  # Nodes marked as convergence
+        self.instance_tracking: Dict[str, Dict[str, List[str]]] = {}  
+        # convergence_node -> {incoming_agent -> [instance_ids]}
+        # Example: {"synthesizer": {"summarizer": ["sum_1", "sum_2", "sum_3"]}}
+        
+        self.instance_completions: Dict[str, BranchResult] = {}
+        # instance_id -> result
+        
+        self.convergence_executed: Set[str] = set()  # Prevent duplicate execution
+        
         # Cleanup tracking
         self._cleanup_counter = 0
         self._branch_completion_times: Dict[str, float] = {}  # Track when branches completed
+        
+        # Initialize convergence tracker
+        self.convergence_tracker = ConvergenceTracker()
+        
+        # Parallel invocation groups tracking
+        self.parallel_groups: Dict[str, ParallelInvocationGroup] = {}
+        self.branch_to_group: Dict[str, str] = {}  # branch_id -> group_id
+        self.completed_groups: Set[str] = set()  # For cleanup tracking
+        self.group_timeout_seconds: int = self.DEFAULT_GROUP_TIMEOUT_SECONDS  # Use constant
+        
+        # Identify convergence points from topology
+        self._identify_convergence_points()
+    
+    def _identify_convergence_points(self):
+        """Identify user-marked convergence points from topology."""
+        if not self.graph:
+            return
+        
+        # Check nodes for convergence point marking
+        for node_name, node_data in self.graph.nodes.items():
+            # Check if node has is_convergence_point flag
+            if hasattr(node_data, 'is_convergence_point') and node_data.is_convergence_point:
+                self.convergence_points.add(node_name)
+                # Initialize tracking for this convergence point
+                self.instance_tracking[node_name] = {}
+                logger.info(f"Registered convergence point: {node_name}")
     
     def _should_spawn_divergence(
         self, 
@@ -607,6 +745,12 @@ class DynamicBranchSpawner:
             self.branch_results[branch.id] = result
             self._branch_completion_times[branch.id] = time.time()
             
+            # If this branch has an instance ID, record the instance completion
+            if "instance_id" in branch.metadata:
+                instance_id = branch.metadata["instance_id"]
+                self.instance_completions[instance_id] = result
+                logger.debug(f"Recorded completion of instance {instance_id}")
+            
             # Mark all agents in branch as completed
             for agent in branch.topology.agents:
                 self.completed_agents.add(agent)
@@ -661,8 +805,16 @@ class DynamicBranchSpawner:
         """
         ready_agents = []
         
-        # 1. Check topology-based convergence points
+        # 1. Check our new dynamic instance-based convergence points
+        ready_convergence = await self.check_and_handle_convergence_points()
+        ready_agents.extend(ready_convergence)
+        
+        # 2. Check legacy topology-based convergence points (if any still exist)
         for convergence_agent in self.graph.convergence_points:
+            # Skip if this is already handled by our new system
+            if convergence_agent in self.convergence_points:
+                continue
+                
             sync_req = self.graph.requires_synchronization(convergence_agent)
             if not sync_req:
                 continue
@@ -717,6 +869,129 @@ class DynamicBranchSpawner:
             del self.waiting_branches[parent_id]
         
         return ready_agents
+    
+    async def check_and_handle_convergence_points(self) -> List[Tuple[str, Dict[str, Any]]]:
+        """
+        Check if any convergence points are ready to execute.
+        A convergence point is ready when ALL dynamic instances targeting it have completed.
+        
+        Returns:
+            List of (agent_name, aggregated_context) tuples for agents ready to run
+        """
+        ready_convergence_points = []
+        
+        for conv_node in self.convergence_points:
+            if conv_node in self.convergence_executed:
+                continue  # Already handled
+            
+            # Check if all instances targeting this convergence point have completed
+            all_complete = True
+            instance_results = []
+            
+            # Get all incoming agents for this convergence point
+            incoming_agents = self.graph.get_previous_agents(conv_node)
+            
+            for incoming_agent in incoming_agents:
+                if incoming_agent not in self.instance_tracking.get(conv_node, {}):
+                    # No instances from this agent yet - might still be creating them
+                    # Check if this agent has at least been invoked
+                    if incoming_agent in self.completed_agents or self._is_agent_active(incoming_agent):
+                        # Agent is processing but hasn't created instances yet
+                        all_complete = False
+                        break
+                    # If the agent hasn't even started, convergence isn't ready
+                    continue
+                
+                # Check each instance
+                for instance_id in self.instance_tracking[conv_node][incoming_agent]:
+                    if instance_id not in self.instance_completions:
+                        # This instance hasn't completed yet
+                        all_complete = False
+                        break
+                    instance_results.append(self.instance_completions[instance_id])
+                
+                if not all_complete:
+                    break
+            
+            # All instances complete - ready to execute convergence point
+            if all_complete and instance_results:
+                logger.info(f"Convergence point '{conv_node}' ready with {len(instance_results)} instance results")
+                
+                # Aggregate all instance results
+                aggregated = self._aggregate_instance_results(instance_results)
+                
+                # Mark as executed to prevent duplicates
+                self.convergence_executed.add(conv_node)
+                
+                ready_convergence_points.append((conv_node, aggregated))
+        
+        return ready_convergence_points
+    
+    def _aggregate_instance_results(self, instance_results: List[BranchResult]) -> Dict[str, Any]:
+        """
+        Aggregate results from all instances for a convergence point.
+        
+        Args:
+            instance_results: List of branch results from all instances
+            
+        Returns:
+            Aggregated context for the convergence point
+        """
+        aggregated = {
+            "convergence_results": [],
+            "instance_count": len(instance_results),
+            "aggregation_time": time.time(),
+            "aggregated_responses": [],
+            "is_convergence": True  # Important flag for Orchestra
+        }
+        
+        for result in instance_results:
+            # Extract the response from each instance
+            instance_summary = {
+                "branch_id": result.branch_id,
+                "response": result.final_response,
+                "success": result.success
+            }
+            aggregated["convergence_results"].append(instance_summary)
+            
+            # Also collect just the responses for easy access
+            if result.final_response:
+                aggregated["aggregated_responses"].append(result.final_response)
+        
+        logger.info(f"Aggregated {len(instance_results)} instance results for convergence")
+        return aggregated
+    
+    def _create_convergence_branch(
+        self,
+        convergence_node: str,
+        aggregated_context: Dict[str, Any]
+    ) -> ExecutionBranch:
+        """Create a branch for executing a convergence point."""
+        branch_id = f"convergence_{convergence_node}_{uuid.uuid4().hex[:8]}"
+        
+        # Get allowed transitions from this node forward
+        allowed_transitions = self.graph.get_subgraph_from(convergence_node)
+        
+        branch = ExecutionBranch(
+            id=branch_id,
+            name=f"Convergence: {convergence_node}",
+            type=BranchType.SIMPLE,
+            topology=BranchTopology(
+                agents=[convergence_node],
+                entry_agent=convergence_node,
+                current_agent=convergence_node,
+                allowed_transitions=allowed_transitions
+            ),
+            state=BranchState(status=BranchStatus.PENDING),
+            metadata={
+                "is_convergence": True,
+                "aggregated_context": aggregated_context,
+                "instance_count": aggregated_context.get("instance_count", 0)
+            }
+        )
+        
+        logger.info(f"Created convergence branch for '{convergence_node}' with {aggregated_context.get('instance_count', 0)} aggregated inputs")
+        return branch
     
     def _aggregate_branch_results(self, required_agents: Set[str]) -> Dict[str, Any]:
         """Aggregate results from branches that contained the required agents."""
@@ -853,8 +1128,29 @@ class DynamicBranchSpawner:
                 }
             return instance
         else:
-            # Regular agent - just get it
-            return AgentRegistry.get(agent_name)
+            # Regular agent - check if already in use
+            async with self.single_agent_lock:
+                if agent_name in self.single_agent_allocations:
+                    current_branch = self.single_agent_allocations[agent_name]
+                    if current_branch != branch_id:  # Different branch trying to use it
+                        logger.warning(
+                            f"Single agent '{agent_name}' already in use by branch "
+                            f"'{current_branch}', cannot allocate to '{branch_id}'"
+                        )
+                        return None
+                    else:
+                        # Same branch requesting again - allow (idempotent)
+                        logger.debug(f"Branch '{branch_id}' already has '{agent_name}'")
+                        return AgentRegistry.get(agent_name)
+                
+                # Agent is available - allocate it
+                agent = AgentRegistry.get(agent_name)
+                if agent:
+                    self.single_agent_allocations[agent_name] = branch_id
+                    logger.info(
+                        f"Allocated single agent '{agent_name}' to branch '{branch_id}'"
+                    )
+                return agent
     
     async def _acquire_from_pool_async(
         self,
@@ -912,6 +1208,55 @@ class DynamicBranchSpawner:
             else:
                 logger.warning(f"Failed to release instance from pool '{pool_name}' for branch '{branch_id}'")
     
+    async def _release_single_agent(self, agent_name: str, branch_id: str) -> bool:
+        """
+        Release a single agent allocation.
+        
+        Args:
+            agent_name: Name of the agent to release
+            branch_id: ID of the branch releasing the agent
+            
+        Returns:
+            True if released, False if not allocated to this branch
+        """
+        async with self.single_agent_lock:
+            if agent_name in self.single_agent_allocations:
+                if self.single_agent_allocations[agent_name] == branch_id:
+                    del self.single_agent_allocations[agent_name]
+                    logger.info(
+                        f"Released single agent '{agent_name}' from branch '{branch_id}'"
+                    )
+                    return True
+                else:
+                    logger.warning(
+                        f"Branch '{branch_id}' tried to release '{agent_name}' "
+                        f"but it's allocated to '{self.single_agent_allocations[agent_name]}'"
+                    )
+            return False
+    
+    async def _get_available_instance_count(self, agent_name: str) -> int:
+        """
+        Get the number of available instances for an agent.
+        
+        Args:
+            agent_name: Name of the agent or pool
+            
+        Returns:
+            Number of available instances
+        """
+        from ...agents.registry import AgentRegistry
+        
+        if AgentRegistry.is_pool(agent_name):
+            pool = AgentRegistry.get_pool(agent_name)
+            return pool.get_available_count() if pool else 0
+        else:
+            # Single agent - check if in use
+            async with self.single_agent_lock:
+                if agent_name in self.single_agent_allocations:
+                    return 0  # Already in use
+                else:
+                    return 1  # Available
+    
     async def handle_agent_initiated_parallelism(
         self,
         agent_name: str,
@@ -920,7 +1265,12 @@ class DynamicBranchSpawner:
         parent_branch_id: str
     ) -> List[asyncio.Task]:
         """
-        Handle agent-initiated parallel invocation with pool support.
+        Handle agent-initiated parallel invocation with unified batch processing.
+        
+        This method handles ALL cases:
+        - Single instance (batch_size = 1)
+        - Multiple instances but less than requested (batch_size = available)
+        - Sufficient instances (batch_size = requested)
         
         Args:
             agent_name: Name of the agent initiating parallelism
@@ -931,99 +1281,114 @@ class DynamicBranchSpawner:
         Returns:
             List of tasks for child branches
         """
+        # Check for properly parsed invocations list
+        invocations = None
+        if isinstance(response, dict) and "invocations" in response:
+            invocations = response["invocations"]
+            logger.info(f"Using parsed invocations list with {len(invocations) if invocations else 0} invocations")
+        
         # Extract target agents from response
         target_agents = self._extract_parallel_targets(response)
         if not target_agents:
             logger.warning(f"Agent '{agent_name}' requested parallel invoke but no targets found")
             return []
         
-        logger.info(f"Agent '{agent_name}' initiating parallel execution of: {target_agents}")
+        logger.info(f"Agent '{agent_name}' initiating execution of: {target_agents}")
         
-        # Check for pool constraints and acquire instances
-        agent_instances = {}
-        failed_acquisitions = []
+        # PHASE 1: Create ALL branches immediately in execution graph
+        # This ensures proper convergence detection
+        all_branches = []
+        branch_to_invocation = {}  # Map branch_id to invocation data
         
-        for target_agent in target_agents:
-            # Try to acquire agent (from pool if necessary)
-            instance = await self._acquire_agent_for_branch(
-                target_agent,
-                f"child_{parent_branch_id}_{target_agent}_{uuid.uuid4().hex[:8]}",
-                timeout=10.0  # Shorter timeout for parallel acquisition
-            )
+        for idx, target_agent in enumerate(target_agents):
+            # Extract request data for this invocation
+            instance_id = None
+            agent_request = {}
             
-            if instance:
-                agent_instances[target_agent] = instance
+            if invocations and idx < len(invocations):
+                # Direct access to invocation object
+                inv = invocations[idx]
+                agent_request = inv.request
+                instance_id = inv.instance_id
+                target_agent = inv.agent_name  # Use actual agent name from invocation
             else:
-                failed_acquisitions.append(target_agent)
-                logger.warning(f"Failed to acquire instance for '{target_agent}'")
-        
-        # If some acquisitions failed, handle gracefully
-        if failed_acquisitions:
-            # Release already acquired instances
-            for agent_name, instance in agent_instances.items():
-                if agent_name in self.pool_allocations:
-                    self._release_pool_instance(agent_name)
+                # No invocations available - use empty request
+                logger.warning(f"No invocation data available for {target_agent}[{idx}], using empty request")
+                agent_request = {}
             
-            # Return error or handle as needed
-            logger.error(
-                f"Could not acquire all requested agents. Failed: {failed_acquisitions}. "
-                f"Consider increasing pool sizes or reducing parallelism."
-            )
-            # Could optionally return partial results or retry
-            return []
-        
-        # Create child branches with acquired instances
-        child_tasks = []
-        child_branch_ids = []
-        
-        for target_agent, instance in agent_instances.items():
-            # Extract agent-specific request data
-            agent_request = self._extract_agent_request(response, target_agent)
+            # Create unique branch ID
+            child_branch_id = f"child_{parent_branch_id}_{target_agent}_{idx}_{uuid.uuid4().hex[:8]}"
             
-            # Create child branch with parent reference
+            # Create child branch
             child_branch = self._create_child_branch(
                 parent_agent=agent_name,
                 target_agent=target_agent,
                 parent_branch_id=parent_branch_id,
                 initial_request=agent_request,
-                context=context
+                context=context,
+                instance_id=instance_id
             )
             
-            # Store branch info and relationships
+            # Store branch info
             self.branch_info[child_branch.id] = child_branch
-            self._track_agent_in_branch(target_agent, child_branch.id)
+            all_branches.append(child_branch)
+            branch_to_invocation[child_branch.id] = {
+                'target_agent': target_agent,
+                'request': agent_request,
+                'instance_id': instance_id,
+                'index': idx
+            }
             
-            # Track parent-child relationship
-            child_branch_ids.append(child_branch.id)
-            self.child_parent_map[child_branch.id] = parent_branch_id
-            
-            # Create async task
-            task = asyncio.create_task(
-                self._execute_branch_with_monitoring(child_branch, agent_request, context)
-            )
-            
-            self.active_branches[child_branch.id] = task
-            child_tasks.append(task)
-            
-            # Emit event
-            if self.event_bus:
-                await self.event_bus.emit(BranchCreatedEvent(
-                    branch_id=child_branch.id,
-                    branch_name=child_branch.name,
-                    source_agent=agent_name,
-                    target_agents=[target_agent],
-                    trigger_type="agent_initiated_parallel",
-                    metadata={"parent_branch_id": parent_branch_id}
-                ))
+            logger.debug(f"Created branch {child_branch.id} for {target_agent}[{idx}] with request: {agent_request}")
         
-        # Track parent's children and put parent in waiting state
-        if child_branch_ids:
-            self.parent_child_map[parent_branch_id] = child_branch_ids
-            self.waiting_branches[parent_branch_id] = set(child_branch_ids)
-            logger.info(f"Spawned {len(child_branch_ids)} parallel branches from agent '{agent_name}' (agent-initiated)")
-            logger.info(f"Parent branch '{parent_branch_id}' waiting for {len(child_branch_ids)} children")
+        # Determine the target agent name (all should be the same for pooling)
+        agent_name_target = target_agents[0] if target_agents else None
         
-        return child_tasks
+        # Validate all target agents are the same (required for pooling)
+        if target_agents and not all(t == agent_name_target for t in target_agents):
+            logger.warning(f"Mixed target agents in parallel invocation: {set(target_agents)}. Using first: {agent_name_target}")
+        
+        if not agent_name_target:
+            logger.error("No target agent identified for parallel invocation")
+            return []
+        
+        # PHASE 2: Create Parallel Invocation Group
+        group_id = f"parallel_group_{uuid.uuid4().hex[:8]}"
+        group = ParallelInvocationGroup(
+            group_id=group_id,
+            parent_branch_id=parent_branch_id,
+            requesting_agent=agent_name,
+            target_agent=agent_name_target,
+            total_branches=len(all_branches),
+            branch_ids=[b.id for b in all_branches]
+        )
+        
+        # Find all convergence points reachable from target agent
+        group.convergence_points = self._find_reachable_convergence_points(agent_name_target)
+        
+        # Register group and map branches to it
+        self.parallel_groups[group_id] = group
+        for branch_id in group.branch_ids:
+            self.branch_to_group[branch_id] = group_id
+        
+        logger.info(f"Created parallel group '{group_id}' with {len(all_branches)} branches, convergence points: {group.convergence_points}")
+        
+        # PHASE 3: Execute using unified batch processing
+        all_tasks = await self._execute_branches_in_batches(
+            group=group,
+            branches=all_branches,
+            branch_to_invocation=branch_to_invocation,
+            context=context
+        )
+        
+        # Track parent's children and put parent in waiting state if needed
+        if all_tasks:
+            self.parent_child_map[parent_branch_id] = group.branch_ids
+            self.waiting_branches[parent_branch_id] = set(group.branch_ids)
+            logger.info(f"Spawned {len(group.branch_ids)} branches from agent '{agent_name}'")
+            logger.info(f"Parent branch '{parent_branch_id}' waiting for {len(group.branch_ids)} children")
+        
+        return all_tasks
     
     def _extract_parallel_targets(self, response: Any) -> List[str]:
         """Extract target agent names from parallel invoke response."""
@@ -1087,13 +1452,16 @@ class DynamicBranchSpawner:
         logger.debug(f"Extracted request for agent '{target_agent}': {agent_request}")
         return agent_request
     
+
+    
     def _create_child_branch(
         self,
         parent_agent: str,
         target_agent: str,
         parent_branch_id: str,
         initial_request: Any,
-        context: Dict[str, Any]
+        context: Dict[str, Any],
+        instance_id: Optional[str] = None
     ) -> ExecutionBranch:
         """Create a child branch for agent-initiated parallelism."""
         branch_id = f"child_{parent_branch_id}_{target_agent}_{uuid.uuid4().hex[:8]}"
@@ -1118,11 +1486,375 @@ class DynamicBranchSpawner:
                 "parent_branch_id": parent_branch_id,
                 "initial_request": initial_request,
                 "context": context,
-                "is_child_branch": True
+                "is_child_branch": True,
+                "instance_id": instance_id if instance_id else None
             }
         )
         
         return branch
+    
+    async def _execute_branches_in_batches(
+        self,
+        group: ParallelInvocationGroup,
+        branches: List[ExecutionBranch],
+        branch_to_invocation: Dict[str, Dict],
+        context: Dict[str, Any]
+    ) -> List[asyncio.Task]:
+        """
+        Execute branches in batches based on available instances.
+        
+        This unified method handles all scenarios:
+        - Sequential (batch_size=1)
+        - Batched (batch_size<total)
+        - Parallel (batch_size=total)
+        """
+        all_tasks = []
+        agent_name = group.target_agent
+        
+        # Determine batch size
+        available_count = await self._get_available_instance_count(agent_name)
+        if available_count == 0:
+            logger.error(f"No instances available for '{agent_name}'")
+            return []
+        
+        batch_size = min(available_count, len(branches))
+        total_batches = (len(branches) + batch_size - 1) // batch_size
+        
+        logger.info(
+            f"Executing {len(branches)} branches of '{agent_name}' "
+            f"in {total_batches} batches (batch_size={batch_size})"
+        )
+        
+        # Process branches in batches
+        for batch_num in range(0, len(branches), batch_size):
+            batch = branches[batch_num:batch_num + batch_size]
+            batch_tasks = []
+            
+            # Start all branches in this batch
+            for branch in batch:
+                inv_data = branch_to_invocation[branch.id]
+                
+                # Acquire instance
+                instance = await self._acquire_agent_for_branch(
+                    agent_name,
+                    branch.id,
+                    timeout=30.0
+                )
+                
+                if not instance:
+                    logger.error(f"Failed to acquire instance for branch {branch.id}")
+                    # Mark branch as failed in group
+                    group.failed_branches.add(branch.id)
+                    continue
+                
+                # Track agent in branch
+                self._track_agent_in_branch(agent_name, branch.id)
+                self.child_parent_map[branch.id] = group.parent_branch_id
+                
+                # Add group context to branch metadata
+                branch.metadata['parallel_group_id'] = group.group_id
+                branch.metadata['parallel_group_size'] = group.total_branches
+                
+                # Create task
+                task = asyncio.create_task(
+                    self._execute_branch_with_group_awareness(
+                        branch, inv_data['request'], context, group
+                    )
+                )
+                
+                self.active_branches[branch.id] = task
+                batch_tasks.append(task)
+            
+            # For resource-constrained execution, wait for batch to complete
+            # before starting next batch (to free up instances)
+            is_last_batch = (batch_num + batch_size >= len(branches))
+            if not is_last_batch and batch_size < len(branches):
+                logger.info(f"Waiting for batch {batch_num//batch_size + 1}/{total_batches} to complete before next batch")
+                await asyncio.gather(*batch_tasks, return_exceptions=True)
+                
+                # Release instances for reuse in next batch
+                for branch in batch:
+                    await self._release_agent_instance(agent_name, branch.id)
+            
+            all_tasks.extend(batch_tasks)
+        
+        return all_tasks
+    
+    async def _execute_branch_with_group_awareness(
+        self,
+        branch: ExecutionBranch,
+        initial_request: Any,
+        context: Dict[str, Any],
+        group: ParallelInvocationGroup
+    ) -> BranchResult:
+        """Execute a branch with awareness of its parallel invocation group."""
+        try:
+            # Add group info to context
+            enhanced_context = {
+                **context,
+                'parallel_group_id': group.group_id,
+                'parallel_group_size': group.total_branches
+            }
+            
+            # Execute the branch
+            result = await self.branch_executor.execute_branch(
+                branch, initial_request, enhanced_context
+            )
+            
+            # Mark branch as completed in group
+            group.completed_branches.add(branch.id)
+            
+            # Store only essential data to avoid memory issues
+            if result and result.execution_trace:
+                last_step = result.execution_trace[-1]
+                
+                # Truncate large responses to prevent memory issues
+                content = last_step.response
+                if isinstance(content, str) and len(content) > self.DEFAULT_MAX_RESULT_SIZE:
+                    content = content[:self.DEFAULT_MAX_RESULT_SIZE] + "... [truncated]"
+                    logger.warning(f"Truncated large response from branch {branch.id} (was {len(last_step.response)} chars)")
+                
+                group.aggregated_results[branch.id] = {
+                    'branch_id': branch.id,
+                    'content': content,
+                    'agent': last_step.agent_name
+                }
+            
+            # Record completion
+            self.completed_branches.add(branch.id)
+            self.branch_results[branch.id] = result
+            
+            # Check if this completes the group and triggers convergence
+            # Move check inside the method to prevent race conditions
+            await self._trigger_group_convergence(group)
+            
+            # Periodically clean up completed groups
+            self._cleanup_counter += 1
+            if self._cleanup_counter % self.DEFAULT_CLEANUP_INTERVAL == 0:
+                await self.cleanup_completed_groups()
+            
+            # Clean up active branch tracking
+            if branch.id in self.active_branches:
+                del self.active_branches[branch.id]
+            
+            return result
+            
+        except Exception as e:
+            logger.error(f"Error executing branch {branch.id}: {e}")
+            # Mark branch as failed in group
+            group.failed_branches.add(branch.id)
+            
+            # Check if group should still trigger convergence with partial results
+            # Call the method which will check internally with proper locking
+            if group.should_trigger_convergence(min_success_ratio=0.5):
+                await self._trigger_group_convergence(group)
+            
+            raise
+    
+    async def _trigger_group_convergence(self, group: ParallelInvocationGroup):
+        """Trigger convergence points after all branches in a group complete."""
+        # Use lock to prevent race conditions
+        async with group.convergence_lock:
+            # Check completion status inside the lock to prevent races
+            if not group.is_complete():
+                return  # Not all branches completed yet
+            
+            if group.convergence_triggered:
+                return  # Already triggered by another branch
+            
+            group.convergence_triggered = True
+        
+        logger.info(
+            f"Parallel group '{group.group_id}' complete. "
+            f"Successfully completed: {group.get_successful_count()}/{group.total_branches}. "
+        )
+        
+        # Collect all results from successful branches
+        aggregated_data = []
+        for branch_id in group.completed_branches:
+            if branch_id in group.aggregated_results:
+                aggregated_data.append(group.aggregated_results[branch_id])
+        
+        # Store aggregated data for parent branch to use when it resumes
+        # The parent will naturally flow to convergence points with this data
+        parent_branch_id = group.parent_branch_id
+        if parent_branch_id in self.branch_info:
+            parent_branch = self.branch_info[parent_branch_id]
+            parent_branch.metadata['aggregated_child_results'] = aggregated_data
+            parent_branch.metadata['child_group_id'] = group.group_id
+            logger.info(f"Stored {len(aggregated_data)} aggregated results for parent branch '{parent_branch_id}'")
+            
+            # FIX 1: Clear waiting branches so parent can resume
+            if parent_branch_id in self.waiting_branches:
+                # Clear all children from this group
+                self.waiting_branches[parent_branch_id].clear()
+                logger.info(f"Cleared waiting branches for parent '{parent_branch_id}' - ready to resume")
+            
+            # FIX 2: Set parent branch to continue to convergence point
+            if group.convergence_points and parent_branch:
+                # Prepare the parent to continue to convergence
+                convergence_point = list(group.convergence_points)[0]
+                
+                # Store convergence data in parent metadata
+                parent_branch.metadata['convergence_data'] = {
+                    'target': convergence_point,
+                    'aggregated_requests': aggregated_data,
+                    'source_count': len(aggregated_data),
+                    'is_convergence': True
+                }
+                
+                # Update parent's current agent to convergence point
+                parent_branch.topology.current_agent = convergence_point
+                logger.info(f"Parent branch will continue to convergence point: {convergence_point}")
+        
+        # If there are convergence points, we DON'T execute them directly
+        # The parent branch will flow to them naturally after resuming
+        if group.convergence_points:
+            logger.info(f"Parent branch will flow to convergence points: {group.convergence_points}")
+        
+        # Mark group as completed for cleanup
+        self.completed_groups.add(group.group_id)
+    
+    def _find_reachable_convergence_points(self, from_agent: str) -> Set[str]:
+        """Find all convergence points reachable from an agent."""
+        convergence_points = set()
+        
+        if not self.graph:
+            return convergence_points
+        
+        for node_name, node in self.graph.nodes.items():
+            if hasattr(node, 'is_convergence_point') and node.is_convergence_point:
+                # Check if this convergence point is reachable from the agent
+                if self.graph.can_reach(from_agent, node_name):
+                    convergence_points.add(node_name)
+        
+        return convergence_points
+    
+    async def _execute_convergence_point(
+        self,
+        convergence_point: str,
+        aggregated_data: List[Dict],
+        group_id: str
+    ) -> None:
+        """Execute a convergence point with aggregated data."""
+        logger.info(
+            f"Executing convergence point '{convergence_point}' "
+            f"with {len(aggregated_data)} aggregated inputs from group '{group_id}'"
+        )
+        
+        # Create convergence context
+        convergence_context = {
+            "is_convergence": True,
+            "aggregated_requests": aggregated_data,
+            "source_count": len(aggregated_data),
+            "convergence_point": convergence_point,
+            "parallel_group_id": group_id
+        }
+        
+        # Create a convergence branch
+        branch_id = f"convergence_{convergence_point}_{group_id}"
+        allowed_transitions = self.graph.get_subgraph_from(convergence_point) if self.graph else {}
+        
+        convergence_branch = ExecutionBranch(
+            id=branch_id,
+            name=f"Convergence: {convergence_point}",
+            type=BranchType.CONVERGENCE,
+            topology=BranchTopology(
+                agents=[convergence_point],
+                entry_agent=convergence_point,
+                current_agent=convergence_point,
+                allowed_transitions=allowed_transitions
+            ),
+            state=BranchState(status=BranchStatus.PENDING),
+            completion_condition=AgentDecidedCompletion(),
+            metadata={
+                "is_convergence_execution": True,
+                "aggregated_count": len(aggregated_data),
+                "parallel_group_id": group_id
+            }
+        )
+        
+        # Format the aggregated request
+        initial_request = {
+            "type": "aggregated_data",
+            "data": aggregated_data,
+            "count": len(aggregated_data)
+        }
+        
+        # Execute the convergence point
+        try:
+            result = await self.branch_executor.execute_branch(
+                convergence_branch,
+                initial_request,
+                convergence_context
+            )
+            logger.info(f"Convergence point '{convergence_point}' completed successfully")
+        except Exception as e:
+            logger.error(f"Error executing convergence point '{convergence_point}': {e}")
+    
+    async def _release_agent_instance(self, agent_name: str, branch_id: str):
+        """Release an agent instance after use."""
+        # Release from single agent tracking
+        async with self.single_agent_lock:
+            if agent_name in self.single_agent_allocations:
+                if self.single_agent_allocations[agent_name] == branch_id:
+                    del self.single_agent_allocations[agent_name]
+                    logger.debug(f"Released single agent '{agent_name}' from branch '{branch_id}'")
+        
+        # Release from pool if applicable
+        if branch_id in self.pool_allocations:
+            allocation = self.pool_allocations[branch_id]
+            if 'pool' in allocation and 'instance' in allocation:
+                pool = allocation['pool']
+                instance = allocation['instance']
+                pool.release_instance(instance)
+                del self.pool_allocations[branch_id]
+                logger.debug(f"Released pool instance for '{agent_name}' from branch '{branch_id}'")
+    
+    async def cleanup_completed_groups(self):
+        """Clean up completed and timed-out parallel invocation groups."""
+        current_time = datetime.now()
+        groups_to_remove = []
+        
+        for group_id, group in self.parallel_groups.items():
+            # Check if group is completed and marked for cleanup
+            if group_id in self.completed_groups:
+                groups_to_remove.append(group_id)
+                logger.debug(f"Cleaning up completed group '{group_id}'")
+            
+            # Check for timeout
+            elif hasattr(group, 'created_at'):
+                age_seconds = (current_time - group.created_at).total_seconds()
+                if age_seconds > self.group_timeout_seconds:
+                    groups_to_remove.append(group_id)
+                    logger.warning(
+                        f"Cleaning up timed-out group '{group_id}' "
+                        f"(age: {age_seconds:.1f}s, timeout: {self.group_timeout_seconds}s)"
+                    )
+        
+        # Remove identified groups
+        for group_id in groups_to_remove:
+            # Clean up group
+            if group_id in self.parallel_groups:
+                group = self.parallel_groups[group_id]
+                
+                # Clean up branch-to-group mappings
+                for branch_id in group.branch_ids:
+                    if branch_id in self.branch_to_group:
+                        del self.branch_to_group[branch_id]
+                
+                # Remove the group itself
+                del self.parallel_groups[group_id]
+                
+                # Remove from completed groups set
+                self.completed_groups.discard(group_id)
+                
+                logger.info(f"Cleaned up parallel group '{group_id}'")
+        
+        # Log cleanup summary
+        if groups_to_remove:
+            logger.info(f"Cleaned up {len(groups_to_remove)} parallel groups")
+            logger.debug(f"Remaining groups: {len(self.parallel_groups)}")
     
     async def _handle_child_completion(
         self,
@@ -1150,6 +1882,61 @@ class DynamicBranchSpawner:
                 logger.info(f"All children completed for parent branch '{parent_branch_id}'")
             else:
                 logger.info(f"Parent branch '{parent_branch_id}' still waiting for {remaining} children")
+    
+    def _track_instance_heading_to_convergence(
+        self, 
+        instance_id: str, 
+        agent_name: str, 
+        branch_id: str
+    ) -> None:
+        """
+        When an agent instance is created, check if it leads to a convergence point.
+        
+        Args:
+            instance_id: Unique ID for this instance
+            agent_name: Name of the agent being instantiated
+            branch_id: ID of the branch containing this instance
+        """
+        # Check what this agent connects to
+        next_agents = self.graph.get_next_agents(agent_name)
+        
+        for next_agent in next_agents:
+            if next_agent in self.convergence_points:
+                # This instance will eventually reach a convergence point
+                if agent_name not in self.instance_tracking[next_agent]:
+                    self.instance_tracking[next_agent][agent_name] = []
+                
+                self.instance_tracking[next_agent][agent_name].append(instance_id)
+                logger.debug(f"Instance {instance_id} of {agent_name} tracked for convergence at {next_agent}")
+                
+                # Also check if the agent_name itself leads indirectly to convergence points
+                # (for multi-hop scenarios like browser -> summarizer -> synthesizer)
+                self._track_indirect_convergence(instance_id, agent_name)
+    
+    def _track_indirect_convergence(self, instance_id: str, agent_name: str) -> None:
+        """Track instances that indirectly reach convergence points through multiple hops."""
+        visited = set()
+        queue = [(agent_name, instance_id)]
+        
+        while queue:
+            current_agent, current_instance = queue.pop(0)
+            if current_agent in visited:
+                continue
+            visited.add(current_agent)
+            
+            next_agents = self.graph.get_next_agents(current_agent)
+            for next_agent in next_agents:
+                if next_agent in self.convergence_points:
+                    # Track this path to convergence
+                    if current_agent not in self.instance_tracking[next_agent]:
+                        self.instance_tracking[next_agent][current_agent] = []
+                    
+                    if current_instance not in self.instance_tracking[next_agent][current_agent]:
+                        self.instance_tracking[next_agent][current_agent].append(current_instance)
+                        logger.debug(f"Instance {current_instance} of {current_agent} will reach convergence at {next_agent}")
+                else:
+                    # Continue traversal
+                    queue.append((next_agent, current_instance))
     
     def _aggregate_child_results(self, parent_branch_id: str) -> Dict[str, Any]:
         """

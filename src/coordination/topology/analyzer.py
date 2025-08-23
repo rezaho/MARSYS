@@ -139,6 +139,13 @@ class TopologyAnalyzer:
             # Use shared parsing to handle any node format
             node = parse_node(node_item)
             graph.add_node(node.name, agent=node.agent_ref, node_type=node.node_type)
+            
+            # Transfer convergence point flag if set
+            if hasattr(node, 'is_convergence_point') and node.is_convergence_point:
+                graph_node = graph.nodes.get(node.name)
+                if graph_node:
+                    graph_node.is_convergence_point = True
+                    logger.debug(f"Transferred convergence point flag for {node.name}")
     
     def _add_edges(self, graph: TopologyGraph, topology_def: Union[Topology, Dict[str, Any]]) -> None:
         """Add edges from topology definition to graph."""
