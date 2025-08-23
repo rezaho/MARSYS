@@ -245,7 +245,7 @@ def parse_rule(rule: Union[str, 'Rule']) -> 'Rule':
 def _parse_string_rule(rule_str: str) -> 'Rule':
     """Parse string-based rules."""
     from ...rules.basic_rules import (
-        TimeoutRule, MaxAgentsRule, MaxStepsRule, ParallelRule
+        TimeoutRule, MaxAgentsRule, MaxStepsRule, ParallelRule, ConvergencePointRule
     )
     
     rule_str = rule_str.strip()
@@ -274,6 +274,12 @@ def _parse_string_rule(rule_str: str) -> 'Rule':
         agents_str = parallel_match.group(1)
         agents = [a.strip() for a in agents_str.split(',')]
         return ParallelRule(agents=agents)
+    
+    # Parse convergence point rule
+    convergence_match = re.match(r'convergence_point\((.*?)\)', rule_str)
+    if convergence_match:
+        agent_name = convergence_match.group(1).strip()
+        return ConvergencePointRule(agent_name=agent_name)
     
     # Parse max_turns for conversations (create MaxTurnsRule)
     max_turns_match = re.match(r'max_turns\((.*?),\s*(\d+)\)', rule_str)

@@ -940,3 +940,51 @@ class ParallelRule(Rule):
         trigger_str = f" (triggered by {self.trigger_agent})" if self.trigger_agent else ""
         wait_str = " with synchronization" if self.wait_for_all else " without synchronization"
         return f"Parallel execution rule for {self.agents}{trigger_str}{wait_str}"
+
+
+class ConvergencePointRule(Rule):
+    """
+    Rule that marks an agent as a convergence point for parallel execution.
+    
+    A convergence point is an agent that should wait for all parallel instances
+    of its predecessor agents to complete before executing. This enables proper
+    aggregation of results from parallel executions.
+    """
+    
+    def __init__(
+        self,
+        agent_name: str,
+        name: Optional[str] = None,
+        priority: RulePriority = RulePriority.HIGH
+    ):
+        """
+        Initialize convergence point rule.
+        
+        Args:
+            agent_name: Name of the agent that is a convergence point
+            name: Optional rule name
+            priority: Rule priority
+        """
+        rule_name = name or f"convergence_point_{agent_name}"
+        super().__init__(rule_name, RuleType.FLOW_CONTROL, priority)
+        self.agent_name = agent_name
+    
+    async def check(self, context: RuleContext) -> RuleResult:
+        """
+        Mark agent as convergence point.
+        
+        This rule doesn't block execution but provides metadata
+        for the branch spawner to handle convergence properly.
+        """
+        return RuleResult(
+            rule_name=self.name,
+            passed=True,
+            action="allow",
+            metadata={
+                "is_convergence_point": True,
+                "convergence_agent": self.agent_name
+            }
+        )
+    
+    def description(self) -> str:
+        return f"Convergence point rule for: {self.agent_name}"

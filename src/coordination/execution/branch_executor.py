@@ -233,6 +233,10 @@ class BranchExecutor:
             branch.state.end_time = time.time()
             branch.state.total_steps = result.total_steps
             
+            # Release any single agents allocated to this branch
+            if hasattr(self, 'branch_spawner') and self.branch_spawner:
+                await self._release_branch_agents(branch.id)
+            
             return result
             
         except Exception as e:
@@ -371,10 +375,35 @@ class BranchExecutor:
             next_agent = await self._determine_next_agent(
                 current_agent,
                 step_result,
-                branch.topology.allowed_transitions
+                branch.topology.allowed_transitions,
+                branch.id  # Pass branch ID for convergence checking
             )
             
             if not next_agent:
+                # Check if stopped at convergence
+                convergence_target = getattr(step_result, 'convergence_target', None)
+                if convergence_target:
+                    # Update branch position in tracker
+                    if hasattr(self.branch_spawner, 'convergence_tracker'):
+                        self.branch_spawner.convergence_tracker.update_branch_position(
+                            branch.id, current_agent
+                        )
+                    
+                    return BranchResult(
+                        branch_id=branch.id,
+                        success=True,
+                        final_response=None,  # No final response yet
+                        total_steps=branch.state.current_step,
+                        execution_trace=execution_trace,
+                        branch_memory=context.branch_memory,
+                        metadata={
+                            "held_at_convergence": True,
+                            "convergence_target": convergence_target,
+                            "last_agent": current_agent,
+                            "hold_reason": getattr(step_result, 'hold_reason', None)
+                        }
+                    )
+                
                 # No next agent - branch completes
                 # Extract the actual content from parsed response if available
                 final_content = step_result.response
@@ -956,11 +985,110 @@ class BranchExecutor:
         max_steps = branch.topology.metadata.get("max_steps", 30)
         return branch.state.current_step >= max_steps
     
+    async def _should_hold_for_convergence(
+        self,
+        current_agent: str,
+        next_agent: str,
+        branch_id: str
+    ) -> Tuple[bool, Optional[str]]:
+        """
+        Determine if execution should hold at a convergence point.
+        
+        Now checks for parallel invocation groups, not just active branches.
+        Includes deadlock detection with timeout.
+        
+        Returns:
+            (should_hold, reason)
+        """
+        if not self.topology_graph or not self.branch_spawner:
+            return False, None
+        
+        # Check if next agent is a convergence point
+        node = self.topology_graph.get_node(next_agent)
+        if not (node and hasattr(node, 'is_convergence_point') and node.is_convergence_point):
+            return False, None
+        
+        # IMPORTANT: Check if this branch is part of a parallel invocation group
+        if hasattr(self.branch_spawner, 'branch_to_group'):
+            group_id = self.branch_spawner.branch_to_group.get(branch_id)
+            if group_id:
+                group = self.branch_spawner.parallel_groups.get(group_id)
+                if group and next_agent in group.convergence_points:
+                    # Check for timeout/deadlock
+                    from datetime import datetime
+                    if hasattr(group, 'created_at'):
+                        age_seconds = (datetime.now() - group.created_at).total_seconds()
+                        # Use timeout from branch_spawner
+                        timeout = getattr(self.branch_spawner, 'group_timeout_seconds', 3600)
+                        if age_seconds > timeout:
+                            logger.error(
+                                f"DEADLOCK DETECTED: Group '{group_id}' timed out after {age_seconds:.1f}s. "
+                                f"Forcing convergence with {group.get_successful_count()} completed branches."
+                            )
+                            # Force convergence with partial results
+                            return False, "Deadlock timeout - proceeding with partial results"
+                    
+                    # This branch is part of a group heading to this convergence point
+                    pending = group.get_pending_count()
+                    if pending > 0:
+                        logger.info(
+                            f"Branch '{branch_id}' holding at convergence '{next_agent}' - "
+                            f"waiting for {pending} more branches from group '{group_id}'"
+                        )
+                        return True, f"Part of parallel group '{group_id}', {pending} branches pending"
+        
+        # Fallback: Check for other active branches (for non-group scenarios)
+        active_branches = self.branch_spawner.active_branches
+        
+        # Exclude current branch
+        other_branches = {bid: task for bid, task in active_branches.items() 
+                         if bid != branch_id and not task.done()}
+        
+        if not other_branches:
+            # No other active branches - can proceed
+            logger.info(f"Branch '{branch_id}' is only active branch - proceeding to convergence point '{next_agent}'")
+            return False, None
+        
+        # Check if any other branch could reach this convergence point
+        could_converge_here = []
+        
+        for other_branch_id in other_branches:
+            # Get current position of other branch
+            other_branch_info = self.branch_spawner.branch_info.get(other_branch_id)
+            if not other_branch_info:
+                continue
+            
+            current_position = other_branch_info.topology.current_agent
+            if not current_position:
+                continue
+            
+            # Check if this branch could reach the convergence point
+            if self.topology_graph.can_reach(current_position, next_agent):
+                could_converge_here.append(other_branch_id)
+                logger.debug(f"Branch '{other_branch_id}' at '{current_position}' could reach '{next_agent}'")
+        
+        if not could_converge_here:
+            # No other branches could reach this convergence point
+            logger.info(f"No other branches can reach convergence point '{next_agent}' - proceeding")
+            return False, None
+        
+        # Should hold - other branches could converge here
+        logger.info(f"Branch '{branch_id}' holding at convergence point '{next_agent}' - "
+                   f"waiting for {len(could_converge_here)} other branches")
+        
+        # Track which branches could arrive
+        if hasattr(self.branch_spawner, 'convergence_tracker'):
+            self.branch_spawner.convergence_tracker.potential_arrivals[next_agent] = \
+                set(could_converge_here + [branch_id])
+        
+        return True, f"Waiting for {len(could_converge_here)} branches: {could_converge_here}"
+    
     async def _determine_next_agent(
         self,
         current_agent: str,
         step_result: StepResult,
-        allowed_transitions: Dict[str, List[str]]
+        allowed_transitions: Dict[str, List[str]],
+        branch_id: Optional[str] = None
     ) -> Optional[str]:
         """Determine the next agent based on step result and allowed transitions."""
         # If step result specifies next agent
@@ -989,15 +1117,49 @@ class BranchExecutor:
             # Normal validation for other agents
             allowed = allowed_transitions.get(current_agent, [])
             if step_result.next_agent in allowed:
-                return step_result.next_agent
+                next_agent = step_result.next_agent  # Store instead of returning immediately
             else:
                 logger.warning(f"Agent '{current_agent}' tried to invoke '{step_result.next_agent}' "
                              f"but it's not in allowed transitions: {allowed}")
                 return None
+        else:
+            # Default: take first allowed transition
+            allowed = allowed_transitions.get(current_agent, [])
+            next_agent = allowed[0] if allowed else None
         
-        # Default: take first allowed transition
-        allowed = allowed_transitions.get(current_agent, [])
-        return allowed[0] if allowed else None
+        # Check if we should hold for convergence (only if branch_id provided and next_agent determined)
+        if next_agent and branch_id:
+            should_hold, reason = await self._should_hold_for_convergence(
+                current_agent, next_agent, branch_id
+            )
+            
+            if should_hold:
+                # Store convergence target and request data
+                step_result.convergence_target = next_agent
+                step_result.hold_reason = reason
+                
+                # Add to pending requests
+                if hasattr(self.branch_spawner, 'convergence_tracker'):
+                    request_data = self._prepare_convergence_request(step_result)
+                    self.branch_spawner.convergence_tracker.add_pending_request(
+                        next_agent, branch_id, current_agent, request_data
+                    )
+                
+                return None  # Stop branch execution
+        
+        return next_agent
+    
+    def _prepare_convergence_request(self, step_result: StepResult) -> Any:
+        """Prepare request data for convergence point."""
+        # Extract the actual content to send to convergence point
+        if step_result.parsed_response and isinstance(step_result.parsed_response, dict):
+            # Use the parsed response action_input as the request
+            action_input = step_result.parsed_response.get("action_input")
+            if action_input:
+                return action_input
+        
+        # Fallback to response content
+        return step_result.response
     
     def _prepare_next_request(
         self,
@@ -1182,7 +1344,13 @@ class BranchExecutor:
         target_agents = validation.next_agents
         logger.info(f"Agent '{agent_name}' initiating parallel invocation of {target_agents}")
         
-        # Store branch continuation state in branch metadata instead of self.branch_continuation
+        # Mark this branch as having spawned children for dynamic convergence
+        branch.metadata["has_parallel_children"] = True
+        branch.metadata["expected_children"] = len(target_agents)
+        branch.metadata["completed_children"] = []
+        branch.metadata["child_agents"] = target_agents
+        
+        # Store branch continuation state in branch metadata
         branch.metadata["continuation_state"] = {
             "agent_name": agent_name,
             "context": context,
@@ -1255,12 +1423,27 @@ class BranchExecutor:
         # Add aggregated results to context
         context.shared_context["child_results"] = aggregated_results
         
-        # Create a synthetic request with child results
-        resume_request = {
-            "original_request": continuation.get("parsed_response", {}),
-            "child_results": aggregated_results,
-            "resumed_from_parallel": True
-        }
+        # FIX 3: Check if parent should flow to convergence
+        current_agent = agent_name
+        if 'convergence_data' in branch.metadata:
+            conv_data = branch.metadata['convergence_data']
+            # Update the request to include convergence data
+            resume_request = {
+                "aggregated_requests": conv_data['aggregated_requests'],
+                "source_count": conv_data['source_count'],
+                "is_convergence": True,
+                "resumed_from_parallel": True
+            }
+            # Set current agent to convergence point
+            current_agent = conv_data['target']
+            logger.info(f"Parent resuming to convergence point '{current_agent}' with {conv_data['source_count']} aggregated results")
+        else:
+            # Create a synthetic request with child results
+            resume_request = {
+                "original_request": continuation.get("parsed_response", {}),
+                "child_results": aggregated_results,
+                "resumed_from_parallel": True
+            }
         
         # Continue execution from where we left off
         try:
@@ -1268,7 +1451,7 @@ class BranchExecutor:
             if branch.type == BranchType.SIMPLE:
                 # Continue simple branch execution
                 result = await self._continue_simple_branch(
-                    branch, context, agent_name, resume_request
+                    branch, context, current_agent, resume_request
                 )
             elif branch.type == BranchType.CONVERSATION:
                 # Continue conversation branch
@@ -1386,10 +1569,35 @@ class BranchExecutor:
             next_agent = await self._determine_next_agent(
                 current_agent,
                 step_result,
-                branch.topology.allowed_transitions
+                branch.topology.allowed_transitions,
+                branch.id  # Pass branch ID for convergence checking
             )
             
             if not next_agent:
+                # Check if stopped at convergence
+                convergence_target = getattr(step_result, 'convergence_target', None)
+                if convergence_target:
+                    # Update branch position in tracker
+                    if hasattr(self.branch_spawner, 'convergence_tracker'):
+                        self.branch_spawner.convergence_tracker.update_branch_position(
+                            branch.id, current_agent
+                        )
+                    
+                    return BranchResult(
+                        branch_id=branch.id,
+                        success=True,
+                        final_response=None,  # No final response yet
+                        total_steps=branch.state.current_step,
+                        execution_trace=execution_trace,
+                        branch_memory=context.branch_memory,
+                        metadata={
+                            "held_at_convergence": True,
+                            "convergence_target": convergence_target,
+                            "last_agent": current_agent,
+                            "hold_reason": getattr(step_result, 'hold_reason', None)
+                        }
+                    )
+                
                 # No next agent - branch completes
                 # Extract the actual content from parsed response if available
                 final_content = step_result.response
@@ -1430,3 +1638,28 @@ class BranchExecutor:
         # For now, just delegate to simple branch continuation
         # Could add specialized conversation resumption logic here
         return await self._continue_simple_branch(branch, context, current_agent, resume_request)
+    
+    async def _release_branch_agents(self, branch_id: str) -> None:
+        """
+        Release any single agents allocated to this branch.
+        
+        Args:
+            branch_id: ID of the branch whose agents should be released
+        """
+        if not hasattr(self, 'branch_spawner') or not self.branch_spawner:
+            return
+        
+        # Get all single agents allocated to this branch
+        agents_to_release = []
+        async with self.branch_spawner.single_agent_lock:
+            agents_to_release = [
+                agent_name 
+                for agent_name, allocated_branch_id in self.branch_spawner.single_agent_allocations.items()
+                if allocated_branch_id == branch_id
+            ]
+        
+        # Release them
+        for agent_name in agents_to_release:
+            released = await self.branch_spawner._release_single_agent(agent_name, branch_id)
+            if released:
+                logger.debug(f"Released single agent '{agent_name}' from completed branch '{branch_id}'")

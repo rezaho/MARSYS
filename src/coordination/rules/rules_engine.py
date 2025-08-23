@@ -89,6 +89,8 @@ class RuleResult:
     reason: Optional[str] = None
     modifications: Dict[str, Any] = field(default_factory=dict)
     severity: str = "info"  # "info", "warning", "error", "critical"
+    metadata: Dict[str, Any] = field(default_factory=dict)  # For rule metadata
+    suggestions: Dict[str, Any] = field(default_factory=dict)  # For rule suggestions
     
     @property
     def should_continue(self) -> bool:

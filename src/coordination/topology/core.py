@@ -50,6 +50,7 @@ class Node:
     name: str
     node_type: NodeType = NodeType.AGENT
     agent_ref: Optional[Any] = None  # Reference to actual agent instance
+    is_convergence_point: bool = False  # User-controlled convergence marking
     metadata: Dict[str, Any] = field(default_factory=dict)
     
     def __post_init__(self):

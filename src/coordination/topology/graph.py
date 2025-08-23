@@ -43,6 +43,7 @@ class NodeInfo:
     outgoing_edges: List[str] = field(default_factory=list)
     capabilities: List[str] = field(default_factory=list)
     metadata: Dict[str, Any] = field(default_factory=dict)
+    is_convergence_point: bool = False  # User-controlled convergence marking
     
     def add_incoming(self, source: str) -> None:
         """Add an incoming edge from source."""
@@ -58,11 +59,6 @@ class NodeInfo:
     def is_divergence_point(self) -> bool:
         """Check if this node has multiple outgoing edges."""
         return len(self.outgoing_edges) > 1
-    
-    @property
-    def is_convergence_point(self) -> bool:
-        """Check if this node has multiple incoming edges."""
-        return len(self.incoming_edges) > 1
 
 
 @dataclass
@@ -444,6 +440,61 @@ class TopologyGraph:
         self.metadata["original_exits"] = exit_agents
         
         logger.info(f"Auto-injected User node with entry {entry_agent} and exits {exit_agents}")
+    
+    def get_node(self, name: str) -> Optional[NodeInfo]:
+        """Get node by name."""
+        return self.nodes.get(name)
+    
+    def can_reach(self, from_agent: str, to_agent: str, visited: Optional[Set[str]] = None) -> bool:
+        """
+        Check if there's a path from from_agent to to_agent in the topology.
+        
+        Args:
+            from_agent: Starting agent
+            to_agent: Target agent
+            visited: Set of already visited nodes (for cycle detection)
+        
+        Returns:
+            True if a path exists
+        """
+        if visited is None:
+            visited = set()
+        
+        if from_agent == to_agent:
+            return True
+        
+        if from_agent in visited:
+            return False  # Cycle detected
+        
+        visited.add(from_agent)
+        
+        # Get all possible next agents from current position
+        next_agents = self.get_next_agents(from_agent)
+        
+        for next_agent in next_agents:
+            if self.can_reach(next_agent, to_agent, visited.copy()):
+                return True
+        
+        return False
+    
+    def get_all_reachable_convergence_points(self, from_agent: str) -> Set[str]:
+        """
+        Get all convergence points reachable from the given agent.
+        
+        Args:
+            from_agent: Starting agent
+        
+        Returns:
+            Set of reachable convergence point names
+        """
+        reachable = set()
+        
+        for node_name, node in self.nodes.items():
+            if hasattr(node, 'is_convergence_point') and node.is_convergence_point:
+                if self.can_reach(from_agent, node_name):
+                    reachable.add(node_name)
+        
+        return reachable
     
     def get_agents_with_user_access(self) -> List[str]:
         """Get all agents that have edges to User nodes."""
