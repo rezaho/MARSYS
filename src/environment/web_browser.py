@@ -4074,7 +4074,7 @@ class BrowserTool:
         reasoning: Optional[str] = None
     ) -> Dict[str, Any]:
         """
-        Navigate to a URL and extract main content.
+        Enhanced version that automatically detects and handles both HTML and PDF content.
 
         Parameters:
             url: URL to extract content from
@@ -4092,9 +4092,45 @@ class BrowserTool:
         original_url = self.page.url
         
         try:
-            # Navigate to the target URL
+            # First, try to determine content type without navigation
+            # This avoids loading PDFs in the browser viewer
+            try:
+                head_response = await self.page.request.head(url)
+                content_type = head_response.headers.get('content-type', '').lower()
+            except:
+                # If HEAD request fails, we'll detect by URL pattern
+                content_type = ''
+            
+            # Detect if it's a PDF
+            is_pdf = (
+                'application/pdf' in content_type or
+                url.lower().endswith('.pdf') or
+                '/pdf/' in url.lower()
+            )
+            
+            if is_pdf:
+                # Use dedicated PDF extraction
+                return await self.extract_pdf_content_from_url(
+                    url,
+                    output_format="markdown" if return_markdown else "json",
+                    max_text_length=max_text_length,
+                    reasoning=reasoning
+                )
+            
+            # For HTML content, navigate normally
             await self.page.goto(url)
             await self.page.wait_for_load_state("networkidle")
+            
+            # Double-check if we ended up on a PDF (some URLs redirect)
+            final_url = self.page.url
+            if final_url.lower().endswith('.pdf') or '/pdf/' in final_url.lower():
+                # URL redirected to PDF
+                return await self.extract_pdf_content_from_url(
+                    final_url,
+                    output_format="markdown" if return_markdown else "json",
+                    max_text_length=max_text_length,
+                    reasoning=reasoning
+                )
             
             # Get page title
             title = await self.page.title()
@@ -4125,11 +4161,13 @@ class BrowserTool:
                 content = ""
             
             result = {
+                "success": True,
                 "url": url,
                 "title": title,
                 "content": content,
                 "content_length": len(content),
-                "format": "markdown" if return_markdown else "text"
+                "format": "markdown" if return_markdown else "text",
+                "type": "html"
             }
             
             self.history.append(
@@ -4139,15 +4177,255 @@ class BrowserTool:
                     "url": url,
                     "title": title,
                     "content_length": len(content),
+                    "type": "html",
+                    "success": True
                 }
             )
             
             return result
             
+        except Exception as e:
+            error_msg = str(e)
+            self.history.append(
+                {
+                    "action": "extract_content_from_url",
+                    "reasoning": r,
+                    "url": url,
+                    "success": False,
+                    "error": error_msg
+                }
+            )
+            
+            return {
+                "success": False,
+                "error": error_msg,
+                "url": url,
+                "message": f"Failed to extract content: {error_msg}"
+            }
+            
         finally:
             # Return to original URL
-            if original_url != url:
-                await self.page.goto(original_url)
+            if original_url != url and original_url:
+                try:
+                    await self.page.goto(original_url)
+                except:
+                    pass  # Ignore errors when returning to original URL
+
+    async def extract_pdf_content_from_url(
+        self,
+        url: str,
+        output_format: str = "markdown",  # "markdown" or "json"
+        max_text_length: Optional[int] = 10000,
+        reasoning: Optional[str] = None
+    ) -> Dict[str, Any]:
+        """
+        Extract text content from PDF URLs with proper loading.
+        
+        Parameters:
+            url: URL of the PDF document
+            output_format: Return format - "markdown" or "json"
+            max_text_length: Maximum length of extracted text
+            reasoning: The reasoning chain for this action
+            
+        Returns:
+            Dictionary with extracted content and metadata
+        """
+        import io
+        
+        r = reasoning or ""
+        
+        try:
+            # Method 1: Use request context for more reliable PDF download
+            # This ensures we get the complete PDF content
+            response = await self.page.request.get(url)
+            
+            # Check if request was successful
+            if not response.ok:
+                raise Exception(f"Failed to fetch PDF: HTTP {response.status}")
+            
+            # Get the complete PDF content
+            pdf_bytes = await response.body()
+            
+            # Verify we have actual PDF content
+            if not pdf_bytes or len(pdf_bytes) < 100:
+                raise Exception("Received empty or invalid PDF content")
+            
+            # Check PDF header (PDF files start with %PDF)
+            if not pdf_bytes[:5] == b'%PDF-':
+                raise Exception("Content is not a valid PDF file")
+            
+            # Try to extract text using available PDF libraries
+            extracted_text = ""
+            
+            # Try pdfminer.six first (better for complex PDFs)
+            try:
+                from pdfminer.high_level import extract_text_to_fp
+                from pdfminer.layout import LAParams
+                
+                output_string = io.StringIO()
+                extract_text_to_fp(
+                    io.BytesIO(pdf_bytes),
+                    output_string,
+                    laparams=LAParams(),
+                    output_type='text',
+                    codec='utf-8'
+                )
+                extracted_text = output_string.getvalue()
+                
+            except ImportError:
+                # Fallback to PyPDF2 if pdfminer.six is not available
+                try:
+                    from PyPDF2 import PdfReader
+                    
+                    pdf_file = io.BytesIO(pdf_bytes)
+                    reader = PdfReader(pdf_file)
+                    for page in reader.pages:
+                        extracted_text += page.extract_text() + "\n"
+                        
+                except ImportError:
+                    raise Exception("No PDF parsing library available. Please install pdfminer.six or PyPDF2.")
+            
+            # Truncate if needed
+            if max_text_length and len(extracted_text) > max_text_length:
+                extracted_text = extracted_text[:max_text_length] + "..."
+            
+            # Format output
+            if output_format == "markdown":
+                # Convert to markdown format with title from URL
+                title = url.split('/')[-1].replace('.pdf', '')
+                content = f"# PDF Document: {title}\n\n**Source:** {url}\n\n---\n\n{extracted_text}"
+            else:  # json
+                content = {
+                    "url": url,
+                    "text": extracted_text,
+                    "format": "pdf",
+                    "length": len(extracted_text)
+                }
+            
+            result = {
+                "success": True,
+                "content": content,
+                "url": url,
+                "format": output_format,
+                "type": "pdf"
+            }
+            
+            self.history.append(
+                {
+                    "action": "extract_pdf_content_from_url",
+                    "reasoning": r,
+                    "url": url,
+                    "content_length": len(extracted_text),
+                    "success": True
+                }
+            )
+            
+            return result
+            
+        except Exception as e:
+            # Fallback: Try navigation method with proper waiting
+            try:
+                response = await self.page.goto(url, wait_until="networkidle")
+                
+                # Wait for response to be fully loaded
+                await response.finished()
+                
+                pdf_bytes = await response.body()
+                
+                # Verify we have actual PDF content
+                if not pdf_bytes or len(pdf_bytes) < 100:
+                    raise Exception("Received empty or invalid PDF content")
+                
+                # Check PDF header
+                if not pdf_bytes[:5] == b'%PDF-':
+                    raise Exception("Content is not a valid PDF file")
+                
+                # Try to extract text using available PDF libraries
+                extracted_text = ""
+                
+                # Try pdfminer.six first (better for complex PDFs)
+                try:
+                    from pdfminer.high_level import extract_text_to_fp
+                    from pdfminer.layout import LAParams
+                    
+                    output_string = io.StringIO()
+                    extract_text_to_fp(
+                        io.BytesIO(pdf_bytes),
+                        output_string,
+                        laparams=LAParams(),
+                        output_type='text',
+                        codec='utf-8'
+                    )
+                    extracted_text = output_string.getvalue()
+                    
+                except ImportError:
+                    # Fallback to PyPDF2 if pdfminer.six is not available
+                    try:
+                        from PyPDF2 import PdfReader
+                        
+                        pdf_file = io.BytesIO(pdf_bytes)
+                        reader = PdfReader(pdf_file)
+                        for page in reader.pages:
+                            extracted_text += page.extract_text() + "\n"
+                            
+                    except ImportError:
+                        raise Exception("No PDF parsing library available. Please install pdfminer.six or PyPDF2.")
+                
+                # Truncate if needed
+                if max_text_length and len(extracted_text) > max_text_length:
+                    extracted_text = extracted_text[:max_text_length] + "..."
+                
+                # Format output
+                if output_format == "markdown":
+                    title = url.split('/')[-1].replace('.pdf', '')
+                    content = f"# PDF Document: {title}\n\n**Source:** {url}\n\n---\n\n{extracted_text}"
+                else:  # json
+                    content = {
+                        "url": url,
+                        "text": extracted_text,
+                        "format": "pdf",
+                        "length": len(extracted_text)
+                    }
+                
+                result = {
+                    "success": True,
+                    "content": content,
+                    "url": url,
+                    "format": output_format,
+                    "type": "pdf"
+                }
+                
+                self.history.append(
+                    {
+                        "action": "extract_pdf_content_from_url",
+                        "reasoning": r,
+                        "url": url,
+                        "content_length": len(extracted_text),
+                        "success": True
+                    }
+                )
+                
+                return result
+                
+            except Exception as e2:
+                error_msg = f"Primary method: {str(e)}, Fallback method: {str(e2)}"
+                
+                self.history.append(
+                    {
+                        "action": "extract_pdf_content_from_url",
+                        "reasoning": r,
+                        "url": url,
+                        "success": False,
+                        "error": error_msg
+                    }
+                )
+                
+                return {
+                    "success": False,
+                    "error": error_msg,
+                    "url": url,
+                    "message": f"Failed to extract PDF content"
+                }
 
     async def press_key(self, key: str, reasoning: Optional[str] = None, delay: Optional[int] = None) -> None:
         """
