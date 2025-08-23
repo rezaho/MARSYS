@@ -10,6 +10,7 @@ from __future__ import annotations
 import json
 import re
 import logging
+import uuid
 from abc import ABC, abstractmethod
 from dataclasses import dataclass
 from typing import Any, Dict, List, Optional, Type, TYPE_CHECKING
@@ -17,6 +18,7 @@ from enum import Enum
 
 from ..branches.types import ExecutionBranch, StepResult, ExecutionState
 from ..topology.graph import TopologyGraph
+from .types import AgentInvocation, ValidationError
 
 if TYPE_CHECKING:
     from ...agents import BaseAgent
@@ -183,7 +185,7 @@ class StructuredJSONProcessor(ResponseProcessor):
             
             result = {
                 "next_action": data.get("next_action"),
-                "raw_response": data
+               "raw_response": data
             }
             
             # Handle different action types
@@ -192,52 +194,79 @@ class StructuredJSONProcessor(ResponseProcessor):
                 
                 # Check for unified array format (new standard)
                 if isinstance(action_input, list):
-                    # Extract agent names and requests from array
-                    result["target_agents"] = []
-                    result["agent_requests"] = {}
+                    try:
+                        # Parse invocations using Pydantic
+                        invocations = []
+                        for idx, item in enumerate(action_input):
+                            if isinstance(item, dict) and "agent_name" in item:
+                                # Create AgentInvocation with validation
+                                invocation = AgentInvocation(
+                                    agent_name=item["agent_name"],
+                                    request=item.get("request", {}),
+                                    instance_id=f"{item['agent_name']}_{idx}_{uuid.uuid4().hex[:8]}"
+                                )
+                                invocations.append(invocation)
+                            else:
+                                raise ValueError(f"Invalid invocation format at index {idx}: missing 'agent_name'")
+                        
+                        # Store validated invocations directly as list
+                        result["invocations"] = invocations
+                        result["target_agents"] = [inv.agent_name for inv in invocations]
+                        
+                        # For backward compatibility, also populate agent_requests
+                        result["agent_requests"] = {}
+                        for inv in invocations:
+                            # Store by instance_id to avoid overwrites
+                            result["agent_requests"][inv.instance_id] = inv.request
+                        
+                        # For backward compatibility with single agent flow
+                        if len(result["target_agents"]) == 1:
+                            result["target_agent"] = result["target_agents"][0]
+                            result["action_input"] = invocations[0].request
                     
-                    for item in action_input:
-                        if isinstance(item, dict) and "agent_name" in item:
-                            agent_name = item["agent_name"]
-                            result["target_agents"].append(agent_name)
-                            result["agent_requests"][agent_name] = item.get("request", {})
-                    
-                    # Flag if this is parallel (multiple agents)
-                    result["is_parallel"] = len(result["target_agents"]) > 1
-                    
-                    # For backward compatibility with single agent flow
-                    if len(result["target_agents"]) == 1:
-                        result["target_agent"] = result["target_agents"][0]
-                        result["action_input"] = result["agent_requests"].get(result["target_agent"], {})
+                    except Exception as e:
+                        # Return detailed error to agent
+                        return {
+                            "next_action": "validation_error", 
+                            "error": f"Failed to parse agent invocations: {str(e)}",
+                            "retry_suggestion": "Ensure action_input is an array of objects with 'agent_name' and 'request' fields. Do not proceed with parallel invocations until this is fixed.",
+                            "raw_response": data
+                        }
                 
-                # Legacy format support
+                # Single dict format - convert to single-item list
                 elif isinstance(action_input, dict):
-                    # Check for enhanced single agent format
                     if "agent_name" in action_input:
-                        result["target_agent"] = action_input["agent_name"]
-                        result["action_input"] = action_input.get("request", {})
-                        result["target_agents"] = [result["target_agent"]]
-                        result["agent_requests"] = {result["target_agent"]: result["action_input"]}
-                    # Check for target_agent at top level
-                    elif "target_agent" in data:
-                        result["target_agent"] = data["target_agent"]
-                        result["action_input"] = action_input
-                        result["target_agents"] = [result["target_agent"]]
-                        result["agent_requests"] = {result["target_agent"]: action_input}
+                        # Convert single dict to list format
+                        invocation = AgentInvocation(
+                            agent_name=action_input["agent_name"],
+                            request=action_input.get("request", {}),
+                            instance_id=f"{action_input['agent_name']}_0_{uuid.uuid4().hex[:8]}"
+                        )
+                        result["invocations"] = [invocation]
+                        result["target_agents"] = [invocation.agent_name]
+                        
+                        # For backward compatibility
+                        result["target_agent"] = invocation.agent_name
+                        result["action_input"] = invocation.request
+                        result["agent_requests"] = {invocation.instance_id: invocation.request}
                     else:
-                        # Very legacy - just agent name as string
-                        result["target_agent"] = str(action_input)
-                        result["action_input"] = {}
-                        result["target_agents"] = [result["target_agent"]]
-                        result["agent_requests"] = {result["target_agent"]: {}}
+                        # Invalid format - return error
+                        return {
+                            "next_action": "validation_error",
+                            "error": "Invalid invocation format",
+                            "details": ["Dictionary must contain 'agent_name' field"],
+                            "retry_suggestion": "Use format: {'agent_name': 'agent', 'request': {...}} or array format for multiple agents",
+                            "raw_response": data
+                        }
                 else:
-                    # Legacy format - action_input is agent name string
-                    result["target_agent"] = str(action_input)
-                    result["action_input"] = {}
-                    result["target_agents"] = [result["target_agent"]]
-                    result["agent_requests"] = {result["target_agent"]: {}}
-                
-                result["is_parallel"] = len(result.get("target_agents", [])) > 1
+                    # Invalid format - not array or proper dict
+                    return {
+                        "next_action": "validation_error",
+                        "error": "Invalid action_input format",
+                        "details": [f"Expected array or dict with 'agent_name', got {type(action_input).__name__}"],
+                        "retry_suggestion": "Use array format: [{'agent_name': 'agent', 'request': {...}}] for agent invocations",
+                        "raw_response": data
+                    }
                 
             elif data.get("next_action") == "parallel_invoke":
                 # Legacy parallel_invoke support for backward compatibility
@@ -299,8 +328,24 @@ class StructuredJSONProcessor(ResponseProcessor):
                     result[key] = value
             return result
             
+        except json.JSONDecodeError as e:
+            logger.error(f"JSON parsing failed at position {e.pos}: {e.msg}")
+            logger.debug(f"Failed JSON string (first 500 chars): {json_str[:500] if 'json_str' in locals() else 'None'}")
+            
+            # Try to extract action type at minimum
+            action_match = re.search(r'"next_action"\s*:\s*"([^"]+)"', str(response))
+            if action_match:
+                action = action_match.group(1)
+                logger.info(f"Extracted action type despite JSON error: {action}")
+                return {
+                    "next_action": action,
+                    "parse_error": str(e),
+                    "partial_parse": True,
+                    "raw_response": response
+                }
+            return None
         except Exception as e:
-            logger.error(f"Failed to process JSON response: {e}")
+            logger.error(f"Unexpected error processing response: {type(e).__name__}: {e}")
             return None
     
     def priority(self) -> int:
@@ -416,12 +461,9 @@ class NaturalLanguageProcessor(ResponseProcessor):
                     "raw_response": response
                 }
             
-            # Default to continue execution
-            return {
-                "next_action": "continue",
-                "content": text,
-                "raw_response": response
-            }
+            # No patterns matched - cannot determine action
+            logger.debug(f"NaturalLanguageProcessor: No patterns matched in text: {text[:200]}...")
+            return None
             
         except Exception as e:
             logger.error(f"Failed to process natural language: {e}")
@@ -522,10 +564,31 @@ class ValidationProcessor:
                     break
         
         if not parsed:
+            # Try to detect if this looks like a successful response that couldn't be parsed
+            response_str = str(raw_response)
+            
+            # Check if it looks like an agent trying to invoke another agent
+            if "invoke_agent" in response_str and "summarizer_agent" in response_str:
+                logger.warning("Response appears to invoke an agent but couldn't be parsed - likely JSON escaping issue")
+                return ValidationResult(
+                    is_valid=False,
+                    error_message="JSON parsing failed - likely due to unescaped special characters in content",
+                    retry_suggestion="Please retry with properly escaped JSON. Ensure all quotes, newlines, and special characters in the content are properly escaped."
+                )
+            
+            # Check if it's a tool response that needs processing
+            elif "tool_calls" in response_str:
+                return ValidationResult(
+                    is_valid=False,
+                    error_message="Tool response detected but couldn't be parsed",
+                    retry_suggestion="Please ensure your tool response is properly formatted JSON"
+                )
+            
+            # Generic fallback
             return ValidationResult(
                 is_valid=False,
-                error_message="Could not parse response format",
-                retry_suggestion="Please respond with a valid action format"
+                error_message="Could not parse response format - no processor could handle it",
+                retry_suggestion='Please respond with a valid JSON format: {"next_action": "invoke_agent", "action_input": [{"agent_name": "agent_name", "request": "your request"}]}'
             )
         
         # 2. Determine action type
@@ -616,13 +679,14 @@ class ValidationProcessor:
                 retry_suggestion=f"Valid targets: {next_agents}"
             )
         
-        # Check if this is parallel invocation
-        is_parallel = parsed.get("is_parallel", len(target_agents) > 1)
+        # Determine action type based on number of target agents
+        # Multiple agents -> PARALLEL_INVOKE, single agent -> INVOKE_AGENT
+        action_type = ActionType.PARALLEL_INVOKE if len(target_agents) > 1 else ActionType.INVOKE_AGENT
         
         return ValidationResult(
             is_valid=True,
             next_agents=target_agents,
-            action_type=ActionType.PARALLEL_INVOKE if is_parallel else ActionType.INVOKE_AGENT
+            action_type=action_type
         )
     
     async def _validate_parallel_invocation(
