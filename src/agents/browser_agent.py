@@ -495,6 +495,15 @@ class BrowserAgent(Agent):
             auto_screenshot: Whether to automatically take screenshots after state-changing operations
             timeout: Default timeout in milliseconds for browser operations (default: 5000)
         """
+        # Check for playwright-stealth support
+        try:
+            from playwright_stealth import stealth_async
+            self._stealth_available = True
+            logger.info("playwright-stealth detected - stealth mode will be enabled")
+        except ImportError:
+            self._stealth_available = False
+            logger.info("playwright-stealth not installed. Install with: pip install playwright-stealth")
+        
         # Set up temporary directory
         if tmp_dir:
             self.tmp_dir = Path(tmp_dir)
@@ -667,6 +676,15 @@ class BrowserAgent(Agent):
                 screenshot_dir=str(self.screenshots_dir),
             )
 
+            # Apply stealth mode if available
+            if self._stealth_available:
+                try:
+                    from playwright_stealth import stealth_async
+                    await stealth_async(self.browser_tool.page)
+                    logger.info(f"Stealth mode enabled for {self.name}")
+                except Exception as e:
+                    logger.warning(f"Failed to apply stealth mode: {e}")
+            
             logger.info(
                 f"Browser initialized for {self.name} using BrowserTool (headless={self.headless}, timeout={self.timeout}ms)"
             )
