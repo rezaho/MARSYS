@@ -1,7 +1,15 @@
 """
 Multi-Agent Deep Research System with BrowserAgent and Citation Management
 =========================================================================
-This example demonstrates an advanced multi-agent research workflow that:
+This example demonstrates an advanced multi-agent research workflow using the
+simplified auto_run method with allowed_peers for defining agent connections.
+
+The multi-agent topology is defined through allowed_peers parameters:
+- No explicit topology definition needed
+- Agents connect via reflexive edges (can invoke and return to caller)
+- The orchestrator agent serves as both entry and exit point
+
+Workflow:
 1. Uses RetrievalAgent to find relevant sources
 2. Uses BrowserAgent to extract full content from URLs
 3. Stores content in a scratch pad (JSONL format)
@@ -9,6 +17,8 @@ This example demonstrates an advanced multi-agent research workflow that:
 5. Saves the report as a markdown file
 
 Features demonstrated:
+- auto_run method for simplified multi-agent execution
+- allowed_peers for defining agent connections
 - Input/output schema validation
 - BrowserAgent for web content extraction
 - File-based content storage (scratch pad)
@@ -25,10 +35,12 @@ import asyncio
 import json
 import logging
 import os
+import glob
 from datetime import datetime
 from pathlib import Path
 from typing import Dict, List, Optional, Any
 import uuid
+from dotenv import load_dotenv
 
 from src.agents.agents import Agent
 from src.agents.browser_agent import BrowserAgent
@@ -98,23 +110,48 @@ def write_to_scratch_pad(url: str, title: str, content: str, scratch_pad_file: s
 
 def read_scratch_pad_content(scratch_pad_file: str) -> List[Dict[str, Any]]:
     """
-    Read all content from scratch pad file.
+    FIX 4: Read all content from scratch pad file with path resolution.
     
     Args:
-        scratch_pad_file: Path to the scratch pad file
+        scratch_pad_file: Path to the scratch pad file (relative or absolute)
     
     Returns:
         List of all extracted content objects
     """
     try:
+        # Handle relative paths
+        if not os.path.isabs(scratch_pad_file):
+            # Try common locations
+            possible_paths = [
+                scratch_pad_file,  # Current directory
+                os.path.join("tmp", scratch_pad_file),  # tmp directory
+            ]
+            
+            # Look for most recent output directory
+            output_dirs = glob.glob("tmp/research_output_*")
+            if output_dirs:
+                most_recent = sorted(output_dirs)[-1]
+                possible_paths.append(os.path.join(most_recent, scratch_pad_file))
+            
+            # Find first existing path
+            for path in possible_paths:
+                if os.path.exists(path):
+                    scratch_pad_file = path
+                    logger.info(f"Resolved scratch pad path to: {scratch_pad_file}")
+                    break
+            else:
+                logger.warning(f"Scratch pad file not found in any common location: {scratch_pad_file}")
+        
         sources = []
         if os.path.exists(scratch_pad_file):
             with open(scratch_pad_file, 'r', encoding='utf-8') as f:
                 for line in f:
                     if line.strip():
                         sources.append(json.loads(line.strip()))
+            logger.info(f"Read {len(sources)} sources from scratch pad: {scratch_pad_file}")
+        else:
+            logger.warning(f"Scratch pad file does not exist: {scratch_pad_file}")
         
-        logger.info(f"Read {len(sources)} sources from scratch pad")
         return sources
         
     except Exception as e:
@@ -162,27 +199,6 @@ def write_markdown_report(content: str, file_path: str) -> Dict[str, Any]:
 
 
 # --- Agent Descriptions are now defined dynamically in main() based on user input ---
-
-
-# Tool function: Mock search function for RetrievalAgent
-def search_web(query: str, num_results: int = 10) -> Dict[str, Any]:
-    """
-    Mock Google search function for finding relevant URLs.
-    In a real implementation, this would use Google Custom Search API.
-    """
-    # This is a simplified mock - in production, implement actual Google Search API
-    mock_results = [
-        {"title": f"Research Article on {query} - Part {i+1}", 
-         "url": f"https://example.com/article-{i+1}", 
-         "snippet": f"Comprehensive analysis of {query} covering key aspects..."}
-        for i in range(min(num_results, 15))
-    ]
-    
-    return {
-        "results": mock_results,
-        "total_results": len(mock_results),
-        "query": query
-    }
 
 
 # Tool function: Ask user questions in terminal for orchestrator
@@ -238,6 +254,9 @@ def setup_logging():
 
 async def main():
     """Main execution function"""
+    
+    # Load environment variables from .env file
+    load_dotenv()
     
     # Get API keys
     OPENROUTER_API_KEY = os.getenv("OPENROUTER_API_KEY")
@@ -341,16 +360,16 @@ After clarification, coordinate with:
 - BrowserAgent: For content extraction and scratch pad management  
 - SynthesizerAgent: For creating the comprehensive final report
 
-**Available agents to invoke:**
+You can work with:
 - RetrievalAgent: Specialized in finding relevant URLs and coordinating content extraction
 - SynthesizerAgent: Specialized in analyzing extracted content and creating research reports
 
 Process:
 1. Use ask_user_question tool to ask 2-3 clarifying questions about the research scope and approach
 2. Based on user's clarifying responses, create detailed and refined instructions for RetrievalAgent
-3. Invoke RetrievalAgent with the refined query and output directory
+3. Work with RetrievalAgent to gather sources
 4. Monitor the research progress and ensure quality
-5. Invoke SynthesizerAgent to create the final comprehensive report
+5. Work with SynthesizerAgent to create the final comprehensive report
 6. Return the complete research results with file paths and summaries
 
 Focus on ensuring the research is targeted, comprehensive, and meets the user's specific needs.
@@ -364,26 +383,34 @@ Your role:
 1. Receive research queries and understand the information needed
 2. Use available search tools to find relevant URLs
 3. Collect and curate a comprehensive list of sources
-4. Send ALL collected URLs together in a single batch to the BrowserAgent for content extraction
-5. Coordinate the collection of extracted content into the scratch pad file
-6. Return the complete scratch pad file path and processing summary
+4. Coordinate with BrowserAgent to extract content from the URLs
+5. Return the complete scratch pad file path and processing summary
 
 Available tools:
-- search_web: Search Google for relevant information
+- tool_google_search_api: Search Google for relevant information
+- save_to_context: Save important data for other agents
 
 You work with:
 - BrowserAgent: Specialized in batch content extraction and saving to scratch pad files
 
 Process:
 1. Understand the research query and identify key topics
-2. Perform multiple strategic searches to find diverse, high-quality sources
+2. Use tool_google_search_api to find diverse, high-quality sources (perform multiple searches with different keywords)
 3. Collect URLs from search results (aim for exactly {num_articles} quality sources)
-4. Create a scratch pad file named EXACTLY "research_scratch_pad.jsonl" in the output directory
-5. Send the complete list of URLs to BrowserAgent with the exact file path: output_directory + "/research_scratch_pad.jsonl"
-6. Monitor the batch extraction process
-7. Return the complete scratch pad file path and summary of extracted content
+4. Save the collected URLs to context using save_to_context tool (for backup/reference)
+5. CRITICAL: After collecting URLs, you MUST invoke BrowserAgent using:
+   {{"next_action": "invoke_agent", "target_agent": "BrowserAgent", "action_input": {{
+       "urls": [list of URLs you collected],
+       "scratch_pad_file": "<output_directory>/research_scratch_pad.jsonl"
+   }}}}
+6. Wait for BrowserAgent to complete content extraction
+7. After BrowserAgent returns, provide final_response with the results
 
-IMPORTANT: The scratch pad file must be named "research_scratch_pad.jsonl" (with .jsonl extension). Do not use any other filename or extension.
+IMPORTANT:
+- You MUST invoke BrowserAgent using the invoke_agent action - DO NOT skip this step!
+- The scratch pad file must be named "research_scratch_pad.jsonl" (with .jsonl extension)
+- Construct the full path as: output_directory + "/research_scratch_pad.jsonl"
+- Only return final_response AFTER BrowserAgent has completed extraction
 
 Focus on finding authoritative, recent, and diverse sources. Target exactly {num_articles} high-quality articles that comprehensively cover the research topic.
 """
@@ -395,48 +422,98 @@ You are the BrowserAgent specialized in batch web content extraction and scratch
 Your role:
 1. Receive a list of URLs for batch processing using your browser capabilities
 2. Navigate to each URL and extract clean, readable content from web pages
-3. Save all extracted content to the provided scratch pad file named "research_scratch_pad.jsonl"
+3. Save all extracted content to the provided scratch pad file
 4. Return confirmation of successful batch content extraction and storage
 
 Process:
-1. Receive a list of URLs and the exact scratch pad file path (should end with "research_scratch_pad.jsonl")
-2. For each URL in the batch: use the `extract_content_from_url` tool to extract content
-3. Use the `write_to_scratch_pad` tool to save extracted content with source IDs to the .jsonl file
-4. Return extraction status for all URLs with confirmation of saves to "research_scratch_pad.jsonl"
+1. Receive a list of URLs and the scratch pad file path
+2. For each URL in the batch: use your browser capabilities to extract content
+3. Use the write_to_scratch_pad function to save extracted content with source IDs to the file
+4. Return extraction status for all URLs with confirmation of successful saves
 
-CRITICAL: The scratch pad file must be named "research_scratch_pad.jsonl" with .jsonl extension.
-Do not save content to any other filename or file extension (.txt, .md, etc.).
-
-Focus on extracting substantive, useful content and saving it properly to the scratch pad file.
-Handle errors gracefully and continue processing remaining URLs if some fail.
-The scratch pad file path will be provided to you - use it exactly as provided.
+IMPORTANT:
+- The scratch pad file must be named "research_scratch_pad.jsonl" with .jsonl extension
+- Use the file path exactly as provided to you
+- Focus on extracting substantive, useful content
+- Handle errors gracefully and continue processing remaining URLs if some fail
 """
 
         # Synthesizer Agent Description
-        SYNTHESIZER_DESCRIPTION = f"""
-You are the SynthesizerAgent specialized in analyzing extracted research content and creating comprehensive reports.
+        SYNTHESIZER_DESCRIPTION = """
+You are the SynthesizerAgent - an advanced research analyst specialized in deep content analysis and intelligent report synthesis.
 
-Your role:
-1. Read and analyze all content from the provided scratch pad file
-2. Synthesize information from multiple sources into a coherent narrative
-3. Create a well-structured research report with proper citations
-4. Ensure comprehensive coverage of the research topic
-5. Generate markdown-formatted reports with proper formatting
+Your Core Mission:
+Transform raw research data into insightful, well-reasoned reports by thinking critically about the content and letting the findings guide your structure.
 
 Process:
-1. Load and analyze all extracted content from the "research_scratch_pad.jsonl" file
-2. Identify key themes, findings, and insights across sources
-3. Create a structured report with:
-   - Executive summary
-   - Main findings organized by themes
-   - Detailed analysis with numbered citations [1], [2], etc.
-   - Reference list with all sources
-4. Save the report as a markdown file named "final_research_report.md"
-5. Return file path and preview of the report
+1. **Load and Analyze Content:**
+   - Use read_scratch_pad_content tool to load all extracted content
+   - Read through ALL sources carefully and thoughtfully
+   
+2. **Deep Analysis Phase (CRITICAL - Think Before Writing):**
+   - Identify major themes, patterns, and concepts across all sources
+   - Discover relationships and connections between different findings
+   - Note contrasts, debates, or differing perspectives between sources
+   - Identify gaps, limitations, or areas needing more investigation
+   - Consider: What's the "story" that emerges from these sources collectively?
+   - Ask yourself: What are the key insights? What's surprising? What's controversial?
 
-IMPORTANT: The input file should be "research_scratch_pad.jsonl" and output should be "final_research_report.md".
+3. **Dynamic Structure Creation (Let Content Guide Structure):**
+   - Based on your analysis, decide what sections would best present the findings
+   - Consider the nature of the topic (technical, theoretical, practical, emerging, mature)
+   - Create sections that logically flow from the content itself
+   - Each section should have a clear purpose and add unique value
+   - Don't force a rigid template - adapt to what the research reveals
 
-Focus on creating authoritative, well-researched reports that synthesize information effectively and provide clear value to the reader.
+4. **Synthesize Information for Each Section:**
+   - For each section, draw from MULTIPLE relevant sources - never rely on just one
+   - Don't just summarize individual sources - INTEGRATE and SYNTHESIZE them
+   - Show how different sources support, contradict, or build upon each other
+   - Use inline citations like [1,2,3] to show which sources support each point
+   - Provide specific examples, data points, and evidence from the sources
+   
+   Good synthesis example:
+   "Recent developments show three competing approaches [1,3,5], with transformer-based 
+   methods gaining prominence [1,2] despite computational challenges noted by researchers [3,4,6]."
+   
+   Poor synthesis (avoid):
+   "Source 1 says X. Source 2 says Y. Source 3 says Z."
+
+5. **Create Comprehensive References:**
+   - Include ALL sources used in the report
+   - CRITICAL: Each reference MUST include the complete URL
+   - Format:
+     [#] Author/Source (Year). Title. Publication/Website.
+         URL: [complete URL here]
+         Accessed: [date from timestamp]
+   
+6. **Write Report to Disk:**
+   - Use write_markdown_report tool to save the complete report
+   - File name: output_directory + "/final_research_report.md"
+   - Include all sections you've created with full content
+
+Key Principles:
+- **Think First, Write Second**: Analyze deeply before structuring your report
+- **Adaptive Structure**: Let the content guide your structure, not a template
+- **Multi-Source Synthesis**: Every major point should integrate multiple sources
+- **Critical Analysis**: Don't just report - analyze, compare, evaluate, and draw insights
+- **Complete Attribution**: Every source must be properly cited with its full URL
+- **Evidence-Based**: Support claims with specific examples and data from sources
+
+Quality Indicators Your Report Should Have:
+- Sections that emerge naturally from the content analysis
+- Paragraphs that weave together multiple sources seamlessly
+- Clear reasoning about why certain sections are included
+- Thoughtful transitions between sections
+- Evidence of critical thinking and evaluation
+- Identification of patterns, trends, and relationships
+- Discussion of implications and significance
+- Complete references with accessible URLs
+
+IMPORTANT:
+- You MUST call write_markdown_report tool before returning final_response
+- Every citation [#] in your text must have a corresponding reference with URL
+- Focus on creating insightful analysis, not just information compilation
 """
 
         # --- Agent Creation ---
@@ -464,7 +541,7 @@ Focus on creating authoritative, well-researched reports that synthesize informa
                     "sources_processed": {"type": "integer", "description": "Number of sources successfully processed"},
                     "research_summary": {"type": "string", "description": "Summary of the research process and findings"}
                 },
-                "required": ["report_file", "report_preview"]
+                "required": ["report_file"]
             }
         )
 
@@ -491,7 +568,7 @@ Focus on creating authoritative, well-researched reports that synthesize informa
                     "total_sources": {"type": "integer", "description": "Total number of sources found and processed"},
                     "sources_summary": {"type": "string", "description": "Summary of the types and quality of sources found"}
                 },
-                "required": ["success", "scratch_pad_file", "total_sources"]
+                "required": ["success", "scratch_pad_file"]
             }
         )
 
@@ -539,7 +616,7 @@ Focus on creating authoritative, well-researched reports that synthesize informa
                         "description": "Detailed results for each URL processed"
                     }
                 },
-                "required": ["success", "total_processed", "successful_extractions", "failed_extractions", "results"]
+                "required": ["success", "total_processed"]
             }
         )
 
@@ -570,7 +647,7 @@ Focus on creating authoritative, well-researched reports that synthesize informa
                     "total_sources_cited": {"type": "integer", "description": "Number of sources referenced in the report"},
                     "report_length": {"type": "integer", "description": "Total length of the report in characters"}
                 },
-                "required": ["success", "report_file", "report_preview", "total_sources_cited"]
+                "required": ["success", "report_file"]
             }
         )
 
@@ -581,14 +658,20 @@ Focus on creating authoritative, well-researched reports that synthesize informa
         logger.info(f"Starting research workflow with output directory: {output_directory}")
         logger.info(f"Research query: '{research_query}' | Target articles: {num_articles}")
         
-        # Run the orchestrator
+        # Run the multi-agent system using auto_run
+        # The topology is automatically built from allowed_peers:
+        # - OrchestratorAgent -> RetrievalAgent, SynthesizerAgent (reflexive edges)
+        # - RetrievalAgent -> BrowserAgent (reflexive edge)
+        # - OrchestratorAgent is both entry_point and exit_point
+        # This creates a hub-and-spoke pattern with orchestrator as the hub
         result = await orchestrator.auto_run(
             initial_request={
                 "query": research_query,
                 "output_directory": output_directory
             },
             max_steps=30,  # Increased to accommodate clarifying questions
-            max_re_prompts=3
+            max_re_prompts=3,
+            timeout=1800  # 30 minutes timeout for the research process
         )
         
         # Process results
