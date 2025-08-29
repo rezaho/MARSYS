@@ -4074,7 +4074,7 @@ class BrowserTool:
         reasoning: Optional[str] = None
     ) -> Dict[str, Any]:
         """
-        Enhanced version that automatically detects and handles both HTML and PDF content.
+        Enhanced version with anti-bot evasion and retry strategies.
 
         Parameters:
             url: URL to extract content from
@@ -4086,130 +4086,269 @@ class BrowserTool:
         Returns:
             Dictionary with extracted content information
         """
+        import random
+        import asyncio
+        
         r = reasoning or ""
         
         # Save current URL to return to later
         original_url = self.page.url
         
-        try:
-            # First, try to determine content type without navigation
-            # This avoids loading PDFs in the browser viewer
-            try:
-                head_response = await self.page.request.head(url)
-                content_type = head_response.headers.get('content-type', '').lower()
-            except:
-                # If HEAD request fails, we'll detect by URL pattern
-                content_type = ''
-            
-            # Detect if it's a PDF
-            is_pdf = (
-                'application/pdf' in content_type or
-                url.lower().endswith('.pdf') or
-                '/pdf/' in url.lower()
-            )
-            
-            if is_pdf:
-                # Use dedicated PDF extraction
-                return await self.extract_pdf_content_from_url(
-                    url,
-                    output_format="markdown" if return_markdown else "json",
-                    max_text_length=max_text_length,
-                    reasoning=reasoning
-                )
-            
-            # For HTML content, navigate normally
-            await self.page.goto(url)
-            await self.page.wait_for_load_state("networkidle")
-            
-            # Double-check if we ended up on a PDF (some URLs redirect)
-            final_url = self.page.url
-            if final_url.lower().endswith('.pdf') or '/pdf/' in final_url.lower():
-                # URL redirected to PDF
-                return await self.extract_pdf_content_from_url(
-                    final_url,
-                    output_format="markdown" if return_markdown else "json",
-                    max_text_length=max_text_length,
-                    reasoning=reasoning
-                )
-            
-            # Get page title
-            title = await self.page.title()
-            
-            # Try to find main content using the selector
-            content_element = await self.page.query_selector(selector)
-            
-            if content_element:
-                if return_markdown:
-                    html = await content_element.inner_html()
-                    content = markdownify.markdownify(html, strip=["script", "style"])
-                else:
-                    content = await content_element.text_content()
-            else:
-                # Fallback to body content
-                if return_markdown:
-                    html = await self.page.content()
-                    content = markdownify.markdownify(html, strip=["script", "style"])
-                else:
-                    content = await self.page.text_content("body")
-            
-            # Clean and truncate content
-            if content:
-                content = content.strip()
-                if max_text_length and len(content) > max_text_length:
-                    content = content[:max_text_length] + "..."
-            else:
-                content = ""
-            
-            result = {
-                "success": True,
-                "url": url,
-                "title": title,
-                "content": content,
-                "content_length": len(content),
-                "format": "markdown" if return_markdown else "text",
-                "type": "html"
-            }
-            
-            self.history.append(
-                {
-                    "action": "extract_content_from_url",
-                    "reasoning": r,
-                    "url": url,
-                    "title": title,
-                    "content_length": len(content),
-                    "type": "html",
-                    "success": True
+        # Define retry strategies with different user agents and settings
+        strategies = [
+            {
+                'name': 'standard_desktop',
+                'user_agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36',
+                'viewport': {'width': 1920, 'height': 1080},
+                'headers': {
+                    'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8',
+                    'Accept-Language': 'en-US,en;q=0.5',
+                    'Accept-Encoding': 'gzip, deflate, br',
+                    'DNT': '1',
+                    'Connection': 'keep-alive',
+                    'Upgrade-Insecure-Requests': '1'
                 }
-            )
+            },
+            {
+                'name': 'mobile_safari',
+                'user_agent': 'Mozilla/5.0 (iPhone; CPU iPhone OS 16_6 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/16.6 Mobile/15E148 Safari/604.1',
+                'viewport': {'width': 390, 'height': 844},
+                'headers': {
+                    'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
+                    'Accept-Language': 'en-US,en;q=0.9'
+                }
+            },
+            {
+                'name': 'googlebot',  # Some sites allow Googlebot
+                'user_agent': 'Mozilla/5.0 (compatible; Googlebot/2.1; +http://www.google.com/bot.html)',
+                'viewport': {'width': 1024, 'height': 768}
+            }
+        ]
+        
+        for i, strategy in enumerate(strategies):
+            context = None
+            try:
+                logger.info(f"Attempting extraction with strategy: {strategy['name']} (attempt {i+1}/{len(strategies)})")
+                
+                # Create new context with user agent
+                context = await self.browser.new_context(
+                    user_agent=strategy['user_agent'],
+                    viewport=strategy['viewport'],
+                    extra_http_headers=strategy.get('headers', {})
+                )
+                page = await context.new_page()
+                
+                # Add random delay to appear more human
+                await asyncio.sleep(random.uniform(0.5, 2.0))
+                
+                # First, check if it's a PDF
+                try:
+                    head_response = await page.request.head(url)
+                    content_type = head_response.headers.get('content-type', '').lower()
+                except:
+                    content_type = ''
+                
+                is_pdf = (
+                    'application/pdf' in content_type or
+                    url.lower().endswith('.pdf') or
+                    '/pdf/' in url.lower()
+                )
+                
+                if is_pdf:
+                    # Use dedicated PDF extraction
+                    result = await self.extract_pdf_content_from_url(
+                        url,
+                        output_format="markdown" if return_markdown else "json",
+                        max_text_length=max_text_length,
+                        reasoning=reasoning
+                    )
+                    await context.close()
+                    return result
+                
+                # Navigate with timeout
+                response = await page.goto(url, wait_until='domcontentloaded', timeout=15000)
+                
+                # Check HTTP status
+                if response and response.status >= 400:
+                    logger.warning(f"HTTP {response.status} for {url}")
+                    await context.close()
+                    continue
+                
+                # Wait for content with shorter timeout
+                try:
+                    await page.wait_for_selector(selector, timeout=5000)
+                except:
+                    # Try body as fallback
+                    await page.wait_for_selector('body', timeout=2000)
+                
+                # Check for bot detection
+                content = await page.content()
+                if self._is_bot_blocked(content):
+                    logger.warning(f"Bot detection triggered with strategy {strategy['name']}")
+                    await context.close()
+                    continue
+                
+                # Extract and validate content
+                extracted = await self._extract_with_validation(page, selector, max_text_length, return_markdown)
+                
+                if extracted and len(extracted.get('content', '')) > 100:
+                    logger.info(f"Successfully extracted content with strategy: {strategy['name']}")
+                    
+                    result = {
+                        "success": True,
+                        "url": url,
+                        "title": extracted['title'],
+                        "content": extracted['content'],
+                        "content_length": extracted['length'],
+                        "format": "markdown" if return_markdown else "text",
+                        "type": "html",
+                        "strategy_used": strategy['name']
+                    }
+                    
+                    self.history.append(
+                        {
+                            "action": "extract_content_from_url",
+                            "reasoning": r,
+                            "url": url,
+                            "title": extracted['title'],
+                            "content_length": extracted['length'],
+                            "type": "html",
+                            "success": True,
+                            "strategy": strategy['name']
+                        }
+                    )
+                    
+                    await context.close()
+                    return result
+                
+                await context.close()
+                
+            except Exception as e:
+                logger.warning(f"Strategy {strategy['name']} failed: {str(e)[:100]}")
+                if context:
+                    await context.close()
+                continue
+        
+        # All strategies failed
+        logger.error(f"All extraction strategies failed for {url}")
+        error_msg = f"Unable to extract content from {url} after {len(strategies)} attempts"
+        
+        self.history.append(
+            {
+                "action": "extract_content_from_url",
+                "reasoning": r,
+                "url": url,
+                "success": False,
+                "error": error_msg
+            }
+        )
+        
+        return {
+            "success": False,
+            "error": error_msg,
+            "url": url,
+            "message": error_msg
+        }
+        
+        # Note: removed finally block since we're not navigating with self.page anymore
+
+    def _is_bot_blocked(self, content: str) -> bool:
+        """Check for common bot detection/blocking indicators."""
+        if not content:
+            return False
             
-            return result
+        content_lower = content.lower()
+        
+        # Bot detection services
+        indicators = [
+            # Cloudflare
+            'cf-browser-verification',
+            'cloudflare ray id',
+            'cf_clearance',
+            'checking your browser',
+            'ddos protection by cloudflare',
+            
+            # Incapsula/Imperva
+            'incapsula incident',
+            'incap_ses',
+            'visid_incap',
+            
+            # Distil Networks
+            'distil_referrer',
+            'distilnetworks',
+            
+            # PerimeterX
+            'perimeterx',
+            '_px',
+            
+            # DataDome
+            'datadome',
+            
+            # Generic blocks
+            '403 forbidden',
+            'access denied',
+            'permission denied',
+            'unauthorized access',
+            'bot detection',
+            'are you a robot',
+            'prove you are human'
+        ]
+        
+        for indicator in indicators:
+            if indicator in content_lower:
+                logger.debug(f"Bot detection indicator found: {indicator}")
+                return True
+        
+        # Check for suspiciously short content that might be a block page
+        text_only = re.sub(r'<[^>]+>', '', content)  # Strip HTML
+        if len(text_only.strip()) < 100 and any(word in text_only.lower() for word in ['blocked', 'denied', 'forbidden']):
+            return True
+        
+        return False
+
+    async def _extract_with_validation(self, page, selector, max_text_length, return_markdown):
+        """Extract content and validate it's meaningful."""
+        try:
+            # Try primary selector
+            element = await page.query_selector(selector)
+            if not element:
+                # Fallback to body
+                element = await page.query_selector('body')
+            
+            if element:
+                if return_markdown:
+                    html = await element.inner_html()
+                    import markdownify
+                    content = markdownify.markdownify(html, strip=['script', 'style'])
+                else:
+                    content = await element.text_content()
+                
+                # Validate content is not just JavaScript
+                if content:
+                    # Check if content is mostly JavaScript/minified code
+                    js_indicators = ['function(', 'var ', 'const ', 'let ', '=>', '});', 'window.', 'document.']
+                    js_count = sum(1 for ind in js_indicators if ind in content[:500])
+                    
+                    if js_count > 3:
+                        logger.warning("Content appears to be JavaScript code, not article text")
+                        return None
+                    
+                    # Truncate if needed
+                    if max_text_length and len(content) > max_text_length:
+                        content = content[:max_text_length] + "..."
+                    
+                    title = await page.title()
+                    
+                    return {
+                        'url': page.url,
+                        'title': title,
+                        'content': content,
+                        'length': len(content)
+                    }
             
         except Exception as e:
-            error_msg = str(e)
-            self.history.append(
-                {
-                    "action": "extract_content_from_url",
-                    "reasoning": r,
-                    "url": url,
-                    "success": False,
-                    "error": error_msg
-                }
-            )
-            
-            return {
-                "success": False,
-                "error": error_msg,
-                "url": url,
-                "message": f"Failed to extract content: {error_msg}"
-            }
-            
-        finally:
-            # Return to original URL
-            if original_url != url and original_url:
-                try:
-                    await self.page.goto(original_url)
-                except:
-                    pass  # Ignore errors when returning to original URL
+            logger.error(f"Content extraction failed: {e}")
+            return None
 
     async def extract_pdf_content_from_url(
         self,
