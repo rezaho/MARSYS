@@ -1353,6 +1353,7 @@ Example for `final_response`:
             self._last_system_prompt_context = {
                 "run_mode": run_mode,
                 "tools_count": len(self.tools_schema),
+                "can_return_final": getattr(self, '_can_return_final_response', False),
                 "system_prompt": system_prompt,
             }
         else:
@@ -1577,12 +1578,14 @@ Example for `final_response`:
         memory_messages = self.memory.retrieve_all() if hasattr(self, "memory") else []
 
         # Check if we need to rebuild the system prompt
-        # Rebuild if: first call, mode changed, or tools changed
+        # Rebuild if: first call, mode changed, tools changed, or final_response permission changed
         should_rebuild_system = (
             not hasattr(self, "_last_system_prompt_context")
             or self._last_system_prompt_context.get("run_mode") != execution_mode
             or self._last_system_prompt_context.get("tools_count")
             != len(self.tools_schema)
+            or self._last_system_prompt_context.get("can_return_final")
+            != getattr(self, '_can_return_final_response', False)
         )
 
         # Prepare messages with system prompt
@@ -2291,59 +2294,270 @@ Example for `final_response`:
     #         return f"Agent '{self.name}' auto_run finished after {current_task_steps} steps without providing an explicit final answer."
 
     async def auto_run(
-        self, 
-        task: str, 
+        self,
+        initial_request: Any,
+        request_context: Optional['RequestContext'] = None,
         max_steps: int = 30,
-        context: Optional[Dict[str, Any]] = None
-    ) -> Any:
+        max_re_prompts: int = 3,
+        timeout: Optional[int] = None,
+        progress_monitor_func: Optional[
+            Callable[
+                [asyncio.Queue, Optional[logging.Logger]], Coroutine[Any, Any, None]
+            ]
+        ] = None,
+        user_interaction: Optional[Union[str, 'CommunicationManager']] = None,
+    ) -> Union[Dict[str, Any], str]:
         """
         Run agent with automatic topology creation from allowed_peers.
         
-        This provides backward compatibility for the legacy auto_run interface
+        This provides full backward compatibility for the legacy auto_run interface
         while using the modern Orchestra coordination system internally.
+        
+        Args:
+            initial_request: The task/request to execute. Can be string, dict, or custom object.
+            request_context: Optional RequestContext for tracking execution state.
+            max_steps: Maximum number of execution steps.
+            max_re_prompts: Maximum retry attempts on errors (handled by Orchestra internally).
+            timeout: Optional timeout in seconds for the entire execution.
+            progress_monitor_func: Optional function for monitoring execution progress.
+            user_interaction: Optional user interaction mode. Can be:
+                - "terminal": Enable terminal-based user interaction
+                - CommunicationManager instance: Use custom communication manager
+                - None (default): No user interaction (auto-injected User nodes auto-complete)
+            
+        Returns:
+            The final response from the agent execution, either as a dict or string.
+            
+        Raises:
+            ValueError: If no allowed_peers are defined for the agent.
+            RuntimeError: If the execution fails.
         """
+        # Import here to avoid circular imports
+        import uuid
+        from ..coordination import Orchestra
+        from .registry import AgentRegistry
+        from .utils import RequestContext, LogLevel
+        from ..utils.monitoring import default_progress_monitor
+        
+        # Validate that agent has allowed_peers
         if not self._allowed_peers_init:
             raise ValueError(
                 f"Agent {self.name} has no allowed_peers defined. "
                 f"Use allowed_peers parameter during initialization."
             )
         
-        # Create minimal topology - edges will be built from allowed_peers
-        topology = {
-            "nodes": [self.name],
-            "edges": [],  # Will be built automatically from allowed_peers
-            "rules": [f"max_steps({max_steps})"]
-        }
+        # Extract prompt and context from initial_request
+        prompt, context_messages = self._extract_prompt_and_context(initial_request)
         
-        # Add all peers to topology nodes
-        topology["nodes"].extend(list(self._allowed_peers_init))
+        # Create RequestContext if not provided
+        monitor_task = None
+        created_new_context = False
         
-        # Import here to avoid circular imports
-        from ..coordination import Orchestra
-        from .registry import AgentRegistry
+        if request_context is None:
+            created_new_context = True
+            task_id = f"agent-task-{self.name}-{uuid.uuid4()}"
+            progress_queue = asyncio.Queue() if progress_monitor_func else None
+            
+            request_context = RequestContext(
+                task_id=task_id,
+                initial_prompt=prompt,
+                progress_queue=progress_queue,
+                log_level=LogLevel.SUMMARY,
+                max_depth=3,
+                max_interactions=max_steps * 2 + 5,
+                interaction_id=str(uuid.uuid4()),
+                depth=0,
+                interaction_count=0,
+                caller_agent_name=None,
+                callee_agent_name=self.name,
+                current_tokens_used=0,
+                max_tokens_soft_limit=None,
+                max_tokens_hard_limit=None
+            )
+            
+            # Start progress monitor if requested
+            if progress_queue and progress_monitor_func:
+                monitor_to_use = progress_monitor_func or default_progress_monitor
+                monitor_task = asyncio.create_task(
+                    monitor_to_use(progress_queue, self.logger)
+                )
+                await self._log_progress(
+                    request_context,
+                    LogLevel.SUMMARY,
+                    f"Agent '{self.name}' starting auto_run with progress monitoring",
+                    data={"task_id": task_id}
+                )
         
-        # Create Orchestra instance
-        orchestra = Orchestra(agent_registry=AgentRegistry)
-        
-        # Merge provided context with auto_run context
-        exec_context = {"initial_agent": self.name}
-        if context:
-            exec_context.update(context)
-        
-        # Execute with Orchestra
-        result = await orchestra.execute(
-            task=task,
-            topology=topology,
-            context=exec_context,
-            max_steps=max_steps
-        )
-        
-        # Return appropriate response based on result
-        if result.success:
-            return result.final_response
-        else:
-            # For backward compatibility, raise exception on failure
-            raise RuntimeError(f"auto_run failed: {result.error}")
+        try:
+            # Create topology from allowed_peers
+            topology = {
+                "nodes": [self.name],
+                "edges": [],  # Will be built automatically from allowed_peers
+                "rules": [f"max_steps({max_steps})"],
+                "entry_point": self.name,  # Specify this agent as the entry point
+                "exit_points": [self.name]  # Also specify as exit point so it can return final_response
+            }
+            
+            # Add timeout rule if specified
+            if timeout:
+                topology["rules"].append(f"timeout({timeout})")
+            
+            # Note: TopologyAnalyzer will auto-discover all agents from registry
+            # No need to manually add peers here
+            
+            # Prepare execution context
+            exec_context = {
+                "initial_agent": self.name,
+                "request_context": request_context,
+                "max_re_prompts": max_re_prompts,
+                "context_messages": context_messages  # Pass any extracted context messages
+            }
+            
+            # Log start of execution
+            await self._log_progress(
+                request_context,
+                LogLevel.SUMMARY,
+                f"Agent '{self.name}' starting auto_run for task '{request_context.task_id}'",
+                data={
+                    "initial_request_preview": str(prompt)[:200],
+                    "max_steps": max_steps,
+                    "max_re_prompts": max_re_prompts,
+                    "allowed_peers": list(self._allowed_peers_init)
+                }
+            )
+            
+            # Create communication manager if requested
+            comm_manager = None
+            terminal_channel = None  # Track for cleanup
+            if user_interaction:
+                if isinstance(user_interaction, str) and user_interaction == "terminal":
+                    # Create terminal-based interaction
+                    from ..coordination.communication import CommunicationManager
+                    from ..coordination.communication.channels import TerminalChannel
+                    
+                    comm_manager = CommunicationManager()
+                    terminal_channel = TerminalChannel(f"terminal_{self.name}")
+                    await terminal_channel.start()
+                    comm_manager.register_channel(terminal_channel)
+                    
+                    # Assign to session if context has session_id
+                    if exec_context and "session_id" in exec_context:
+                        comm_manager.assign_channel_to_session(
+                            exec_context["session_id"], 
+                            terminal_channel.channel_id
+                        )
+                elif hasattr(user_interaction, 'register_channel'):
+                    # User provided their own CommunicationManager
+                    comm_manager = user_interaction
+                else:
+                    self.logger.warning(f"Invalid user_interaction value: {user_interaction}")
+            
+            # Create Orchestra instance with optional communication
+            orchestra = Orchestra(
+                agent_registry=AgentRegistry,
+                communication_manager=comm_manager  # Pass the manager if available
+            )
+            
+            # Execute with Orchestra
+            result = await orchestra.execute(
+                task=prompt,  # Use extracted prompt as the task
+                topology=topology,
+                context=exec_context,
+                max_steps=max_steps
+            )
+            
+            # Process result
+            if result.success:
+                final_answer_data = result.final_response
+                
+                # Create preview for logging
+                if isinstance(final_answer_data, dict):
+                    preview = str(final_answer_data)[:200]
+                elif isinstance(final_answer_data, str):
+                    preview = final_answer_data[:200]
+                else:
+                    preview = str(final_answer_data)[:200]
+                
+                await self._log_progress(
+                    request_context,
+                    LogLevel.SUMMARY,
+                    f"Agent '{self.name}' auto_run finished successfully",
+                    data={
+                        "final_answer_preview": preview,
+                        "total_steps": result.total_steps,
+                        "duration": result.total_duration
+                    }
+                )
+                
+                return final_answer_data
+            else:
+                # Handle failure
+                error_msg = result.error or "Unknown error during execution"
+                await self._log_progress(
+                    request_context,
+                    LogLevel.MINIMAL,  # Use MINIMAL for errors
+                    f"Agent '{self.name}' auto_run failed: {error_msg}",
+                    data={"error": error_msg}
+                )
+                
+                # Return error message for backward compatibility
+                return f"Error: Agent '{self.name}' failed during auto_run: {error_msg}"
+                
+        except Exception as e:
+            self.logger.error(f"Exception in auto_run: {e}", exc_info=True)
+            await self._log_progress(
+                request_context,
+                LogLevel.MINIMAL,  # Use MINIMAL for errors
+                f"Agent '{self.name}' auto_run encountered exception: {str(e)}",
+                data={"exception": str(e)}
+            )
+            
+            # Return error for backward compatibility
+            return f"Error: Agent '{self.name}' encountered exception: {str(e)}"
+            
+        finally:
+            # Cleanup terminal channel if created
+            if terminal_channel:
+                try:
+                    await terminal_channel.stop()
+                    self.logger.debug(f"Stopped terminal channel for agent '{self.name}'")
+                except Exception as e:
+                    self.logger.warning(f"Failed to stop terminal channel: {e}")
+            
+            if comm_manager and user_interaction == "terminal":
+                try:
+                    await comm_manager.cleanup()
+                    self.logger.debug(f"Cleaned up communication manager for agent '{self.name}'")
+                except Exception as e:
+                    self.logger.warning(f"Failed to cleanup communication manager: {e}")
+            
+            # Cleanup monitor task if it was created
+            if created_new_context and monitor_task:
+                self.logger.info(
+                    f"Agent {self.name} auto_run signaling progress monitor to stop."
+                )
+                if request_context.progress_queue:
+                    await request_context.progress_queue.put(None)
+                    try:
+                        await asyncio.wait_for(monitor_task, timeout=5.0)
+                    except asyncio.TimeoutError:
+                        self.logger.warning(
+                            f"Timeout waiting for progress monitor of agent {self.name} to stop."
+                        )
+                        monitor_task.cancel()
+                    except Exception as e_monitor:
+                        self.logger.error(
+                            f"Error stopping monitor task: {e_monitor}",
+                            exc_info=True
+                        )
+            
+            # Clear memory if retention is single_run
+            if self._memory_retention == "single_run" and hasattr(self, 'memory'):
+                try:
+                    self.memory.clear()
+                    self.logger.debug(f"Cleared single-run memory for agent '{self.name}'")
+                except Exception as e:
+                    self.logger.warning(f"Failed to clear memory: {e}")
 
     async def _execute_tool_calls(
         self, tool_calls: List[Dict[str, Any]], request_context: RequestContext

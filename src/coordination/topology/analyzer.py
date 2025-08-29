@@ -58,6 +58,7 @@ class TopologyAnalyzer:
             # Import here to avoid circular imports
             from ...agents.registry import AgentRegistry
             
+            # Check existing nodes for allowed_peers (indicates auto_run mode)
             node_names = [n for n in graph.nodes.keys() if n != "User"]
             has_allowed_peers = any(
                 hasattr(AgentRegistry.get(name), '_allowed_peers_init') and 
@@ -66,8 +67,14 @@ class TopologyAnalyzer:
             )
             
             if has_allowed_peers:
-                logger.info("No edges defined in topology - building from allowed_peers")
-                self._build_edges_from_allowed_peers(graph, node_names)
+                logger.info("Detected auto_run mode - building topology from allowed_peers")
+                
+                # Step 1: Auto-discover and add all nodes from registry
+                self._build_nodes_from_registry(graph)
+                
+                # Step 2: Build edges from allowed_peers (all nodes now in graph)
+                all_node_names = [n for n in graph.nodes.keys() if n != "User"]
+                self._build_edges_from_allowed_peers(graph, all_node_names)
         else:
             # Validate no mixing of approaches
             from ...agents.registry import AgentRegistry
@@ -192,7 +199,8 @@ class TopologyAnalyzer:
             agent = AgentRegistry.get(agent_name)
             if agent and hasattr(agent, '_allowed_peers_init') and agent._allowed_peers_init:
                 for peer in agent._allowed_peers_init:
-                    if peer in agents:  # Only add edges to agents in topology
+                    # Check if peer exists in the graph (was discovered)
+                    if peer in graph.nodes:  # Changed from 'if peer in agents'
                         # Check if this is a reflexive relationship (using allowed_peers means reflexive)
                         graph.add_edge(TopologyEdge(
                             source=agent_name,
@@ -205,6 +213,35 @@ class TopologyAnalyzer:
         
         if edges_created > 0:
             logger.info(f"Created {edges_created} reflexive edges from allowed_peers")
+    
+    def _build_nodes_from_registry(self, graph: TopologyGraph) -> int:
+        """
+        Auto-discover and add all agents from AgentRegistry that have allowed_peers.
+        Only used in auto_run mode when no explicit edges are defined.
+        
+        Returns:
+            Number of nodes added to the graph
+        """
+        from ...agents.registry import AgentRegistry
+        
+        nodes_added = 0
+        all_agents = AgentRegistry.all()
+        
+        for agent_name, agent in all_agents.items():
+            # Skip if already in graph
+            if agent_name in graph.nodes:
+                continue
+                
+            # Add if agent has allowed_peers defined (indicates participation in auto_run)
+            if hasattr(agent, '_allowed_peers_init'):
+                graph.add_node(agent_name, agent=agent)
+                nodes_added += 1
+                logger.debug(f"Auto-discovered agent from registry: {agent_name}")
+        
+        if nodes_added > 0:
+            logger.info(f"Auto-discovered {nodes_added} agents from AgentRegistry")
+        
+        return nodes_added
     
     def _process_rules(self, graph: TopologyGraph, topology_def: Union[Topology, Dict[str, Any]]) -> None:
         """Process rules to identify execution patterns."""
