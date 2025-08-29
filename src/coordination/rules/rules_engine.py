@@ -211,17 +211,45 @@ class RulesEngine:
         self.pre_rule_hooks: List[Callable] = []
         self.post_rule_hooks: List[Callable] = []
     
-    def register_rule(self, rule: Rule) -> None:
+    def has_rule(self, rule_name: str) -> bool:
+        """
+        Check if a rule with the given name already exists.
+        
+        Args:
+            rule_name: Name of the rule to check
+            
+        Returns:
+            True if rule exists, False otherwise
+        """
+        return rule_name in self.rules
+    
+    def register_rule(self, rule: Rule, force: bool = False) -> None:
         """
         Register a rule with the engine.
         
         Args:
             rule: Rule to register
+            force: If True, overwrite existing rule without warning
         """
         if rule.name in self.rules:
-            logger.warning(f"Overwriting existing rule: {rule.name}")
+            if not force:
+                logger.warning(f"Overwriting existing rule: {rule.name}")
+            else:
+                logger.debug(f"Force overwriting rule: {rule.name}")
+            
+            # Remove old instance from rules_by_type
+            old_rule = self.rules[rule.name]
+            if old_rule.rule_type in self.rules_by_type:
+                self.rules_by_type[old_rule.rule_type] = [
+                    r for r in self.rules_by_type[old_rule.rule_type] 
+                    if r.name != rule.name
+                ]
         
         self.rules[rule.name] = rule
+        
+        # Add to rules_by_type
+        if rule.rule_type not in self.rules_by_type:
+            self.rules_by_type[rule.rule_type] = []
         self.rules_by_type[rule.rule_type].append(rule)
         
         # Sort by priority

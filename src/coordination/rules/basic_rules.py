@@ -664,36 +664,9 @@ class ReflexiveReturnRule(Rule):
         self.agent_name = agent_name
         
     async def check(self, context: RuleContext) -> RuleResult:
-        """Check if agent should return to caller."""
-        current = context.metadata.get("current_agent")
-        action = context.metadata.get("action_type")
-        
-        # Only act on final_response from our agent
-        if current != self.agent_name or action != "final_response":
-            return RuleResult(
-                rule_name=self.name,
-                passed=True,
-                action="allow"
-            )
-        
-        # Check branch metadata for reflexive caller
-        caller = context.branch_metadata.get(f"reflexive_caller_{self.agent_name}")
-        
-        if caller:
-            # Return to caller and clear the reflexive state
-            return RuleResult(
-                rule_name=self.name,
-                passed=True,
-                action="modify",
-                reason=f"{self.agent_name} returning to {caller} (reflexive pattern)",
-                modifications={
-                    "override_next_agent": caller,
-                    "update_state": {
-                        f"reflexive_caller_{self.agent_name}": None  # Clear state
-                    }
-                }
-            )
-        
+        """Track reflexive state without forcing transitions."""
+        # This rule now only tracks state
+        # The actual return logic is handled in branch_executor
         return RuleResult(
             rule_name=self.name,
             passed=True,

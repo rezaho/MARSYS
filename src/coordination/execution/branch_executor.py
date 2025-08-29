@@ -348,6 +348,27 @@ class BranchExecutor:
                     elif "content" in step_result.parsed_response:
                         final_content = step_result.parsed_response["content"]
                 
+                # CHECK FOR REFLEXIVE RETURN BEFORE COMPLETING
+                if f"reflexive_caller_{current_agent}" in branch.metadata:
+                    # Handle reflexive return - continue execution with caller
+                    caller = branch.metadata[f"reflexive_caller_{current_agent}"]
+                    del branch.metadata[f"reflexive_caller_{current_agent}"]
+                    
+                    next_agent = caller
+                    current_request = final_content
+                    
+                    logger.info(f"Reflexive return: {current_agent} completed with final_response, returning to {caller}")
+                    
+                    # Mark the last step differently so _should_complete won't trigger
+                    if execution_trace:
+                        execution_trace[-1].action_type = "reflexive_return"
+                    
+                    # Update context and continue
+                    context.metadata["from_agent"] = current_agent
+                    current_agent = next_agent
+                    branch.topology.current_agent = current_agent
+                    continue  # Continue loop instead of returning
+                
                 # Check if this is a reflexive edge - need to route back to parent
                 if self._is_reflexive_branch(branch):
                     logger.info(f"Reflexive branch completing - routing response back to parent")
@@ -672,11 +693,23 @@ class BranchExecutor:
                 
                 return result
             else:
-                return StepResult(
-                    agent_name="User",
-                    success=False,
-                    error="User node handler not configured"
-                )
+                # Check if this is an auto-injected User node
+                if branch.metadata.get("auto_injected_user"):
+                    # Auto-complete for auto-injected User nodes without handler
+                    # Pass through the actual request instead of a dummy message
+                    return StepResult(
+                        agent_name="User",
+                        success=True,
+                        response=request if request else {"message": "Auto-injected User node completed"},
+                        metadata={"auto_completed": True}
+                    )
+                else:
+                    # Explicit User node without handler is an error
+                    return StepResult(
+                        agent_name="User",
+                        success=False,
+                        error="User node handler not configured for explicit User node"
+                    )
         
         # Get agent instance for normal agents (pool-aware)
         agent = self.agent_registry.get_or_acquire(agent_name, branch.id)
