@@ -96,39 +96,52 @@ class RuleFactory:
         engine: RulesEngine,
         topology_graph: TopologyGraph
     ) -> None:
-        """Add rules for reflexive edges (<=>) patterns."""
+        """
+        Add rules for reflexive edges (<=>) patterns.
+        Prevents duplicate return rules for agents with multiple reflexive relationships.
+        """
         reflexive_pairs = set()
+        registered_return_rules = set()  # Track which return rules already exist
         
         for edge in topology_graph.edges:
             if edge.metadata and edge.metadata.get("reflexive"):
-                # Track reflexive pairs
+                # Track reflexive pairs to avoid duplicate state rules
                 pair = tuple(sorted([edge.source, edge.target]))
                 if pair not in reflexive_pairs:
                     reflexive_pairs.add(pair)
                     
-                    # Add state tracking rules for both directions
+                    # Add state tracking rules for both directions (always unique per pair)
                     state_rule1 = ReflexiveStateTrackingRule(
                         source_agent=edge.source,
                         target_agent=edge.target
                     )
                     engine.register_rule(state_rule1)
+                    logger.debug(f"Added state tracking rule: {edge.source} -> {edge.target}")
                     
                     state_rule2 = ReflexiveStateTrackingRule(
                         source_agent=edge.target,
                         target_agent=edge.source
                     )
                     engine.register_rule(state_rule2)
+                    logger.debug(f"Added state tracking rule: {edge.target} -> {edge.source}")
                     
-                    # Add return rules for both agents
-                    return_rule1 = ReflexiveReturnRule(
-                        agent_name=edge.source
-                    )
-                    engine.register_rule(return_rule1)
-                    
-                    return_rule2 = ReflexiveReturnRule(
-                        agent_name=edge.target
-                    )
-                    engine.register_rule(return_rule2)
+                    # Add return rules only if not already registered
+                    for agent_name in [edge.source, edge.target]:
+                        rule_name = f"reflexive_return_{agent_name}"
+                        
+                        # Check if this return rule already exists
+                        if rule_name not in registered_return_rules:
+                            # Check if already in engine (from previous run or manual addition)
+                            if not engine.has_rule(rule_name):
+                                return_rule = ReflexiveReturnRule(agent_name=agent_name)
+                                engine.register_rule(return_rule)
+                                registered_return_rules.add(rule_name)
+                                logger.debug(f"Added return rule: {rule_name}")
+                            else:
+                                registered_return_rules.add(rule_name)
+                                logger.debug(f"Return rule already exists: {rule_name}")
+                        else:
+                            logger.debug(f"Skipping duplicate return rule: {rule_name}")
                     
                     logger.info(f"Added reflexive rules for {edge.source} <=> {edge.target}")
     

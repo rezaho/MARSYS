@@ -263,33 +263,50 @@ class DynamicBranchSpawner:
         response: Any
     ) -> bool:
         """
-        Determine if divergence spawning should occur based on agent's actual intent.
+        FIX 1: Determine if divergence spawning should occur based on RUNTIME behavior.
         
         Returns True only if:
-        1. Agent is a topology divergence point AND
-        2. Agent hasn't specified a single next target AND
-        3. Agent doesn't have pending tool execution
-        """
-        # Not a divergence point in topology - no spawning
-        if not self.graph.is_divergence_point(agent_name):
-            return False
+        1. Agent explicitly requested parallel execution OR
+        2. Agent specified multiple target agents explicitly
         
-        # Check for tool continuation markers FIRST
+        We NO LONGER use static topology to determine divergence.
+        """
+        # Check if agent explicitly requested parallel execution
         if isinstance(response, dict):
+            # Explicit parallel invocation request
+            if response.get("next_action") == "parallel_invoke":
+                logger.info(f"Agent '{agent_name}' explicitly requested parallel invocation")
+                return True
+            
+            # Check for tool continuation markers - no divergence during tool execution
             if response.get('_tool_continuation') or response.get('_has_tool_calls'):
-                logger.info(f"Agent '{agent_name}' is divergence point but has pending tools - no spawning")
+                logger.debug(f"Agent '{agent_name}' has pending tools - no divergence")
                 return False
             if response.get('next_action') == 'continue_with_tools':
-                logger.info(f"Agent '{agent_name}' is divergence point but continuing with tools - no spawning")
+                logger.debug(f"Agent '{agent_name}' continuing with tools - no divergence")
                 return False
+            
+            # Check if we just completed a reflexive return
+            # (Don't spawn divergence after processing reflexive response)
+            if hasattr(response, 'metadata'):
+                if response.metadata.get('reflexive_return_completed'):
+                    logger.info(f"Agent '{agent_name}' just completed reflexive return - no divergence")
+                    return False
         
-        # Check agent's actual intent
+        # Check if agent specified multiple targets explicitly
+        explicit_targets = self._extract_explicit_targets(response)
+        if len(explicit_targets) > 1:
+            logger.info(f"Agent '{agent_name}' specified multiple targets: {explicit_targets} - spawning divergence")
+            return True
+        
+        # Agent specified single target or no target - NO divergence
+        # We don't use static topology anymore
         if self._has_explicit_single_target(response):
-            logger.info(f"Agent '{agent_name}' is divergence point but specified single target - no spawning")
-            return False
+            logger.debug(f"Agent '{agent_name}' specified single target - no divergence")
+        else:
+            logger.debug(f"Agent '{agent_name}' didn't specify multiple targets - no divergence")
         
-        # Agent didn't specify target - use topology divergence
-        return True
+        return False
 
     def _has_explicit_single_target(self, response: Any) -> bool:
         """Check if response explicitly specifies a single target agent."""
@@ -670,6 +687,19 @@ class DynamicBranchSpawner:
         # Get allowed transitions from this agent forward
         allowed_transitions = self.graph.get_subgraph_from(target_agent)
         
+        # Build metadata with reflexive caller if needed
+        metadata = {
+            "source_agent": source_agent,
+            "initial_request": initial_request,
+            "context": context,
+            "is_reflexive": is_reflexive  # NEW
+        }
+        
+        # FIX 2: Set reflexive caller metadata when it's a reflexive edge
+        if is_reflexive:
+            metadata[f"reflexive_caller_{target_agent}"] = source_agent
+            logger.info(f"Set reflexive caller for {target_agent}: {source_agent}")
+        
         branch = ExecutionBranch(
             id=branch_id,
             name=f"Branch: {source_agent} → {target_agent}",
@@ -682,12 +712,7 @@ class DynamicBranchSpawner:
             ),
             state=BranchState(status=BranchStatus.PENDING),
             completion_condition=AgentDecidedCompletion(),
-            metadata={
-                "source_agent": source_agent,
-                "initial_request": initial_request,
-                "context": context,
-                "is_reflexive": is_reflexive  # NEW
-            }
+            metadata=metadata
         )
         
         return branch

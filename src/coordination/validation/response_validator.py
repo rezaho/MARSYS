@@ -496,7 +496,7 @@ class ValidationProcessor:
             ActionType.WAIT_AND_AGGREGATE: self._validate_wait_aggregate
         }
     
-    def _get_allowed_actions(self, agent: BaseAgent) -> List[str]:
+    def _get_allowed_actions(self, agent: BaseAgent, branch: ExecutionBranch = None) -> List[str]:
         """Get list of actions this agent is allowed to perform based on topology."""
         allowed = []
         
@@ -510,7 +510,9 @@ class ValidationProcessor:
             allowed.append("call_tool")
         
         # Check if agent can return final response
-        if self.topology_graph.has_user_access(agent.name):
+        # Either connected to User OR in reflexive invocation
+        is_reflexive = branch and branch.metadata.get(f"reflexive_caller_{agent.name}") is not None
+        if self.topology_graph.has_user_access(agent.name) or is_reflexive:
             allowed.append("final_response")
         
         return allowed
@@ -596,7 +598,7 @@ class ValidationProcessor:
         
         # Don't default to "continue" - require explicit action
         if not action_str:
-            allowed_actions = self._get_allowed_actions(agent)
+            allowed_actions = self._get_allowed_actions(agent, branch)
             return ValidationResult(
                 is_valid=False,
                 error_message="No action specified in response",
@@ -607,7 +609,7 @@ class ValidationProcessor:
             # Direct mapping without "continue" fallback
             action_type = ActionType(action_str)
         except ValueError:
-            allowed_actions = self._get_allowed_actions(agent)
+            allowed_actions = self._get_allowed_actions(agent, branch)
             valid_action_types = []
             for action in allowed_actions:
                 if action == "invoke_agent":
@@ -783,20 +785,23 @@ class ValidationProcessor:
         """
         # Check if agent can return final response
         if self.topology_graph:
-            if not self.topology_graph.has_user_access(agent.name):
+            # Check if this is a reflexive invocation (agent was called via reflexive edge)
+            is_reflexive_invocation = branch.metadata.get(f"reflexive_caller_{agent.name}") is not None
+            
+            if not self.topology_graph.has_user_access(agent.name) and not is_reflexive_invocation:
                 # Get the agent's allowed next agents for better error message
                 next_agents = self.topology_graph.get_next_agents(agent.name)
                 
                 logger.warning(
-                    f"Agent '{agent.name}' attempted final_response but is not connected to User. "
-                    f"Agent's next options: {next_agents}"
+                    f"Agent '{agent.name}' attempted final_response but is not connected to User "
+                    f"and not in reflexive invocation. Agent's next options: {next_agents}"
                 )
                 
                 return ValidationResult(
                     is_valid=False,
                     error_message=(
                         f"Agent '{agent.name}' cannot use final_response action. "
-                        f"Only agents with edges to User nodes can complete execution. "
+                        f"Only agents with edges to User nodes or agents invoked via reflexive edges can complete execution. "
                         f"This agent can invoke: {next_agents}"
                     ),
                     retry_suggestion=(
@@ -804,6 +809,8 @@ class ValidationProcessor:
                         f"or 'call_tool' if you have tools available."
                     )
                 )
+            elif is_reflexive_invocation:
+                logger.debug(f"Agent '{agent.name}' is allowed to use final_response (reflexive invocation)")
         else:
             logger.debug(f"Agent '{agent.name}' is allowed to use final_response (has User access)")
         
@@ -835,7 +842,7 @@ class ValidationProcessor:
         """Validate conversation end."""
         # Check if we're in a conversation branch
         if branch.type.value != "conversation":
-            allowed_actions = self._get_allowed_actions(agent)
+            allowed_actions = self._get_allowed_actions(agent, branch)
             if "final_response" in allowed_actions:
                 retry_suggestion = "Use 'final_response' to complete execution"
             else:

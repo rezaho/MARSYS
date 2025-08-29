@@ -360,6 +360,7 @@ class Orchestra:
                 branch_results=result.get("branch_results", []),
                 total_steps=result.get("total_steps", 0),
                 total_duration=duration,
+                error=result.get("error"),  # Pass error from result
                 metadata={
                     "session_id": session_id,
                     "max_steps": max_steps,
@@ -598,11 +599,19 @@ class Orchestra:
         # Extract final response
         final_response = self._extract_final_response(completed_branches)
         
+        # Extract error from failed branches
+        error = None
+        for branch in completed_branches:
+            if not branch.success and branch.error:
+                error = branch.error
+                break  # Use first error found
+        
         return {
             "success": any(b.success for b in completed_branches),
             "final_response": final_response,
             "branch_results": completed_branches,
             "total_steps": total_steps,
+            "error": error,  # Include error in result
             "metadata": {
                 "completed_branches": len(completed_branches),
                 "cancelled_tasks": len(all_tasks)
@@ -632,6 +641,11 @@ class Orchestra:
         if branch_id is None:
             branch_id = f"main_{agent_name}_{uuid.uuid4().hex[:8]}"
         
+        # Include topology metadata (e.g., auto_injected_user)
+        metadata = {"initial_task": task, "context": context}
+        if hasattr(self.topology_graph, 'metadata'):
+            metadata.update(self.topology_graph.metadata)
+        
         return ExecutionBranch(
             id=branch_id,
             name=f"Main: {agent_name}",
@@ -643,7 +657,7 @@ class Orchestra:
                 allowed_transitions=dict(self.topology_graph.adjacency)
             ),
             state=BranchState(status=BranchStatus.PENDING),
-            metadata={"initial_task": task, "context": context}
+            metadata=metadata
         )
     
     def _get_last_agent(self, branch_result: BranchResult) -> Optional[str]:
