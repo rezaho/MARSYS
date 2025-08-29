@@ -37,6 +37,8 @@ class StepContext:
     memory: List[Dict[str, Any]] = field(default_factory=list)
     tools_enabled: bool = True
     metadata: Dict[str, Any] = field(default_factory=dict)
+    branch: Optional['ExecutionBranch'] = None  # FIX 3: Added for dynamic instructions
+    topology_graph: Optional['TopologyGraph'] = None  # FIX 3: Added for dynamic instructions
     
     def to_request_context(self) -> Dict[str, Any]:
         """Convert to request context for agent.run_step()."""
@@ -144,7 +146,9 @@ class StepExecutor:
             agent_name=agent_name,
             memory=[],  # Empty - not used for injection anymore
             tools_enabled=context.get("tools_enabled", True),
-            metadata=context
+            metadata=context,
+            branch=context.get("branch"),  # FIX 3: Pass branch for dynamic instructions
+            topology_graph=context.get("topology_graph")  # FIX 3: Pass topology for dynamic instructions
         )
         
         logger.info(f"Executing step for agent '{agent_name}' "
@@ -284,6 +288,71 @@ class StepExecutor:
         self._update_stats(agent_name, failed_result, retry_count, duration)
         return failed_result
     
+    def _get_dynamic_format_instructions(
+        self,
+        agent: BaseAgent,
+        branch: Optional[ExecutionBranch] = None,
+        topology_graph: Optional['TopologyGraph'] = None
+    ) -> str:
+        """
+        FIX 3: Generate format instructions based on allowed actions.
+        
+        This ensures agents only see the actions they're actually allowed to perform,
+        preventing validation errors when agents try to use disallowed actions.
+        """
+        # Import validator to get allowed actions
+        from ..validation.response_validator import ValidationProcessor
+        
+        # We need the topology graph to determine allowed actions
+        if not topology_graph:
+            # Fall back to static instructions if no topology available
+            return """
+Your response must be a JSON object with one of these formats:
+
+1. To invoke another agent:
+{"next_action": "invoke_agent", "action_input": {"agent_name": "AgentName", "request": "your request"}}
+
+2. To call tools:
+{"next_action": "call_tool", "action_input": {"tool_calls": [...]}}
+
+3. To provide final response:
+{"next_action": "final_response", "action_input": {"response": "your final answer"}}
+
+Do not provide thoughts or explanations outside this JSON structure."""
+        
+        validator = ValidationProcessor(topology_graph)
+        allowed_actions = validator._get_allowed_actions(agent, branch)
+        
+        instructions = ["Your response must be a JSON object with one of these formats:"]
+        format_count = 0
+        
+        if "invoke_agent" in allowed_actions:
+            format_count += 1
+            next_agents = topology_graph.get_next_agents(agent.name)
+            if next_agents:
+                agents_str = ', '.join(next_agents)
+                instructions.append(
+                    f"\n{format_count}. To invoke another agent ({agents_str}):\n"
+                    '{"next_action": "invoke_agent", "action_input": {"agent_name": "AgentName", "request": "your request"}}'
+                )
+        
+        if "call_tool" in allowed_actions:
+            format_count += 1
+            instructions.append(
+                f"\n{format_count}. To call tools:\n"
+                '{"next_action": "call_tool", "action_input": {"tool_calls": [...]}}'
+            )
+        
+        if "final_response" in allowed_actions:
+            format_count += 1
+            instructions.append(
+                f"\n{format_count}. To provide final response:\n"
+                '{"next_action": "final_response", "action_input": {"response": "your final answer"}}'
+            )
+        
+        instructions.append("\nDo not provide thoughts or explanations outside this JSON structure.")
+        
+        return "".join(instructions)
     
     async def _process_agent_response(
         self,
@@ -543,32 +612,32 @@ class StepExecutor:
             result.metadata['invalid_response'] = True
             result.metadata['retry_reason'] = 'format_error'
             
-            # Generate format instructions
-            format_instructions = """
-Your response must be a JSON object with one of these formats:
-
-1. To invoke another agent:
-{"next_action": "invoke_agent", "action_input": {"agent_name": "AgentName", "request": "your request"}}
-
-2. To call tools:
-{"next_action": "call_tool", "action_input": {"tool_calls": [...]}}
-
-3. To provide final response:
-{"next_action": "final_response", "action_input": {"response": "your final answer"}}
-
-Do not provide thoughts or explanations outside this JSON structure."""
+            # FIX 3: Generate dynamic format instructions based on allowed actions
+            # Get topology graph from context if available
+            topology_graph = None
+            if hasattr(context, 'topology_graph'):
+                topology_graph = context.topology_graph
+            elif hasattr(self, 'topology_graph'):
+                topology_graph = self.topology_graph
             
-            # Try to get agent-specific format instructions if available
+            # Generate dynamic instructions
+            format_instructions = self._get_dynamic_format_instructions(
+                agent, 
+                context.branch if hasattr(context, 'branch') else None,
+                topology_graph
+            )
+            
+            # Try to get agent-specific format instructions if available (override dynamic)
             if hasattr(agent, '_get_response_guidelines'):
                 try:
                     format_instructions = agent._get_response_guidelines()
                 except:
-                    pass  # Use default format
+                    pass  # Use dynamic format
             elif hasattr(agent, '_get_unified_response_format'):
                 try:
                     format_instructions = agent._get_unified_response_format()
                 except:
-                    pass  # Use default format
+                    pass  # Use dynamic format
             
             result.error = f"Invalid response format. {format_instructions}"
             logger.warning(f"Agent '{context.agent_name}' provided invalid response - will retry with format instructions")

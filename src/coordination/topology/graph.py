@@ -438,6 +438,7 @@ class TopologyGraph:
         self.metadata["auto_injected_user"] = True
         self.metadata["original_entry"] = entry_agent
         self.metadata["original_exits"] = exit_agents
+        self.metadata["agent_after_user"] = entry_agent  # Critical for branch spawning after User completes
         
         logger.info(f"Auto-injected User node with entry {entry_agent} and exits {exit_agents}")
     
@@ -516,13 +517,13 @@ class TopologyGraph:
     
     def has_user_access(self, agent_name: str) -> bool:
         """
-        Check if a specific agent has edges to User nodes.
+        Check if a specific agent has edges to User nodes or is an exit point.
         
         Args:
             agent_name: Name of the agent to check
             
         Returns:
-            True if the agent has access to User nodes, False otherwise
+            True if the agent has access to User nodes or is an exit point, False otherwise
         """
         from .core import NodeType
         
@@ -539,6 +540,19 @@ class TopologyGraph:
         for target in node.outgoing_edges:
             target_node = self.nodes.get(target)
             if target_node and target_node.node_type == NodeType.USER:
+                return True
+        
+        # Also check if this agent is in the exit_points metadata
+        # This allows agents designated as exit points to return final_response
+        # even when there's no User node (e.g., in auto_run scenarios)
+        if self.metadata:
+            exit_points = self.metadata.get("exit_points", [])
+            if agent_name in exit_points:
+                return True
+            
+            # Also check original_exits for auto-injected User scenarios
+            original_exits = self.metadata.get("original_exits", [])
+            if agent_name in original_exits:
                 return True
         
         return False
