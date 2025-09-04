@@ -17,12 +17,13 @@ from typing import Any, Dict, List, Optional, Set, Tuple, TYPE_CHECKING, Union
 from collections import defaultdict
 
 from ...agents.memory import Message
-from ..branches.types import StepResult
+from ..branches.types import StepResult, ExecutionBranch
 from .tool_executor import RealToolExecutor
 
 if TYPE_CHECKING:
     from ...agents import BaseAgent
     from ..communication.user_node_handler import UserNodeHandler
+    from ..topology import TopologyGraph
 
 logger = logging.getLogger(__name__)
 
@@ -156,6 +157,10 @@ class StepExecutor:
                    f"branch: {step_context.branch_id}, "
                    f"step: {step_context.step_number})")
         
+        # Generate dynamic format instructions if we have topology and branch
+        topology_graph = context.get("topology_graph")
+        branch = context.get("branch")
+        
         # Execute with retries
         retry_count = 0
         last_error = None
@@ -168,6 +173,17 @@ class StepExecutor:
                 # Mark as continuation if this is a tool continuation
                 if context.get('tool_continuation'):
                     run_context["is_continuation"] = True
+                
+                # Add format instructions to context if available
+                if topology_graph and branch:
+                    format_instructions = self._get_dynamic_format_instructions(
+                        agent, 
+                        branch,
+                        topology_graph
+                    )
+                    if format_instructions:
+                        run_context["format_instructions"] = format_instructions
+                        logger.debug(f"Passing dynamic format instructions for {agent_name} via context")
                 
                 agent_response = await agent.run_step(
                     request,
@@ -290,69 +306,540 @@ class StepExecutor:
     
     def _get_dynamic_format_instructions(
         self,
-        agent: BaseAgent,
-        branch: Optional[ExecutionBranch] = None,
+        agent: 'BaseAgent',
+        branch: Optional['ExecutionBranch'] = None,
         topology_graph: Optional['TopologyGraph'] = None
     ) -> str:
         """
-        FIX 3: Generate format instructions based on allowed actions.
-        
-        This ensures agents only see the actions they're actually allowed to perform,
-        preventing validation errors when agents try to use disallowed actions.
+        Generate COMPLETE system prompt with dynamic action determination.
+        This builds a full system prompt that replaces the agent's default one,
+        with actions determined dynamically from topology and branch metadata.
         """
-        # Import validator to get allowed actions
-        from ..validation.response_validator import ValidationProcessor
-        
-        # We need the topology graph to determine allowed actions
         if not topology_graph:
-            # Fall back to static instructions if no topology available
-            return """
-Your response must be a JSON object with one of these formats:
-
-1. To invoke another agent:
-{"next_action": "invoke_agent", "action_input": {"agent_name": "AgentName", "request": "your request"}}
-
-2. To call tools:
-{"next_action": "call_tool", "action_input": {"tool_calls": [...]}}
-
-3. To provide final response:
-{"next_action": "final_response", "action_input": {"response": "your final answer"}}
-
-Do not provide thoughts or explanations outside this JSON structure."""
+            # Fall back to agent's own system prompt if no topology
+            return ""
         
-        validator = ValidationProcessor(topology_graph)
-        allowed_actions = validator._get_allowed_actions(agent, branch)
+        agent_name = agent.name if hasattr(agent, 'name') else str(agent)
         
-        instructions = ["Your response must be a JSON object with one of these formats:"]
-        format_count = 0
+        # Build complete system prompt components
+        system_prompt_parts = []
         
-        if "invoke_agent" in allowed_actions:
-            format_count += 1
-            next_agents = topology_graph.get_next_agents(agent.name)
-            if next_agents:
-                agents_str = ', '.join(next_agents)
-                instructions.append(
-                    f"\n{format_count}. To invoke another agent ({agents_str}):\n"
-                    '{"next_action": "invoke_agent", "action_input": {"agent_name": "AgentName", "request": "your request"}}'
+        # 1. Start with agent's description (cleaned of schema hints)
+        if not hasattr(agent, 'description'):
+            raise RuntimeError(
+                f"Agent '{agent_name}' does not have a description attribute. "
+                "All agents must have a description for proper system prompt generation."
+            )
+        
+        cleaned_description = self._strip_schema_hints(agent.description)
+        system_prompt_parts.append(cleaned_description)
+        
+        # 2. Add tool instructions if agent has tools
+        tool_instructions = self._get_tool_instructions(agent)
+        if tool_instructions:
+            system_prompt_parts.append(tool_instructions)
+        
+        # 3. Add peer agent instructions based on topology
+        next_agents = topology_graph.get_next_agents(agent_name)
+        if next_agents:
+            peer_instructions = self._get_peer_agent_instructions(agent_name, next_agents)
+            if peer_instructions:
+                system_prompt_parts.append(peer_instructions)
+        
+        # 4. Add context handling instructions
+        context_instructions = self._get_context_instructions(agent)
+        if context_instructions:
+            system_prompt_parts.append(context_instructions)
+        
+        # 5. Now build the dynamic format instructions
+        guidelines = (
+            "When responding, ensure your output adheres to the requested format. "
+            "Be concise and stick to the persona and task given."
+        )
+        
+        # Add schema instructions if agent has them
+        if hasattr(agent, '_get_schema_instructions'):
+            schema_instructions = agent._get_schema_instructions()
+            if schema_instructions:
+                guidelines += schema_instructions
+        
+        # Determine available actions dynamically
+        available_actions = []
+        action_descriptions = []
+        
+        # 1. Check if agent has tools
+        if hasattr(agent, 'tools') and agent.tools:
+            available_actions.append("'call_tool'")
+            action_descriptions.append(
+                '- If `next_action` is `"call_tool"`:\n'
+                '     `{"tool_calls": [{"id": "...", "type": "function", "function": {"name": "tool_name", "arguments": "{\\"param\\": ...}"}}]}`\n'
+                '     • The list **must** stay inside `action_input`.'
+            )
+        
+        # 2. Check if agent can invoke other agents (from topology)
+        next_agents = topology_graph.get_next_agents(agent_name)
+        if next_agents:
+            available_actions.append("'invoke_agent'")
+            # Include the actual agent names in the description
+            agents_list = ", ".join(next_agents)
+            action_descriptions.append(
+                '- If `next_action` is `"invoke_agent"`:\n'
+                f'     An ARRAY of agent invocation objects for agents: {agents_list}\n'
+                '     `[{"agent_name": "example_agent_name", "request": {...}}, ...]`\n'
+                '     • Single agent: array with one object (sequential execution)\n'
+                '     • Multiple agents: array with multiple objects (parallel execution)\n'
+                '     • Same agent multiple times: multiple objects with same agent_name but different requests'
+            )
+        
+        # 3. CRITICAL: Check if agent can return final response
+        can_return_final = False
+        
+        # Check static flag first (set at branch start)
+        if hasattr(agent, '_can_return_final_response') and agent._can_return_final_response:
+            can_return_final = True
+        
+        # Check if agent has user access in topology
+        if topology_graph.has_user_access(agent_name):
+            can_return_final = True
+        
+        # MOST IMPORTANT: Check for reflexive invocation in branch metadata
+        if branch and branch.metadata:
+            reflexive_caller = branch.metadata.get(f"reflexive_caller_{agent_name}")
+            if reflexive_caller:
+                can_return_final = True
+                logger.info(f"Dynamically detected reflexive invocation for {agent_name} from {reflexive_caller} - enabling final_response")
+        
+        # Check if agent is an exit point
+        if hasattr(topology_graph, 'exit_points') and agent_name in topology_graph.exit_points:
+            can_return_final = True
+        
+        if can_return_final:
+            available_actions.append("'final_response'")
+            action_descriptions.append(
+                '- If `next_action` is `"final_response"`:\n'
+                '     `{"response": "Your final textual answer..."}`\n'
+                '     **USE THIS when your assigned task is fully complete!**'
+            )
+        
+        # Build actions string
+        if not available_actions:
+            # Defensive fallback - shouldn't happen
+            actions_str = "'final_response'"
+            available_actions = ["'final_response'"]
+            action_descriptions = ['- If `next_action` is `"final_response"`:\n     `{"response": "Your final answer..."}`']
+        else:
+            actions_str = ", ".join(available_actions)
+        
+        # Build the complete guidelines (matching agent's format)
+        guidelines += f"""
+
+--- STRICT JSON OUTPUT FORMAT ---
+Your *entire* response MUST be a single, valid JSON object.  This JSON object
+must be enclosed in a JSON markdown code block, e.g.:
+```json
+{{ ... }}
+```
+No other text or additional JSON objects should appear outside this single
+markdown block.
+
+Example:
+```json
+{{
+  "thought": "Your reasoning for the chosen action (optional).",
+  "next_action": "Must be one of: {actions_str}.",
+  "action_input": {{ /* parameters specific to next_action */ }}
+}}
+```
+
+Detailed structure for the JSON object:
+1. `thought` (String, optional) – your internal reasoning.
+2. `next_action` (String, required) – {actions_str}.
+3. `action_input` (Array/Object, required) – parameters specific to `next_action`.
+{chr(10).join(action_descriptions)}
+"""
+        
+        # Add examples based on available actions
+        examples = []
+        
+        if "'invoke_agent'" in actions_str:
+            # Use actual agent names in examples
+            example_agent = next_agents[0] if next_agents else "example_agent"
+            
+            # Try to get schema-based example, otherwise use generic placeholder
+            request_example = self._get_agent_request_example(example_agent)
+            
+            examples.append(f"""
+Example for single agent invocation (sequential):
+```json
+{{
+  "thought": "I need to delegate this task to a specialist.",
+  "next_action": "invoke_agent",
+  "action_input": [
+    {{
+      "agent_name": "{example_agent}",
+      "request": {request_example}
+    }}
+  ]
+}}
+```
+
+Example for multiple invocations of the same agent (parallel):
+```json
+{{
+  "thought": "I need to process multiple items using the same agent type.",
+  "next_action": "invoke_agent",
+  "action_input": [
+    {{
+      "agent_name": "{example_agent}",
+      "request": {request_example}
+    }},
+    {{
+      "agent_name": "{example_agent}", 
+      "request": {request_example}
+    }},
+    {{
+      "agent_name": "{example_agent}",
+      "request": {request_example}
+    }}
+  ]
+}}
+```""")
+
+        if "'call_tool'" in actions_str:
+            # Get an example tool name if available
+            example_tool = "example_tool"
+            if hasattr(agent, 'tools') and agent.tools:
+                tool_names = list(agent.tools.keys()) if isinstance(agent.tools, dict) else []
+                if tool_names:
+                    example_tool = tool_names[0]
+            
+            examples.append(f"""
+Example for `call_tool`:
+```json
+{{
+  "thought": "I need to use a tool.",
+  "next_action": "call_tool",
+  "action_input": {{
+    "tool_calls": [{{
+      "id": "call_123",
+      "type": "function",
+      "function": {{
+        "name": "{example_tool}",
+        "arguments": "{{\\"param\\": \\"value\\"}}"
+      }}
+    }}]
+  }}
+}}
+```""")
+
+        if "'final_response'" in actions_str:
+            examples.append("""
+Example for `final_response`:
+```json
+{
+  "thought": "I have completed the task.",
+  "next_action": "final_response",
+  "action_input": {
+    "response": "Here is my final answer based on the analysis..."
+  }
+}
+```""")
+        
+        if examples:
+            guidelines += "\n" + "\n".join(examples)
+        
+        # Add the complete format guidelines to the system prompt parts
+        system_prompt_parts.append(guidelines)
+        
+        # Combine all parts into the complete system prompt
+        complete_system_prompt = "\n\n".join(filter(None, system_prompt_parts))
+        
+        return complete_system_prompt
+    
+    def _strip_schema_hints(self, text: str) -> str:
+        """
+        Remove lines that try to re-explain the standard JSON output contract.
+        The official schema will be appended later.
+        """
+        import re
+        
+        # Pattern to match schema hint lines
+        schema_hint_pattern = re.compile(
+            r"(next_action|action_input|tool_calls|JSON\s*object|Response Structure)",
+            re.IGNORECASE,
+        )
+        
+        lines = [
+            ln
+            for ln in text.splitlines()
+            if not schema_hint_pattern.search(ln)
+        ]
+        # Collapse consecutive blank lines that can appear after stripping
+        cleaned = re.sub(r"\n{3,}", "\n\n", "\n".join(lines)).strip()
+        return cleaned
+    
+    def _get_tool_instructions(self, agent: 'BaseAgent') -> str:
+        """Generate tool usage instructions for the system prompt."""
+        # Check if agent has tools
+        if not hasattr(agent, 'tools') or not agent.tools:
+            return ""
+        if not hasattr(agent, 'tools_schema') or not agent.tools_schema:
+            return ""
+        
+        prompt_lines = ["\n\n--- AVAILABLE TOOLS ---"]
+        prompt_lines.append(
+            "When you need to use a tool, your response should include a `tool_calls` field. This field should be a list of JSON objects, where each object represents a tool call."
+        )
+        prompt_lines.append(
+            'Each tool call object must have an `id` (a unique identifier for the call), a `type` field set to "function", and a `function` field.'
+        )
+        prompt_lines.append(
+            "The `function` field must be an object with a `name` (the tool name) and `arguments` (a JSON string of the arguments)."
+        )
+        prompt_lines.append("Example of a tool call structure:")
+        prompt_lines.append(
+            """
+```json
+{
+  "tool_calls": [
+    {
+      "id": "call_abc123",
+      "type": "function",
+      "function": {
+        "name": "tool_name_here",
+        "arguments": "{\\"param1\\": \\"value1\\", \\"param2\\": value2}"
+      }
+    }
+  ]
+}
+```"""
+        )
+        prompt_lines.append("Available tools are:")
+        
+        for tool_def in agent.tools_schema:
+            func_spec = tool_def.get("function", {})
+            name = func_spec.get("name", "Unknown tool")
+            description = func_spec.get("description", "No description.")
+            parameters = func_spec.get("parameters", {})
+            prompt_lines.append(f"\nTool: `{name}`")
+            prompt_lines.append(f"  Description: {description}")
+            if parameters and parameters.get("properties"):
+                prompt_lines.append("  Parameters:")
+                param_lines = self._format_parameters(
+                    parameters.get("properties", {}),
+                    parameters.get("required", [])
                 )
+                prompt_lines.extend(param_lines)
+            else:
+                prompt_lines.append("  Parameters: None")
         
-        if "call_tool" in allowed_actions:
-            format_count += 1
+        prompt_lines.append("--- END AVAILABLE TOOLS ---")
+        return "\n".join(prompt_lines)
+    
+    def _format_parameters(self, properties: Dict, required: List[str], indent: int = 2) -> List[str]:
+        """Recursively format parameters including nested structures."""
+        lines = []
+        for p_name, p_spec in properties.items():
+            p_type = p_spec.get("type", "any")
+            p_desc = p_spec.get("description", "")
+            is_required = p_name in required
+            
+            # Base parameter line
+            lines.append(f"{'  ' * indent}- `{p_name}` ({p_type}): {p_desc} {'(required)' if is_required else ''}")
+            
+            # If it's an object with properties, show nested structure
+            if p_type == "object" and "properties" in p_spec:
+                nested_props = p_spec["properties"]
+                nested_required = p_spec.get("required", [])
+                lines.append(f"{'  ' * (indent + 1)}Nested parameters:")
+                lines.extend(self._format_parameters(nested_props, nested_required, indent + 2))
+        
+        return lines
+    
+    def _get_peer_agent_instructions(self, agent_name: str, allowed_agents: List[str]) -> str:
+        """Generate peer agent invocation instructions for the system prompt."""
+        if not allowed_agents:
+            return ""
+        
+        # Import here to avoid circular dependency
+        from src.agents.registry import AgentRegistry
+        
+        prompt_lines = ["\n\n--- AVAILABLE PEER AGENTS ---"]
+        prompt_lines.append(
+            "You can invoke other agents to assist you. If you choose this path, your JSON response (as described in the general response guidelines) "
+            'should set `next_action` to `"invoke_agent"`. The `action_input` field for this action must be an object containing:'
+        )
+        prompt_lines.append(
+            "- `agent_name`: (String) The name of the agent to invoke from the list below (must be an exact match)."
+        )
+        prompt_lines.append(
+            "- `request`: (String or Object) The specific task, question, or data payload for the target agent. "
+            "This can be a simple string (e.g., 'Summarize the key findings from the attached report.') or a structured JSON object "
+            'if the target agent expects specific parameters (e.g., `{"prompt": "Analyze sales data for Q3", "region_filter": "North America"}`).'
+        )
+        prompt_lines.append(
+            "Example of the relevant part of your JSON response if invoking an agent:"
+        )
+        prompt_lines.append(
+            """
+```json
+{
+  "next_action": "invoke_agent",
+  "action_input": [
+    {
+      "agent_name": "example_agent_name_here",
+      "request": "Your request or task for the agent"
+    }
+  ]
+}
+```"""
+        )
+        prompt_lines.append("You are allowed to invoke the following agents:")
+        
+        for peer_name in allowed_agents:
+            # Get instance count information
+            try:
+                total_instances = AgentRegistry.get_instance_count(peer_name)
+                available_instances = AgentRegistry.get_available_count(peer_name)
+                
+                # Format agent name with instance info
+                if total_instances > 1:
+                    # It's a pool - show instance availability
+                    instance_info = f" (Pool: {available_instances}/{total_instances} instances available)"
+                    prompt_lines.append(f"- `{peer_name}`{instance_info}")
+                    if available_instances < total_instances:
+                        prompt_lines.append(f"  Note: Some instances are currently in use. You can invoke up to {available_instances} in parallel.")
+                else:
+                    # Single instance agent
+                    prompt_lines.append(f"- `{peer_name}` (Single instance)")
+            except:
+                # If registry lookup fails, just list the agent name
+                prompt_lines.append(f"- `{peer_name}`")
+            
+            # Add simple format note
+            prompt_lines.append("  Expected input format: Any string or object")
+        
+        prompt_lines.append("--- END AVAILABLE PEER AGENTS ---")
+        return "\n".join(prompt_lines)
+    
+    def _get_context_instructions(self, agent: 'BaseAgent') -> str:
+        """Generate instructions for handling passed context."""
+        instructions = []
+        
+        # Instructions for receiving context
+        instructions.append("\n\n--- CONTEXT HANDLING ---")
+        instructions.append(
+            "You may receive saved context from other agents in your request. "
+            "This context contains important information they've preserved for you, "
+            "such as search results, analysis data, or other relevant content."
+        )
+        instructions.append(
+            "Context will appear as '[Saved Context from AgentName]' followed by "
+            "organized sections of saved messages."
+        )
+        
+        # Instructions for saving context (if agent has the tool)
+        if hasattr(agent, 'tools') and agent.tools and "save_to_context" in agent.tools:
             instructions.append(
-                f"\n{format_count}. To call tools:\n"
-                '{"next_action": "call_tool", "action_input": {"tool_calls": [...]}}'
+                "\nTo pass important information to the next agent or user:"
+            )
+            instructions.append(
+                "1. Use the 'save_to_context' tool to preserve key messages"
+            )
+            instructions.append(
+                "2. Save context BEFORE invoking the next agent or returning final response"
+            )
+            instructions.append(
+                "3. Use descriptive context keys like 'search_results', 'analysis_data', etc."
+            )
+            instructions.append(
+                "4. The saved context will automatically be passed to the next recipient"
+            )
+            
+            instructions.append(
+                "\nExample: After receiving tool results, save them before proceeding:"
+            )
+            instructions.append(
+                '{"next_action": "call_tool", "action_input": {"tool_calls": '
+                '[{"id": "save_1", "type": "function", "function": '
+                '{"name": "save_to_context", "arguments": '
+                '{"selection_criteria": {"role_filter": ["tool"]}, '
+                '"context_key": "search_results"}}}]}}'
             )
         
-        if "final_response" in allowed_actions:
-            format_count += 1
-            instructions.append(
-                f"\n{format_count}. To provide final response:\n"
-                '{"next_action": "final_response", "action_input": {"response": "your final answer"}}'
-            )
+        return "\n".join(instructions) if instructions else ""
+    
+    def _get_agent_request_example(self, agent_name: str) -> str:
+        """
+        Get an example request format for an agent based on its input schema.
+        Returns either a schema-based example or a generic placeholder.
+        """
+        try:
+            # Try to import AgentRegistry to get schema
+            from src.agents.registry import AgentRegistry
+            
+            # Try to get the agent from registry
+            agent = AgentRegistry.get(agent_name)
+            if agent and hasattr(agent, '_compiled_input_schema'):
+                schema = agent._compiled_input_schema
+                if schema:
+                    # Generate example based on schema
+                    return self._generate_example_from_schema(schema)
+        except (ImportError, Exception):
+            pass
         
-        instructions.append("\nDo not provide thoughts or explanations outside this JSON structure.")
+        # Default to generic placeholder
+        return '<request-data-specific-to-agent>'
+    
+    def _generate_example_from_schema(self, schema: Dict[str, Any]) -> str:
+        """
+        Generate an example request based on a JSON schema.
+        """
+        if not schema or not isinstance(schema, dict):
+            return '<request-data-specific-to-agent>'
         
-        return "".join(instructions)
+        schema_type = schema.get('type', 'any')
+        
+        # Handle string type
+        if schema_type == 'string':
+            return '"<your-request-string>"'
+        
+        # Handle object type
+        if schema_type == 'object':
+            properties = schema.get('properties', {})
+            required = schema.get('required', [])
+            
+            if not properties:
+                return '{}'
+            
+            # Build example object
+            example_obj = {}
+            for prop_name, prop_schema in properties.items():
+                prop_type = prop_schema.get('type', 'any')
+                is_required = prop_name in required
+                
+                # Generate placeholder based on type and requirement
+                if prop_type == 'string':
+                    placeholder = f'<{prop_name}{" (required)" if is_required else ""}>'  
+                elif prop_type == 'array':
+                    placeholder = f'[<{prop_name}-items>]'
+                elif prop_type == 'object':
+                    placeholder = f'{{<{prop_name}-data>}}'
+                elif prop_type == 'number' or prop_type == 'integer':
+                    placeholder = f'<{prop_name}-number>'
+                elif prop_type == 'boolean':
+                    placeholder = 'true/false'
+                else:
+                    placeholder = f'<{prop_name}>'
+                
+                example_obj[prop_name] = placeholder
+            
+            # Convert to JSON string with proper formatting
+            import json
+            return json.dumps(example_obj, indent=2)
+        
+        # For any other type or unknown schema
+        return '<request-data-specific-to-agent>'
     
     async def _process_agent_response(
         self,
