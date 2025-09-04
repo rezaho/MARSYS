@@ -774,7 +774,9 @@ class BranchExecutor:
                         "session_id": context.session_id,
                         "step_number": branch.state.current_step,
                         "conversation": conversation_context,
-                        "tool_continuation": is_tool_continuation
+                        "tool_continuation": is_tool_continuation,
+                        "branch": branch,  # CRITICAL: Pass branch for reflexive metadata
+                        "topology_graph": self.topology_graph  # CRITICAL: Pass topology for next agents
                     }
                 )
             else:

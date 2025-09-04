@@ -1316,6 +1316,7 @@ Example for `final_response`:
         memory_messages: List[Dict[str, Any]],
         run_mode: str,
         rebuild_system: bool = True,
+        override_system_prompt: Optional[str] = None,
     ) -> List[Dict[str, Any]]:
         """
         Prepare messages for LLM by adding/updating system prompt.
@@ -1327,38 +1328,54 @@ Example for `final_response`:
             memory_messages: Messages from memory in LLM format
             run_mode: The execution mode (e.g., 'auto_step', 'chat', 'plan')
             rebuild_system: Whether to rebuild the system prompt
+            override_system_prompt: Optional system prompt to use instead of generating one
 
         Returns:
             List of messages ready to send to the LLM
         """
-        # If we need to rebuild the system prompt
-        if rebuild_system:
-            # Get base description for this run mode
-            base_description = getattr(
-                self,
-                f"description_{run_mode}",
-                self.description,  # Use mode-specific or default description
-            )
-
-            # Determine JSON mode settings
-            json_mode_for_output = run_mode == "auto_step"
-
-            # Construct the system prompt
-            system_prompt = self._construct_full_system_prompt(
-                base_description=base_description,
-                json_mode_for_output=json_mode_for_output,
-            )
-
-            # Cache the context for future checks
-            self._last_system_prompt_context = {
-                "run_mode": run_mode,
-                "tools_count": len(self.tools_schema),
-                "can_return_final": getattr(self, '_can_return_final_response', False),
-                "system_prompt": system_prompt,
-            }
+        # If override_system_prompt is provided, use it directly
+        if override_system_prompt:
+            system_prompt = override_system_prompt
+            self.logger.debug(f"Using override system prompt for {self.name}")
         else:
-            # Use cached system prompt
-            system_prompt = self._last_system_prompt_context["system_prompt"]
+            # Determine if we should rebuild the system prompt
+            should_rebuild = (
+                rebuild_system
+                or not hasattr(self, "_last_system_prompt_context")
+                or self._last_system_prompt_context.get("run_mode") != run_mode
+                or self._last_system_prompt_context.get("tools_count") != len(self.tools_schema)
+                or self._last_system_prompt_context.get("can_return_final") != getattr(self, '_can_return_final_response', False)
+            )
+            
+            # If we need to rebuild the system prompt
+            if should_rebuild:
+                # Use default system prompt construction
+                # Get base description for this run mode
+                base_description = getattr(
+                    self,
+                    f"description_{run_mode}",
+                    self.description,  # Use mode-specific or default description
+                )
+
+                # Determine JSON mode settings
+                json_mode_for_output = run_mode == "auto_step"
+
+                # Construct the system prompt normally
+                system_prompt = self._construct_full_system_prompt(
+                    base_description=base_description,
+                    json_mode_for_output=json_mode_for_output,
+                )
+
+                # Cache the context for future checks
+                self._last_system_prompt_context = {
+                    "run_mode": run_mode,
+                    "tools_count": len(self.tools_schema),
+                    "can_return_final": getattr(self, '_can_return_final_response', False),
+                    "system_prompt": system_prompt,
+                }
+            else:
+                # Use cached system prompt
+                system_prompt = self._last_system_prompt_context["system_prompt"]
 
         # Filter out error messages as they are not valid roles for LLM APIs
         # OpenAI and other providers only accept: 'system', 'assistant', 'user', 'function', 'tool'
@@ -1588,9 +1605,15 @@ Example for `final_response`:
             != getattr(self, '_can_return_final_response', False)
         )
 
+        # Extract format instructions from context if available
+        format_instructions = context.get("format_instructions")
+        
         # Prepare messages with system prompt
         prepared_messages = self._prepare_messages_for_llm(
-            memory_messages, execution_mode, rebuild_system=should_rebuild_system
+            memory_messages, 
+            execution_mode, 
+            rebuild_system=should_rebuild_system,
+            override_system_prompt=format_instructions
         )
 
         # Extract model kwargs for logging
@@ -1963,335 +1986,6 @@ Example for `final_response`:
 
         return True, None
 
-    # TODO: auto_run will be reimplemented using the coordinator module
-    # For backward compatibility, it will internally use the new coordination system
-    # async def auto_run(
-    #     self,
-    #     initial_request: Any,
-    #     request_context: Optional[RequestContext] = None,
-    #     max_steps: int = 30,
-    #     max_re_prompts: int = 3,
-    #     progress_monitor_func: Optional[
-    #         Callable[
-    #             [asyncio.Queue, Optional[logging.Logger]], Coroutine[Any, Any, None]
-    #         ]
-    #     ] = None,
-    # ) -> Union[Dict[str, Any], str]:
-    #     current_task_steps = 0
-    #     final_answer_data: Optional[Union[Dict[str, Any], str]] = None
-    #
-    #     # --- RequestContext and Progress Monitor Handling ---
-    #     # _request_context: RequestContext
-    #     monitor_task: Optional[asyncio.Task] = None
-    #     created_new_context = False
-    #
-    #     if request_context is None:
-    #         created_new_context = True
-    #         task_id = f"agent-task-{self.name}-{uuid.uuid4()}"
-    #         progress_queue = asyncio.Queue()
-    #
-    #         initial_prompt_for_context, _ = self._extract_prompt_and_context(
-    #             initial_request
-    #         )
-    #
-    #         request_context = RequestContext(
-    #             task_id=task_id,
-    #             initial_prompt=initial_prompt_for_context,
-    #             progress_queue=progress_queue,
-    #             log_level=LogLevel.SUMMARY,
-    #             max_depth=3,
-    #             max_interactions=max_steps * 2 + 5,
-    #         )
-    #
-    #         monitor_to_use = progress_monitor_func or default_progress_monitor
-    #         monitor_task = asyncio.create_task(
-    #             monitor_to_use(progress_queue, self.logger)
-    #         )
-    #         self.logger.info(
-    #             f"Created new RequestContext (ID: {task_id}) and started progress monitor for agent {self.name}."
-    #         )
-    #     # --- End RequestContext and Progress Monitor Handling ---
-    #
-    #     # --- Input Schema Validation ---
-    #     is_valid, validation_error = await self._validate_initial_request(initial_request, request_context)
-    #     if not is_valid:
-    #         # Cleanup monitor if created
-    #         if created_new_context and monitor_task:
-    #             await request_context.progress_queue.put(None)
-    #             try:
-    #                 await asyncio.wait_for(monitor_task, timeout=2.0)
-    #             except asyncio.TimeoutError:
-    #                 monitor_task.cancel()
-    #         return validation_error
-    #     # --- End Input Schema Validation ---
-    #
-    #     if isinstance(initial_request, str):
-    #         current_request_payload: Union[str, Dict[str, Any]] = {
-    #             "prompt": initial_request
-    #         }
-    #     elif isinstance(initial_request, dict):
-    #         current_request_payload = (
-    #             initial_request.copy()
-    #         )  # Use a copy to avoid modifying original
-    #     else:
-    #         current_request_payload = {"prompt": str(initial_request)}
-    #
-    #     re_prompt_attempt_count = 0
-    #     # raw_llm_response_message will store the Message object returned by the _run method in each step
-    #     raw_llm_response_message: Optional[Message] = None
-    #
-    #     await self._log_progress(
-    #         request_context,  # Use the now-guaranteed-to-be-set request_context
-    #         LogLevel.SUMMARY,
-    #         f"Agent '{self.name}' starting auto_run for task '{request_context.task_id}'. Max steps: {max_steps}, Max re-prompts: {max_re_prompts}.",
-    #         data={"initial_request_preview": str(current_request_payload)[:200]},
-    #     )
-    #
-    #     while current_task_steps < max_steps and final_answer_data is None:
-    #         step_interaction_id = str(
-    #             uuid.uuid4()
-    #         )  # TO-DO: why are we creating a new interaction_id for each step? Shouldn't we use the same interaction_id for the entire task? or do we need to create a new interaction_id for each step? where do we use the interaction_id from the request_context?
-    #         current_step_request_context = dataclasses.replace(
-    #             request_context,
-    #             interaction_id=step_interaction_id,
-    #         )
-    #
-    #         await self._log_progress(
-    #             current_step_request_context,
-    #             LogLevel.DETAILED,
-    #             f"Auto_run step {current_task_steps + 1}/{max_steps} for agent '{self.name}'. Current payload keys: {list(current_request_payload.keys()) if isinstance(current_request_payload, dict) else 'string'}",
-    #         )
-    #
-    #         raw_llm_response_message: Message = await self._run(
-    #             prompt=current_request_payload,
-    #             request_context=current_step_request_context,
-    #             run_mode="auto_step",
-    #         )
-
-    #         # Validate that _run returned a proper Message object
-    #         is_valid, validation_error = self._validate_message_object(raw_llm_response_message, self.__class__.__name__)
-    #         if not is_valid:
-    #             # This indicates a problem with the _run implementation, not the model output
-    #             error_msg = f"Internal error: {validation_error}. This indicates a bug in the agent implementation, not the model output."
-    #             await self._log_progress(
-    #                 current_step_request_context,
-    #                 LogLevel.MINIMAL,
-    #                 error_msg,
-    #                 data={"validation_error": validation_error, "returned_type": type(raw_llm_response_message).__name__}
-    #             )
-    #             final_answer_data = f"Error: {error_msg}"
-    #             break
-
-    #         # Check if _run returned an error message
-    #         if raw_llm_response_message.role == "error":
-    #             error_code = getattr(raw_llm_response_message, 'error_code', None)
-    #             error_msg = f"Agent '{self.name}' returned error: {raw_llm_response_message.content}"
-    #             await self._log_progress(
-    #                 current_step_request_context,
-    #                 LogLevel.MINIMAL,
-    #                 error_msg,
-    #             data={"error_code": error_code}
-    #             )
-    #             final_answer_data = f"Error: {error_msg}"
-    #             break
-
-    #         # -------------------------------------------------------------
-    #         # NEW PRIORITY HANDLING: Use Message.to_action_dict()
-    #         # -------------------------------------------------------------
-    #         action_dict = raw_llm_response_message.to_action_dict()
-
-    #         if action_dict is None:
-    #             # No valid action found - provide feedback for retry
-    #             error_data = {
-    #                 "content": str(raw_llm_response_message.content)[:200] if raw_llm_response_message.content else "",
-    #                 "tool_calls_present": bool(raw_llm_response_message.tool_calls),
-    #                 "agent_calls_present": bool(getattr(raw_llm_response_message, 'agent_calls', None)),
-    #                 "content_type": type(raw_llm_response_message.content).__name__,
-    #                 "content_next_action": raw_llm_response_message.content.get('next_action') if isinstance(raw_llm_response_message.content, dict) else 'N/A'
-    #             }
-
-    #             should_retry, error_feedback, next_payload = await self._handle_auto_run_error(
-    #                 "invalid_response_format", error_data, re_prompt_attempt_count, max_re_prompts, current_step_request_context
-    #             )
-
-    #             if should_retry:
-    #                 re_prompt_attempt_count += 1
-    #                 current_request_payload = next_payload
-    #                 continue
-    #             else:
-    #                 # Maximum retries exceeded - now raise exception
-    #                 from src.agents.exceptions import ModelResponseError
-
-    #                 final_error_msg = (
-    #                     f"Agent '{self.name}' failed to provide valid response format after {max_re_prompts + 1} attempts. "
-    #                     f"Expected one of: tool_calls attribute, agent_calls attribute, or "
-    #                     f"content with next_action='final_response'. "
-    #                     f"Got: tool_calls={bool(raw_llm_response_message.tool_calls)}, "
-    #                     f"agent_calls={bool(getattr(raw_llm_response_message, 'agent_calls', None))}, "
-    #                     f"content_type={type(raw_llm_response_message.content).__name__}, "
-    #                     f"content_next_action={raw_llm_response_message.content.get('next_action') if isinstance(raw_llm_response_message.content, dict) else 'N/A'}"
-    #                 )
-
-    #                 raise ModelResponseError(
-    #                     final_error_msg,
-    #                     agent_name=self.name,
-    #                     response_content=raw_llm_response_message.content,
-    #                     task_id=request_context.task_id if request_context else None
-    #                 )
-
-    #         # Extract action components
-    #         next_action_val = action_dict.get("next_action")
-    #         action_input_val = action_dict.get("action_input")
-
-    #         # Dispatch to appropriate action handler
-    #         if next_action_val == "call_tool":
-    #             current_request_payload = await self._handle_call_tool_action(
-    #                 action_input_val,
-    #                 raw_llm_response_message,
-    #                 current_step_request_context,
-    #             )
-    #         elif next_action_val == "invoke_agent":
-    #             current_request_payload = await self._handle_invoke_agent_action(
-    #                 raw_llm_response_message,
-    #                 current_step_request_context,
-    #                 request_context,
-    #                 )
-    #         elif next_action_val == "final_response":
-    #             is_final, final_answer_data, retry_payload = await self._handle_final_response_action(
-    #                 action_input_val, current_step_request_context, re_prompt_attempt_count, max_re_prompts
-    #             )
-    #             if is_final:
-    #                 if final_answer_data is not None:
-    #                     # Call post-step hook before breaking for final response
-    #                     await self._post_step_hook(
-    #                         step_number=current_task_steps + 1,
-    #                         action_type=next_action_val,
-    #                         request_context=current_step_request_context,
-    #                         final_response=True,
-    #                         action_input=action_input_val
-    #                     )
-    #                     break  # Exit the loop with final answer
-    #             else:
-    #                 # Retry needed
-    #                 re_prompt_attempt_count += 1
-    #                 current_request_payload = retry_payload
-    #                 continue
-    #         else:
-    #             # This should not happen if to_action_dict() is working correctly
-    #             from src.agents.exceptions import ModelResponseError
-    #             raise ModelResponseError(
-    #                 f"Unknown next_action '{next_action_val}' returned by Message.to_action_dict()",
-    #                 agent_name=self.name,
-    #                 response_content=raw_llm_response_message.content,
-    #                 task_id=request_context.task_id if request_context else None
-    #             )
-
-    #         # Call post-step hook for non-final actions
-    #         if next_action_val != "final_response":
-    #             await self._post_step_hook(
-    #                 step_number=current_task_steps + 1,
-    #                 action_type=next_action_val,
-    #                 request_context=current_step_request_context,
-    #                 action_input=action_input_val,
-    #                 raw_response_message=raw_llm_response_message
-    #             )
-    #
-    #         current_task_steps += 1
-    #         if current_task_steps >= max_steps and final_answer_data is None:
-    #             await self._log_progress(
-    #                 current_step_request_context,
-    #                 LogLevel.MINIMAL,
-    #                 f"Agent '{self.name}' reached max_steps ({max_steps}) in auto_run without a final answer.",
-    #             )
-    #             final_answer_data = f"Error: Agent '{self.name}' did not produce a final answer for the current sub-task."
-    #             break
-
-    #     if final_answer_data is not None:
-    #         # Create preview of final answer for logging
-    #         if isinstance(final_answer_data, dict):
-    #             preview = str(final_answer_data)[:200]
-    #         elif isinstance(final_answer_data, str):
-    #             preview = final_answer_data[:200]
-    #         else:
-    #             preview = str(final_answer_data)[:200]
-    #
-    #         await self._log_progress(
-    #             request_context,
-    #             LogLevel.SUMMARY,
-    #             f"Agent '{self.name}' auto_run finished. Final Answer: '{preview}...'",
-    #         )
-    #         # Cleanup monitor task if it was created by this auto_run instance
-    #         # TO-DO: the logic needs to be checked. Also, we should ensure that we need this cleanup logic here.
-    #         if created_new_context and monitor_task:
-    #             self.logger.info(
-    #                 f"Agent {self.name} auto_run (completed with answer) signaling progress monitor to stop."
-    #             )
-    #             if (
-    #                 hasattr(request_context, "progress_queue")
-    #                 and request_context.progress_queue
-    #             ):
-    #                 await request_context.progress_queue.put(None)
-    #                 try:
-    #                     await asyncio.wait_for(monitor_task, timeout=5.0)
-    #                 except asyncio.TimeoutError:
-    #                     self.logger.warning(
-    #                         f"Timeout waiting for progress monitor of agent {self.name} to stop."
-    #                     )
-    #                     monitor_task.cancel()
-    #                 except Exception as e_monitor_stop:
-    #                     self.logger.error(
-    #                         f"Error stopping/waiting for monitor task: {e_monitor_stop}",
-    #                         exc_info=True,
-    #                     )
-    #         return final_answer_data
-    #     else:
-    #         # This block is reached if max_steps is hit without a final_answer_data
-    #         # Simplified logging: request_context is guaranteed to be set here.
-    #         await self._log_progress(
-    #             request_context,
-    #             LogLevel.MINIMAL,
-    #             f"Agent '{self.name}' auto_run completed after {current_task_steps} steps without providing an explicit final answer.",
-    #         )
-    # Try to synthesize a response based on the last known state if necessary, or return a generic message.
-    # For this implementation, we return a message indicating no explicit final answer.
-    # last_message = self.memory.retrieve_recent(1)
-    # fallback_answer = f"Agent '{self.name}' concluded its auto_run process. No explicit final answer was provided. Last message: {str(last_message[0].content)[:200] if last_message else 'None'}"
-    # return fallback_answer
-    # Ensure logging uses the final request_context # Comment removed as logic simplified
-    # final_log_context = request_context # Removed
-    # if final_log_context: # Removed
-    #     await self._log_progress(
-    #         final_log_context,
-    #         LogLevel.MINIMAL,
-    #         f"Agent '{self.name}' auto_run completed after {current_task_steps} steps without providing an explicit final answer.",
-    #     )
-    # else: # Should not happen if logic is correct # Removed
-    #     self.logger.warning(f"Agent '{self.name}' auto_run completed but request_context was not available for final logging.")
-
-    #         # Cleanup monitor task if it was created by this auto_run instance
-    #         if created_new_context and monitor_task:
-    #             self.logger.info(
-    #                 f"Agent {self.name} auto_run (max steps reached) signaling progress monitor to stop."
-    #             )
-    #             if (
-    #                 hasattr(request_context, "progress_queue")
-    #                 and request_context.progress_queue
-    #             ):
-    #                 await request_context.progress_queue.put(None)
-    #                 try:
-    #                     await asyncio.wait_for(monitor_task, timeout=5.0)
-    #                 except asyncio.TimeoutError:
-    #                     self.logger.warning(
-    #                         f"Timeout waiting for progress monitor of agent {self.name} to stop."
-    #                     )
-    #                     monitor_task.cancel()
-    #                 except Exception as e_monitor_stop:
-    #                     self.logger.error(
-    #                         f"Error stopping/waiting for monitor task: {e_monitor_stop}",
-    #                         exc_info=True,
-    #                     )
-    #
-    #         return f"Agent '{self.name}' auto_run finished after {current_task_steps} steps without providing an explicit final answer."
 
     async def auto_run(
         self,
