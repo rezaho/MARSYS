@@ -38,6 +38,28 @@ class AgentInvocation(BaseModel):
             data['instance_id'] = f"{agent_name}_{uuid.uuid4().hex[:8]}"
         super().__init__(**data)
     
+    def to_request_data(self) -> Any:
+        """
+        Extract the request data for passing to agent.
+        
+        Returns:
+            The request data that should be passed to the target agent
+        """
+        return self.request
+    
+    def to_coordination_dict(self) -> dict:
+        """
+        Convert to dict for coordination layer storage.
+        
+        Returns:
+            Dictionary representation for coordination layer
+        """
+        return {
+            "agent_name": self.agent_name,
+            "request": self.request,
+            "instance_id": self.instance_id
+        }
+    
     class Config:
         extra = "allow"  # Allow additional fields for extensibility
 
