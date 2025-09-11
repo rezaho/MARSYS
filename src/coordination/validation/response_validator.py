@@ -8,15 +8,15 @@ It supports multiple response formats and validates actions based on topology pe
 from __future__ import annotations
 
 import json
-import re
 import logging
+import re
 import uuid
 from abc import ABC, abstractmethod
 from dataclasses import dataclass
-from typing import Any, Dict, List, Optional, Type, TYPE_CHECKING
 from enum import Enum
+from typing import TYPE_CHECKING, Any, Dict, List, Optional, Type
 
-from ..branches.types import ExecutionBranch, StepResult, ExecutionState
+from ..branches.types import ExecutionBranch, ExecutionState, StepResult
 from ..topology.graph import TopologyGraph
 from .types import AgentInvocation, ValidationError
 
@@ -44,14 +44,19 @@ class ValidationResult:
     parsed_response: Optional[Dict[str, Any]] = None
     error_message: Optional[str] = None
     retry_suggestion: Optional[str] = None
-    next_agents: List[str] = None  # For invoke/parallel_invoke
+    invocations: List['AgentInvocation'] = None  # Complete invocation data for invoke/parallel_invoke
     tool_calls: List[Dict[str, Any]] = None
     
     def __post_init__(self):
-        if self.next_agents is None:
-            self.next_agents = []
+        if self.invocations is None:
+            self.invocations = []
         if self.tool_calls is None:
             self.tool_calls = []
+    
+    @property
+    def next_agents(self) -> List[str]:
+        """Backward compatibility property to get agent names from invocations."""
+        return [inv.agent_name for inv in self.invocations] if self.invocations else []
 
 
 class ResponseProcessor(ABC):
@@ -199,19 +204,19 @@ class StructuredJSONProcessor(ResponseProcessor):
                         invocations = []
                         for idx, item in enumerate(action_input):
                             if isinstance(item, dict) and "agent_name" in item:
-                                # Create AgentInvocation with validation
+                                # Create AgentInvocation for validation
                                 invocation = AgentInvocation(
                                     agent_name=item["agent_name"],
                                     request=item.get("request", {}),
                                     instance_id=f"{item['agent_name']}_{idx}_{uuid.uuid4().hex[:8]}"
                                 )
+                                # Keep as AgentInvocation object for type safety
                                 invocations.append(invocation)
                             else:
                                 raise ValueError(f"Invalid invocation format at index {idx}: missing 'agent_name'")
                         
-                        # Store validated invocations directly as list
+                        # Store validated invocations as objects
                         result["invocations"] = invocations
-                        result["target_agents"] = [inv.agent_name for inv in invocations]
                         
                         # For backward compatibility, also populate agent_requests
                         result["agent_requests"] = {}
@@ -220,18 +225,18 @@ class StructuredJSONProcessor(ResponseProcessor):
                             result["agent_requests"][inv.instance_id] = inv.request
                         
                         # For backward compatibility with single agent flow
-                        if len(result["target_agents"]) == 1:
-                            result["target_agent"] = result["target_agents"][0]
+                        if len(invocations) == 1:
+                            # Only apply backward compatibility for truly single invocation
+                            if not hasattr(invocations[0], 'request'):
+                                logger.error(f"Invocation object missing 'request' property: {type(invocations[0])}")
+                                return None
+                            result["target_agent"] = invocations[0].agent_name
                             result["action_input"] = invocations[0].request
                     
                     except Exception as e:
-                        # Return detailed error to agent
-                        return {
-                            "next_action": "validation_error", 
-                            "error": f"Failed to parse agent invocations: {str(e)}",
-                            "retry_suggestion": "Ensure action_input is an array of objects with 'agent_name' and 'request' fields. Do not proceed with parallel invocations until this is fixed.",
-                            "raw_response": data
-                        }
+                        # Log error and return None to let process_response handle it properly
+                        logger.warning(f"Failed to parse agent invocations: {str(e)}")
+                        return None
                 
                 # Single dict format - convert to single-item list
                 elif isinstance(action_input, dict):
@@ -242,8 +247,8 @@ class StructuredJSONProcessor(ResponseProcessor):
                             request=action_input.get("request", {}),
                             instance_id=f"{action_input['agent_name']}_0_{uuid.uuid4().hex[:8]}"
                         )
+                        # Keep as AgentInvocation object
                         result["invocations"] = [invocation]
-                        result["target_agents"] = [invocation.agent_name]
                         
                         # For backward compatibility
                         result["target_agent"] = invocation.agent_name
@@ -395,7 +400,7 @@ class NaturalLanguageProcessor(ResponseProcessor):
                 re.IGNORECASE
             ),
             "final_response": re.compile(
-                r"(?:final|complete|done|finished|concluded|my answer is)",
+                r"\b(?:my final answer is|this is my final response|final report:|conclusion:|here is my final answer|here's my final response)\b",
                 re.IGNORECASE
             ),
             "end_conversation": re.compile(
@@ -510,10 +515,17 @@ class ValidationProcessor:
             allowed.append("call_tool")
         
         # Check if agent can return final response
-        # Either connected to User OR in reflexive invocation
-        is_reflexive = branch and branch.metadata.get(f"reflexive_caller_{agent.name}") is not None
-        if self.topology_graph.has_user_access(agent.name) or is_reflexive:
+        # Two scenarios where final_response is allowed:
+        # 1. Agent has User access
+        has_user_access = self.topology_graph.has_user_access(agent.name)
+        
+        # 2. Agent is in child branch (parallel invocation)
+        is_child_branch = branch and branch.metadata.get("is_child_branch") == True
+        
+        if has_user_access or is_child_branch:
             allowed.append("final_response")
+        else:
+            logger.info(f"VALIDATION: {agent.name} NOT allowed final_response - next_agents: {next_agents}")
         
         return allowed
     
@@ -595,7 +607,6 @@ class ValidationProcessor:
         
         # 2. Determine action type
         action_str = parsed.get("next_action")
-        
         # Don't default to "continue" - require explicit action
         if not action_str:
             allowed_actions = self._get_allowed_actions(agent, branch)
@@ -654,20 +665,20 @@ class ValidationProcessor:
         exec_state: ExecutionState
     ) -> ValidationResult:
         """Validate agent invocation (single or multiple)."""
-        target_agents = parsed.get("target_agents", [])
+        # Get invocations directly from parsed response
+        invocations = parsed.get("invocations", [])
         
-        # Fall back to single target_agent for backward compatibility
-        if not target_agents and "target_agent" in parsed:
-            target_agents = [parsed["target_agent"]]
-        
-        if not target_agents:
+        if not invocations:
             return ValidationResult(
                 is_valid=False,
-                error_message="Missing target agent(s) for invocation",
-                retry_suggestion="Specify which agent(s) to invoke"
+                error_message="Missing invocations for agent invocation",
+                retry_suggestion="Specify which agent(s) to invoke with proper invocation format"
             )
         
-        # Check topology permissions for all targets
+        # Extract agent names from invocations for validation
+        target_agents = [inv.agent_name for inv in invocations]
+        
+        # Check topology permissions
         next_agents = self.topology_graph.get_next_agents(agent.name)
         invalid_targets = []
         for target in target_agents:
@@ -681,13 +692,13 @@ class ValidationProcessor:
                 retry_suggestion=f"Valid targets: {next_agents}"
             )
         
-        # Determine action type based on number of target agents
-        # Multiple agents -> PARALLEL_INVOKE, single agent -> INVOKE_AGENT
-        action_type = ActionType.PARALLEL_INVOKE if len(target_agents) > 1 else ActionType.INVOKE_AGENT
+        # Determine action type based on number of invocations
+        # Multiple invocations -> PARALLEL_INVOKE, single invocation -> INVOKE_AGENT
+        action_type = ActionType.PARALLEL_INVOKE if len(invocations) > 1 else ActionType.INVOKE_AGENT
         
         return ValidationResult(
             is_valid=True,
-            next_agents=target_agents,
+            invocations=invocations,  # Pass complete invocation data
             action_type=action_type
         )
     
@@ -698,15 +709,19 @@ class ValidationProcessor:
         branch: ExecutionBranch,
         exec_state: ExecutionState
     ) -> ValidationResult:
-        """Validate parallel agent invocation (NEW!)."""
-        target_agents = parsed.get("target_agents", [])
+        """Validate parallel agent invocation (DEPRECATED - use _validate_agent_invocation)."""
+        # Get invocations from parsed response
+        invocations = parsed.get("invocations", [])
         
-        if not target_agents or len(target_agents) < 2:
+        if not invocations or len(invocations) < 2:
             return ValidationResult(
                 is_valid=False,
-                error_message="Parallel invocation requires at least 2 agents",
+                error_message="Parallel invocation requires at least 2 invocations",
                 retry_suggestion="Specify multiple agents to run in parallel"
             )
+        
+        # Extract agent names from invocations for validation
+        target_agents = [inv.agent_name for inv in invocations]
         
         # Check topology permissions for each target
         next_agents = self.topology_graph.get_next_agents(agent.name)
@@ -727,7 +742,8 @@ class ValidationProcessor:
         
         return ValidationResult(
             is_valid=True,
-            next_agents=target_agents
+            action_type=ActionType.PARALLEL_INVOKE,
+            invocations=invocations  # Pass complete invocation data
         )
     
     async def _validate_tool_call(
@@ -785,23 +801,20 @@ class ValidationProcessor:
         """
         # Check if agent can return final response
         if self.topology_graph:
-            # Check if this is a reflexive invocation (agent was called via reflexive edge)
-            is_reflexive_invocation = branch.metadata.get(f"reflexive_caller_{agent.name}") is not None
-            
-            if not self.topology_graph.has_user_access(agent.name) and not is_reflexive_invocation:
+            if not self.topology_graph.has_user_access(agent.name):
                 # Get the agent's allowed next agents for better error message
                 next_agents = self.topology_graph.get_next_agents(agent.name)
                 
                 logger.warning(
-                    f"Agent '{agent.name}' attempted final_response but is not connected to User "
-                    f"and not in reflexive invocation. Agent's next options: {next_agents}"
+                    f"Agent '{agent.name}' attempted final_response but is not connected to User. "
+                    f"Agent's next options: {next_agents}"
                 )
                 
                 return ValidationResult(
                     is_valid=False,
                     error_message=(
                         f"Agent '{agent.name}' cannot use final_response action. "
-                        f"Only agents with edges to User nodes or agents invoked via reflexive edges can complete execution. "
+                        f"Only agents with edges to User nodes can complete execution. "
                         f"This agent can invoke: {next_agents}"
                     ),
                     retry_suggestion=(
@@ -809,8 +822,6 @@ class ValidationProcessor:
                         f"or 'call_tool' if you have tools available."
                     )
                 )
-            elif is_reflexive_invocation:
-                logger.debug(f"Agent '{agent.name}' is allowed to use final_response (reflexive invocation)")
         else:
             logger.debug(f"Agent '{agent.name}' is allowed to use final_response (has User access)")
         
