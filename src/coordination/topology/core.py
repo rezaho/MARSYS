@@ -39,7 +39,6 @@ class EdgeType(Enum):
 
 class EdgePattern(Enum):
     """Special edge patterns."""
-    REFLEXIVE = "reflexive"      # A <=> B (boomerang)
     ALTERNATING = "alternating"  # A <~> B (ping-pong)
     SYMMETRIC = "symmetric"      # A <|> B (peer)
 
@@ -50,7 +49,7 @@ class Node:
     name: str
     node_type: NodeType = NodeType.AGENT
     agent_ref: Optional[Any] = None  # Reference to actual agent instance
-    is_convergence_point: bool = False  # User-controlled convergence marking
+    is_convergence_point: bool = True  # Default to convergence point for automatic branch merging
     metadata: Dict[str, Any] = field(default_factory=dict)
     
     def __post_init__(self):

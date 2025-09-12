@@ -43,7 +43,7 @@ class NodeInfo:
     outgoing_edges: List[str] = field(default_factory=list)
     capabilities: List[str] = field(default_factory=list)
     metadata: Dict[str, Any] = field(default_factory=dict)
-    is_convergence_point: bool = False  # User-controlled convergence marking
+    is_convergence_point: bool = True  # Default to convergence point for automatic branch merging
     
     def add_incoming(self, source: str) -> None:
         """Add an incoming edge from source."""
@@ -122,7 +122,15 @@ class TopologyGraph:
     def add_node(self, name: str, agent: Optional[Any] = None, node_type: Optional['NodeType'] = None, **metadata) -> NodeInfo:
         """Add a node to the graph."""
         if name not in self.nodes:
-            self.nodes[name] = NodeInfo(name=name, agent=agent, node_type=node_type, metadata=metadata)
+            # Extract is_convergence_point from metadata if provided, otherwise use default (True)
+            is_convergence = metadata.pop('is_convergence_point', True) if metadata else True
+            self.nodes[name] = NodeInfo(
+                name=name, 
+                agent=agent, 
+                node_type=node_type, 
+                metadata=metadata,
+                is_convergence_point=is_convergence
+            )
         return self.nodes[name]
     
     def add_edge(self, edge: TopologyEdge) -> None:

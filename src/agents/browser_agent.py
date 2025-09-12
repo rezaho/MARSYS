@@ -303,7 +303,7 @@ Return a JSON array of objects with "box_2d" and "label" fields only.
             # Add current user request message
             user_request_message = Message(
                 role="user",
-                content=json.dumps(request_data, indent=2),
+                content=self._safe_json_serialize(request_data),
                 name=request_context.caller_agent_name or "user"
             )
             

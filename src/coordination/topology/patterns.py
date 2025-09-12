@@ -63,7 +63,6 @@ class PatternConfig:
                      hub: str, 
                      spokes: List[str],
                      parallel_spokes: bool = False,
-                     reflexive: bool = True,
                      **kwargs) -> 'PatternConfig':
         """
         Create hub and spoke configuration.
@@ -72,7 +71,6 @@ class PatternConfig:
             hub: Name of the hub agent
             spokes: List of spoke agent names
             parallel_spokes: Whether spokes execute in parallel
-            reflexive: Use reflexive edges (spokes return to hub)
             **kwargs: Additional metadata
             
         Returns:
@@ -83,8 +81,7 @@ class PatternConfig:
             params={
                 "hub": hub,
                 "spokes": spokes,
-                "parallel_spokes": parallel_spokes,
-                "reflexive": reflexive
+                "parallel_spokes": parallel_spokes
             },
             metadata=kwargs
         )

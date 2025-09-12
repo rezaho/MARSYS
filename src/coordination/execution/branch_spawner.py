@@ -187,12 +187,9 @@ class DynamicBranchSpawner:
         self.event_bus = event_bus
         self.agent_registry = agent_registry
         
-        # Track pool instance allocations
-        self.pool_allocations: Dict[str, Dict[str, Any]] = {}  # branch_id -> {pool_name, instance}
-        
-        # NEW: Track single agent allocations to prevent parallel usage
-        self.single_agent_allocations: Dict[str, str] = {}  # agent_name -> branch_id
-        self.single_agent_lock = asyncio.Lock()  # Async lock for thread-safe access
+        # Track agent/pool allocations uniformly
+        self.agent_allocations: Dict[str, Dict[str, Any]] = {}  # branch_id -> {resource, instance}
+        self.resource_lock = asyncio.Lock()  # Unified lock for resource management
         
         # Memory management configuration
         self.max_completed_agents = max_completed_agents or self.DEFAULT_MAX_COMPLETED_AGENTS
@@ -286,12 +283,6 @@ class DynamicBranchSpawner:
                 logger.debug(f"Agent '{agent_name}' continuing with tools - no divergence")
                 return False
             
-            # Check if we just completed a reflexive return
-            # (Don't spawn divergence after processing reflexive response)
-            if hasattr(response, 'metadata'):
-                if response.metadata.get('reflexive_return_completed'):
-                    logger.info(f"Agent '{agent_name}' just completed reflexive return - no divergence")
-                    return False
         
         # Check if agent specified multiple targets explicitly
         explicit_targets = self._extract_explicit_targets(response)
@@ -512,7 +503,7 @@ class DynamicBranchSpawner:
         # 5. Check for simple sequential continuation
         next_agents = self.graph.get_next_agents(agent_name)
         if len(next_agents) == 1 and not new_tasks:
-            # Single next agent and no branches spawned - continue in same branch
+            # Single successor - continue in same branch (both reflexive and non-reflexive)
             logger.debug(f"Agent '{agent_name}' has single successor '{next_agents[0]}' - continuing in same branch")
             return []
         
@@ -667,6 +658,114 @@ class DynamicBranchSpawner:
         logger.info(f"Spawned {len(new_tasks)} parallel branches for agents: {parallel_group.agents}")
         return new_tasks
     
+    def _create_branch(
+        self,
+        branch_type: BranchType,
+        target_agent: str,
+        parent_branch: Optional[ExecutionBranch] = None,
+        source_agent: Optional[str] = None,
+        initial_request: Any = None,
+        context: Optional[Dict[str, Any]] = None,
+        branch_id: Optional[str] = None,
+        allowed_transitions: Optional[Dict[str, List[str]]] = None,
+        **kwargs
+    ) -> ExecutionBranch:
+        """
+        Unified branch creation method that handles all branch types consistently.
+        
+        Args:
+            branch_type: Type of branch (SIMPLE, CHILD, CONVERSATION, etc.)
+            target_agent: Name of the target agent
+            parent_branch: Parent branch if this is a child branch
+            source_agent: Source agent name (for reflexive checking)
+            initial_request: Initial request for the branch
+            context: Additional context for the branch
+            branch_id: Optional branch ID (auto-generated if not provided)
+            allowed_transitions: Optional allowed transitions (auto-determined if not provided)
+            **kwargs: Additional branch-specific parameters
+        
+        Returns:
+            ExecutionBranch: The created branch with proper metadata
+        """
+        # Generate branch ID if not provided
+        if not branch_id:
+            if branch_type == BranchType.SIMPLE:
+                branch_id = f"branch_{source_agent}_to_{target_agent}_{uuid.uuid4().hex[:8]}"
+            elif branch_type == BranchType.CONVERSATION:
+                branch_id = f"conversation_{source_agent}_{target_agent}_{uuid.uuid4().hex[:8]}"
+            elif parent_branch:
+                branch_id = f"child_{parent_branch.id}_{target_agent}_{uuid.uuid4().hex[:8]}"
+            else:
+                branch_id = f"branch_{target_agent}_{uuid.uuid4().hex[:8]}"
+        
+        # Initialize metadata
+        metadata = {}
+        
+        # Copy parent's metadata if this is a child branch
+        if parent_branch:
+            metadata = parent_branch.metadata.copy() if parent_branch.metadata else {}
+            metadata['parent_branch_id'] = parent_branch.id
+            metadata['is_child_branch'] = True
+            metadata['parent_agent'] = source_agent or parent_branch.topology.current_agent
+            if not source_agent:
+                source_agent = parent_branch.topology.current_agent
+        
+        # Add source agent and context to metadata
+        if source_agent:
+            metadata['source_agent'] = source_agent
+        metadata['initial_request'] = initial_request
+        metadata['context'] = context or {}
+        
+        # CRITICAL: Check for reflexive edges and set metadata
+        
+        # Add any additional kwargs to metadata
+        for key, value in kwargs.items():
+            if key not in ['branch_type', 'topology', 'state', 'completion_condition']:
+                metadata[key] = value
+        
+        # Get allowed transitions if not provided
+        if not allowed_transitions:
+            allowed_transitions = self.graph.get_subgraph_from(target_agent) if self.graph else {}
+        
+        # Determine branch name
+        if branch_type == BranchType.CONVERSATION:
+            branch_name = f"Conversation: {source_agent} ↔ {target_agent}"
+        elif parent_branch:
+            branch_name = f"Child Branch: {source_agent or 'Unknown'} → {target_agent}"
+        else:
+            branch_name = f"Branch: {source_agent or 'Start'} → {target_agent}"
+        
+        # Create the topology based on branch type
+        if branch_type == BranchType.CONVERSATION:
+            topology = BranchTopology(
+                agents=[source_agent, target_agent] if source_agent else [target_agent],
+                entry_agent=target_agent,
+                current_agent=target_agent,
+                allowed_transitions=allowed_transitions,
+                conversation_pattern=ConversationPattern.DIALOGUE,
+                max_iterations=kwargs.get('max_iterations', 10)
+            )
+        else:
+            topology = BranchTopology(
+                agents=[target_agent],
+                entry_agent=target_agent,
+                current_agent=target_agent,
+                allowed_transitions=allowed_transitions
+            )
+        
+        # Create the branch
+        branch = ExecutionBranch(
+            id=branch_id,
+            name=branch_name,
+            type=branch_type,
+            topology=topology,
+            state=BranchState(status=BranchStatus.PENDING),
+            completion_condition=AgentDecidedCompletion(),
+            metadata=metadata
+        )
+        
+        return branch
+    
     def _create_simple_branch(
         self,
         source_agent: str,
@@ -674,48 +773,14 @@ class DynamicBranchSpawner:
         initial_request: Any,
         context: Dict[str, Any]
     ) -> ExecutionBranch:
-        """Create a simple execution branch."""
-        branch_id = f"branch_{source_agent}_to_{target_agent}_{uuid.uuid4().hex[:8]}"
-        
-        # Check if this is a reflexive edge
-        is_reflexive = False
-        edge = self.graph.get_edge(source_agent, target_agent)
-        if edge and (edge.metadata.get("reflexive") or edge.metadata.get("pattern") == "boomerang"):
-            is_reflexive = True
-            logger.debug(f"Creating reflexive branch from {source_agent} to {target_agent}")
-        
-        # Get allowed transitions from this agent forward
-        allowed_transitions = self.graph.get_subgraph_from(target_agent)
-        
-        # Build metadata with reflexive caller if needed
-        metadata = {
-            "source_agent": source_agent,
-            "initial_request": initial_request,
-            "context": context,
-            "is_reflexive": is_reflexive  # NEW
-        }
-        
-        # FIX 2: Set reflexive caller metadata when it's a reflexive edge
-        if is_reflexive:
-            metadata[f"reflexive_caller_{target_agent}"] = source_agent
-            logger.info(f"Set reflexive caller for {target_agent}: {source_agent}")
-        
-        branch = ExecutionBranch(
-            id=branch_id,
-            name=f"Branch: {source_agent} → {target_agent}",
-            type=BranchType.SIMPLE,
-            topology=BranchTopology(
-                agents=[target_agent],
-                entry_agent=target_agent,
-                current_agent=target_agent,
-                allowed_transitions=allowed_transitions
-            ),
-            state=BranchState(status=BranchStatus.PENDING),
-            completion_condition=AgentDecidedCompletion(),
-            metadata=metadata
+        """Create a simple execution branch using the unified method."""
+        return self._create_branch(
+            branch_type=BranchType.SIMPLE,
+            target_agent=target_agent,
+            source_agent=source_agent,
+            initial_request=initial_request,
+            context=context
         )
-        
-        return branch
     
     def _create_conversation_branch(
         self,
@@ -1122,60 +1187,60 @@ class DynamicBranchSpawner:
         agent_name: str,
         branch_id: str,
         timeout: float = 30.0
-    ) -> Optional[Any]:
+    ) -> Any:
         """
-        Acquire an agent instance for a branch, handling pools if necessary.
+        Unified agent acquisition using the same interface for all agents.
+        
+        Both single agents and pools now support acquire_instance_async.
         
         Args:
             agent_name: Name of the agent or pool
             branch_id: ID of the branch requesting the agent
-            timeout: Timeout for acquiring from pool
+            timeout: Timeout for acquiring the agent
             
         Returns:
-            Agent instance or None if unavailable
+            Agent instance
+            
+        Raises:
+            RuntimeError: If agent cannot be acquired within timeout
         """
         if not self.agent_registry:
-            logger.warning("No agent registry available")
-            return None
+            error_msg = "No agent registry available"
+            logger.error(error_msg)
+            raise RuntimeError(error_msg)
         
         # Import here to avoid circular imports
         from ...agents.registry import AgentRegistry
         
-        # Check if it's a pool
-        if AgentRegistry.is_pool(agent_name):
-            # Acquire from pool with timeout
-            instance = await self._acquire_from_pool_async(agent_name, branch_id, timeout)
-            if instance:
-                # Track the allocation
-                self.pool_allocations[branch_id] = {
-                    'pool_name': agent_name,
-                    'instance': instance
-                }
+        # Get the agent or pool from registry
+        resource = AgentRegistry.get(agent_name) or AgentRegistry.get_pool(agent_name)
+        
+        if not resource:
+            error_msg = f"Agent/pool '{agent_name}' not found in registry"
+            logger.error(error_msg)
+            raise RuntimeError(error_msg)
+        
+        # Use unified interface - both single agents and pools have acquire_instance_async
+        instance = await resource.acquire_instance_async(branch_id, timeout)
+        
+        if instance:
+            # Track the allocation uniformly
+            self.agent_allocations[branch_id] = {
+                'agent_name': agent_name,
+                'resource': resource,  # Keep reference for release
+                'instance': instance
+            }
+            logger.info(
+                f"Acquired instance from '{agent_name}' for branch '{branch_id}'"
+            )
             return instance
         else:
-            # Regular agent - check if already in use
-            async with self.single_agent_lock:
-                if agent_name in self.single_agent_allocations:
-                    current_branch = self.single_agent_allocations[agent_name]
-                    if current_branch != branch_id:  # Different branch trying to use it
-                        logger.warning(
-                            f"Single agent '{agent_name}' already in use by branch "
-                            f"'{current_branch}', cannot allocate to '{branch_id}'"
-                        )
-                        return None
-                    else:
-                        # Same branch requesting again - allow (idempotent)
-                        logger.debug(f"Branch '{branch_id}' already has '{agent_name}'")
-                        return AgentRegistry.get(agent_name)
-                
-                # Agent is available - allocate it
-                agent = AgentRegistry.get(agent_name)
-                if agent:
-                    self.single_agent_allocations[agent_name] = branch_id
-                    logger.info(
-                        f"Allocated single agent '{agent_name}' to branch '{branch_id}'"
-                    )
-                return agent
+            error_msg = (
+                f"Failed to acquire instance from '{agent_name}' for branch '{branch_id}' "
+                f"within {timeout}s timeout. Agent may be busy with other branches."
+            )
+            logger.error(error_msg)
+            raise RuntimeError(error_msg)
     
     async def _acquire_from_pool_async(
         self,
@@ -1223,41 +1288,38 @@ class DynamicBranchSpawner:
         Args:
             branch_id: ID of the branch
         """
-        if branch_id in self.pool_allocations:
-            allocation = self.pool_allocations.pop(branch_id)
-            pool_name = allocation['pool_name']
-            
-            from ...agents.registry import AgentRegistry
-            if AgentRegistry.release_to_pool(pool_name, branch_id):
-                logger.debug(f"Released instance from pool '{pool_name}' for branch '{branch_id}'")
-            else:
-                logger.warning(f"Failed to release instance from pool '{pool_name}' for branch '{branch_id}'")
+        # Delegate to unified method
+        self._release_agent_for_branch(branch_id)
     
-    async def _release_single_agent(self, agent_name: str, branch_id: str) -> bool:
+    def _release_agent_for_branch(self, branch_id: str) -> bool:
         """
-        Release a single agent allocation.
+        Unified agent release using the same interface for all agents.
         
         Args:
-            agent_name: Name of the agent to release
             branch_id: ID of the branch releasing the agent
             
         Returns:
-            True if released, False if not allocated to this branch
+            True if released, False if branch had no allocation
         """
-        async with self.single_agent_lock:
-            if agent_name in self.single_agent_allocations:
-                if self.single_agent_allocations[agent_name] == branch_id:
-                    del self.single_agent_allocations[agent_name]
-                    logger.info(
-                        f"Released single agent '{agent_name}' from branch '{branch_id}'"
-                    )
-                    return True
-                else:
-                    logger.warning(
-                        f"Branch '{branch_id}' tried to release '{agent_name}' "
-                        f"but it's allocated to '{self.single_agent_allocations[agent_name]}'"
-                    )
+        if branch_id not in self.agent_allocations:
+            logger.debug(f"Branch '{branch_id}' has no agent allocation to release")
             return False
+        
+        allocation = self.agent_allocations.pop(branch_id)
+        resource = allocation['resource']
+        agent_name = allocation['agent_name']
+        
+        # Use unified interface - both single agents and pools have release_instance
+        success = resource.release_instance(branch_id)
+        
+        if success:
+            logger.info(f"Released agent from '{agent_name}' for branch '{branch_id}'")
+        else:
+            logger.error(
+                f"Failed to release agent from '{agent_name}' for branch '{branch_id}'"
+            )
+        
+        return success
     
     async def _get_available_instance_count(self, agent_name: str) -> int:
         """
@@ -1271,16 +1333,14 @@ class DynamicBranchSpawner:
         """
         from ...agents.registry import AgentRegistry
         
-        if AgentRegistry.is_pool(agent_name):
-            pool = AgentRegistry.get_pool(agent_name)
-            return pool.get_available_count() if pool else 0
-        else:
-            # Single agent - check if in use
-            async with self.single_agent_lock:
-                if agent_name in self.single_agent_allocations:
-                    return 0  # Already in use
-                else:
-                    return 1  # Available
+        # Get resource from registry (could be agent or pool)
+        resource = AgentRegistry.get(agent_name) or AgentRegistry.get_pool(agent_name)
+        
+        if resource and hasattr(resource, 'get_available_count'):
+            return resource.get_available_count()
+        
+        # Default to 0 if resource not found or doesn't have availability method
+        return 0
     
     async def handle_agent_initiated_parallelism(
         self,
@@ -1312,12 +1372,13 @@ class DynamicBranchSpawner:
             invocations = response["invocations"]
             logger.info(f"Using parsed invocations list with {len(invocations) if invocations else 0} invocations")
         
-        # Extract target agents from response
-        target_agents = self._extract_parallel_targets(response)
-        if not target_agents:
-            logger.warning(f"Agent '{agent_name}' requested parallel invoke but no targets found")
+        # Get invocations directly from response
+        if not invocations:
+            logger.warning(f"Agent '{agent_name}' requested parallel invoke but no invocations found")
             return []
         
+        # Extract target agent names for logging
+        target_agents = [inv.agent_name for inv in invocations]
         logger.info(f"Agent '{agent_name}' initiating execution of: {target_agents}")
         
         # PHASE 1: Create ALL branches immediately in execution graph
@@ -1325,24 +1386,11 @@ class DynamicBranchSpawner:
         all_branches = []
         branch_to_invocation = {}  # Map branch_id to invocation data
         
-        for idx, target_agent in enumerate(target_agents):
-            # Extract request data for this invocation
-            instance_id = None
-            agent_request = {}
-            
-            if invocations and idx < len(invocations):
-                # Direct access to invocation object
-                inv = invocations[idx]
-                agent_request = inv.request
-                instance_id = inv.instance_id
-                target_agent = inv.agent_name  # Use actual agent name from invocation
-            else:
-                # No invocations available - use empty request
-                logger.warning(f"No invocation data available for {target_agent}[{idx}], using empty request")
-                agent_request = {}
-            
-            # Create unique branch ID
-            child_branch_id = f"child_{parent_branch_id}_{target_agent}_{idx}_{uuid.uuid4().hex[:8]}"
+        for idx, inv in enumerate(invocations):
+            # Direct access to invocation object - no matching needed!
+            target_agent = inv.agent_name
+            agent_request = inv.request
+            instance_id = inv.instance_id
             
             # Create child branch
             child_branch = self._create_child_branch(
@@ -1488,33 +1536,26 @@ class DynamicBranchSpawner:
         context: Dict[str, Any],
         instance_id: Optional[str] = None
     ) -> ExecutionBranch:
-        """Create a child branch for agent-initiated parallelism."""
-        branch_id = f"child_{parent_branch_id}_{target_agent}_{uuid.uuid4().hex[:8]}"
+        """Create a child branch using the unified method."""
+        # Get the parent branch to pass to unified method
+        parent_branch = self.branch_info.get(parent_branch_id)
         
-        # Get allowed transitions from this agent forward
-        allowed_transitions = self.graph.get_subgraph_from(target_agent)
-        
-        branch = ExecutionBranch(
-            id=branch_id,
-            name=f"Child Branch: {parent_agent} → {target_agent}",
-            type=BranchType.SIMPLE,
-            topology=BranchTopology(
-                agents=[target_agent],
-                entry_agent=target_agent,
-                current_agent=target_agent,
-                allowed_transitions=allowed_transitions
-            ),
-            state=BranchState(status=BranchStatus.PENDING),
-            completion_condition=AgentDecidedCompletion(),
-            metadata={
-                "parent_agent": parent_agent,
-                "parent_branch_id": parent_branch_id,
-                "initial_request": initial_request,
-                "context": context,
-                "is_child_branch": True,
-                "instance_id": instance_id if instance_id else None
-            }
+        # Use the unified method with additional metadata
+        branch = self._create_branch(
+            branch_type=BranchType.SIMPLE,  # Child branches are SIMPLE type
+            target_agent=target_agent,
+            parent_branch=parent_branch,
+            source_agent=parent_agent,
+            initial_request=initial_request,
+            context=context,
+            instance_id=instance_id
         )
+        
+        # Override the branch ID to maintain the child naming convention
+        branch.id = f"child_{parent_branch_id}_{target_agent}_{uuid.uuid4().hex[:8]}"
+        
+        # Ensure parent_branch_id is in metadata (in case parent_branch was None)
+        branch.metadata["parent_branch_id"] = parent_branch_id
         
         return branch
     
@@ -1559,21 +1600,20 @@ class DynamicBranchSpawner:
             for branch in batch:
                 inv_data = branch_to_invocation[branch.id]
                 
-                # Acquire instance
-                instance = await self._acquire_agent_for_branch(
-                    agent_name,
-                    branch.id,
-                    timeout=30.0
-                )
-                
-                if not instance:
-                    logger.error(f"Failed to acquire instance for branch {branch.id}")
+                # Acquire instance - will raise if fails
+                try:
+                    instance = await self._acquire_agent_for_branch(
+                        agent_name,
+                        branch.id,
+                        timeout=60.0  # Increased timeout for queueing scenarios
+                    )
+                except RuntimeError as e:
+                    logger.error(f"Failed to acquire instance for branch {branch.id}: {e}")
                     # Mark branch as failed in group
                     group.failed_branches.add(branch.id)
                     continue
                 
-                # Track agent in branch
-                self._track_agent_in_branch(agent_name, branch.id)
+                # Track parent-child relationship (agent tracking now handled by allocation)
                 self.child_parent_map[branch.id] = group.parent_branch_id
                 
                 # Add group context to branch metadata
@@ -1581,6 +1621,7 @@ class DynamicBranchSpawner:
                 branch.metadata['parallel_group_size'] = group.total_branches
                 
                 # Create task
+                logger.debug(f"Creating task for branch {branch.id} with request: {inv_data['request']}")
                 task = asyncio.create_task(
                     self._execute_branch_with_group_awareness(
                         branch, inv_data['request'], context, group
@@ -1716,21 +1757,23 @@ class DynamicBranchSpawner:
                 logger.info(f"Cleared waiting branches for parent '{parent_branch_id}' - ready to resume")
             
             # FIX 2: Set parent branch to continue to convergence point
-            if group.convergence_points and parent_branch:
-                # Prepare the parent to continue to convergence
-                convergence_point = list(group.convergence_points)[0]
-                
-                # Store convergence data in parent metadata
-                parent_branch.metadata['convergence_data'] = {
-                    'target': convergence_point,
-                    'aggregated_requests': aggregated_data,
-                    'source_count': len(aggregated_data),
-                    'is_convergence': True
-                }
-                
-                # Update parent's current agent to convergence point
-                parent_branch.topology.current_agent = convergence_point
-                logger.info(f"Parent branch will continue to convergence point: {convergence_point}")
+            # COMMENTED OUT: This was causing parent agent to be skipped after parallel execution
+            # The parent should resume at its original current_agent, not jump to convergence
+            # if group.convergence_points and parent_branch:
+            #     # Prepare the parent to continue to convergence
+            #     convergence_point = list(group.convergence_points)[0]
+            #     
+            #     # Store convergence data in parent metadata
+            #     parent_branch.metadata['convergence_data'] = {
+            #         'target': convergence_point,
+            #         'aggregated_requests': aggregated_data,
+            #         'source_count': len(aggregated_data),
+            #         'is_convergence': True
+            #     }
+            #     
+            #     # Update parent's current agent to convergence point
+            #     parent_branch.topology.current_agent = convergence_point
+            #     logger.info(f"Parent branch will continue to convergence point: {convergence_point}")
         
         # If there are convergence points, we DON'T execute them directly
         # The parent branch will flow to them naturally after resuming
@@ -1747,6 +1790,7 @@ class DynamicBranchSpawner:
         if not self.graph:
             return convergence_points
         
+        # Check explicitly marked convergence points
         for node_name, node in self.graph.nodes.items():
             if hasattr(node, 'is_convergence_point') and node.is_convergence_point:
                 # Check if this convergence point is reachable from the agent
@@ -1819,22 +1863,12 @@ class DynamicBranchSpawner:
     
     async def _release_agent_instance(self, agent_name: str, branch_id: str):
         """Release an agent instance after use."""
-        # Release from single agent tracking
-        async with self.single_agent_lock:
-            if agent_name in self.single_agent_allocations:
-                if self.single_agent_allocations[agent_name] == branch_id:
-                    del self.single_agent_allocations[agent_name]
-                    logger.debug(f"Released single agent '{agent_name}' from branch '{branch_id}'")
-        
-        # Release from pool if applicable
-        if branch_id in self.pool_allocations:
-            allocation = self.pool_allocations[branch_id]
-            if 'pool' in allocation and 'instance' in allocation:
-                pool = allocation['pool']
-                instance = allocation['instance']
-                pool.release_instance(instance)
-                del self.pool_allocations[branch_id]
-                logger.debug(f"Released pool instance for '{agent_name}' from branch '{branch_id}'")
+        # Use unified release method
+        success = self._release_agent_for_branch(branch_id)
+        if success:
+            logger.debug(f"Released agent '{agent_name}' from branch '{branch_id}'")
+        else:
+            logger.warning(f"Failed to release agent '{agent_name}' from branch '{branch_id}'")
     
     async def cleanup_completed_groups(self):
         """Clean up completed and timed-out parallel invocation groups."""
@@ -1975,10 +2009,23 @@ class DynamicBranchSpawner:
         """
         child_branch_ids = self.parent_child_map.get(parent_branch_id, [])
         
+        # Collect actual responses from children
+        agent_responses = []
+        for child_id in child_branch_ids:
+            if child_id in self.branch_results:
+                result = self.branch_results[child_id]
+                branch = self.branch_info.get(child_id)
+                
+                if result.final_response and branch:
+                    # Format as the parent agent expects
+                    agent_responses.append({
+                        "agent_name": branch.topology.entry_agent,
+                        "response": result.final_response
+                    })
+        
+        # Return aggregated context with child results as array
         aggregated = {
-            "child_results": {},
-            "child_responses": {},
-            "combined_memory": {},
+            "child_results": agent_responses,  # Direct array, not wrapped
             "metadata": {
                 "parent_branch_id": parent_branch_id,
                 "child_count": len(child_branch_ids),
@@ -1986,31 +2033,17 @@ class DynamicBranchSpawner:
             }
         }
         
+        # Also collect memory and other metadata for potential use
+        combined_memory = {}
         for child_id in child_branch_ids:
             if child_id in self.branch_results:
                 result = self.branch_results[child_id]
-                branch = self.branch_info.get(child_id)
-                
-                if branch:
-                    # Get the target agent name
-                    target_agent = branch.topology.entry_agent
-                    
-                    # Store child result
-                    aggregated["child_results"][target_agent] = {
-                        "branch_id": child_id,
-                        "final_response": result.final_response,
-                        "success": result.success,
-                        "total_steps": result.total_steps,
-                        "error": result.error
-                    }
-                    
-                    # Extract agent responses
-                    for step_result in result.execution_trace:
-                        aggregated["child_responses"][step_result.agent_name] = step_result.response
-                    
-                    # Merge memory
-                    for agent, memories in result.branch_memory.items():
-                        aggregated["combined_memory"][agent] = memories
+                # Merge memory
+                for agent, memories in result.branch_memory.items():
+                    combined_memory[agent] = memories
+        
+        if combined_memory:
+            aggregated["combined_memory"] = combined_memory
         
         return aggregated
     

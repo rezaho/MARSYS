@@ -19,7 +19,6 @@ logger = logging.getLogger(__name__)
 
 # Edge pattern regular expressions
 EDGE_PATTERNS = {
-    'reflexive': re.compile(r'^(.+?)\s*<=>\s*(.+)$'),      # A <=> B (boomerang)
     'alternating': re.compile(r'^(.+?)\s*<~>\s*(.+)$'),    # A <~> B (ping-pong)
     'symmetric': re.compile(r'^(.+?)\s*<\|>\s*(.+)$'),     # A <|> B (peer)
     'bidirectional': re.compile(r'^(.+?)\s*<->\s*(.+)$'),  # A <-> B (standard bidirectional)
@@ -70,9 +69,13 @@ def parse_node(node: Union[str, Node, Any]) -> Node:
         if isinstance(node_type, str):
             node_type = NodeType(node_type.lower())
         
+        # Support explicit opt-out via dictionary
+        is_convergence = node.get("is_convergence_point", True)  # Default to True
+        
         return Node(
             name=name,
             node_type=node_type,
+            is_convergence_point=is_convergence,
             metadata=node.get("metadata", {})
         )
     
@@ -158,17 +161,6 @@ def parse_edge(edge: Union[str, Edge, Tuple, dict]) -> Edge:
 def _parse_string_edge(edge_str: str) -> Edge:
     """Parse a string edge definition with various patterns."""
     edge_str = edge_str.strip()
-    
-    # Check reflexive edge (boomerang pattern)
-    match = EDGE_PATTERNS['reflexive'].match(edge_str)
-    if match:
-        source, target = match.groups()
-        return Edge(
-            source=source.strip(),
-            target=target.strip(),
-            bidirectional=True,
-            pattern=EdgePattern.REFLEXIVE
-        )
     
     # Check alternating edge (ping-pong pattern)
     match = EDGE_PATTERNS['alternating'].match(edge_str)

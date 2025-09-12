@@ -147,12 +147,12 @@ class TopologyAnalyzer:
             node = parse_node(node_item)
             graph.add_node(node.name, agent=node.agent_ref, node_type=node.node_type)
             
-            # Transfer convergence point flag if set
-            if hasattr(node, 'is_convergence_point') and node.is_convergence_point:
+            # Transfer convergence point flag (both True and False)
+            if hasattr(node, 'is_convergence_point'):
                 graph_node = graph.nodes.get(node.name)
                 if graph_node:
-                    graph_node.is_convergence_point = True
-                    logger.debug(f"Transferred convergence point flag for {node.name}")
+                    graph_node.is_convergence_point = node.is_convergence_point
+                    logger.debug(f"Transferred convergence point flag for {node.name}: {node.is_convergence_point}")
     
     def _add_edges(self, graph: TopologyGraph, topology_def: Union[Topology, Dict[str, Any]]) -> None:
         """Add edges from topology definition to graph."""
@@ -170,10 +170,7 @@ class TopologyAnalyzer:
                 # Convert metadata from Edge pattern to TopologyEdge metadata
                 metadata = {}
                 if edge.pattern:
-                    if edge.pattern == EdgePattern.REFLEXIVE:
-                        metadata["reflexive"] = True
-                        metadata["pattern"] = "boomerang"
-                    elif edge.pattern == EdgePattern.ALTERNATING:
+                    if edge.pattern == EdgePattern.ALTERNATING:
                         metadata["alternating"] = True
                         metadata["pattern"] = "ping_pong"
                     elif edge.pattern == EdgePattern.SYMMETRIC:
@@ -201,18 +198,17 @@ class TopologyAnalyzer:
                 for peer in agent._allowed_peers_init:
                     # Check if peer exists in the graph (was discovered)
                     if peer in graph.nodes:  # Changed from 'if peer in agents'
-                        # Check if this is a reflexive relationship (using allowed_peers means reflexive)
+                        # Create bidirectional edge instead of reflexive
                         graph.add_edge(TopologyEdge(
                             source=agent_name,
                             target=peer,
-                            bidirectional=False,  # Reflexive is NOT bidirectional
-                            metadata={"reflexive": True, "pattern": "boomerang"}
+                            bidirectional=True  # Now creates bidirectional edges
                         ))
                         edges_created += 1
-                        logger.debug(f"Created reflexive edge from allowed_peers: {agent_name} -> {peer}")
+                        logger.debug(f"Created bidirectional edge from allowed_peers: {agent_name} <-> {peer}")
         
         if edges_created > 0:
-            logger.info(f"Created {edges_created} reflexive edges from allowed_peers")
+            logger.info(f"Created {edges_created} bidirectional edges from allowed_peers")
     
     def _build_nodes_from_registry(self, graph: TopologyGraph) -> int:
         """
