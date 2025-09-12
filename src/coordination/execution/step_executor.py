@@ -161,6 +161,12 @@ class StepExecutor:
         topology_graph = context.get("topology_graph")
         branch = context.get("branch")
         
+        # Extract execution config from context
+        execution_config = context.get('execution_config')
+        if not execution_config:
+            from ..config import ExecutionConfig
+            execution_config = ExecutionConfig()  # Default: auto mode
+        
         # Execute with retries
         retry_count = 0
         last_error = None
@@ -184,6 +190,16 @@ class StepExecutor:
                     if format_instructions:
                         run_context["format_instructions"] = format_instructions
                         logger.debug(f"Passing dynamic format instructions for {agent_name} via context")
+                
+                # NEW: Add steering based on config
+                if execution_config.should_apply_steering(retry_count):
+                    steering_prompt = self._get_steering_prompt(
+                        agent,
+                        step_context,
+                        retry_count=retry_count
+                    )
+                    run_context["steering_prompt"] = steering_prompt
+                    logger.debug(f"Added steering for {agent_name} (retry {retry_count}, mode: {execution_config.steering_mode})")
                 
                 agent_response = await agent.run_step(
                     request,
@@ -367,14 +383,14 @@ class StepExecutor:
         available_actions = []
         action_descriptions = []
         
-        # 1. Check if agent has tools
-        if hasattr(agent, 'tools') and agent.tools:
-            available_actions.append("'call_tool'")
-            action_descriptions.append(
-                '- If `next_action` is `"call_tool"`:\n'
-                '     `{"tool_calls": [{"id": "...", "type": "function", "function": {"name": "tool_name", "arguments": "{\\"param\\": ...}"}}]}`\n'
-                '     • The list **must** stay inside `action_input`.'
-            )
+        # # 1. Check if agent has tools
+        # if hasattr(agent, 'tools') and agent.tools:
+        #     available_actions.append("'call_tool'")
+        #     action_descriptions.append(
+        #         '- If `next_action` is `"call_tool"`:\n'
+        #         '     `{"tool_calls": [{"id": "...", "type": "function", "function": {"name": "tool_name", "arguments": "{\\"param\\": ...}"}}]}`\n'
+        #         '     • The list **must** stay inside `action_input`.'
+        #     )
         
         # 2. Check if agent can invoke other agents (from topology)
         next_agents = topology_graph.get_next_agents(agent_name)
@@ -386,9 +402,10 @@ class StepExecutor:
                 '- If `next_action` is `"invoke_agent"`:\n'
                 f'     An ARRAY of agent invocation objects for agents: {agents_list}\n'
                 '     `[{"agent_name": "example_agent_name", "request": {...}}, ...]`\n'
-                '     • Single agent: array with one object (sequential execution)\n'
+                '     • Single agent: array with one object\n'
                 '     • Multiple agents: array with multiple objects (parallel execution)\n'
-                '     • Same agent multiple times: multiple objects with same agent_name but different requests'
+                '     • IMPORTANT: Only invoke agents together if you do NOT need one\'s response before invoking another\n'
+                '     • Control flow after invocation depends on the system topology configuration'
             )
         
         # 3. CRITICAL: Check if agent can return final response
@@ -401,13 +418,6 @@ class StepExecutor:
         # Check if agent has user access in topology
         if topology_graph.has_user_access(agent_name):
             can_return_final = True
-        
-        # MOST IMPORTANT: Check for reflexive invocation in branch metadata
-        if branch and branch.metadata:
-            reflexive_caller = branch.metadata.get(f"reflexive_caller_{agent_name}")
-            if reflexive_caller:
-                can_return_final = True
-                logger.info(f"Dynamically detected reflexive invocation for {agent_name} from {reflexive_caller} - enabling final_response")
         
         # Check if agent is an exit point
         if hasattr(topology_graph, 'exit_points') and agent_name in topology_graph.exit_points:
@@ -431,106 +441,79 @@ class StepExecutor:
             actions_str = ", ".join(available_actions)
         
         # Build the complete guidelines (matching agent's format)
-        guidelines += f"""
-
---- STRICT JSON OUTPUT FORMAT ---
-Your *entire* response MUST be a single, valid JSON object.  This JSON object
-must be enclosed in a JSON markdown code block, e.g.:
-```json
-{{ ... }}
-```
-No other text or additional JSON objects should appear outside this single
-markdown block.
-
-Example:
-```json
-{{
-  "thought": "Your reasoning for the chosen action (optional).",
-  "next_action": "Must be one of: {actions_str}.",
-  "action_input": {{ /* parameters specific to next_action */ }}
-}}
-```
-
-Detailed structure for the JSON object:
-1. `thought` (String, optional) – your internal reasoning.
-2. `next_action` (String, required) – {actions_str}.
-3. `action_input` (Array/Object, required) – parameters specific to `next_action`.
-{chr(10).join(action_descriptions)}
-"""
+        guidelines += self._get_json_format_guidelines(actions_str, action_descriptions)
         
         # Add examples based on available actions
         examples = []
         
         if "'invoke_agent'" in actions_str:
             # Use actual agent names in examples
-            example_agent = next_agents[0] if next_agents else "example_agent"
+            # example_agent = next_agents[0] if next_agents else "example_agent"
             
-            # Try to get schema-based example, otherwise use generic placeholder
-            request_example = self._get_agent_request_example(example_agent)
+            # # Try to get schema-based example, otherwise use generic placeholder
+            # request_example = self._get_agent_request_example(example_agent)
             
-            examples.append(f"""
-Example for single agent invocation (sequential):
+            examples.append("""
+Example for single agent invocation:
 ```json
 {{
   "thought": "I need to delegate this task to a specialist.",
   "next_action": "invoke_agent",
   "action_input": [
     {{
-      "agent_name": "{example_agent}",
-      "request": {request_example}
+      "agent_name": "<example_agent>",
+      "request": <request_example>
     }}
   ]
 }}
 ```
 
-Example for multiple invocations of the same agent (parallel):
+Example for parallel invocations (when responses are independent):
 ```json
 {{
-  "thought": "I need to process multiple items using the same agent type.",
+  "thought": "I need to process multiple items that don't depend on each other.",
   "next_action": "invoke_agent",
   "action_input": [
     {{
-      "agent_name": "{example_agent}",
-      "request": {request_example}
+      "agent_name": "<example_agent_1>",
+      "request": <request_example_1>
     }},
     {{
-      "agent_name": "{example_agent}", 
-      "request": {request_example}
-    }},
-    {{
-      "agent_name": "{example_agent}",
-      "request": {request_example}
+      "agent_name": "<example_agent_2>", 
+      "request": <request_example_2>
     }}
   ]
 }}
-```""")
+```
 
-        if "'call_tool'" in actions_str:
-            # Get an example tool name if available
-            example_tool = "example_tool"
-            if hasattr(agent, 'tools') and agent.tools:
-                tool_names = list(agent.tools.keys()) if isinstance(agent.tools, dict) else []
-                if tool_names:
-                    example_tool = tool_names[0]
+REMEMBER: Only invoke agents together if you don't need one's response to invoke another!""")
+
+#         if "'call_tool'" in actions_str:
+#             # Get an example tool name if available
+#             example_tool = "example_tool"
+#             if hasattr(agent, 'tools') and agent.tools:
+#                 tool_names = list(agent.tools.keys()) if isinstance(agent.tools, dict) else []
+#                 if tool_names:
+#                     example_tool = tool_names[0]
             
-            examples.append(f"""
-Example for `call_tool`:
-```json
-{{
-  "thought": "I need to use a tool.",
-  "next_action": "call_tool",
-  "action_input": {{
-    "tool_calls": [{{
-      "id": "call_123",
-      "type": "function",
-      "function": {{
-        "name": "{example_tool}",
-        "arguments": "{{\\"param\\": \\"value\\"}}"
-      }}
-    }}]
-  }}
-}}
-```""")
+#             examples.append(f"""
+# Example for `call_tool`:
+# ```json
+# {{
+#   "thought": "I need to use a tool.",
+#   "next_action": "call_tool",
+#   "action_input": {{
+#     "tool_calls": [{{
+#       "id": "call_123",
+#       "type": "function",
+#       "function": {{
+#         "name": "{example_tool}",
+#         "arguments": "{{\\"param\\": \\"value\\"}}"
+#       }}
+#     }}]
+#   }}
+# }}
+# ```""")
 
         if "'final_response'" in actions_str:
             examples.append("""
@@ -596,24 +579,24 @@ Example for `final_response`:
         prompt_lines.append(
             "The `function` field must be an object with a `name` (the tool name) and `arguments` (a JSON string of the arguments)."
         )
-        prompt_lines.append("Example of a tool call structure:")
-        prompt_lines.append(
-            """
-```json
-{
-  "tool_calls": [
-    {
-      "id": "call_abc123",
-      "type": "function",
-      "function": {
-        "name": "tool_name_here",
-        "arguments": "{\\"param1\\": \\"value1\\", \\"param2\\": value2}"
-      }
-    }
-  ]
-}
-```"""
-        )
+#         prompt_lines.append("Example of a tool call structure:")
+#         prompt_lines.append(
+#             """
+# ```json
+# {
+#   "tool_calls": [
+#     {
+#       "id": "call_abc123",
+#       "type": "function",
+#       "function": {
+#         "name": "tool_name_here",
+#         "arguments": "{\\"param1\\": \\"value1\\", \\"param2\\": value2}"
+#       }
+#     }
+#   ]
+# }
+# ```"""
+#         )
         prompt_lines.append("Available tools are:")
         
         for tool_def in agent.tools_schema:
@@ -667,34 +650,98 @@ Example for `final_response`:
         prompt_lines = ["\n\n--- AVAILABLE PEER AGENTS ---"]
         prompt_lines.append(
             "You can invoke other agents to assist you. If you choose this path, your JSON response (as described in the general response guidelines) "
-            'should set `next_action` to `"invoke_agent"`. The `action_input` field for this action must be an object containing:'
+            'should set `next_action` to `"invoke_agent"`. The `action_input` field for this action must be an array containing agent invocation objects.'
         )
+        
+        prompt_lines.append("\n**CRITICAL DECISION PRINCIPLE:**")
+        prompt_lines.append(
+            "Before invoking any agent(s), ask yourself: 'Do I need the response from these agent(s) to complete my task or make my next decision?'"
+        )
+        prompt_lines.append(
+            "- If YES → Invoke those agents first, wait for their responses, then proceed with your next action"
+        )
+        prompt_lines.append(
+            "- If NO → You may invoke them alongside other agents or pass control directly"
+        )
+        
+        prompt_lines.append("\n**EXECUTION SEMANTICS:**")
+        prompt_lines.append(
+            "- **Multiple agents in array**: They execute in parallel. Depending on the system topology, "
+            "control may return to you with their responses OR flow directly to another designated agent."
+        )
+        prompt_lines.append(
+            "- **Single agent in array**: Standard invocation. Depending on the system topology, "
+            "you may receive its response OR it may continue the workflow to another agent."
+        )
+        prompt_lines.append(
+            "- **Key Rule**: NEVER invoke agents together if you need one's response before invoking another. "
+            "Invoke them in separate steps based on your information dependencies."
+        )
+        
+        prompt_lines.append("\nEach invocation object must contain:")
         prompt_lines.append(
             "- `agent_name`: (String) The name of the agent to invoke from the list below (must be an exact match)."
         )
         prompt_lines.append(
-            "- `request`: (String or Object) The specific task, question, or data payload for the target agent. "
-            "This can be a simple string (e.g., 'Summarize the key findings from the attached report.') or a structured JSON object "
-            'if the target agent expects specific parameters (e.g., `{"prompt": "Analyze sales data for Q3", "region_filter": "North America"}`).'
+            "- `request`: (String or Object) The specific task, question, or data payload for the target agent."
         )
+        
+        prompt_lines.append("\n**EXAMPLES OF CORRECT INVOCATION PATTERNS:**")
+        prompt_lines.append("\n✅ CORRECT - When you need responses before proceeding:")
         prompt_lines.append(
-            "Example of the relevant part of your JSON response if invoking an agent:"
-        )
-        prompt_lines.append(
-            """
-```json
+            """```
+Step 1: Invoke data collection agents (need their data first)
 {
+  "thought": "I need to collect data from multiple sources before I can proceed",
   "next_action": "invoke_agent",
   "action_input": [
-    {
-      "agent_name": "example_agent_name_here",
-      "request": "Your request or task for the agent"
-    }
+    {"agent_name": "DataAgent1", "request": {"query": "..."}},
+    {"agent_name": "DataAgent2", "request": {"query": "..."}}
+  ]
+}
+
+Step 2: After receiving data, invoke processing agent
+{
+  "thought": "Now that I have the data from both agents, I can send it for processing",
+  "next_action": "invoke_agent",
+  "action_input": [
+    {"agent_name": "ProcessingAgent", "request": {"data": "..."}}
   ]
 }
 ```"""
         )
-        prompt_lines.append("You are allowed to invoke the following agents:")
+        
+        prompt_lines.append("\n❌ INCORRECT - Invoking dependent agents together:")
+        prompt_lines.append(
+            """```
+{
+  "thought": "I'll invoke data collectors and processor together",
+  "next_action": "invoke_agent",
+  "action_input": [
+    {"agent_name": "DataAgent1", "request": {"query": "..."}},
+    {"agent_name": "DataAgent2", "request": {"query": "..."}},
+    {"agent_name": "ProcessingAgent", "request": {"data": "???"}}  // ERROR: What data? You don't have it yet!
+  ]
+}
+```"""
+        )
+        
+        prompt_lines.append("\n✅ CORRECT - When agents don't depend on each other:")
+        prompt_lines.append(
+            """```
+{
+  "thought": "These analysis tasks are independent and can run in parallel",
+  "next_action": "invoke_agent",
+  "action_input": [
+    {"agent_name": "AnalysisAgent1", "request": {"analyze": "dataset_A"}},
+    {"agent_name": "AnalysisAgent2", "request": {"analyze": "dataset_B"}},
+    {"agent_name": "AnalysisAgent3", "request": {"analyze": "dataset_C"}}
+  ]
+}
+```"""
+        )
+        
+        prompt_lines.append("\nYou are allowed to invoke the following agents:")
         
         for peer_name in allowed_agents:
             # Get instance count information
@@ -768,6 +815,120 @@ Example for `final_response`:
             )
         
         return "\n".join(instructions) if instructions else ""
+    
+    def _get_json_format_guidelines(self, actions_str: str, action_descriptions: List[str]) -> str:
+        """
+        Get the strict JSON output format guidelines.
+        
+        Args:
+            actions_str: Comma-separated list of available actions
+            action_descriptions: Detailed descriptions for each action
+        
+        Returns:
+            Formatted JSON guidelines string
+        """
+        return f"""
+
+--- STRICT JSON OUTPUT FORMAT ---
+Your *entire* response MUST be a single, valid JSON object.  This JSON object
+must be enclosed in a JSON markdown code block, e.g.:
+```json
+{{ ... }}
+```
+No other text or additional JSON objects should appear outside this single
+markdown block.
+
+Example:
+```json
+{{
+  "thought": "Your reasoning for the chosen action (optional).",
+  "next_action": "Must be one of: {actions_str}.",
+  "action_input": {{ /* parameters specific to next_action */ }}
+}}
+```
+
+Detailed structure for the JSON object:
+1. `thought` (String, optional) – your internal reasoning.
+2. `next_action` (String, required) – {actions_str}.
+3. `action_input` (Array/Object, required) – parameters specific to `next_action`.
+{chr(10).join(action_descriptions)}
+"""
+    
+    def _get_steering_prompt(self, agent: BaseAgent, context: StepContext, 
+                             retry_count: int = 0) -> str:
+        """
+        Generate steering prompt to guide agent behavior.
+        
+        Args:
+            agent: The agent being executed
+            context: Current execution context
+            retry_count: Current retry attempt number
+            
+        Returns:
+            Steering prompt to inject as last user message
+        """
+        # Get available actions from topology
+        topology_graph = context.topology_graph if hasattr(context, 'topology_graph') else None
+        branch = context.branch if hasattr(context, 'branch') else None
+        
+        # Get available next agents
+        if topology_graph and branch:
+            # Try to get from the method we use in _get_dynamic_format_instructions
+            current_agent = agent.name if hasattr(agent, 'name') else str(agent)
+            allowed_transitions = topology_graph.get_allowed_transitions()
+            next_agents = allowed_transitions.get(current_agent, [])
+            
+            # Filter out User and duplicates
+            next_agents = [a for a in next_agents if a != "User"]
+            next_agents = list(dict.fromkeys(next_agents))  # Remove duplicates while preserving order
+        else:
+            next_agents = []
+        
+        # Determine available actions
+        available_actions = []
+        action_descriptions = []
+        
+        # Add invoke_agent if there are next agents
+        if next_agents:
+            available_actions.append("'invoke_agent'")
+            action_descriptions.append(
+                f'- If `next_action` is `"invoke_agent"`:\n'
+                f'     `{{"agent_name": "<target-agent>", "request": "<your-request>"}}`\n'
+                f'     Available agents: {", ".join(next_agents)}'
+            )
+        
+        # Add call_tool if agent has tools
+        if hasattr(agent, 'tools_schema') and agent.tools_schema:
+            available_actions.append("'call_tool'")
+            action_descriptions.append(
+                '- If `next_action` is `"call_tool"`:\n'
+                '     `{"tool_calls": [{"id": "<unique-id>", "type": "function", '
+                '"function": {"name": "<tool-name>", "arguments": "<json-args>"}}]}`'
+            )
+        
+        # Always add final_response
+        available_actions.append("'final_response'")
+        action_descriptions.append(
+            '- If `next_action` is `"final_response"`:\n'
+            '     `{"content": "Your final answer..."}`'
+        )
+        
+        actions_str = ", ".join(available_actions)
+        
+        # Get JSON guidelines
+        json_guidelines = self._get_json_format_guidelines(actions_str, action_descriptions)
+        
+        # Build steering based on retry
+        if retry_count > 0:
+            return f"""Your previous response was not in the correct format.
+
+{json_guidelines}
+
+Please provide your response as a single JSON object in a markdown code block."""
+        else:
+            return f"""Remember to format your response correctly:
+
+{json_guidelines}"""
     
     def _get_agent_request_example(self, agent_name: str) -> str:
         """
