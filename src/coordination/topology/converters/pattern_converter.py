@@ -66,27 +66,17 @@ class PatternConfigConverter:
         
         # Add spokes
         spokes = config.params["spokes"]
-        reflexive = config.params.get("reflexive", True)
         parallel_spokes = config.params.get("parallel_spokes", False)
         
         for spoke in spokes:
             topology.add_node(spoke)
             
-            if reflexive:
-                # Use reflexive pattern for request-response
-                topology.add_edge(Edge(
-                    source=hub_name,
-                    target=spoke,
-                    bidirectional=True,
-                    pattern=EdgePattern.REFLEXIVE
-                ))
-            else:
-                # Simple bidirectional edges
-                topology.add_edge(Edge(
-                    source=hub_name,
-                    target=spoke,
-                    bidirectional=True
-                ))
+            # Always use bidirectional edges
+            topology.add_edge(Edge(
+                source=hub_name,
+                target=spoke,
+                bidirectional=True
+            ))
         
         # Add parallel rule if specified
         if parallel_spokes and len(spokes) > 1:

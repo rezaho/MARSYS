@@ -215,7 +215,7 @@ class AgentPool:
         timeout: Optional[float] = None
     ) -> Optional[Any]:
         """
-        Acquire an available instance from the pool.
+        Acquire an available instance from the pool by delegating to agent's own acquire.
         
         Args:
             branch_id: ID of the branch requesting the instance
@@ -235,42 +235,50 @@ class AgentPool:
                 )
                 return allocation.agent_instance
             
-            # Try to get an available instance
-            if self.available_instances:
-                instance_id = self.available_instances.pop()
-                agent_instance = self.instances[instance_id]
+            # Try to acquire from any available instance
+            for i, agent_instance in enumerate(self.instances):
+                # Skip if already allocated (tracked by pool)
+                if i not in self.available_instances:
+                    continue
                 
-                # Create allocation record
-                allocation = InstanceAllocation(
-                    instance_id=instance_id,
-                    agent_instance=agent_instance,
-                    branch_id=branch_id
-                )
-                
-                self.allocated_instances[branch_id] = allocation
-                self.instance_to_branch[instance_id] = branch_id
-                
-                # Update statistics
-                self.total_allocations += 1
-                current_usage = len(self.allocated_instances)
-                if current_usage > self.peak_concurrent_usage:
-                    self.peak_concurrent_usage = current_usage
-                
-                wait_time = time.time() - start_time
-                self.total_wait_time += wait_time
-                
-                logger.info(
-                    f"Allocated instance {instance_id} from pool '{self.base_name}' "
-                    f"to branch '{branch_id}' ({current_usage}/{self.num_instances} in use)"
-                )
-                
-                return agent_instance
-            else:
-                logger.warning(
-                    f"No available instances in pool '{self.base_name}' "
-                    f"({len(self.allocated_instances)}/{self.num_instances} in use)"
-                )
-                return None
+                # Delegate to agent's own acquire method
+                if hasattr(agent_instance, 'acquire_instance'):
+                    acquired = agent_instance.acquire_instance(branch_id)
+                    if acquired:
+                        # Remove from available set
+                        self.available_instances.remove(i)
+                        
+                        # Create allocation record
+                        allocation = InstanceAllocation(
+                            instance_id=i,
+                            agent_instance=agent_instance,
+                            branch_id=branch_id
+                        )
+                        
+                        self.allocated_instances[branch_id] = allocation
+                        self.instance_to_branch[i] = branch_id
+                        
+                        # Update statistics
+                        self.total_allocations += 1
+                        current_usage = len(self.allocated_instances)
+                        if current_usage > self.peak_concurrent_usage:
+                            self.peak_concurrent_usage = current_usage
+                        
+                        wait_time = time.time() - start_time
+                        self.total_wait_time += wait_time
+                        
+                        logger.info(
+                            f"Allocated instance {i} from pool '{self.base_name}' "
+                            f"to branch '{branch_id}' ({current_usage}/{self.num_instances} in use)"
+                        )
+                        
+                        return agent_instance
+            
+            logger.warning(
+                f"No available instances in pool '{self.base_name}' "
+                f"({len(self.allocated_instances)}/{self.num_instances} in use)"
+            )
+            return None
     
     async def acquire_instance_async(
         self,
@@ -279,7 +287,10 @@ class AgentPool:
         retry_interval: float = 0.5
     ) -> Optional[Any]:
         """
-        Acquire an instance asynchronously, waiting if necessary.
+        Acquire an instance asynchronously by delegating to agent's own acquire method.
+        
+        This method tries each agent instance in the pool, delegating to their
+        individual acquire_instance_async methods which handle queueing internally.
         
         Args:
             branch_id: ID of the branch requesting the instance
@@ -290,14 +301,62 @@ class AgentPool:
             Agent instance if acquired within timeout, None otherwise
         """
         start_time = time.time()
+        remaining_timeout = timeout
         
-        while time.time() - start_time < timeout:
-            instance = self.acquire_instance(branch_id)
-            if instance:
-                return instance
+        # Try to acquire from each instance using their own acquire methods
+        for agent in self.instances:
+            if hasattr(agent, 'acquire_instance_async'):
+                # Delegate to agent's own async acquire (which handles queueing)
+                instance = await agent.acquire_instance_async(branch_id, remaining_timeout)
+                if instance:
+                    # Track which instance was allocated
+                    with self._lock:
+                        for i, inst in enumerate(self.instances):
+                            if inst is instance:
+                                self.allocated_instances[branch_id] = InstanceAllocation(
+                                    instance_id=i,
+                                    agent_instance=instance,
+                                    branch_id=branch_id
+                                )
+                                self.instance_to_branch[i] = branch_id
+                                if i in self.available_instances:
+                                    self.available_instances.remove(i)
+                                break
+                        
+                        # Update statistics
+                        self.total_allocations += 1
+                        current_usage = len(self.allocated_instances)
+                        if current_usage > self.peak_concurrent_usage:
+                            self.peak_concurrent_usage = current_usage
+                    
+                    logger.info(
+                        f"Allocated instance from pool '{self.base_name}' to branch '{branch_id}' "
+                        f"({len(self.allocated_instances)}/{self.num_instances} in use)"
+                    )
+                    return instance
+            else:
+                # Fallback to sync acquire if agent doesn't have async method
+                instance = agent.acquire_instance(branch_id) if hasattr(agent, 'acquire_instance') else None
+                if instance:
+                    with self._lock:
+                        for i, inst in enumerate(self.instances):
+                            if inst is instance:
+                                self.allocated_instances[branch_id] = InstanceAllocation(
+                                    instance_id=i,
+                                    agent_instance=instance,
+                                    branch_id=branch_id
+                                )
+                                self.instance_to_branch[i] = branch_id
+                                if i in self.available_instances:
+                                    self.available_instances.remove(i)
+                                break
+                        self.total_allocations += 1
+                    return instance
             
-            # Wait before retrying
-            await asyncio.sleep(retry_interval)
+            # Update remaining timeout
+            remaining_timeout = timeout - (time.time() - start_time)
+            if remaining_timeout <= 0:
+                break
         
         logger.warning(
             f"Timeout waiting for instance from pool '{self.base_name}' "
@@ -307,7 +366,7 @@ class AgentPool:
     
     def release_instance(self, branch_id: str) -> bool:
         """
-        Release an instance back to the pool.
+        Release an instance back to the pool by delegating to agent's own release method.
         
         Args:
             branch_id: ID of the branch releasing the instance
@@ -322,12 +381,24 @@ class AgentPool:
                 )
                 return False
             
-            allocation = self.allocated_instances.pop(branch_id)
+            allocation = self.allocated_instances[branch_id]
+            agent_instance = allocation.agent_instance
             instance_id = allocation.instance_id
             
-            # Return instance to available pool
+            # Delegate release to the agent's own method
+            if hasattr(agent_instance, 'release_instance'):
+                success = agent_instance.release_instance(branch_id)
+                if not success:
+                    logger.error(
+                        f"Agent instance failed to release for branch '{branch_id}' in pool '{self.base_name}'"
+                    )
+                    return False
+            
+            # Clean up pool tracking
+            self.allocated_instances.pop(branch_id)
             self.available_instances.add(instance_id)
-            del self.instance_to_branch[instance_id]
+            if instance_id in self.instance_to_branch:
+                del self.instance_to_branch[instance_id]
             
             # Update statistics
             self.total_releases += 1

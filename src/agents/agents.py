@@ -120,6 +120,9 @@ class BaseAgent(ABC):
         name: Unique name of the agent instance within the registry.
     """
 
+    # Maximum recursion depth for queue processing
+    MAX_QUEUE_RECURSION = 100
+
     # ------------------------------------------------------------------
     # Helper: drop duplicate JSON-schema instructions from descriptions
     # ------------------------------------------------------------------
@@ -249,13 +252,20 @@ class BaseAgent(ABC):
         self._context_selector = ContextSelector(self.name)
 
         # Add context selection tools
-        self._add_context_selection_tools()
+        # self._add_context_selection_tools()
 
         # Initialize agent state (including persistent memory if needed)
         self._initialize_agent()
         
         # Topology constraints
         self._can_return_final_response = False  # Default to False, require explicit permission
+
+        # Resource management for unified acquisition
+        self._allocated_to_branch: Optional[str] = None
+        self._allocation_lock = asyncio.Lock()
+        self._acquisition_lock = asyncio.Lock()  # Lock for thread-safe acquisition
+        self._wait_queue: asyncio.Queue = asyncio.Queue()
+        self._allocation_stats = {"total_acquisitions": 0, "total_releases": 0, "total_wait_time": 0.0}
 
     def __del__(self) -> None:
         """Safely unregister the agent, even during interpreter shutdown."""
@@ -1307,9 +1317,209 @@ Example for `final_response`:
                         f"Loaded persistent memory for agent '{self.name}' from {self._memory_storage_path}"
                     )
                 except Exception as e:
-                    self.logger.warning(
-                        f"Failed to load persistent memory for agent '{self.name}': {e}"
-                    )
+                    self.logger.warning(f"Failed to load persistent memory for agent '{self.name}': {e}")
+
+    # ============== Resource Management Methods for Unified Acquisition ==============
+
+    def acquire_instance(self, branch_id: str) -> Optional["BaseAgent"]:
+        """
+        Synchronous acquire - returns self if available, None if busy.
+
+        Args:
+            branch_id: ID of the branch requesting this agent
+
+        Returns:
+            Self if available, None if already allocated to another branch
+        """
+        if self._allocated_to_branch is None:
+            self._allocated_to_branch = branch_id
+            self._allocation_stats["total_acquisitions"] += 1
+            self.logger.debug(f"Agent '{self.name}' acquired by branch '{branch_id}'")
+            return self
+        elif self._allocated_to_branch == branch_id:
+            # Same branch requesting again (idempotent)
+            self.logger.debug(f"Agent '{self.name}' already allocated to branch '{branch_id}'")
+            return self
+        else:
+            # Already allocated to another branch
+            self.logger.debug(f"Agent '{self.name}' is busy (allocated to '{self._allocated_to_branch}'), " f"branch '{branch_id}' must wait")
+            return None
+
+    async def acquire_instance_async(self, branch_id: str, timeout: float = 30.0) -> Optional["BaseAgent"]:
+        """
+        Asynchronously acquire the agent, waiting if necessary.
+
+        This provides queueing behavior for single agents, making them behave
+        like pools with size=1.
+
+        Args:
+            branch_id: ID of the branch requesting this agent
+            timeout: Maximum time to wait for the agent to become available
+
+        Returns:
+            Self if acquired within timeout, None otherwise
+        """
+        start_time = time.time()
+
+        # Thread-safe acquisition with atomic queue operations
+        async with self._acquisition_lock:
+            # Try synchronous acquire first
+            instance = self.acquire_instance(branch_id)
+            if instance:
+                return instance
+
+            # Queue atomically with the acquisition check
+            wait_future: asyncio.Future = asyncio.Future()
+            await self._wait_queue.put((branch_id, wait_future))
+
+        self.logger.info(f"Branch '{branch_id}' queued for agent '{self.name}' " f"(queue size: {self._wait_queue.qsize()})")
+
+        try:
+            # Wait for our turn with timeout
+            instance = await asyncio.wait_for(wait_future, timeout=timeout)
+
+            wait_time = time.time() - start_time
+            self._allocation_stats["total_wait_time"] += wait_time
+            self.logger.info(f"Branch '{branch_id}' acquired agent '{self.name}' " f"after {wait_time:.2f}s wait")
+            return instance
+
+        except asyncio.TimeoutError:
+            self.logger.warning(f"Timeout waiting for agent '{self.name}' " f"for branch '{branch_id}' after {timeout}s")
+            # Note: Ideally we'd remove from queue, but the branch will be skipped when its turn comes
+            return None
+
+    def release_instance(self, branch_id: str) -> bool:
+        """
+        Release the agent back to available state.
+
+        Args:
+            branch_id: ID of the branch releasing this agent
+
+        Returns:
+            True if released successfully, False if branch didn't have the agent
+        """
+        if self._allocated_to_branch == branch_id:
+            self._allocated_to_branch = None
+            self._allocation_stats["total_releases"] += 1
+
+            self.logger.info(f"Agent '{self.name}' released by branch '{branch_id}'")
+
+            # Process wait queue asynchronously (safely)
+            try:
+                loop = asyncio.get_running_loop()
+                loop.create_task(self._process_wait_queue())
+            except RuntimeError:
+                # No event loop running, can't process queue async
+                self.logger.debug("No event loop available for async queue processing")
+
+            return True
+        else:
+            self.logger.warning(f"Branch '{branch_id}' tried to release agent '{self.name}' " f"but doesn't have it allocated (allocated to: {self._allocated_to_branch})")
+            return False
+
+    async def _process_wait_queue(self, depth: int = 0) -> None:
+        """Process the next branch in the wait queue with recursion limit."""
+        # Check recursion depth limit
+        if depth >= self.MAX_QUEUE_RECURSION or self._wait_queue.empty():
+            if depth >= self.MAX_QUEUE_RECURSION:
+                self.logger.warning(f"Queue processing recursion limit reached ({self.MAX_QUEUE_RECURSION})")
+            return
+
+        try:
+            # Get next waiter
+            next_branch_id, future = await self._wait_queue.get()
+
+            # Check if future is still active (not timed out)
+            if not future.done():
+                # Allocate to this branch
+                self._allocated_to_branch = next_branch_id
+                self._allocation_stats["total_acquisitions"] += 1
+
+                # Fulfill the future with self
+                future.set_result(self)
+
+                self.logger.info(f"Agent '{self.name}' allocated to waiting branch '{next_branch_id}' " f"(remaining queue: {self._wait_queue.qsize()})")
+            else:
+                # This waiter timed out, try the next one with incremented depth
+                await self._process_wait_queue(depth + 1)
+
+        except asyncio.QueueEmpty:
+            pass
+        except Exception as e:
+            self.logger.error(f"Error processing wait queue for agent '{self.name}': {e}")
+
+    def get_available_count(self) -> int:
+        """
+        Get number of available instances (0 or 1 for single agents).
+
+        Returns:
+            0 if allocated, 1 if available
+        """
+        return 0 if self._allocated_to_branch else 1
+
+    def get_instance_for_branch(self, branch_id: str) -> Optional["BaseAgent"]:
+        """
+        Get the instance if allocated to this branch.
+
+        Args:
+            branch_id: ID of the branch
+
+        Returns:
+            Self if allocated to this branch, None otherwise
+        """
+        if self._allocated_to_branch == branch_id:
+            return self
+        return None
+
+    def get_allocation_stats(self) -> Dict[str, Any]:
+        """
+        Get resource allocation statistics.
+
+        Returns:
+            Dictionary with allocation statistics
+        """
+        avg_wait_time = self._allocation_stats["total_wait_time"] / self._allocation_stats["total_acquisitions"] if self._allocation_stats["total_acquisitions"] > 0 else 0.0
+
+        return {
+            "agent_name": self.name,
+            "allocated_to": self._allocated_to_branch,
+            "queue_size": self._wait_queue.qsize(),
+            "total_acquisitions": self._allocation_stats["total_acquisitions"],
+            "total_releases": self._allocation_stats["total_releases"],
+            "average_wait_time": avg_wait_time,
+        }
+
+    # ============== End Resource Management Methods ==============
+
+    def _safe_json_serialize(self, data: Any) -> str:
+        """
+        Safely serialize data to JSON, handling Pydantic models and AgentInvocation objects.
+
+        Args:
+            data: Data to serialize
+
+        Returns:
+            JSON string representation of the data
+        """
+
+        def convert(obj):
+            # Handle Pydantic models
+            if hasattr(obj, "model_dump"):
+                return obj.model_dump()
+            # Handle AgentInvocation or other objects with to_request_data
+            elif hasattr(obj, "to_request_data"):
+                return obj.to_request_data()
+            # Handle lists and tuples
+            elif isinstance(obj, (list, tuple)):
+                return [convert(item) for item in obj]
+            # Handle dictionaries
+            elif isinstance(obj, dict):
+                return {k: convert(v) for k, v in obj.items()}
+            # Return as-is for basic types
+            return obj
+
+        clean_data = convert(data)
+        return json.dumps(clean_data, indent=2)
 
     def _prepare_messages_for_llm(
         self,
@@ -1615,6 +1825,19 @@ Example for `final_response`:
             rebuild_system=should_rebuild_system,
             override_system_prompt=format_instructions
         )
+        
+        # Extract steering prompt from context
+        steering_prompt = context.get("steering_prompt")
+        
+        # Inject steering as last user message if provided
+        if steering_prompt:
+            messages_with_steering = prepared_messages.copy()
+            messages_with_steering.append({
+                "role": "user",
+                "content": steering_prompt
+            })
+            self.logger.debug(f"Injected steering prompt for {self.name}")
+            prepared_messages = messages_with_steering
 
         # Extract model kwargs for logging
         model_kwargs = context.get("model_kwargs", {})
@@ -2029,10 +2252,10 @@ Example for `final_response`:
         # Import here to avoid circular imports
         import uuid
         from ..coordination import Orchestra
-        from .registry import AgentRegistry
-        from .utils import RequestContext, LogLevel
         from ..utils.monitoring import default_progress_monitor
-        
+        from .registry import AgentRegistry
+        from .utils import LogLevel, RequestContext
+
         # Validate that agent has allowed_peers
         if not self._allowed_peers_init:
             raise ValueError(

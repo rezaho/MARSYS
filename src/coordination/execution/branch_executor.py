@@ -12,30 +12,35 @@ import asyncio
 import json
 import logging
 import time
-from dataclasses import dataclass, field
-from typing import Any, Dict, List, Optional, Set, Tuple, TYPE_CHECKING
 from collections import defaultdict
+from dataclasses import dataclass, field
+from typing import TYPE_CHECKING, Any, Dict, List, Optional, Set, Tuple
 
 from ...agents.registry import AgentRegistry
 
 if TYPE_CHECKING:
-    from .step_executor import StepExecutor
     from ..routing.router import Router
     from ..topology.graph import TopologyGraph
+    from .step_executor import StepExecutor
+
 from ..branches.types import (
-    ExecutionBranch,
-    BranchType,
-    BranchStatus,
-    BranchResult,
-    StepResult,
-    ConversationPattern,
-    CompletionCondition,
     AgentDecidedCompletion,
-    MaxStepsCompletion,
+    BranchResult,
+    BranchStatus,
+    BranchType,
+    CompletionCondition,
+    ConversationPattern,
     ConversationTurnsCompletion,
+    ExecutionBranch,
+    MaxStepsCompletion,
+    StepResult,
 )
-from ..validation.response_validator import ValidationProcessor, ActionType, ValidationResult
-from ..rules.rules_engine import RulesEngine, RuleContext, RuleType
+from ..rules.rules_engine import RuleContext, RulesEngine, RuleType
+from ..validation.response_validator import (
+    ActionType,
+    ValidationProcessor,
+    ValidationResult,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -130,15 +135,7 @@ class BranchExecutor:
         # Get agents that can return final response
         agents_with_user_access = self.topology_graph.get_agents_with_user_access()
         
-        # NEW: Check for agents in reflexive edges (they can also return final response)
-        agents_in_reflexive_edges = set()
-        for edge in self.topology_graph.edges:
-            if edge.metadata.get("reflexive") or edge.metadata.get("pattern") == "boomerang":
-                # Target of reflexive edge can return final response
-                agents_in_reflexive_edges.add(edge.target)
-        
         logger.info(f"Agents with User access: {agents_with_user_access}")
-        logger.info(f"Agents in reflexive edges: {agents_in_reflexive_edges}")
         
         # Update each agent in the branch
         for agent_name in branch.topology.agents:
@@ -147,22 +144,15 @@ class BranchExecutor:
                 continue
             agent = self.agent_registry.get(agent_name)
             if agent and hasattr(agent, 'set_topology_constraints'):
-                # Agent can return final if connected to User OR is target of reflexive edge
-                can_return_final = (
-                    agent_name in agents_with_user_access or 
-                    agent_name in agents_in_reflexive_edges
-                )
+                # Agent can return final if connected to User
+                can_return_final = agent_name in agents_with_user_access
                 agent.set_topology_constraints({
                     "can_return_final_response": can_return_final
                 })
                 logger.info(f"Set constraints for {agent_name}: can_return_final={can_return_final}")
             else:
                 logger.warning(f"Agent {agent_name} not found or doesn't support constraints")
-    
-    def _is_reflexive_branch(self, branch: ExecutionBranch) -> bool:
-        """Check if this branch was created from a reflexive edge."""
-        return branch.metadata.get("is_reflexive", False)
-    
+
     async def execute_branch(
         self,
         branch: ExecutionBranch,
@@ -268,7 +258,7 @@ class BranchExecutor:
     ) -> BranchResult:
         """
         Execute a simple sequential branch.
-        
+        ium,  
         This handles linear agent execution with potential tool usage.
         """
         logger.debug(f"Executing simple branch with agents: {branch.topology.agents}")
@@ -338,50 +328,16 @@ class BranchExecutor:
             
             # Check if this is a final response
             if step_result.action_type == "final_response" and not step_result.next_agent:
-                # Only end if there's no next_agent override from rules
                 # Extract the actual content from parsed response if available
                 final_content = step_result.response
                 if step_result.parsed_response and isinstance(step_result.parsed_response, dict):
                     # Check for final_response field in parsed data
                     if "final_response" in step_result.parsed_response:
+                        # Debug logging when agent returns final_response
+                        logger.debug(f"Agent {current_agent} returning final_response, checking reflexive pattern...")
                         final_content = step_result.parsed_response["final_response"]
                     elif "content" in step_result.parsed_response:
                         final_content = step_result.parsed_response["content"]
-                
-                # CHECK FOR REFLEXIVE RETURN BEFORE COMPLETING
-                if f"reflexive_caller_{current_agent}" in branch.metadata:
-                    # Handle reflexive return - continue execution with caller
-                    caller = branch.metadata[f"reflexive_caller_{current_agent}"]
-                    del branch.metadata[f"reflexive_caller_{current_agent}"]
-                    
-                    next_agent = caller
-                    current_request = final_content
-                    
-                    logger.info(f"Reflexive return: {current_agent} completed with final_response, returning to {caller}")
-                    
-                    # Mark the last step differently so _should_complete won't trigger
-                    if execution_trace:
-                        execution_trace[-1].action_type = "reflexive_return"
-                    
-                    # Update context and continue
-                    context.metadata["from_agent"] = current_agent
-                    current_agent = next_agent
-                    branch.topology.current_agent = current_agent
-                    continue  # Continue loop instead of returning
-                
-                # Check if this is a reflexive edge - need to route back to parent
-                if self._is_reflexive_branch(branch):
-                    logger.info(f"Reflexive branch completing - routing response back to parent")
-                    # The branch spawner will handle routing this back
-                    return BranchResult(
-                        branch_id=branch.id,
-                        success=True,
-                        final_response=final_content,
-                        total_steps=branch.state.current_step,
-                        execution_trace=execution_trace,
-                        branch_memory=context.branch_memory,
-                        metadata={"reflexive_completion": True}
-                    )
                 
                 return BranchResult(
                     branch_id=branch.id,
@@ -735,10 +691,8 @@ class BranchExecutor:
                     active_branches=1,  # TODO: Get from branch spawner
                     metadata={
                         "request": request,
-                        "from_agent": context.metadata.get("from_agent"),
                         "conversation_context": conversation_context,
-                        "is_reflexive_call": context.metadata.get("is_reflexive_call", False),
-                        "branch_type": branch.type.value
+                        "branch_type": branch.type.value,
                     },
                     branch_metadata=branch.metadata  # For rule state persistence
                 )
@@ -807,13 +761,16 @@ class BranchExecutor:
                     context.add_memory(agent_name, memory_update)
             else:
                 # Fallback for backward compatibility
-                context.add_memory(agent_name, {
-                    "role": "assistant",
-                    "content": result.response,
-                    "name": agent_name,
-                    "timestamp": time.time()
-                })
-            
+                context.add_memory(
+                    agent_name,
+                    {
+                        "role": "assistant",
+                        "content": result.response,
+                        "name": agent_name,
+                        "timestamp": time.time(),
+                    },
+                )
+
             # Validate response if validator available
             # Skip validation if this is a tool continuation (tools already executed)
             if self.response_validator and result.success and not (result.tool_results and result.metadata.get('tool_continuation')):
@@ -887,10 +844,8 @@ class BranchExecutor:
                     metadata={
                         "action_type": result.action_type,
                         "current_agent": agent_name,
-                        "from_agent": context.metadata.get("from_agent"),
                         "target_agent": result.next_agent,
-                        "is_reflexive_call": context.metadata.get("is_reflexive_call", False),
-                        "branch_type": branch.type.value
+                        "branch_type": branch.type.value,
                     },
                     branch_metadata=branch.metadata  # Important for AlternatingAgentRule
                 )
@@ -924,11 +879,6 @@ class BranchExecutor:
                             # Log state changes for debugging
                             logger.debug(f"Rule {rule_result.rule_name} updated branch state: {rule_result.modifications['update_state']}")
                         
-                        # Handle clear reflexive flag
-                        if rule_result.modifications.get("clear_reflexive"):
-                            context.metadata.pop("is_reflexive_call", None)
-                            context.metadata.pop("from_agent", None)
-                            logger.info(f"Rule {rule_result.rule_name} cleared reflexive metadata")
                         
                         # Handle forced completion
                         if rule_result.modifications.get("force_completion"):
@@ -952,9 +902,7 @@ class BranchExecutor:
                         "response": result.response,
                         "action_type": result.action_type,
                         "next_agent": result.next_agent,
-                        "from_agent": context.metadata.get("from_agent"),
-                        "is_reflexive_call": context.metadata.get("is_reflexive_call", False),
-                        "branch_type": branch.type.value
+                        "branch_type": branch.type.value,
                     },
                     branch_metadata=branch.metadata
                 )
@@ -1229,7 +1177,13 @@ class BranchExecutor:
         
         # CASE 4: Normal continuation
         base_request = self._get_base_request(step_result)
-        
+
+        # Validation logging for debugging
+        if isinstance(base_request, list):
+            logger.warning(f"Base request is a list, might be malformed: {base_request}")
+        elif isinstance(base_request, dict) and "agent_name" in base_request:
+            logger.warning(f"Base request looks like an invocation dict: {base_request}")
+
         # FIX: Check for saved_context instead of context_selection
         if not hasattr(step_result, 'saved_context') or not step_result.saved_context:
             return base_request
@@ -1249,11 +1203,22 @@ class BranchExecutor:
                        step_result.parsed_response.get("final_response") or 
                        step_result.response)
             return step_result.response
-        
-        if (step_result.parsed_response and 
-            "action_input" in step_result.parsed_response):
-            return step_result.parsed_response["action_input"]
-        
+
+        # Handle invoke_agent with invocation array
+        if step_result.parsed_response and "action_input" in step_result.parsed_response:
+
+            action_input = step_result.parsed_response["action_input"]
+
+            # Check if action_input is an invocation array (reflexive case)
+            if isinstance(action_input, list) and len(action_input) > 0:
+                first_item = action_input[0]
+                if isinstance(first_item, dict) and "request" in first_item:
+                    # This is an invocation array - extract the request
+                    return first_item.get("request", "")
+
+            # Normal case - action_input is the direct request
+            return action_input
+
         return step_result.response
     
     def _include_context_in_request(
@@ -1389,8 +1354,8 @@ class BranchExecutor:
         branch.metadata["continuation_state"] = {
             "agent_name": agent_name,
             "context": context,
-            "target_agents": target_agents,
-            "parsed_response": validation.parsed_response
+            "invocations": validation.invocations,  # Store complete invocation data
+            "parsed_response": validation.parsed_response,
         }
         
         # Also store in instance variable for compatibility
@@ -1398,8 +1363,8 @@ class BranchExecutor:
             "agent_name": agent_name,
             "context": context,
             "branch": branch,
-            "target_agents": target_agents,
-            "parsed_response": validation.parsed_response
+            "invocations": validation.invocations,  # Store complete invocation data
+            "parsed_response": validation.parsed_response,
         }
         
         # Set branch to waiting state
@@ -1474,12 +1439,36 @@ class BranchExecutor:
             logger.info(f"Parent resuming to convergence point '{current_agent}' with {conv_data['source_count']} aggregated results")
         else:
             # Create a synthetic request with child results
-            resume_request = {
-                "original_request": continuation.get("parsed_response", {}),
-                "child_results": aggregated_results,
-                "resumed_from_parallel": True
-            }
-        
+            # Extract request data from invocations if present
+            original_request = continuation.get("parsed_response", {})
+
+            # Convert AgentInvocation objects to clean request data
+            if "invocations" in original_request and original_request["invocations"]:
+                # Extract request data from AgentInvocation objects
+                invocation_summary = []
+                for inv in original_request["invocations"]:
+                    if hasattr(inv, "agent_name"):  # It's an AgentInvocation object
+                        invocation_summary.append({"agent": inv.agent_name, "request": inv.request})
+                    else:  # It's already a dict (shouldn't happen with our fix)
+                        invocation_summary.append(
+                            {
+                                "agent": inv.get("agent_name", "unknown"),
+                                "request": inv.get("request", {}),
+                            }
+                        )
+
+                resume_request = {
+                    "original_invocations": invocation_summary,
+                    "child_results": aggregated_results,
+                    "resumed_from_parallel": True,
+                }
+            else:
+                # No invocation data, just pass child results
+                resume_request = {
+                    "child_results": aggregated_results,
+                    "resumed_from_parallel": True,
+                }
+
         # Continue execution from where we left off
         try:
             # Execute the next step after aggregation
@@ -1607,7 +1596,10 @@ class BranchExecutor:
                 branch.topology.allowed_transitions,
                 branch.id  # Pass branch ID for convergence checking
             )
-            
+
+            # Debug log the agent transition
+            logger.debug(f"Agent transition: {current_agent} → {next_agent or 'END'} in branch {branch.id}")
+
             if not next_agent:
                 # Check if stopped at convergence
                 convergence_target = getattr(step_result, 'convergence_target', None)
@@ -1655,13 +1647,24 @@ class BranchExecutor:
             # Prepare request for next agent
             current_request = self._prepare_next_request(step_result, context)
             logger.info(f"Transitioning from {current_agent} to {next_agent} with request: {current_request}")
-            
-            # Update context metadata for next agent (important for reflexive rules)
-            context.metadata["from_agent"] = current_agent
-            
+
+            # Context metadata update removed - from_agent not needed anymore
+
             current_agent = next_agent
             branch.topology.current_agent = current_agent
-    
+
+        # If we exit the loop due to completion condition (e.g., max steps)
+        # return the current state as the result
+        return BranchResult(
+            branch_id=branch.id,
+            success=True,
+            final_response=execution_trace[-1].response if execution_trace else None,
+            total_steps=branch.state.current_step,
+            execution_trace=execution_trace,
+            branch_memory=context.branch_memory,
+            metadata={"completion_reason": "max_steps_reached"},
+        )
+
     async def _continue_conversation_branch(
         self,
         branch: ExecutionBranch,
@@ -1683,18 +1686,15 @@ class BranchExecutor:
         """
         if not hasattr(self, 'branch_spawner') or not self.branch_spawner:
             return
-        
-        # Get all single agents allocated to this branch
-        agents_to_release = []
-        async with self.branch_spawner.single_agent_lock:
-            agents_to_release = [
-                agent_name 
-                for agent_name, allocated_branch_id in self.branch_spawner.single_agent_allocations.items()
-                if allocated_branch_id == branch_id
-            ]
-        
-        # Release them
-        for agent_name in agents_to_release:
-            released = await self.branch_spawner._release_single_agent(agent_name, branch_id)
+
+        # Check if branch has allocation and get agent name for logging
+        agent_name = None
+        async with self.branch_spawner.resource_lock:
+            if branch_id in self.branch_spawner.agent_allocations:
+                agent_name = self.branch_spawner.agent_allocations[branch_id].get("agent_name", "unknown")
+
+        # Release outside the lock since _release_agent_for_branch modifies the dict
+        if agent_name:
+            released = self.branch_spawner._release_agent_for_branch(branch_id)
             if released:
-                logger.debug(f"Released single agent '{agent_name}' from completed branch '{branch_id}'")
+                logger.debug(f"Released agent '{agent_name}' from completed branch '{branch_id}'")
