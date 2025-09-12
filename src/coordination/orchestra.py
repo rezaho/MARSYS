@@ -254,6 +254,7 @@ class Orchestra:
         topology: Any,  # Accepts Topology, PatternConfig, or dict
         agent_registry: Optional[AgentRegistry] = None,
         context: Optional[Dict[str, Any]] = None,
+        execution_config: Optional['ExecutionConfig'] = None,  # NEW
         max_steps: int = 100,
         state_manager: Optional[StateManager] = None
     ) -> OrchestraResult:
@@ -265,6 +266,7 @@ class Orchestra:
             topology: Definition of agent topology and rules
             agent_registry: Optional registry (uses global if not provided)
             context: Optional execution context
+            execution_config: Optional configuration for execution behavior
             max_steps: Maximum steps before timeout
             state_manager: Optional state manager for persistence
             
@@ -273,6 +275,11 @@ class Orchestra:
         """
         if agent_registry is None:
             agent_registry = AgentRegistry
+        
+        # Add execution config to context so it flows through the system
+        context = context or {}
+        if execution_config:
+            context['execution_config'] = execution_config
         
         orchestra = cls(agent_registry, rule_factory_config=None, state_manager=state_manager)
         return await orchestra.execute(task, topology, context, max_steps)
@@ -544,11 +551,18 @@ class Orchestra:
                                         break
                                 
                                 if parent_branch:
-                                    # Resume parent branch with aggregated results
+                                    # Get properly formatted child results
+                                    child_results = aggregated_context.get("child_results")
+                                    if isinstance(child_results, dict) and "responses" in child_results:
+                                        child_results = child_results["responses"]
+                                    
+                                    logger.info(f"Resuming parent branch '{parent_branch_id}' with {len(child_results) if child_results else 0} child results")
+                                    
+                                    # Resume parent branch with child results
                                     resume_task = asyncio.create_task(
                                         self.branch_executor.execute_branch(
                                             parent_branch,
-                                            aggregated_context.get('child_results', {}),  # Pass aggregated results
+                                            child_results,  # Pass formatted array
                                             context,
                                             resume_with_results=aggregated_context
                                         )
