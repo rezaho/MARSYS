@@ -69,8 +69,8 @@ def parse_node(node: Union[str, Node, Any]) -> Node:
         if isinstance(node_type, str):
             node_type = NodeType(node_type.lower())
         
-        # Support explicit opt-out via dictionary
-        is_convergence = node.get("is_convergence_point", True)  # Default to True
+        # Support explicit opt-in via dictionary
+        is_convergence = node.get("is_convergence_point", False)  # Default to False
         
         return Node(
             name=name,

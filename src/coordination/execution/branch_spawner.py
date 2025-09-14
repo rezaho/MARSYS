@@ -119,6 +119,33 @@ class ConvergenceTracker:
 
 
 @dataclass
+class AggregatedContext:
+    """
+    Standardized structure for aggregated results from branches.
+    Used for both legacy convergence and parent-child aggregation.
+    """
+    responses: List[Dict[str, Any]]  # Array of {agent_name, response} dicts
+    requests: List[Dict[str, Any]]   # Array of {agent_name, request} dicts (last messages only)
+    metadata: Dict[str, Any] = field(default_factory=dict)
+
+    # Optional fields for specific use cases
+    parent_branch_id: Optional[str] = None
+    resume_parent: bool = False
+    required_agents: Optional[List[str]] = None
+
+    def to_dict(self) -> Dict[str, Any]:
+        """Convert to dict for backward compatibility if needed."""
+        return {
+            "responses": self.responses,
+            "requests": self.requests,
+            "metadata": self.metadata,
+            "parent_branch_id": self.parent_branch_id,
+            "resume_parent": self.resume_parent,
+            "required_agents": self.required_agents
+        }
+
+
+@dataclass
 class ParallelInvocationGroup:
     """Tracks a group of branches from a single parallel invocation request."""
     group_id: str
@@ -129,11 +156,20 @@ class ParallelInvocationGroup:
     branch_ids: List[str]
     completed_branches: Set[str] = field(default_factory=set)
     failed_branches: Set[str] = field(default_factory=set)
-    convergence_points: Set[str] = field(default_factory=set)
     aggregated_results: Dict[str, Any] = field(default_factory=dict)
     created_at: datetime = field(default_factory=datetime.now)
     convergence_triggered: bool = False
     convergence_lock: asyncio.Lock = field(default_factory=asyncio.Lock)
+    
+    # New fields for multi-convergence handling
+    shared_convergence_points: Set[str] = field(default_factory=set)
+    sub_group_convergences: Dict[str, Set[str]] = field(default_factory=dict)
+    convergence_tracking_active: Dict[str, bool] = field(default_factory=dict)
+    branch_convergence_map: Dict[str, str] = field(default_factory=dict)
+    branch_agent_map: Dict[str, str] = field(default_factory=dict)
+    convergence_aggregations: Dict[str, List[Dict]] = field(default_factory=dict)
+    convergence_branches_spawned: Set[str] = field(default_factory=set)
+    parent_should_wait: bool = True
     
     def is_complete(self) -> bool:
         """Check if all branches in the group have completed or failed."""
@@ -153,6 +189,45 @@ class ParallelInvocationGroup:
             return False
         success_ratio = self.get_successful_count() / self.total_branches if self.total_branches > 0 else 0
         return success_ratio >= min_success_ratio
+    
+    def record_branch_convergence(self, branch_id: str, convergence_point: str, result: Dict):
+        """Record that a branch reached a specific convergence point."""
+        self.branch_convergence_map[branch_id] = convergence_point
+        if convergence_point not in self.convergence_aggregations:
+            self.convergence_aggregations[convergence_point] = []
+        self.convergence_aggregations[convergence_point].append(result)
+        
+        if convergence_point not in self.convergence_tracking_active:
+            self.convergence_tracking_active[convergence_point] = True
+            logger.info(f"Convergence tracking activated for '{convergence_point}'")
+    
+    def check_convergence_ready(self, convergence_point: str) -> bool:
+        """Check if a specific convergence point is ready."""
+        if convergence_point in self.sub_group_convergences:
+            # Sub-group: check if all agents in sub-group arrived
+            expected_agents = self.sub_group_convergences[convergence_point]
+            arrived_agents = {
+                self.branch_agent_map[bid]
+                for bid, cp in self.branch_convergence_map.items() 
+                if cp == convergence_point and bid in self.branch_agent_map
+            }
+            return expected_agents == arrived_agents
+        elif convergence_point in self.shared_convergence_points:
+            # Shared: all branches must arrive
+            branches_at_this_point = sum(
+                1 for cp in self.branch_convergence_map.values() 
+                if cp == convergence_point
+            )
+            return branches_at_this_point == self.total_branches
+        return False
+    
+    def get_convergence_groups(self) -> Dict[str, List[str]]:
+        """Group branches by their convergence points."""
+        from collections import defaultdict
+        groups = defaultdict(list)
+        for branch_id, conv_point in self.branch_convergence_map.items():
+            groups[conv_point].append(branch_id)
+        return dict(groups)
 
 
 class DynamicBranchSpawner:
@@ -241,18 +316,27 @@ class DynamicBranchSpawner:
         self._identify_convergence_points()
     
     def _identify_convergence_points(self):
-        """Identify user-marked convergence points from topology."""
+        """Identify convergence points from topology (both static and dynamic)."""
         if not self.graph:
             return
         
-        # Check nodes for convergence point marking
+        # Ensure graph has been analyzed and dynamic points marked
+        if not self.graph.metadata.get("analyzed"):
+            self.graph.analyze()
+        
+        # Collect all convergence points from graph's centralized set
+        self.convergence_points = self.graph.convergence_points.copy()
+        
+        # Also check nodes for any additional explicit convergence point marking
         for node_name, node_data in self.graph.nodes.items():
-            # Check if node has is_convergence_point flag
             if hasattr(node_data, 'is_convergence_point') and node_data.is_convergence_point:
-                self.convergence_points.add(node_name)
+                if node_name not in self.convergence_points:
+                    self.convergence_points.add(node_name)
                 # Initialize tracking for this convergence point
                 self.instance_tracking[node_name] = {}
-                logger.info(f"Registered convergence point: {node_name}")
+        
+        if self.convergence_points:
+            logger.info(f"Registered {len(self.convergence_points)} convergence points: {self.convergence_points}")
     
     def _should_spawn_divergence(
         self, 
@@ -705,7 +789,7 @@ class DynamicBranchSpawner:
         if parent_branch:
             metadata = parent_branch.metadata.copy() if parent_branch.metadata else {}
             metadata['parent_branch_id'] = parent_branch.id
-            metadata['is_child_branch'] = True
+            # REMOVED: metadata['is_child_branch'] = True - child branches must flow to convergence
             metadata['parent_agent'] = source_agent or parent_branch.topology.current_agent
             if not source_agent:
                 source_agent = parent_branch.topology.current_agent
@@ -715,8 +799,6 @@ class DynamicBranchSpawner:
             metadata['source_agent'] = source_agent
         metadata['initial_request'] = initial_request
         metadata['context'] = context or {}
-        
-        # CRITICAL: Check for reflexive edges and set metadata
         
         # Add any additional kwargs to metadata
         for key, value in kwargs.items():
@@ -885,13 +967,13 @@ class DynamicBranchSpawner:
                 error=str(e)
             )
     
-    async def check_synchronization_points(self) -> List[Tuple[str, Dict[str, Any]]]:
+    async def check_synchronization_points(self) -> List[Tuple[str, AggregatedContext]]:
         """
         Check if any convergence points are ready to execute.
         Also checks for parent branches waiting for children.
         
         Returns:
-            List of (agent_name, aggregated_context) tuples for agents ready to run
+            List of (agent_name, AggregatedContext) tuples for agents ready to run
         """
         ready_agents = []
         
@@ -918,13 +1000,14 @@ class DynamicBranchSpawner:
                 
                 # Aggregate results from required branches
                 aggregated_context = self._aggregate_branch_results(required_agents)
-                
+
+                # CHANGED: Append dataclass directly, no wrapping
                 ready_agents.append((convergence_agent, aggregated_context))
                 
                 logger.info(f"Convergence point '{convergence_agent}' is ready - "
                           f"all requirements satisfied: {required_agents}")
-        
-        # 2. Check for completed parent branches waiting for children
+
+        # 3. Check for completed parent branches waiting for children
         completed_parents = []
         for parent_id, waiting_children in list(self.waiting_branches.items()):
             logger.debug(f"Checking parent branch '{parent_id}' with {len(waiting_children)} waiting children")
@@ -935,16 +1018,12 @@ class DynamicBranchSpawner:
                     logger.debug(f"Found parent branch '{parent_id}', current_agent: {parent_branch.topology.current_agent}")
                     if parent_branch.topology.current_agent:
                         # Aggregate child results
-                        child_results = self._aggregate_child_results(parent_id)
-                        
-                        # Add to ready list with special context
+                        aggregated_context = self._aggregate_child_results(parent_id)
+
+                        # CHANGED: Append dataclass directly, no extra dict wrapping!
                         ready_agents.append((
                             parent_branch.topology.current_agent,
-                            {
-                                "child_results": child_results,
-                                "parent_branch_id": parent_id,
-                                "resume_parent": True
-                            }
+                            aggregated_context  # Just the dataclass, no wrapper!
                         ))
                         
                         completed_parents.append(parent_id)
@@ -1083,18 +1162,15 @@ class DynamicBranchSpawner:
         logger.info(f"Created convergence branch for '{convergence_node}' with {aggregated_context.get('instance_count', 0)} aggregated inputs")
         return branch
     
-    def _aggregate_branch_results(self, required_agents: Set[str]) -> Dict[str, Any]:
-        """Aggregate results from branches that contained the required agents."""
-        aggregated = {
-            "branch_results": {},
-            "agent_responses": {},
-            "combined_memory": {},
-            "metadata": {
-                "aggregation_time": time.time(),
-                "required_agents": list(required_agents)
-            }
-        }
-        
+    def _aggregate_branch_results(self, required_agents: Set[str]) -> AggregatedContext:
+        """
+        Aggregate results from branches that contained the required agents.
+        Returns standardized AggregatedContext dataclass.
+        """
+        # Collect responses and last requests
+        agent_responses = []
+        agent_requests = []
+
         # Find branches that contained required agents
         for branch_id, result in self.branch_results.items():
             branch = self.branch_info.get(branch_id)
@@ -1104,23 +1180,34 @@ class DynamicBranchSpawner:
             # Check if this branch had any required agents
             branch_agents = set(branch.topology.agents)
             if branch_agents.intersection(required_agents):
-                aggregated["branch_results"][branch_id] = {
-                    "final_response": result.final_response,
-                    "total_steps": result.total_steps,
-                    "agents": list(branch_agents)
-                }
-                
-                # Extract agent-specific responses
-                for step_result in result.execution_trace:
-                    if step_result.agent_name in required_agents:
-                        aggregated["agent_responses"][step_result.agent_name] = step_result.response
-                
-                # Merge memory
-                for agent, memories in result.branch_memory.items():
-                    if agent in required_agents:
-                        aggregated["combined_memory"][agent] = memories
-        
-        return aggregated
+                # Add branch result
+                if result.final_response:
+                    for agent in branch_agents.intersection(required_agents):
+                        agent_responses.append({
+                            "agent_name": agent,
+                            "response": result.final_response,
+                            "branch_id": branch_id
+                        })
+
+                        # Extract last message from this agent
+                        if agent in result.branch_memory and result.branch_memory[agent]:
+                            last_message = result.branch_memory[agent][-1]
+                            agent_requests.append({
+                                "agent_name": agent,
+                                "request": last_message.get('content', '')
+                            })
+
+        # Return standardized dataclass
+        return AggregatedContext(
+            responses=agent_responses,
+            requests=agent_requests,
+            metadata={
+                "aggregation_time": time.time(),
+                "required_agents": list(required_agents)
+            },
+            required_agents=list(required_agents),
+            resume_parent=False  # This is for legacy convergence
+        )
     
     def _track_agent_in_branch(self, agent_name: str, branch_id: str) -> None:
         """Track which branch an agent is in."""
@@ -1342,6 +1429,52 @@ class DynamicBranchSpawner:
         # Default to 0 if resource not found or doesn't have availability method
         return 0
     
+    async def analyze_parallel_invocation(
+        self,
+        parent_agent: str,
+        target_agents: List[str]
+    ) -> Tuple[bool, Set[str], Dict[str, Set[str]]]:
+        """
+        Pre-analyze parallel invocation WITHOUT spawning branches.
+        
+        Returns:
+            (should_parent_wait, shared_convergence_points, sub_group_convergences)
+        """
+        if not self.graph:
+            return True, set(), {}  # Default to waiting
+        
+        # Find convergence points
+        # Only exclude the target agents themselves (they can't converge to themselves)
+        # DO NOT exclude parent - it might be a convergence point!
+        target_set = set(target_agents)
+        shared_conv, sub_conv = self._find_shared_and_subgroup_convergence_points(
+            from_agents=target_set,
+            exclude_agents=target_set  # Only exclude the parallel agents, NOT the parent
+        )
+        
+        # Determine if parent should wait
+        should_wait = True  # Default
+        
+        # Parent must wait if:
+        # 1. It's a convergence point (shared or sub-group)
+        if parent_agent in shared_conv or parent_agent in sub_conv:
+            logger.debug(f"Parent '{parent_agent}' is a convergence point - must wait")
+            should_wait = True
+        # 2. Any child can return to it (even if not formally a convergence point)
+        elif any(self.graph.can_reach(child, parent_agent) for child in target_agents):
+            logger.debug(f"Parent '{parent_agent}' is reachable from children - must wait")
+            should_wait = True
+        # 3. No convergence points found (safety default)
+        elif not shared_conv and not sub_conv:
+            logger.debug(f"No convergence points found - parent must wait (safety)")
+            should_wait = True
+        else:
+            # Parent can complete if convergence happens elsewhere
+            logger.debug(f"Parent '{parent_agent}' can complete - convergence happens downstream")
+            should_wait = False
+        
+        return should_wait, shared_conv, sub_conv
+    
     async def handle_agent_initiated_parallelism(
         self,
         agent_name: str,
@@ -1381,6 +1514,12 @@ class DynamicBranchSpawner:
         target_agents = [inv.agent_name for inv in invocations]
         logger.info(f"Agent '{agent_name}' initiating execution of: {target_agents}")
         
+        # Get pre-analysis from parent branch if available
+        parent_branch = self.branch_info.get(parent_branch_id)
+        pre_analysis = {}
+        if parent_branch and "parallel_analysis" in parent_branch.metadata:
+            pre_analysis = parent_branch.metadata["parallel_analysis"]
+        
         # PHASE 1: Create ALL branches immediately in execution graph
         # This ensures proper convergence detection
         all_branches = []
@@ -1392,15 +1531,23 @@ class DynamicBranchSpawner:
             agent_request = inv.request
             instance_id = inv.instance_id
             
-            # Create child branch
-            child_branch = self._create_child_branch(
-                parent_agent=agent_name,
+            # Use _create_branch, NOT _create_child_branch to avoid is_child_branch
+            child_branch = self._create_branch(
+                branch_type=BranchType.SIMPLE,
                 target_agent=target_agent,
-                parent_branch_id=parent_branch_id,
+                parent_branch=parent_branch,
+                source_agent=agent_name,
                 initial_request=agent_request,
                 context=context,
                 instance_id=instance_id
             )
+            
+            # Override ID for debugging
+            child_branch.id = f"child_{parent_branch_id}_{target_agent}_{uuid.uuid4().hex[:8]}"
+            
+            # Store parent reference WITHOUT is_child_branch
+            child_branch.metadata["parent_branch_id"] = parent_branch_id
+            # DO NOT SET: child_branch.metadata["is_child_branch"] = True
             
             # Store branch info
             self.branch_info[child_branch.id] = child_branch
@@ -1425,7 +1572,7 @@ class DynamicBranchSpawner:
             logger.error("No target agent identified for parallel invocation")
             return []
         
-        # PHASE 2: Create Parallel Invocation Group
+        # PHASE 2: Create Parallel Invocation Group with pre-analyzed convergence info
         group_id = f"parallel_group_{uuid.uuid4().hex[:8]}"
         group = ParallelInvocationGroup(
             group_id=group_id,
@@ -1436,15 +1583,34 @@ class DynamicBranchSpawner:
             branch_ids=[b.id for b in all_branches]
         )
         
-        # Find all convergence points reachable from target agent
-        group.convergence_points = self._find_reachable_convergence_points(agent_name_target)
+        # Use pre-analyzed convergence points if available
+        if pre_analysis:
+            group.parent_should_wait = pre_analysis.get("should_parent_wait", True)
+            group.shared_convergence_points = set(pre_analysis.get("shared_convergence", []))
+            group.sub_group_convergences = {
+                k: set(v) for k, v in pre_analysis.get("sub_group_convergence", {}).items()
+            }
+            logger.info(
+                f"Using pre-analyzed convergence: parent_wait={group.parent_should_wait}, "
+                f"shared={group.shared_convergence_points}, "
+                f"sub_group={list(group.sub_group_convergences.keys())}"
+            )
+        else:
+            # Fallback to legacy convergence finding
+            group.shared_convergence_points = self._find_reachable_convergence_points(agent_name_target)
+            group.parent_should_wait = True  # Default to waiting
+            logger.info(f"Using legacy convergence finding (fallback) - found: {group.shared_convergence_points}")
+        
+        # Track branch-to-agent mapping for convergence tracking
+        for branch in all_branches:
+            group.branch_agent_map[branch.id] = branch.topology.entry_agent
         
         # Register group and map branches to it
         self.parallel_groups[group_id] = group
         for branch_id in group.branch_ids:
             self.branch_to_group[branch_id] = group_id
         
-        logger.info(f"Created parallel group '{group_id}' with {len(all_branches)} branches, convergence points: {group.convergence_points}")
+        logger.info(f"Created parallel group '{group_id}' with {len(all_branches)} branches")
         
         # PHASE 3: Execute using unified batch processing
         all_tasks = await self._execute_branches_in_batches(
@@ -1454,12 +1620,15 @@ class DynamicBranchSpawner:
             context=context
         )
         
-        # Track parent's children and put parent in waiting state if needed
+        # Only add to waiting if parent is actually waiting
         if all_tasks:
             self.parent_child_map[parent_branch_id] = group.branch_ids
-            self.waiting_branches[parent_branch_id] = set(group.branch_ids)
-            logger.info(f"Spawned {len(group.branch_ids)} branches from agent '{agent_name}'")
-            logger.info(f"Parent branch '{parent_branch_id}' waiting for {len(group.branch_ids)} children")
+            
+            if parent_branch and parent_branch.state.status == BranchStatus.WAITING:
+                self.waiting_branches[parent_branch_id] = set(group.branch_ids)
+                logger.info(f"Parent branch '{parent_branch_id}' waiting for {len(group.branch_ids)} children")
+            else:
+                logger.info(f"Parent branch '{parent_branch_id}' completed - not waiting for children")
         
         return all_tasks
     
@@ -1756,35 +1925,22 @@ class DynamicBranchSpawner:
                 self.waiting_branches[parent_branch_id].clear()
                 logger.info(f"Cleared waiting branches for parent '{parent_branch_id}' - ready to resume")
             
-            # FIX 2: Set parent branch to continue to convergence point
-            # COMMENTED OUT: This was causing parent agent to be skipped after parallel execution
-            # The parent should resume at its original current_agent, not jump to convergence
-            # if group.convergence_points and parent_branch:
-            #     # Prepare the parent to continue to convergence
-            #     convergence_point = list(group.convergence_points)[0]
-            #     
-            #     # Store convergence data in parent metadata
-            #     parent_branch.metadata['convergence_data'] = {
-            #         'target': convergence_point,
-            #         'aggregated_requests': aggregated_data,
-            #         'source_count': len(aggregated_data),
-            #         'is_convergence': True
-            #     }
-            #     
-            #     # Update parent's current agent to convergence point
-            #     parent_branch.topology.current_agent = convergence_point
-            #     logger.info(f"Parent branch will continue to convergence point: {convergence_point}")
+            # FIX 2: Parent branch continues naturally - no forced jump to convergence
+            # The parent should resume at its original current_agent and flow naturally
         
         # If there are convergence points, we DON'T execute them directly
         # The parent branch will flow to them naturally after resuming
-        if group.convergence_points:
-            logger.info(f"Parent branch will flow to convergence points: {group.convergence_points}")
+        if group.shared_convergence_points or group.sub_group_convergences:
+            all_convergence = group.shared_convergence_points.union(
+                *group.sub_group_convergences.values() if group.sub_group_convergences else []
+            )
+            logger.info(f"Parent branch will flow to convergence points: {all_convergence}")
         
         # Mark group as completed for cleanup
         self.completed_groups.add(group.group_id)
     
     def _find_reachable_convergence_points(self, from_agent: str) -> Set[str]:
-        """Find all convergence points reachable from an agent."""
+        """Find all convergence points reachable from an agent (legacy method)."""
         convergence_points = set()
         
         if not self.graph:
@@ -1798,6 +1954,119 @@ class DynamicBranchSpawner:
                     convergence_points.add(node_name)
         
         return convergence_points
+    
+    def _find_shared_and_subgroup_convergence_points(
+        self, 
+        from_agents: Set[str], 
+        exclude_agents: Set[str] = None
+    ) -> Tuple[Set[str], Dict[str, Set[str]]]:
+        """
+        Find SHARED convergence points (reachable from ALL agents) and sub-group convergences.
+        
+        Returns:
+            (shared_convergence_points, sub_group_convergences)
+            where sub_group_convergences = {convergence_point: set(agents_that_converge_there)}
+        """
+        if not self.graph:
+            return set(), {}
+        
+        from_agents = from_agents if isinstance(from_agents, set) else {from_agents}
+        exclude_agents = exclude_agents or set()
+        
+        logger.debug(f"Finding convergence points from agents: {from_agents}, excluding: {exclude_agents}")
+        
+        from collections import deque
+        
+        # Step 1: Find all convergence points each agent can reach
+        agent_reachable = {}
+        
+        for agent in from_agents:
+            reachable = set()
+            # BFS from this agent to find all reachable convergence points
+            queue = deque([agent])
+            visited = {agent}
+            
+            while queue:
+                current = queue.popleft()
+                
+                # Check if current is a convergence point
+                if current != agent and current not in exclude_agents:
+                    node = self.graph.nodes.get(current)
+                    # Simply check the node's convergence flag (includes both static and dynamic)
+                    if node and hasattr(node, 'is_convergence_point') and node.is_convergence_point:
+                        reachable.add(current)
+                        logger.debug(f"  Agent '{agent}' can reach convergence point '{current}'")
+                
+                # Continue exploring
+                for next_agent in self.graph.get_next_agents(current):
+                    if next_agent not in visited:
+                        visited.add(next_agent)
+                        queue.append(next_agent)
+            
+            agent_reachable[agent] = reachable
+            logger.debug(f"Agent '{agent}' can reach convergence points: {reachable}")
+        
+        # Step 2: Find SHARED convergence points (intersection of all)
+        shared_convergence = None
+        for agent, reachable in agent_reachable.items():
+            if shared_convergence is None:
+                shared_convergence = reachable.copy()
+            else:
+                shared_convergence &= reachable
+        
+        shared_convergence = shared_convergence or set()
+        
+        # Step 3: Find sub-group convergences
+        sub_group_convergences = {}
+        all_convergence_points = set().union(*agent_reachable.values()) if agent_reachable else set()
+        
+        for conv_point in all_convergence_points:
+            # Find which agents can reach this convergence point
+            agents_converging = {a for a, r in agent_reachable.items() if conv_point in r}
+            
+            # It's a sub-group if more than one but not all agents converge there
+            if (len(agents_converging) > 1 and 
+                agents_converging != from_agents and 
+                conv_point not in shared_convergence):
+                sub_group_convergences[conv_point] = agents_converging
+        
+        logger.info(f"Found shared convergence points: {shared_convergence}")
+        logger.info(f"Found sub-group convergences: {sub_group_convergences}")
+        
+        return shared_convergence, sub_group_convergences
+    
+    def create_convergence_branch(self, convergence_point: str, group: ParallelInvocationGroup) -> ExecutionBranch:
+        """
+        Create a convergence branch structure for Orchestra to execute.
+        """
+        # Get aggregated data for this convergence point
+        aggregated_data = group.convergence_aggregations.get(convergence_point, [])
+        
+        logger.info(
+            f"Creating convergence branch for '{convergence_point}' "
+            f"with {len(aggregated_data)} aggregated results"
+        )
+        
+        # Create the convergence branch
+        convergence_branch = self._create_branch(
+            branch_type=BranchType.CONVERGENCE,
+            target_agent=convergence_point,
+            parent_branch=None,  # No single parent
+            source_agent=group.requesting_agent,
+            initial_request={
+                "is_convergence": True,
+                "aggregated_data": aggregated_data,
+                "source_count": len(aggregated_data),
+                "group_id": group.group_id,
+                "convergence_type": "shared" if convergence_point in group.shared_convergence_points else "sub_group"
+            },
+            context={}
+        )
+        
+        # Store branch info
+        self.branch_info[convergence_branch.id] = convergence_branch
+        
+        return convergence_branch
     
     async def _execute_convergence_point(
         self,
@@ -1997,20 +2266,23 @@ class DynamicBranchSpawner:
                     # Continue traversal
                     queue.append((next_agent, current_instance))
     
-    def _aggregate_child_results(self, parent_branch_id: str) -> Dict[str, Any]:
+    def _aggregate_child_results(self, parent_branch_id: str) -> AggregatedContext:
         """
         Aggregate results from all child branches of a parent.
-        
+        Returns standardized AggregatedContext dataclass.
+
         Args:
             parent_branch_id: ID of the parent branch
             
         Returns:
-            Aggregated results from all child branches
+            AggregatedContext with responses and last message requests
         """
         child_branch_ids = self.parent_child_map.get(parent_branch_id, [])
         
         # Collect actual responses from children
         agent_responses = []
+        child_requests = []  # Last messages only
+
         for child_id in child_branch_ids:
             if child_id in self.branch_results:
                 result = self.branch_results[child_id]
@@ -2022,30 +2294,28 @@ class DynamicBranchSpawner:
                         "agent_name": branch.topology.entry_agent,
                         "response": result.final_response
                     })
-        
-        # Return aggregated context with child results as array
-        aggregated = {
-            "child_results": agent_responses,  # Direct array, not wrapped
-            "metadata": {
+
+                    # Extract only last message (the request back to parent)
+                    agent_name = branch.topology.entry_agent
+                    if agent_name in result.branch_memory and result.branch_memory[agent_name]:
+                        last_message = result.branch_memory[agent_name][-1]
+                        child_requests.append({
+                            "agent_name": agent_name,
+                            "request": last_message.get('content', '')
+                        })
+
+        # Return standardized dataclass
+        return AggregatedContext(
+            responses=agent_responses,
+            requests=child_requests,
+            metadata={
                 "parent_branch_id": parent_branch_id,
                 "child_count": len(child_branch_ids),
                 "aggregation_time": time.time()
-            }
-        }
-        
-        # Also collect memory and other metadata for potential use
-        combined_memory = {}
-        for child_id in child_branch_ids:
-            if child_id in self.branch_results:
-                result = self.branch_results[child_id]
-                # Merge memory
-                for agent, memories in result.branch_memory.items():
-                    combined_memory[agent] = memories
-        
-        if combined_memory:
-            aggregated["combined_memory"] = combined_memory
-        
-        return aggregated
+            },
+            parent_branch_id=parent_branch_id,
+            resume_parent=True  # This is for parent-child aggregation
+        )
     
     def _should_run_cleanup(self) -> bool:
         """Check if cleanup should run based on counter."""

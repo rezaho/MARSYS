@@ -13,13 +13,22 @@ class ExecutionConfig:
     # Steering configuration
     steering_mode: Literal["auto", "always", "never"] = "auto"
     
-    def should_apply_steering(self, retry_count: int = 0) -> bool:
+    # Convergence behavior
+    dynamic_convergence_enabled: bool = True
+    parent_completes_on_spawn: bool = True
+    auto_detect_convergence: bool = True  # Automatically mark exit nodes and parents as convergence
+    
+    # Timeouts
+    convergence_timeout: float = 300.0
+    branch_timeout: float = 600.0
+    
+    def should_apply_steering(self, is_retry: bool = False) -> bool:
         """
         Determine if steering should be applied.
         
         Args:
-            retry_count: Current retry attempt number
-            
+            is_retry: Whether this is a retry attempt
+
         Returns:
             True if steering should be applied, False otherwise
         """

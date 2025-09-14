@@ -23,6 +23,7 @@ from .branches.types import (
     BranchResult,
     StepResult,
 )
+from .execution.branch_spawner import AggregatedContext
 from .topology.analyzer import TopologyAnalyzer
 from .topology.graph import TopologyGraph
 from .topology.core import Topology
@@ -311,11 +312,30 @@ class Orchestra:
         logger.info(f"Starting orchestration session {session_id}")
         
         try:
+            # Import ExecutionConfig here to avoid circular imports
+            from .config import ExecutionConfig
+            
             # Convert to canonical Topology format
             canonical_topology = self._ensure_topology(topology)
             
-            # Analyze topology and create graph
+            # Extract or create execution config
+            execution_config = context.get('execution_config') if context else None
+            if execution_config is None:
+                # Create default config if not provided
+                execution_config = ExecutionConfig()
+                context = context or {}
+                context['execution_config'] = execution_config
+                logger.debug("Created default ExecutionConfig")
+            
+            # Store config in topology metadata BEFORE analysis
+            canonical_topology.metadata = canonical_topology.metadata or {}
+            canonical_topology.metadata['execution_config'] = execution_config
+            
+            # Analyze topology and create graph (will use config from metadata)
             self.topology_graph = self.topology_analyzer.analyze(canonical_topology)
+            
+            # Also store in graph metadata for runtime access
+            self.topology_graph.metadata['execution_config'] = execution_config
             
             # NEW: Set topology references in all agents
             for node_name in self.topology_graph.nodes:
@@ -538,62 +558,69 @@ class Orchestra:
                         
                         for agent, aggregated_context in ready_convergence_agents:
                             # Check if this is a parent branch resumption
-                            if aggregated_context.get("resume_parent", False):
-                                # Resume the existing parent branch
-                                parent_branch_id = aggregated_context.get("parent_branch_id")
-                                logger.info(f"Resuming parent branch '{parent_branch_id}' with aggregated child results")
-                                
-                                # Find the parent branch in branch_states
-                                parent_branch = None
-                                for branch_id, branch in branch_states.items():
-                                    if branch_id == parent_branch_id:
-                                        parent_branch = branch
-                                        break
-                                
-                                if parent_branch:
-                                    # Get properly formatted child results
-                                    child_results = aggregated_context.get("child_results")
-                                    if isinstance(child_results, dict) and "responses" in child_results:
-                                        child_results = child_results["responses"]
-                                    
-                                    logger.info(f"Resuming parent branch '{parent_branch_id}' with {len(child_results) if child_results else 0} child results")
-                                    
-                                    # Resume parent branch with child results
-                                    resume_task = asyncio.create_task(
+                            if isinstance(aggregated_context, AggregatedContext):  # NEW: Type check
+                                if aggregated_context.resume_parent:
+                                    # Resume the existing parent branch
+                                    parent_branch_id = aggregated_context.parent_branch_id
+
+                                    # Find the parent branch in branch_states
+                                    parent_branch = None
+                                    for branch_id, branch in branch_states.items():
+                                        if branch_id == parent_branch_id:
+                                            parent_branch = branch
+                                            break
+
+                                    if parent_branch:
+                                        # Check if parent is actually waiting
+                                        if parent_branch.state.status == BranchStatus.WAITING:
+                                            # Parent is waiting - resume it
+                                            # CHANGED: Direct access to responses field
+                                            child_results = aggregated_context.responses
+
+                                            logger.info(f"Resuming waiting parent branch '{parent_branch_id}'")
+
+                                            resume_task = asyncio.create_task(
+                                                self.branch_executor.execute_branch(
+                                                    parent_branch,
+                                                    child_results,  # Pass the responses array directly
+                                                    context,
+                                                    resume_with_results=aggregated_context.to_dict()  # Pass full context as dict
+                                                )
+                                            )
+                                            all_tasks.append(resume_task)
+                                        else:
+                                            # Parent already completed
+                                            logger.warning(f"Parent branch '{parent_branch_id}' is not waiting - skipping resumption")
+                                    else:
+                                        logger.error(f"Parent branch '{parent_branch_id}' not found")
+                                else:
+                                    # Legacy convergence (not parent resumption)
+                                    # Create continuation branch from convergence point (topology-based)
+                                    convergence_branch = ExecutionBranch(
+                                        id=f"convergence_{agent}_{uuid.uuid4().hex[:8]}",
+                                        name=f"Convergence: {agent}",
+                                        type=BranchType.SIMPLE,
+                                        topology=BranchTopology(
+                                            agents=[agent],
+                                            entry_agent=agent,
+                                            allowed_transitions=dict(self.topology_graph.adjacency)
+                                        ),
+                                        state=BranchState(status=BranchStatus.PENDING)
+                                    )
+
+                                    # Start with aggregated results - pass responses array
+                                    conv_task = asyncio.create_task(
                                         self.branch_executor.execute_branch(
-                                            parent_branch,
-                                            child_results,  # Pass formatted array
-                                            context,
-                                            resume_with_results=aggregated_context
+                                            convergence_branch,
+                                            aggregated_context.responses,  # Pass responses array directly
+                                            context
                                         )
                                     )
-                                    all_tasks.append(resume_task)
-                                else:
-                                    logger.error(f"Parent branch '{parent_branch_id}' not found for resumption")
+                                    all_tasks.append(conv_task)
+                                    branch_states[convergence_branch.id] = convergence_branch
                             else:
-                                # Create continuation branch from convergence point (topology-based)
-                                convergence_branch = ExecutionBranch(
-                                    id=f"convergence_{agent}_{uuid.uuid4().hex[:8]}",
-                                    name=f"Convergence: {agent}",
-                                    type=BranchType.SIMPLE,
-                                    topology=BranchTopology(
-                                        agents=[agent],
-                                        entry_agent=agent,
-                                        allowed_transitions=dict(self.topology_graph.adjacency)
-                                    ),
-                                    state=BranchState(status=BranchStatus.PENDING)
-                                )
-                                
-                                # Start with aggregated results
-                                conv_task = asyncio.create_task(
-                                    self.branch_executor.execute_branch(
-                                        convergence_branch,
-                                        aggregated_context,
-                                        context
-                                    )
-                                )
-                                all_tasks.append(conv_task)
-                                branch_states[convergence_branch.id] = convergence_branch
+                                # Handle legacy dict format for backward compatibility
+                                logger.warning("Received legacy dict format instead of AggregatedContext")
                             
                 except Exception as e:
                     logger.error(f"Error processing completed branch: {e}")
@@ -955,52 +982,46 @@ class Orchestra:
         context: Dict[str, Any]
     ) -> None:
         """Check for ready convergence points and execute them."""
-        if not hasattr(self.branch_spawner, 'convergence_tracker'):
-            return
         
-        tracker = self.branch_spawner.convergence_tracker
-        
-        for convergence_point in list(tracker.pending_requests.keys()):
-            if tracker.check_convergence_ready(convergence_point):
-                # All branches have arrived - execute convergence point
-                logger.info(f"Convergence point '{convergence_point}' ready - aggregating {len(tracker.pending_requests[convergence_point])} requests")
+        # Check parallel groups for convergence
+        if hasattr(self.branch_spawner, 'parallel_groups'):
+            for group_id, group in list(self.branch_spawner.parallel_groups.items()):
+                if group.convergence_triggered:
+                    continue
                 
-                # Get aggregated requests
-                aggregated_requests = tracker.get_aggregated_requests(convergence_point)
+                # Check shared convergence points
+                for conv_point in group.shared_convergence_points:
+                    if group.check_convergence_ready(conv_point) and conv_point not in group.convergence_branches_spawned:
+                        # Create and execute convergence branch
+                        convergence_branch = self.branch_spawner.create_convergence_branch(conv_point, group)
+                        task = asyncio.create_task(
+                            self.branch_executor.execute_branch(
+                                convergence_branch,
+                                convergence_branch.metadata['initial_request'],
+                                context
+                            )
+                        )
+                        all_tasks.append(task)
+                        branch_states[convergence_branch.id] = convergence_branch
+                        group.convergence_branches_spawned.add(conv_point)
+                        logger.info(f"Spawned convergence branch for '{conv_point}'")
                 
-                # Create convergence context with all requests
-                convergence_context = {
-                    "is_convergence": True,
-                    "aggregated_requests": aggregated_requests,
-                    "source_count": len(aggregated_requests),
-                    "convergence_point": convergence_point
-                }
-                
-                # Create a special convergence branch
-                convergence_branch = self._create_convergence_branch(
-                    convergence_point, convergence_context
-                )
-                
-                # Execute convergence point in its own branch
-                initial_request = self._format_aggregated_request(aggregated_requests)
-                
-                conv_task = asyncio.create_task(
-                    self.branch_executor.execute_branch(
-                        convergence_branch,
-                        initial_request,
-                        context
-                    )
-                )
-                
-                all_tasks.append(conv_task)
-                branch_states[convergence_branch.id] = convergence_branch
-                
-                # Clear pending requests for this convergence point
-                del tracker.pending_requests[convergence_point]
-                if convergence_point in tracker.potential_arrivals:
-                    del tracker.potential_arrivals[convergence_point]
-                
-                logger.info(f"Convergence point '{convergence_point}' execution started")
+                # Check sub-group convergences
+                for conv_point in group.sub_group_convergences:
+                    if group.check_convergence_ready(conv_point) and conv_point not in group.convergence_branches_spawned:
+                        # Create and execute convergence branch
+                        convergence_branch = self.branch_spawner.create_convergence_branch(conv_point, group)
+                        task = asyncio.create_task(
+                            self.branch_executor.execute_branch(
+                                convergence_branch,
+                                convergence_branch.metadata['initial_request'],
+                                context
+                            )
+                        )
+                        all_tasks.append(task)
+                        branch_states[convergence_branch.id] = convergence_branch
+                        group.convergence_branches_spawned.add(conv_point)
+                        logger.info(f"Spawned sub-group convergence branch for '{conv_point}'")
     
     def _create_convergence_branch(
         self,

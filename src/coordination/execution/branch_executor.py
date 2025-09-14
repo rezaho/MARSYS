@@ -360,22 +360,20 @@ class BranchExecutor:
                 # Check if stopped at convergence
                 convergence_target = getattr(step_result, 'convergence_target', None)
                 if convergence_target:
-                    # Update branch position in tracker
-                    if hasattr(self.branch_spawner, 'convergence_tracker'):
-                        self.branch_spawner.convergence_tracker.update_branch_position(
-                            branch.id, current_agent
-                        )
+                    # Branch reached a convergence point
+                    logger.info(f"Branch '{branch.id}' reached convergence point '{convergence_target}'")
                     
+                    # The branch completes here - group handles aggregation
                     return BranchResult(
                         branch_id=branch.id,
                         success=True,
-                        final_response=None,  # No final response yet
+                        final_response=step_result.response,
                         total_steps=branch.state.current_step,
                         execution_trace=execution_trace,
                         branch_memory=context.branch_memory,
                         metadata={
-                            "held_at_convergence": True,
-                            "convergence_target": convergence_target,
+                            "reached_convergence": True,
+                            "convergence_point": convergence_target,
                             "last_agent": current_agent,
                             "hold_reason": getattr(step_result, 'hold_reason', None)
                         }
@@ -996,7 +994,7 @@ class BranchExecutor:
             group_id = self.branch_spawner.branch_to_group.get(branch_id)
             if group_id:
                 group = self.branch_spawner.parallel_groups.get(group_id)
-                if group and next_agent in group.convergence_points:
+                if group and (next_agent in group.shared_convergence_points or next_agent in group.sub_group_convergences):
                     # Check for timeout/deadlock
                     from datetime import datetime
                     if hasattr(group, 'created_at'):
@@ -1337,51 +1335,125 @@ class BranchExecutor:
         context: BranchExecutionContext,
         branch: ExecutionBranch
     ) -> StepResult:
-        """
-        Handle agent-initiated parallel invocation.
-        Sets branch to waiting state and returns special StepResult.
-        """
-        target_agents = validation.next_agents
+        """Handle agent-initiated parallel invocation."""
+        
+        # Extract target agents from validation
+        target_agents = []
+        if validation.invocations:
+            target_agents = [inv.agent_name for inv in validation.invocations]
+        
         logger.info(f"Agent '{agent_name}' initiating parallel invocation of {target_agents}")
         
-        # Mark this branch as having spawned children for dynamic convergence
-        branch.metadata["has_parallel_children"] = True
-        branch.metadata["expected_children"] = len(target_agents)
-        branch.metadata["completed_children"] = []
-        branch.metadata["child_agents"] = target_agents
+        # CRITICAL: Pre-analyze topology BEFORE deciding to wait
+        should_parent_wait = True  # Default
+        shared_conv = set()
+        sub_conv = {}
         
-        # Store branch continuation state in branch metadata
-        branch.metadata["continuation_state"] = {
-            "agent_name": agent_name,
-            "context": context,
-            "invocations": validation.invocations,  # Store complete invocation data
-            "parsed_response": validation.parsed_response,
+        if self.branch_spawner and target_agents:
+            try:
+                should_parent_wait, shared_conv, sub_conv = await self.branch_spawner.analyze_parallel_invocation(
+                    agent_name, target_agents
+                )
+            except Exception as e:
+                logger.warning(f"Failed to analyze parallel invocation: {e}")
+                should_parent_wait = True  # Default to safe behavior
+        
+        # Store analysis for branch_spawner to use later
+        branch.metadata["parallel_analysis"] = {
+            "should_parent_wait": should_parent_wait,
+            "shared_convergence": list(shared_conv),
+            "sub_group_convergence": {k: list(v) for k, v in sub_conv.items()},
+            "target_agents": target_agents
         }
         
-        # Also store in instance variable for compatibility
+        # Store in instance variable for continuation
         self.branch_continuation[branch.id] = {
             "agent_name": agent_name,
             "context": context,
             "branch": branch,
-            "invocations": validation.invocations,  # Store complete invocation data
-            "parsed_response": validation.parsed_response,
+            "invocations": validation.invocations,
+            "parsed_response": validation.parsed_response
         }
         
-        # Set branch to waiting state
-        branch.state.status = BranchStatus.WAITING
-        self.waiting_for_children[branch.id] = set(target_agents)
+        if should_parent_wait:
+            # Traditional behavior - parent waits
+            logger.info(f"Parent branch '{branch.id}' entering waiting state")
+            
+            branch.state.status = BranchStatus.WAITING
+            self.waiting_for_children[branch.id] = set(target_agents)
+            
+            return StepResult(
+                agent_name=agent_name,
+                success=True,
+                response=f"Parent waiting for parallel execution of {len(target_agents)} agents",
+                action_type=ActionType.PARALLEL_INVOKE,
+                parsed_response=validation.parsed_response,
+                waiting_for_children=True,
+                child_branch_ids=target_agents
+            )
+        else:
+            # New behavior - parent completes
+            logger.info(f"Parent branch '{branch.id}' completing after spawning")
+            
+            return StepResult(
+                agent_name=agent_name,
+                success=True,
+                response=f"Initiated parallel execution of {len(target_agents)} agents",
+                action_type=ActionType.PARALLEL_INVOKE,
+                parsed_response=validation.parsed_response,
+                waiting_for_children=False,
+                should_end_branch=True  # Branch completes
+            )
+    
+    async def _check_dynamic_convergence(
+        self,
+        branch_id: str,
+        current_agent: str,
+        next_agent: str,
+        step_result: Optional[StepResult] = None
+    ) -> bool:
+        """
+        Check if branch should hold at a convergence point.
         
-        # Create step result indicating branch should wait
-        return StepResult(
-            agent_name=agent_name,
-            success=True,
-            response=result.response,
-            action_type="parallel_invoke",
-            parsed_response=validation.parsed_response,
-            waiting_for_children=True,
-            child_branch_ids=target_agents,  # For now, using agent names as IDs
-            should_end_branch=False  # Don't end the branch, just pause it
-        )
+        Returns True if branch should hold, False if it can proceed.
+        """
+        # Get parallel group for this branch
+        if not self.branch_spawner:
+            return False
+            
+        group_id = self.branch_spawner.branch_to_group.get(branch_id)
+        if not group_id:
+            return False  # Not part of a parallel group
+        
+        group = self.branch_spawner.parallel_groups.get(group_id)
+        if not group:
+            return False
+        
+        # Check if next_agent is a convergence point for this group
+        is_shared_conv = next_agent in group.shared_convergence_points
+        is_subgroup_conv = next_agent in group.sub_group_convergences
+        
+        if not (is_shared_conv or is_subgroup_conv):
+            return False  # Not a convergence point
+        
+        # Record this branch reaching convergence
+        branch_info = self.branch_spawner.branch_info.get(branch_id)
+        if branch_info and step_result:
+            result_data = {
+                'branch_id': branch_id,
+                'from_agent': current_agent,
+                'content': getattr(step_result, 'response', None)
+            }
+            group.record_branch_convergence(branch_id, next_agent, result_data)
+        
+        # Check if convergence point is ready
+        if group.check_convergence_ready(next_agent):
+            logger.info(f"All branches arrived at '{next_agent}' - ready for convergence")
+            return False  # This branch can complete
+        
+        # Need to wait for other branches
+        logger.info(f"Branch '{branch_id}' holding at convergence '{next_agent}'")
+        return True
     
     async def resume_branch(
         self,
@@ -1572,13 +1644,6 @@ class BranchExecutor:
             if step_result.waiting_for_children:
                 # Store updated continuation state
                 self.branch_continuation[branch.id]["parsed_response"] = step_result.parsed_response
-                # Also update branch metadata
-                branch.metadata["continuation_state"] = {
-                    "agent_name": current_agent,
-                    "context": context,
-                    "target_agents": step_result.child_branch_ids,
-                    "parsed_response": step_result.parsed_response
-                }
                 return BranchResult(
                     branch_id=branch.id,
                     success=True,
@@ -1604,22 +1669,20 @@ class BranchExecutor:
                 # Check if stopped at convergence
                 convergence_target = getattr(step_result, 'convergence_target', None)
                 if convergence_target:
-                    # Update branch position in tracker
-                    if hasattr(self.branch_spawner, 'convergence_tracker'):
-                        self.branch_spawner.convergence_tracker.update_branch_position(
-                            branch.id, current_agent
-                        )
+                    # Branch reached a convergence point
+                    logger.info(f"Branch '{branch.id}' reached convergence point '{convergence_target}'")
                     
+                    # The branch completes here - group handles aggregation
                     return BranchResult(
                         branch_id=branch.id,
                         success=True,
-                        final_response=None,  # No final response yet
+                        final_response=step_result.response,
                         total_steps=branch.state.current_step,
                         execution_trace=execution_trace,
                         branch_memory=context.branch_memory,
                         metadata={
-                            "held_at_convergence": True,
-                            "convergence_target": convergence_target,
+                            "reached_convergence": True,
+                            "convergence_point": convergence_target,
                             "last_agent": current_agent,
                             "hold_reason": getattr(step_result, 'hold_reason', None)
                         }
