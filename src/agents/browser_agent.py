@@ -473,6 +473,8 @@ class BrowserAgent(Agent):
         output_schema: Optional[Any] = None,
         auto_screenshot: bool = False,
         timeout: int = 5000,
+        memory_retention: str = "session",
+        memory_storage_path: Optional[str] = None,
     ) -> None:
         """
         Initialize the BrowserAgent.
@@ -494,6 +496,8 @@ class BrowserAgent(Agent):
             output_schema: Optional output schema for the agent
             auto_screenshot: Whether to automatically take screenshots after state-changing operations
             timeout: Default timeout in milliseconds for browser operations (default: 5000)
+            memory_retention: Memory retention policy - "single_run", "session", or "persistent"
+            memory_storage_path: Path for persistent memory storage (if retention is "persistent")
         """
         # Check for playwright-stealth support
         try:
@@ -564,6 +568,8 @@ class BrowserAgent(Agent):
             allowed_peers=allowed_peers,
             input_schema=input_schema,
             output_schema=output_schema,
+            memory_retention=memory_retention,
+            memory_storage_path=memory_storage_path,
         )
 
         # Browser settings
@@ -626,6 +632,8 @@ class BrowserAgent(Agent):
         output_schema: Optional[Any] = None,
         auto_screenshot: bool = False,
         timeout: int = 5000,
+        memory_retention: str = "session",
+        memory_storage_path: Optional[str] = None,
     ) -> "BrowserAgent":
         """
         Safe factory method to create and initialize a BrowserAgent.
@@ -651,6 +659,8 @@ class BrowserAgent(Agent):
             output_schema=output_schema,
             auto_screenshot=auto_screenshot,
             timeout=timeout,
+            memory_retention=memory_retention,
+            memory_storage_path=memory_storage_path,
         )
 
         # Initialize browser using BrowserTool
