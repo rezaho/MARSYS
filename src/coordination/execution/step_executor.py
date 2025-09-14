@@ -192,14 +192,20 @@ class StepExecutor:
                         logger.debug(f"Passing dynamic format instructions for {agent_name} via context")
                 
                 # NEW: Add steering based on config
-                if execution_config.should_apply_steering(retry_count):
+                # Get agent retry count from context (if available)
+                agent_retry_count = context.get('metadata', {}).get('agent_retry_count', 0)
+
+                # Convert to boolean: is this ANY kind of retry?
+                is_retry = (retry_count > 0) or (agent_retry_count > 0)
+
+                if execution_config.should_apply_steering(is_retry):
                     steering_prompt = self._get_steering_prompt(
                         agent,
                         step_context,
-                        retry_count=retry_count
+                        is_retry=is_retry
                     )
                     run_context["steering_prompt"] = steering_prompt
-                    logger.debug(f"Added steering for {agent_name} (retry {retry_count}, mode: {execution_config.steering_mode})")
+                    logger.debug(f"Added steering for {agent_name} (exception_retry: {retry_count}, agent_retry: {agent_retry_count}, is_retry: {is_retry}, mode: {execution_config.steering_mode})")
                 
                 agent_response = await agent.run_step(
                     request,

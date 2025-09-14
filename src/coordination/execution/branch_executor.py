@@ -276,7 +276,10 @@ class BranchExecutor:
             # Check completion condition
             if await self._should_complete(branch, context, execution_trace):
                 break
-            
+
+            # Pass actual retry count in context metadata (for future use)
+            context.metadata["agent_retry_count"] = retry_counts.get(current_agent, 0)
+
             # Execute current agent
             step_result = await self._execute_agent_step(
                 current_agent,
