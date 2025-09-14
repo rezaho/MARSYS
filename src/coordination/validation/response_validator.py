@@ -548,21 +548,21 @@ class ValidationProcessor:
             return ValidationResult(
                 is_valid=False,
                 error_message="Response is None",
-                retry_suggestion="Please provide a response"
+                retry_suggestion="Your response was empty. You must provide content for your next action."
             )
         
         if isinstance(raw_response, str) and not raw_response.strip():
             return ValidationResult(
                 is_valid=False,
                 error_message="Response is empty string",
-                retry_suggestion="Please provide a non-empty response"
+                retry_suggestion="Your response was an empty string. You need to provide actual content."
             )
         
         if isinstance(raw_response, dict) and not raw_response:
             return ValidationResult(
                 is_valid=False,
                 error_message="Response is empty dictionary",
-                retry_suggestion="Please provide a response with content"
+                retry_suggestion="Your response was an empty dictionary. You need to include the required fields."
             )
         
         # 1. Try each processor to parse response
@@ -584,7 +584,7 @@ class ValidationProcessor:
                 return ValidationResult(
                     is_valid=False,
                     error_message="JSON parsing failed - likely due to unescaped special characters in content",
-                    retry_suggestion="Please retry with properly escaped JSON. Ensure all quotes, newlines, and special characters in the content are properly escaped."
+                    retry_suggestion="Your JSON had unescaped special characters. Please ensure all quotes, newlines, and special characters are properly escaped."
                 )
             
             # Check if it's a tool response that needs processing
@@ -592,14 +592,14 @@ class ValidationProcessor:
                 return ValidationResult(
                     is_valid=False,
                     error_message="Tool response detected but couldn't be parsed",
-                    retry_suggestion="Please ensure your tool response is properly formatted JSON"
+                    retry_suggestion="Your tool response format was incorrect. Please ensure it follows proper JSON structure."
                 )
             
             # Generic fallback
             return ValidationResult(
                 is_valid=False,
                 error_message="Could not parse response format - no processor could handle it",
-                retry_suggestion='Please respond with a valid JSON format: {"next_action": "invoke_agent", "action_input": [{"agent_name": "agent_name", "request": "your request"}]}'
+                retry_suggestion='Your response format was not recognized. Use this structure: {"next_action": "invoke_agent", "action_input": [{"agent_name": "agent_name", "request": "your request"}]}'
             )
         
         # 2. Determine action type
@@ -610,7 +610,7 @@ class ValidationProcessor:
             return ValidationResult(
                 is_valid=False,
                 error_message="No action specified in response",
-                retry_suggestion=f"Please specify 'next_action' with one of: {', '.join(allowed_actions)}"
+                retry_suggestion=f"You didn't specify 'next_action'. You must choose one of: {', '.join(allowed_actions)}"
             )
         
         try:
@@ -629,7 +629,7 @@ class ValidationProcessor:
             return ValidationResult(
                 is_valid=False,
                 error_message=f"Unknown action type: {action_str}",
-                retry_suggestion=f"Valid actions for {agent.name} are: {valid_action_types}"
+                retry_suggestion=f"'{action_str}' is not a valid action. Your valid actions are: {valid_action_types}"
             )
         
         # 3. Validate specific action
@@ -669,7 +669,7 @@ class ValidationProcessor:
             return ValidationResult(
                 is_valid=False,
                 error_message="Missing invocations for agent invocation",
-                retry_suggestion="Specify which agent(s) to invoke with proper invocation format"
+                retry_suggestion="You indicated 'invoke_agent' but didn't specify which agent. You must provide the agent_name and request."
             )
         
         # Extract agent names from invocations for validation
@@ -686,7 +686,7 @@ class ValidationProcessor:
             return ValidationResult(
                 is_valid=False,
                 error_message=f"Agent {agent.name} cannot invoke: {invalid_targets}",
-                retry_suggestion=f"Valid targets: {next_agents}"
+                retry_suggestion=f"You cannot invoke {invalid_targets}. Your available agents are: {next_agents}"
             )
         
         # Determine action type based on number of invocations
@@ -714,7 +714,7 @@ class ValidationProcessor:
             return ValidationResult(
                 is_valid=False,
                 error_message="Parallel invocation requires at least 2 invocations",
-                retry_suggestion="Specify multiple agents to run in parallel"
+                retry_suggestion="Parallel execution requires at least 2 agents. Please specify multiple agents to run simultaneously."
             )
         
         # Extract agent names from invocations for validation
@@ -731,7 +731,7 @@ class ValidationProcessor:
             return ValidationResult(
                 is_valid=False,
                 error_message=f"Cannot invoke agents: {invalid_targets}",
-                retry_suggestion=f"Valid targets: {next_agents}"
+                retry_suggestion=f"You cannot invoke {invalid_targets}. Available agents for parallel execution: {next_agents}"
             )
         
         # Check if parallel execution is allowed
@@ -758,7 +758,7 @@ class ValidationProcessor:
             return ValidationResult(
                 is_valid=False,
                 error_message="No tool calls specified",
-                retry_suggestion="Provide tool calls in the correct format"
+                retry_suggestion="You indicated a tool action but didn't provide the tool_calls array. You must specify which tools to call."
             )
         
         # Validate tool call format
@@ -767,14 +767,14 @@ class ValidationProcessor:
                 return ValidationResult(
                     is_valid=False,
                     error_message="Invalid tool call format",
-                    retry_suggestion="Tool calls must be dictionaries with 'id' and 'function'"
+                    retry_suggestion="Your tool call format is incorrect. Each tool call must have 'id' and 'function' fields."
                 )
             
             if "function" not in tool_call:
                 return ValidationResult(
                     is_valid=False,
                     error_message="Tool call missing function",
-                    retry_suggestion="Each tool call needs a 'function' field"
+                    retry_suggestion="Your tool call is missing the 'function' field. Each tool call must include this field."
                 )
         
         return ValidationResult(
@@ -815,8 +815,7 @@ class ValidationProcessor:
                         f"This agent can invoke: {next_agents}"
                     ),
                     retry_suggestion=(
-                        f"Use 'invoke_agent' to pass control to one of: {next_agents}, "
-                        f"or 'call_tool' if you have tools available."
+                        f"You cannot use 'final_response' from this agent. You must invoke one of: {next_agents}"
                     )
                 )
         else:
@@ -828,14 +827,14 @@ class ValidationProcessor:
             return ValidationResult(
                 is_valid=False,
                 error_message="final_response action_input must be a dictionary",
-                retry_suggestion="Use format: {\"action_input\": {\"response\": \"your answer\"}}"
+                retry_suggestion="Format your final_response like this: {\"action_input\": {\"response\": \"your answer\"}}"
             )
         
         if "response" not in action_input and "report" not in action_input:
             return ValidationResult(
                 is_valid=False,
                 error_message="final_response action_input must contain 'response' or 'report' field",
-                retry_suggestion="Use format: {\"action_input\": {\"response\": \"your answer\"}}"
+                retry_suggestion="Format your final_response like this: {\"action_input\": {\"response\": \"your answer\"}}"
             )
         
         return ValidationResult(is_valid=True)
@@ -852,13 +851,13 @@ class ValidationProcessor:
         if branch.type.value != "conversation":
             allowed_actions = self._get_allowed_actions(agent, branch)
             if "final_response" in allowed_actions:
-                retry_suggestion = "Use 'final_response' to complete execution"
+                retry_suggestion = "Use 'final_response' to complete the execution."
             else:
                 next_agents = self.topology_graph.get_next_agents(agent.name)
                 if next_agents:
-                    retry_suggestion = f"Use 'invoke_agent' to pass control to one of: {next_agents}"
+                    retry_suggestion = f"Invoke one of these agents to continue: {next_agents}"
                 else:
-                    retry_suggestion = "This agent cannot end conversation (no valid actions available)"
+                    retry_suggestion = "No valid actions available. Check your allowed actions."
             
             return ValidationResult(
                 is_valid=False,

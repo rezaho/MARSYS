@@ -815,7 +815,7 @@ class BranchExecutor:
                     
                     # FIX: Send validation error back to agent as user message
                     if hasattr(agent, 'memory') and validation.error_message:
-                        error_message = f"Invalid response format. {validation.error_message}"
+                        error_message = f"Your response format was invalid. {validation.error_message}"
                         if validation.retry_suggestion:
                             error_message += f"\n{validation.retry_suggestion}"
                         
