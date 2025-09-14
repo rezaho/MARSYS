@@ -37,4 +37,4 @@ class ExecutionConfig:
         elif self.steering_mode == "always":
             return True
         else:  # auto mode - only on retries
-            return retry_count > 0
+            return is_retry
