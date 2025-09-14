@@ -854,16 +854,23 @@ Detailed structure for the JSON object:
 {chr(10).join(action_descriptions)}
 """
     
-    def _get_steering_prompt(self, agent: BaseAgent, context: StepContext, 
-                             retry_count: int = 0) -> str:
+    def _get_json_guidelines_concise(self, actions_str: str) -> str:
+        """
+        Get concise JSON format reminder for steering/error messages.
+        Avoids duplication with system prompt to prevent repetition.
+        """
+        return f"""Respond with a single JSON object in a markdown block: ```json {{"thought": "...", "next_action": "...", "action_input": {{...}}}} ```"""
+
+    def _get_steering_prompt(self, agent: BaseAgent, context: StepContext,
+                             is_retry: bool = False) -> str:
         """
         Generate steering prompt to guide agent behavior.
         
         Args:
             agent: The agent being executed
             context: Current execution context
-            retry_count: Current retry attempt number
-            
+            is_retry: Whether this is a retry attempt
+
         Returns:
             Steering prompt to inject as last user message
         """
@@ -873,10 +880,9 @@ Detailed structure for the JSON object:
         
         # Get available next agents
         if topology_graph and branch:
-            # Try to get from the method we use in _get_dynamic_format_instructions
+            # Get next agents from topology graph
             current_agent = agent.name if hasattr(agent, 'name') else str(agent)
-            allowed_transitions = topology_graph.get_allowed_transitions()
-            next_agents = allowed_transitions.get(current_agent, [])
+            next_agents = topology_graph.get_next_agents(current_agent)
             
             # Filter out User and duplicates
             next_agents = [a for a in next_agents if a != "User"]
@@ -893,7 +899,7 @@ Detailed structure for the JSON object:
             available_actions.append("'invoke_agent'")
             action_descriptions.append(
                 f'- If `next_action` is `"invoke_agent"`:\n'
-                f'     `{{"agent_name": "<target-agent>", "request": "<your-request>"}}`\n'
+                f'     `{{"agent_name": "AgentName", "request": {{"task": "specific task details"}}}}`\n'
                 f'     Available agents: {", ".join(next_agents)}'
             )
         
@@ -902,8 +908,8 @@ Detailed structure for the JSON object:
             available_actions.append("'call_tool'")
             action_descriptions.append(
                 '- If `next_action` is `"call_tool"`:\n'
-                '     `{"tool_calls": [{"id": "<unique-id>", "type": "function", '
-                '"function": {"name": "<tool-name>", "arguments": "<json-args>"}}]}`'
+                '     `{"tool_calls": [{"id": "call_123", "type": "function", '
+                '"function": {"name": "tool_name", "arguments": "{\\"param\\": \\"value\\"}"}}]}`'
             )
         
         # Always add final_response
@@ -914,21 +920,21 @@ Detailed structure for the JSON object:
         )
         
         actions_str = ", ".join(available_actions)
-        
-        # Get JSON guidelines
-        json_guidelines = self._get_json_format_guidelines(actions_str, action_descriptions)
-        
+
+        # Use concise guidelines for steering to avoid duplication with system prompt
+        json_guidelines_concise = self._get_json_guidelines_concise(actions_str)
+
         # Build steering based on retry
-        if retry_count > 0:
-            return f"""Your previous response was not in the correct format.
+        if is_retry:
+            return f"""Your previous response had an incorrect format. Let's try again with the correct structure.
+{json_guidelines_concise}"""
 
-{json_guidelines}
-
-Please provide your response as a single JSON object in a markdown code block."""
+# You must provide your response as a single JSON object in a markdown code block."""
         else:
-            return f"""Remember to format your response correctly:
+            return f"""Make sure to format your response correctly:
+{json_guidelines_concise}"""
 
-{json_guidelines}"""
+# You must provide your response as a single JSON object in a markdown code block."""
     
     def _get_agent_request_example(self, agent_name: str) -> str:
         """
@@ -949,15 +955,15 @@ Please provide your response as a single JSON object in a markdown code block.""
         except (ImportError, Exception):
             pass
         
-        # Default to generic placeholder
-        return '<request-data-specific-to-agent>'
+        # Default to generic example
+        return '{"task": "task details"}'
     
     def _generate_example_from_schema(self, schema: Dict[str, Any]) -> str:
         """
         Generate an example request based on a JSON schema.
         """
         if not schema or not isinstance(schema, dict):
-            return '<request-data-specific-to-agent>'
+            return '{"task": "task details"}'
         
         schema_type = schema.get('type', 'any')
         
@@ -979,19 +985,19 @@ Please provide your response as a single JSON object in a markdown code block.""
                 prop_type = prop_schema.get('type', 'any')
                 is_required = prop_name in required
                 
-                # Generate placeholder based on type and requirement
+                # Generate example based on type and requirement
                 if prop_type == 'string':
-                    placeholder = f'<{prop_name}{" (required)" if is_required else ""}>'  
+                    placeholder = f'{prop_name}_value{" (required)" if is_required else ""}'
                 elif prop_type == 'array':
-                    placeholder = f'[<{prop_name}-items>]'
+                    placeholder = f'["{prop_name}_item1", "{prop_name}_item2"]'
                 elif prop_type == 'object':
-                    placeholder = f'{{<{prop_name}-data>}}'
+                    placeholder = f'{{"key": "{prop_name}_data"}}'
                 elif prop_type == 'number' or prop_type == 'integer':
-                    placeholder = f'<{prop_name}-number>'
+                    placeholder = 123
                 elif prop_type == 'boolean':
-                    placeholder = 'true/false'
+                    placeholder = True
                 else:
-                    placeholder = f'<{prop_name}>'
+                    placeholder = f'{prop_name}_value'
                 
                 example_obj[prop_name] = placeholder
             
