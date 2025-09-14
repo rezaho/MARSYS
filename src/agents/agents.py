@@ -155,6 +155,7 @@ class BaseAgent(ABC):
         max_tokens: Optional[int] = 512,
         agent_name: Optional[str] = None,
         allowed_peers: Optional[List[str]] = None,
+        is_convergence_point: Optional[bool] = None,  # NEW: Optional convergence flag
         input_schema: Optional[Any] = None,
         output_schema: Optional[Any] = None,
         memory_retention: str = "session",  # New parameter
@@ -170,6 +171,7 @@ class BaseAgent(ABC):
             max_tokens: Default maximum tokens for model generation.
             agent_name: Optional specific name for registration.
             allowed_peers: List of agent names this agent can call.
+            is_convergence_point: Optional flag to mark this agent as a convergence point (for allowed_peers mode).
             input_schema: Optional schema for validating agent input.
             output_schema: Optional schema for validating agent output.
             memory_retention: Memory retention policy - "single_run", "session", or "persistent"
@@ -207,6 +209,8 @@ class BaseAgent(ABC):
         self.max_tokens = max_tokens
         # Store initial allowed_peers for backward compatibility  
         self._allowed_peers_init = set(allowed_peers) if allowed_peers else set()
+        # Store convergence point flag if specified (None means use topology default)
+        self._is_convergence_point = is_convergence_point  # NEW: Store convergence flag
         # Reference to topology graph (will be set by Orchestra)
         self._topology_graph_ref = None
         self.communication_log: Dict[str, List[Dict[str, Any]]] = (
@@ -2223,6 +2227,11 @@ Example for `final_response`:
             ]
         ] = None,
         user_interaction: Optional[Union[str, 'CommunicationManager']] = None,
+        # NEW: Individual config flags instead of ExecutionConfig object
+        auto_detect_convergence: Optional[bool] = None,
+        parent_completes_on_spawn: Optional[bool] = None,
+        dynamic_convergence_enabled: Optional[bool] = None,
+        steering_mode: Optional[str] = None,  # "auto", "always", "never"
     ) -> Union[Dict[str, Any], str]:
         """
         Run agent with automatic topology creation from allowed_peers.
@@ -2322,6 +2331,20 @@ Example for `final_response`:
             # Note: TopologyAnalyzer will auto-discover all agents from registry
             # No need to manually add peers here
             
+            # Import ExecutionConfig
+            from ..coordination.config import ExecutionConfig
+            
+            # Create execution config from individual flags if any are specified
+            execution_config = None
+            if any(x is not None for x in [auto_detect_convergence, parent_completes_on_spawn, 
+                                          dynamic_convergence_enabled, steering_mode]):
+                execution_config = ExecutionConfig(
+                    auto_detect_convergence=auto_detect_convergence if auto_detect_convergence is not None else True,
+                    parent_completes_on_spawn=parent_completes_on_spawn if parent_completes_on_spawn is not None else True,
+                    dynamic_convergence_enabled=dynamic_convergence_enabled if dynamic_convergence_enabled is not None else True,
+                    steering_mode=steering_mode if steering_mode is not None else "auto"
+                )
+            
             # Prepare execution context
             exec_context = {
                 "initial_agent": self.name,
@@ -2329,6 +2352,10 @@ Example for `final_response`:
                 "max_re_prompts": max_re_prompts,
                 "context_messages": context_messages  # Pass any extracted context messages
             }
+            
+            # Add execution_config to context if created from flags
+            if execution_config:
+                exec_context["execution_config"] = execution_config
             
             # Log start of execution
             await self._log_progress(

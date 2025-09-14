@@ -49,7 +49,7 @@ class Node:
     name: str
     node_type: NodeType = NodeType.AGENT
     agent_ref: Optional[Any] = None  # Reference to actual agent instance
-    is_convergence_point: bool = True  # Default to convergence point for automatic branch merging
+    is_convergence_point: bool = False  # Default to NOT convergence point - will be detected dynamically
     metadata: Dict[str, Any] = field(default_factory=dict)
     
     def __post_init__(self):

@@ -43,7 +43,7 @@ class NodeInfo:
     outgoing_edges: List[str] = field(default_factory=list)
     capabilities: List[str] = field(default_factory=list)
     metadata: Dict[str, Any] = field(default_factory=dict)
-    is_convergence_point: bool = True  # Default to convergence point for automatic branch merging
+    is_convergence_point: bool = False  # Default to NOT convergence point - will be detected dynamically
     
     def add_incoming(self, source: str) -> None:
         """Add an incoming edge from source."""
@@ -122,8 +122,8 @@ class TopologyGraph:
     def add_node(self, name: str, agent: Optional[Any] = None, node_type: Optional['NodeType'] = None, **metadata) -> NodeInfo:
         """Add a node to the graph."""
         if name not in self.nodes:
-            # Extract is_convergence_point from metadata if provided, otherwise use default (True)
-            is_convergence = metadata.pop('is_convergence_point', True) if metadata else True
+            # Extract is_convergence_point from metadata if provided, otherwise use default (False)
+            is_convergence = metadata.pop('is_convergence_point', False) if metadata else False
             self.nodes[name] = NodeInfo(
                 name=name, 
                 agent=agent, 
@@ -188,6 +188,76 @@ class TopologyGraph:
                     target_agent=node_name,
                     wait_for=node.incoming_edges.copy()
                 )
+        
+        # Mark dynamic convergence points after analysis (default to auto-detect)
+        self.mark_dynamic_convergence_points()
+        
+        # Store analysis metadata
+        from datetime import datetime
+        self.metadata["analyzed"] = True
+        self.metadata["analysis_time"] = datetime.now().isoformat()
+    
+    def mark_dynamic_convergence_points(self, auto_detect: Optional[bool] = None) -> None:
+        """
+        Automatically mark nodes as convergence points based on topology.
+        
+        Args:
+            auto_detect: Whether to perform automatic detection. If None, checks config in metadata.
+        
+        Marks as convergence:
+        1. Exit points (designated exit nodes from metadata)
+        2. Nodes with multiple incoming edges (natural convergence)
+        
+        This is called after analyze() to set dynamic convergence points.
+        """
+        # Check config if auto_detect not explicitly provided
+        if auto_detect is None:
+            config = self.metadata.get('execution_config')
+            auto_detect = config.auto_detect_convergence if config else True
+        
+        if not auto_detect:
+            return
+        
+        # Get designated exit points from metadata
+        exit_points = set()
+        if self.metadata:
+            # Check for explicitly specified exit points
+            exit_points.update(self.metadata.get("exit_points", []))
+            # Also check original_exits for auto-injected User scenarios
+            exit_points.update(self.metadata.get("original_exits", []))
+        
+        # Mark nodes as convergence points
+        for node_name, node in self.nodes.items():
+            # Skip if already explicitly marked
+            if node.is_convergence_point:
+                continue
+                
+            # Check if this is a designated exit point
+            if node_name in exit_points:
+                node.is_convergence_point = True
+                self.convergence_points.add(node_name)
+                
+                # Create sync requirement (only if has incoming edges)
+                if node.incoming_edges:
+                    self.sync_requirements[node_name] = SyncRequirement(
+                        target_agent=node_name,
+                        wait_for=node.incoming_edges.copy()
+                    )
+                
+                logger.debug(f"Marked exit point '{node_name}' as dynamic convergence point")
+                
+            # Check if this has multiple incoming edges (natural convergence)
+            elif len(node.incoming_edges) > 1:
+                node.is_convergence_point = True
+                self.convergence_points.add(node_name)
+                
+                # Create sync requirement
+                self.sync_requirements[node_name] = SyncRequirement(
+                    target_agent=node_name,
+                    wait_for=node.incoming_edges.copy()
+                )
+                
+                logger.debug(f"Marked multi-input node '{node_name}' as dynamic convergence point")
     
     def get_next_agents(self, agent_name: str) -> List[str]:
         """Get all possible next agents from current agent."""

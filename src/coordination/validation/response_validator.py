@@ -515,14 +515,11 @@ class ValidationProcessor:
             allowed.append("call_tool")
         
         # Check if agent can return final response
-        # Two scenarios where final_response is allowed:
-        # 1. Agent has User access
+        # CHANGED: Only allow final_response for User access
+        # REMOVED: is_child_branch check - child branches must flow to convergence points
         has_user_access = self.topology_graph.has_user_access(agent.name)
         
-        # 2. Agent is in child branch (parallel invocation)
-        is_child_branch = branch and branch.metadata.get("is_child_branch") == True
-        
-        if has_user_access or is_child_branch:
+        if has_user_access:
             allowed.append("final_response")
         else:
             logger.info(f"VALIDATION: {agent.name} NOT allowed final_response - next_agents: {next_agents}")
