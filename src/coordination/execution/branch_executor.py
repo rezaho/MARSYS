@@ -1078,18 +1078,23 @@ class BranchExecutor:
         # If step result specifies next agent
         if step_result.next_agent:
             # SPECIAL CASE: Self-continuation
-            # Allow agent to continue with itself for tool processing or retries
-            if step_result.next_agent == current_agent:
+            # Use centralized helper to check if agents are the same
+            is_self_continuation = self.agent_registry.are_same_agent(
+                step_result.next_agent,
+                current_agent
+            )
+
+            if is_self_continuation:
                 # Check if this is a valid self-continuation scenario
                 if hasattr(step_result, 'metadata'):
                     metadata = step_result.metadata
-                    if (metadata.get('tool_continuation') or 
+                    if (metadata.get('tool_continuation') or
                         metadata.get('invalid_response') or
                         metadata.get('has_tool_calls') or
                         metadata.get('has_tool_results')):
                         logger.debug(f"Allowing self-continuation for '{current_agent}' (tools/retry)")
-                        return current_agent
-                
+                        return current_agent  # Return pool name
+
                 # Otherwise, check if self-loops are allowed in topology
                 allowed = allowed_transitions.get(current_agent, [])
                 if current_agent in allowed:

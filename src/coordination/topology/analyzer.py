@@ -221,16 +221,25 @@ class TopologyAnalyzer:
         from ...agents.registry import AgentRegistry
         
         nodes_added = 0
-        all_agents = AgentRegistry.all()
-        
+        all_agents = AgentRegistry.all_with_pools()
+
         for agent_name, agent in all_agents.items():
             # Skip if already in graph
             if agent_name in graph.nodes:
                 continue
+
+            # Import AgentPool for isinstance check
+            from ...agents.agent_pool import AgentPool
+
+            # Add if agent has allowed_peers defined or if it's a pool
+            if hasattr(agent, '_allowed_peers_init') or isinstance(agent, AgentPool):
+                # Check if agent has explicit convergence point setting
+                metadata = {}
+                if hasattr(agent, '_is_convergence_point') and agent._is_convergence_point is not None:
+                    metadata['is_convergence_point'] = agent._is_convergence_point
                 
-            # Add if agent has allowed_peers defined (indicates participation in auto_run)
-            if hasattr(agent, '_allowed_peers_init'):
-                graph.add_node(agent_name, agent=agent)
+                # Pass metadata through to graph.add_node (uses existing mechanism)
+                graph.add_node(agent_name, agent=agent, **metadata)
                 nodes_added += 1
                 logger.debug(f"Auto-discovered agent from registry: {agent_name}")
         

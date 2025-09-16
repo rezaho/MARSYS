@@ -26,6 +26,7 @@ class AgentRegistry:
         weakref.WeakValueDictionary()
     )
     _pools: Dict[str, "AgentPool"] = {}  # Strong references to pools
+    _pool_instance_map: Dict[str, str] = {}  # instance_name -> pool_name mapping
     _lock = threading.Lock()
     _counter: int = 0
 
@@ -89,17 +90,65 @@ class AgentRegistry:
     @classmethod
     def unregister(cls, name: str) -> None:
         """
-        Removes an agent registration.
+        Unregister an agent or pool.
+
+        - If name is a pool: removes the pool and all its instances
+        - If name is a regular agent: removes just that agent
+        - If name is a pool instance: raises an error (must unregister the pool)
 
         Args:
-            name: The name of the agent to unregister.
+            name: The name of the agent or pool to unregister.
+
+        Raises:
+            ValueError: If attempting to unregister a pool instance individually.
         """
         with cls._lock:
+            # Case 1: It's a pool instance - NOT ALLOWED
+            if name in cls._pool_instance_map:
+                pool_name = cls._pool_instance_map[name]
+                error_msg = (
+                    f"Cannot unregister pool instance '{name}' individually. "
+                    f"Use unregister('{pool_name}') to remove the entire pool."
+                )
+                logging.error(error_msg)
+                raise ValueError(error_msg)
+
+            # Case 2: It's a pool - remove pool and all instances
+            if name in cls._pools:
+                pool = cls._pools[name]
+
+                # Find and remove all instances of this pool
+                instances_to_remove = [
+                    instance_name
+                    for instance_name, mapped_pool in cls._pool_instance_map.items()
+                    if mapped_pool == name
+                ]
+
+                # Remove instances from _agents and _pool_instance_map
+                for instance_name in instances_to_remove:
+                    cls._agents.pop(instance_name, None)
+                    cls._pool_instance_map.pop(instance_name, None)
+
+                # Remove the pool
+                cls._pools.pop(name)
+
+                logging.info(
+                    f"Pool '{name}' and {len(instances_to_remove)} instances unregistered",
+                    extra={"agent_name": name}
+                )
+                return
+
+            # Case 3: It's a regular agent
             if name in cls._agents:
-                cls._agents.pop(name, None)
-                logging.info(f"Agent unregistered: {name}", extra={"agent_name": name})
-            # else:
-            # logging.debug(f"Attempted to unregister non-existent agent: {name}", extra={'agent_name': 'Registry'}) # Optional: log if not found
+                cls._agents.pop(name)
+                logging.info(f"Agent '{name}' unregistered", extra={"agent_name": name})
+                return
+
+            # Case 4: Nothing found
+            logging.warning(
+                f"Cannot unregister '{name}': not found in registry",
+                extra={"agent_name": "Registry"}
+            )
 
     @classmethod
     def get(cls, name: str) -> Optional["BaseAgent"]:
@@ -124,6 +173,27 @@ class AgentRegistry:
         """
         with cls._lock:
             return dict(cls._agents)
+
+    @classmethod
+    def all_with_pools(cls) -> Dict[str, Union["BaseAgent", "AgentPool"]]:
+        """
+        Returns a dictionary of all registered agents and pools.
+
+        This method is used during topology building to ensure pools
+        are visible as valid invocation targets.
+
+        Returns:
+            A dictionary mapping names to agent instances or pool objects.
+        """
+        from .agent_pool import AgentPool
+
+        with cls._lock:
+            result = dict(cls._agents)
+            # Add pools that aren't already represented
+            for pool_name, pool in cls._pools.items():
+                if pool_name not in result:
+                    result[pool_name] = pool
+            return result
 
     @classmethod
     def register_pool(cls, pool: "AgentPool") -> None:
@@ -176,6 +246,7 @@ class AgentRegistry:
                     # Update the instance's internal name if it has one
                     instance.name = instance_name
                 cls._agents[instance_name] = instance
+                cls._pool_instance_map[instance_name] = pool_name  # Track mapping
                 
             logging.info(
                 f"Pool registered: {pool_name} with {pool.num_instances} instances",
@@ -245,15 +316,122 @@ class AgentRegistry:
     def is_pool(cls, name: str) -> bool:
         """
         Check if a name refers to a pool rather than an individual agent.
-        
+
         Args:
             name: Name to check
-            
+
         Returns:
             True if name refers to a pool, False otherwise
         """
         return name in cls._pools
-    
+
+    @classmethod
+    def is_pool_instance(cls, name: str) -> bool:
+        """
+        Check if a name is a pool instance (e.g., BrowserAgent_0).
+
+        Args:
+            name: Name to check
+
+        Returns:
+            True if name is a pool instance, False otherwise
+        """
+        return name in cls._pool_instance_map
+
+    @classmethod
+    def get_pool_name_for_instance(cls, instance_name: str) -> Optional[str]:
+        """
+        Get the pool name for an instance name.
+
+        Args:
+            instance_name: Instance name (e.g., BrowserAgent_0)
+
+        Returns:
+            Pool name (e.g., BrowserAgent) if instance exists, None otherwise
+        """
+        return cls._pool_instance_map.get(instance_name)
+
+    @classmethod
+    def normalize_agent_name(cls, agent_name: str) -> str:
+        """
+        Normalize agent name by converting pool instances to pool names.
+
+        This is the central method for handling the pool instance naming issue.
+        It ensures that instance names like "BrowserAgent_0" are converted to
+        their pool name "BrowserAgent" for consistent lookups.
+
+        Args:
+            agent_name: Agent name (could be regular agent, pool, or pool instance)
+
+        Returns:
+            Normalized name (pool name for instances, original otherwise)
+
+        Examples:
+            "BrowserAgent_0" -> "BrowserAgent"
+            "BrowserAgent" -> "BrowserAgent"
+            "RegularAgent" -> "RegularAgent"
+        """
+        if cls.is_pool_instance(agent_name):
+            pool_name = cls.get_pool_name_for_instance(agent_name)
+            if pool_name:
+                return pool_name
+        return agent_name
+
+    @classmethod
+    def are_same_agent(cls, agent1: str, agent2: str) -> bool:
+        """
+        Check if two agent names refer to the same agent.
+
+        This method handles the comparison of agent names accounting for pool instances.
+        It's used to determine if "BrowserAgent_0" and "BrowserAgent" are the same
+        for purposes like tool continuation.
+
+        Args:
+            agent1: First agent name
+            agent2: Second agent name
+
+        Returns:
+            True if they refer to the same agent/pool
+
+        Examples:
+            are_same_agent("BrowserAgent_0", "BrowserAgent") -> True
+            are_same_agent("BrowserAgent_0", "BrowserAgent_1") -> True
+            are_same_agent("Agent1", "Agent2") -> False
+        """
+        # Normalize both names
+        normalized1 = cls.normalize_agent_name(agent1)
+        normalized2 = cls.normalize_agent_name(agent2)
+        return normalized1 == normalized2
+
+    @classmethod
+    def get_pool_instance(cls, instance_name: str, branch_id: str) -> Optional["BaseAgent"]:
+        """
+        Get a specific pool instance, verifying it's allocated to the branch.
+
+        Args:
+            instance_name: Instance name (e.g., BrowserAgent_0)
+            branch_id: Branch ID requesting the instance
+
+        Returns:
+            Agent instance if allocated to branch, None otherwise
+        """
+        pool_name = cls._pool_instance_map.get(instance_name)
+        if not pool_name:
+            return None
+
+        pool = cls._pools.get(pool_name)
+        if not pool:
+            return None
+
+        # Check if this branch has this specific instance
+        with pool._lock:
+            allocation = pool.allocated_instances.get(branch_id)
+            if allocation and allocation.agent_instance.name == instance_name:
+                return allocation.agent_instance
+
+        # Instance not allocated to this branch
+        return None
+
     @classmethod
     def get_or_acquire(
         cls,
@@ -261,21 +439,29 @@ class AgentRegistry:
         branch_id: Optional[str] = None
     ) -> Optional[Union["BaseAgent", Any]]:
         """
-        Get an agent or acquire from pool if name refers to a pool.
-        
+        Get an agent or acquire from pool if name refers to a pool or pool instance.
+
         Args:
-            name: Name of agent or pool
-            branch_id: Branch ID (required if name is a pool)
-            
+            name: Name of agent, pool, or pool instance
+            branch_id: Branch ID (required if name is a pool or pool instance)
+
         Returns:
             Agent instance or None
         """
+        # Check if it's a pool instance first
+        if cls.is_pool_instance(name):
+            if not branch_id:
+                logging.error(f"branch_id required for pool instance '{name}'")
+                return None
+            return cls.get_pool_instance(name, branch_id)
+
         # Check if it's a pool
-        if cls.is_pool(name):
+        elif cls.is_pool(name):
             if not branch_id:
                 logging.error(f"branch_id required to acquire from pool '{name}'")
                 return None
             return cls.get_from_pool(name, branch_id)
+
         else:
             # Regular agent
             return cls.get(name)
@@ -323,18 +509,20 @@ class AgentRegistry:
     def clear(cls) -> None:
         """
         Removes all agent and pool registrations. Useful for test cleanup.
-        
+
         This method should be used with caution in production code as it
         removes all agent references from the registry.
         """
         with cls._lock:
             agent_names = list(cls._agents.keys())
             pool_names = list(cls._pools.keys())
-            
+            instance_mappings = len(cls._pool_instance_map)
+
             cls._agents.clear()
             cls._pools.clear()
+            cls._pool_instance_map.clear()  # Clear instance mappings too
             cls._counter = 0
-            
+
             if agent_names or pool_names:
                 msg_parts = []
                 if agent_names:
