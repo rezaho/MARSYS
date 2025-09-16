@@ -1736,83 +1736,61 @@ class DynamicBranchSpawner:
         context: Dict[str, Any]
     ) -> List[asyncio.Task]:
         """
-        Execute branches in batches based on available instances.
-        
-        This unified method handles all scenarios:
-        - Sequential (batch_size=1)
-        - Batched (batch_size<total)
-        - Parallel (batch_size=total)
+        Execute branches with TRUE parallel execution - no batching!
+
+        Note: The method name is historical. There is no batching anymore.
+        Each branch independently acquires, executes, and releases resources.
         """
         all_tasks = []
         agent_name = group.target_agent
-        
-        # Determine batch size
-        available_count = await self._get_available_instance_count(agent_name)
-        if available_count == 0:
-            logger.error(f"No instances available for '{agent_name}'")
-            return []
-        
-        batch_size = min(available_count, len(branches))
-        total_batches = (len(branches) + batch_size - 1) // batch_size
-        
-        logger.info(
-            f"Executing {len(branches)} branches of '{agent_name}' "
-            f"in {total_batches} batches (batch_size={batch_size})"
-        )
-        
-        # Process branches in batches
-        for batch_num in range(0, len(branches), batch_size):
-            batch = branches[batch_num:batch_num + batch_size]
-            batch_tasks = []
-            
-            # Start all branches in this batch
-            for branch in batch:
-                inv_data = branch_to_invocation[branch.id]
-                
-                # Acquire instance - will raise if fails
-                try:
-                    instance = await self._acquire_agent_for_branch(
-                        agent_name,
-                        branch.id,
-                        timeout=60.0  # Increased timeout for queueing scenarios
-                    )
-                except RuntimeError as e:
-                    logger.error(f"Failed to acquire instance for branch {branch.id}: {e}")
-                    # Mark branch as failed in group
-                    group.failed_branches.add(branch.id)
-                    continue
-                
-                # Track parent-child relationship (agent tracking now handled by allocation)
-                self.child_parent_map[branch.id] = group.parent_branch_id
-                
-                # Add group context to branch metadata
-                branch.metadata['parallel_group_id'] = group.group_id
-                branch.metadata['parallel_group_size'] = group.total_branches
-                
-                # Create task
-                logger.debug(f"Creating task for branch {branch.id} with request: {inv_data['request']}")
-                task = asyncio.create_task(
-                    self._execute_branch_with_group_awareness(
-                        branch, inv_data['request'], context, group
-                    )
+
+        # Log pool status if applicable
+        if self.agent_registry and self.agent_registry.is_pool(agent_name):
+            pool = self.agent_registry.get_pool(agent_name)
+            if pool:
+                available = pool.get_available_count() if hasattr(pool, 'get_available_count') else 0
+                total = pool.num_instances if hasattr(pool, 'num_instances') else 0
+                logger.info(
+                    f"Starting parallel execution of {len(branches)} branches "
+                    f"for pool '{agent_name}' ({available}/{total} instances available)"
                 )
-                
-                self.active_branches[branch.id] = task
-                batch_tasks.append(task)
-            
-            # For resource-constrained execution, wait for batch to complete
-            # before starting next batch (to free up instances)
-            is_last_batch = (batch_num + batch_size >= len(branches))
-            if not is_last_batch and batch_size < len(branches):
-                logger.info(f"Waiting for batch {batch_num//batch_size + 1}/{total_batches} to complete before next batch")
-                await asyncio.gather(*batch_tasks, return_exceptions=True)
-                
-                # Release instances for reuse in next batch
-                for branch in batch:
-                    await self._release_agent_instance(agent_name, branch.id)
-            
-            all_tasks.extend(batch_tasks)
-        
+        else:
+            logger.info(
+                f"Starting parallel execution of {len(branches)} branches "
+                f"for agent '{agent_name}'"
+            )
+
+        # Create ALL tasks immediately - true parallel execution!
+        for branch in branches:
+            inv_data = branch_to_invocation[branch.id]
+
+            # Track parent-child relationship
+            self.child_parent_map[branch.id] = group.parent_branch_id
+
+            # Add group metadata to branch
+            branch.metadata['parallel_group_id'] = group.group_id
+            branch.metadata['parallel_group_size'] = group.total_branches
+
+            # Create task using wrapper that handles acquire/execute/release
+            task = asyncio.create_task(
+                self._acquire_execute_release_branch(
+                    agent_name=agent_name,
+                    branch=branch,
+                    request=inv_data['request'],
+                    context=context,
+                    group=group
+                )
+            )
+
+            # Track active branch
+            self.active_branches[branch.id] = task
+            all_tasks.append(task)
+
+        logger.info(
+            f"Created {len(all_tasks)} independent tasks. "
+            f"Resources will be utilized as soon as available."
+        )
+
         return all_tasks
     
     async def _execute_branch_with_group_awareness(
@@ -1885,7 +1863,62 @@ class DynamicBranchSpawner:
                 await self._trigger_group_convergence(group)
             
             raise
-    
+
+    async def _acquire_execute_release_branch(
+        self,
+        agent_name: str,
+        branch: ExecutionBranch,
+        request: Any,
+        context: Dict[str, Any],
+        group: ParallelInvocationGroup
+    ) -> BranchResult:
+        """
+        Thin wrapper that adds resource management to existing execution.
+
+        This ensures resources are released immediately upon completion,
+        enabling true parallel execution with optimal resource utilization.
+        """
+        resource = None  # Initialize to avoid NameError if acquisition fails
+        branch_id = branch.id
+
+        try:
+            # Phase 1: Acquire resource (will queue if none available)
+            resource = await self._acquire_agent_for_branch(
+                agent_name, branch_id, timeout=120.0
+            )
+
+            # Phase 2: Execute using EXISTING logic (no duplication!)
+            result = await self._execute_branch_with_group_awareness(
+                branch, request, context, group
+            )
+
+            return result
+
+        except Exception as e:
+            # Mark branch as failed in group for proper tracking
+            group.failed_branches.add(branch_id)
+            logger.error(f"Branch {branch_id} failed: {e}")
+
+            # Still try to trigger convergence with partial results if appropriate
+            if group.should_trigger_convergence(min_success_ratio=0.5):
+                await self._trigger_group_convergence(group)
+
+            raise
+
+        finally:
+            # Phase 3: Always release resource, even on failure
+            # Check agent_allocations instead of resource variable to handle all cases:
+            # - If acquisition failed, there's no allocation to release
+            # - If acquisition succeeded but execution failed, we must release
+            if branch_id in self.agent_allocations:
+                self._release_agent_for_branch(branch_id)
+                logger.debug(f"Released resource for branch {branch_id}")
+
+            # Clean up active branch tracking (needed if acquisition failed,
+            # since _execute_branch_with_group_awareness won't be called)
+            if branch_id in self.active_branches:
+                del self.active_branches[branch_id]
+
     async def _trigger_group_convergence(self, group: ParallelInvocationGroup):
         """Trigger convergence points after all branches in a group complete."""
         # Use lock to prevent race conditions
