@@ -3938,8 +3938,9 @@ class Agent(BaseAgent):
             api_model_kwargs["response_format"] = {"type": "json_object"}
 
         try:
-            # Call the model with prepared messages
-            raw_model_output: Any = self.model.run(
+            # Use async model call for true parallel execution
+            # BaseAPIModel.arun() handles fallback to thread executor if needed
+            raw_model_output: Any = await self.model.arun(
                 messages=messages,
                 max_tokens=max_tokens_override,
                 temperature=temperature_override,

@@ -169,6 +169,114 @@ class APIProviderAdapter(ABC):
         pass
 
 
+class AsyncBaseAPIAdapter(APIProviderAdapter):
+    """
+    Async version of APIProviderAdapter using aiohttp for true async calls.
+
+    This class provides async HTTP capabilities while reusing the parent's
+    request formatting and response harmonization logic.
+    """
+
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        self._session = None
+
+    async def _ensure_session(self):
+        """
+        Ensure aiohttp session exists.
+
+        Creates a persistent session for connection pooling and efficiency.
+        """
+        if self._session is None or self._session.closed:
+            import aiohttp
+            # Create session with optimized settings
+            connector = aiohttp.TCPConnector(
+                limit=100,  # Total connection limit
+                limit_per_host=30,  # Per-host connection limit
+                ttl_dns_cache=300  # DNS cache timeout
+            )
+            self._session = aiohttp.ClientSession(connector=connector)
+        return self._session
+
+    async def arun(self, messages: List[Dict], **kwargs) -> HarmonizedResponse:
+        """
+        Async orchestration flow with aiohttp.
+
+        This method provides true async HTTP calls, allowing the event loop
+        to handle other branches while waiting for API responses.
+
+        Args:
+            messages: List of message dictionaries
+            **kwargs: Additional parameters for the API call
+
+        Returns:
+            HarmonizedResponse: Standardized response object
+
+        Raises:
+            ModelError: For any API or network errors
+        """
+        import aiohttp
+        from src.agents.exceptions import ModelError
+
+        try:
+            # Record start time for response time calculation
+            request_start_time = time.time()
+
+            # Build request components using parent's abstract methods
+            headers = self.get_headers()
+            payload = self.format_request_payload(messages, **kwargs)
+            url = self.get_endpoint_url()
+
+            # Get or create session
+            session = await self._ensure_session()
+
+            # Make async HTTP request
+            # While waiting for response, event loop can handle other branches
+            async with session.post(
+                url,
+                headers=headers,
+                json=payload,
+                timeout=aiohttp.ClientTimeout(total=180)
+            ) as response:
+                # Check status before reading body
+                if response.status != 200:
+                    text = await response.text()
+                    print(f"DEBUG - API Error Response:")
+                    print(f"  Status Code: {response.status}")
+                    print(f"  Response Text: {text}")
+                    print(f"  Request URL: {url}")
+                    print(f"  Request Headers: {headers}")
+                    print(f"  Request Payload: {payload}")
+
+                    # Raise aiohttp exception
+                    response.raise_for_status()
+
+                # Read JSON response
+                raw_response = await response.json()
+
+            # Reuse parent's harmonization logic
+            return self.harmonize_response(raw_response, request_start_time)
+
+        except aiohttp.ClientError as e:
+            # Convert aiohttp exceptions to framework's ModelError
+            error_message = f"Async API request failed: {str(e)}"
+            if hasattr(e, 'status'):
+                error_message = f"API error (status {e.status}): {str(e)}"
+            raise ModelError(error_message)
+        except Exception as e:
+            # Handle unexpected errors
+            raise ModelError(f"Unexpected error in async API call: {str(e)}")
+
+    async def cleanup(self):
+        """
+        Clean up aiohttp session on shutdown.
+
+        Important for proper resource cleanup and avoiding warnings.
+        """
+        if self._session and not self._session.closed:
+            await self._session.close()
+
+
 class OpenAIAdapter(APIProviderAdapter):
     """Adapter for OpenAI and OpenAI-compatible APIs (OpenRouter, Groq)"""
 
@@ -376,6 +484,11 @@ class OpenAIAdapter(APIProviderAdapter):
             reasoning=message.get("reasoning"),  # o1 models
             metadata=metadata,
         )
+
+
+class AsyncOpenAIAdapter(AsyncBaseAPIAdapter, OpenAIAdapter):
+    """Async version of OpenAI adapter using aiohttp."""
+    pass
 
 
 class OpenRouterAdapter(APIProviderAdapter):
@@ -648,6 +761,11 @@ class OpenRouterAdapter(APIProviderAdapter):
         )
 
 
+class AsyncOpenRouterAdapter(AsyncBaseAPIAdapter, OpenRouterAdapter):
+    """Async version of OpenRouter adapter using aiohttp."""
+    pass
+
+
 class AnthropicAdapter(APIProviderAdapter):
     """Adapter for Anthropic Claude API"""
 
@@ -814,6 +932,11 @@ class AnthropicAdapter(APIProviderAdapter):
             tool_calls=tool_calls,
             metadata=metadata,
         )
+
+
+class AsyncAnthropicAdapter(AsyncBaseAPIAdapter, AnthropicAdapter):
+    """Async version of Anthropic adapter using aiohttp."""
+    pass
 
 
 class GoogleAdapter(APIProviderAdapter):
@@ -1238,6 +1361,11 @@ class GoogleAdapter(APIProviderAdapter):
             tool_calls=tool_calls,  # Now includes native Google function calls
             metadata=metadata,
         )
+
+
+class AsyncGoogleAdapter(AsyncBaseAPIAdapter, GoogleAdapter):
+    """Async version of Google Gemini adapter using aiohttp."""
+    pass
 
 
 class ProviderAdapterFactory:
@@ -1729,6 +1857,25 @@ class BaseAPIModel:
             **kwargs,
         )
 
+        # Try to create async adapter if available
+        self.async_adapter = None
+        if self.adapter:
+            adapter_class_name = self.adapter.__class__.__name__
+            async_adapter_class_name = f"Async{adapter_class_name}"
+
+            # Look for async adapter class in the current module
+            import sys
+            current_module = sys.modules[self.__module__]
+            if hasattr(current_module, async_adapter_class_name):
+                async_adapter_class = getattr(current_module, async_adapter_class_name)
+                # Create async adapter with same configuration
+                self.async_adapter = async_adapter_class(
+                    model_name=model_name,
+                    api_key=api_key,
+                    base_url=base_url,
+                    **kwargs  # Pass through any provider-specific kwargs
+                )
+
     # REMOVED: _robust_json_loads method - moved to src/utils/parsing.py
     # REMOVED: _close_json_braces method - moved to src/utils/parsing.py
     # REMOVED: parse_model_response method - action parsing handled in coordination validation
@@ -1816,6 +1963,96 @@ class BaseAPIModel:
         except Exception as e:
             print(f"BaseAPIModel.run failed: {e}")
             raise
+
+    async def arun(
+        self,
+        messages: List[Dict[str, str]],
+        json_mode: bool = False,
+        max_tokens: Optional[int] = None,
+        temperature: Optional[float] = None,
+        top_p: Optional[float] = None,
+        tools: Optional[List[Dict[str, Any]]] = None,
+        **kwargs,
+    ) -> HarmonizedResponse:
+        """
+        Async version of run method.
+
+        Uses async adapter if available, otherwise falls back to running
+        sync adapter in thread executor.
+
+        Args:
+            messages: A list of message dictionaries, following the OpenAI format.
+            json_mode: If True, requests JSON output from the model.
+            max_tokens: Overrides the default max_tokens for this specific call.
+            temperature: Overrides the default temperature for this specific call.
+            top_p: Overrides the default top_p for this specific call.
+            tools: Optional list of tools for function calling.
+            **kwargs: Additional parameters to pass to the API.
+
+        Returns:
+            HarmonizedResponse object with standardized format and metadata
+        """
+        # Include instance thinking_budget if not provided in kwargs and instance has it
+        if (
+            "thinking_budget" not in kwargs
+            and hasattr(self, "thinking_budget")
+            and self.thinking_budget is not None
+        ):
+            kwargs["thinking_budget"] = self.thinking_budget
+
+        if self.async_adapter:
+            # Use native async adapter for best performance
+            adapter_response = await self.async_adapter.arun(
+                messages=messages,
+                json_mode=json_mode,
+                max_tokens=max_tokens,
+                temperature=temperature,
+                top_p=top_p,
+                tools=tools,
+                **kwargs
+            )
+
+            # Check if response is an ErrorResponse
+            if isinstance(adapter_response, ErrorResponse):
+                from src.agents.exceptions import ModelError
+                raise ModelError(
+                    message=f"API Error: {adapter_response.error}",
+                    error_code=adapter_response.error_code,
+                    context={
+                        "error_type": adapter_response.error_type,
+                        "provider": adapter_response.provider,
+                    }
+                )
+
+            # Apply post-processing if configured
+            if self._response_processor and adapter_response.content:
+                adapter_response.content = self._response_processor(adapter_response.content)
+
+            return adapter_response
+        else:
+            # Fallback: run sync adapter in thread executor
+            import asyncio
+            loop = asyncio.get_event_loop()
+
+            # Create a wrapper function that calls the sync method
+            def sync_run():
+                return self.run(
+                    messages=messages,
+                    json_mode=json_mode,
+                    max_tokens=max_tokens,
+                    temperature=temperature,
+                    top_p=top_p,
+                    tools=tools,
+                    **kwargs
+                )
+
+            # Execute in thread pool to avoid blocking
+            return await loop.run_in_executor(None, sync_run)
+
+    async def cleanup(self):
+        """Clean up async resources."""
+        if self.async_adapter and hasattr(self.async_adapter, 'cleanup'):
+            await self.async_adapter.cleanup()
 
 
 class PeftHead:
