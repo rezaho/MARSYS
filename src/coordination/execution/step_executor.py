@@ -439,10 +439,17 @@ class StepExecutor:
         
         # Build actions string
         if not available_actions:
-            # Defensive fallback - shouldn't happen
-            actions_str = "'final_response'"
-            available_actions = ["'final_response'"]
-            action_descriptions = ['- If `next_action` is `"final_response"`:\n     `{"response": "Your final answer..."}`']
+            # This indicates a configuration error - agent cannot do anything
+            # This should never happen in a properly configured topology
+            raise RuntimeError(
+                f"Agent '{agent_name}' has no available actions. "
+                f"The agent cannot invoke other agents (no outgoing edges in topology) "
+                f"and cannot return final response (no user access or exit point designation). "
+                f"This suggests a topology configuration error. "
+                f"Please check that the agent has either: "
+                f"1) Outgoing edges to other agents, or "
+                f"2) Is designated as an exit point or has user access."
+            )
         else:
             actions_str = ", ".join(available_actions)
         
