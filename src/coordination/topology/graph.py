@@ -260,8 +260,30 @@ class TopologyGraph:
                 logger.debug(f"Marked multi-input node '{node_name}' as dynamic convergence point")
     
     def get_next_agents(self, agent_name: str) -> List[str]:
-        """Get all possible next agents from current agent."""
-        return self.adjacency.get(agent_name, [])
+        """
+        Get all possible next agents from current agent.
+
+        Handles both regular agent names and pool instance names.
+        For pool instances (e.g., "BrowserAgent_0"), normalizes to pool name
+        before lookup in the adjacency list.
+
+        Args:
+            agent_name: Name of the agent (can be regular, pool, or instance)
+
+        Returns:
+            List of next agent names from topology
+        """
+        # Import here to avoid circular dependency
+        from ...agents.registry import AgentRegistry
+
+        # Normalize the agent name (converts instance to pool name if needed)
+        normalized_name = AgentRegistry.normalize_agent_name(agent_name)
+
+        # Log if normalization occurred for debugging
+        if normalized_name != agent_name:
+            logger.debug(f"Normalized '{agent_name}' to '{normalized_name}' for topology lookup")
+
+        return self.adjacency.get(normalized_name, [])
     
     def get_previous_agents(self, agent_name: str) -> List[str]:
         """Get all agents that can lead to this agent."""
