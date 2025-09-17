@@ -12,6 +12,7 @@ from difflib import get_close_matches
 
 if TYPE_CHECKING:
     from ...agents import BaseAgent
+    from ..event_bus import EventBus
 
 logger = logging.getLogger(__name__)
 
@@ -26,8 +27,15 @@ def find_similar_tool_names(tool_name: str, available_tools: List[str], cutoff: 
 
 class RealToolExecutor:
     """Executes actual tools instead of returning mock results."""
-    
-    def __init__(self):
+
+    def __init__(self, event_bus: Optional['EventBus'] = None):
+        """
+        Initialize tool executor with optional event bus.
+
+        Args:
+            event_bus: Optional EventBus for emitting tool execution events
+        """
+        self.event_bus = event_bus
         self.tool_registry = {}
         self.agent_tool_cache = {}  # Cache agent tools to avoid repeated introspection
         self._build_tool_registry()
@@ -142,9 +150,26 @@ class RealToolExecutor:
                 except json.JSONDecodeError as e:
                     logger.error(f"Failed to parse tool arguments for {tool_name}: {e}")
                     tool_args = {}
-                
+
                 logger.info(f"Executing tool: {tool_name} with args: {tool_args}")
-                
+
+                # Emit tool start event if event_bus is available
+                start_time = 0
+                if self.event_bus:
+                    from ..status.events import ToolCallEvent
+                    import time
+
+                    start_time = time.time()
+
+                    await self.event_bus.emit(ToolCallEvent(
+                        session_id=context.get("session_id", "unknown"),
+                        branch_id=context.get("branch_id"),
+                        agent_name=agent.name if hasattr(agent, 'name') else str(agent),
+                        tool_name=tool_name,
+                        status="started",
+                        arguments=tool_args
+                    ))
+
                 # Find and execute the tool
                 tool_func = None
                 tool_source = None
@@ -224,6 +249,20 @@ class RealToolExecutor:
                     logger.debug(f"Found tool {tool_name} from {tool_source}")
                     # Execute the tool
                     result = await self._execute_single_tool(tool_func, tool_args, tool_name)
+
+                    # Emit tool complete event
+                    if self.event_bus:
+                        import time
+                        from ..status.events import ToolCallEvent
+
+                        await self.event_bus.emit(ToolCallEvent(
+                            session_id=context.get("session_id", "unknown"),
+                            branch_id=context.get("branch_id"),
+                            agent_name=agent.name if hasattr(agent, 'name') else str(agent),
+                            tool_name=tool_name,
+                            status="completed",
+                            duration=time.time() - start_time if start_time else None
+                        ))
                 else:
                     # Create helpful error message with fuzzy matching
                     all_tools = list(self.tool_registry.keys()) + list(agent_tools.keys())
@@ -253,10 +292,24 @@ class RealToolExecutor:
                 
             except Exception as e:
                 logger.error(f"Error executing tool {tool_name}: {e}", exc_info=True)
-                
+
+                # Emit tool failed event
+                if self.event_bus:
+                    import time
+                    from ..status.events import ToolCallEvent
+
+                    await self.event_bus.emit(ToolCallEvent(
+                        session_id=context.get("session_id", "unknown"),
+                        branch_id=context.get("branch_id"),
+                        agent_name=agent.name if hasattr(agent, 'name') else str(agent),
+                        tool_name=tool_name,
+                        status="failed",
+                        duration=time.time() - start_time if 'start_time' in locals() and start_time else None
+                    ))
+
                 # Create clear error message for the agent
                 error_msg = f"Tool '{tool_name}' failed: {str(e)}"
-                
+
                 results.append({
                     "tool_call_id": tool_id,
                     "tool_name": tool_name,

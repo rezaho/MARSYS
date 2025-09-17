@@ -24,6 +24,7 @@ if TYPE_CHECKING:
     from ...agents import BaseAgent
     from ..communication.user_node_handler import UserNodeHandler
     from ..topology import TopologyGraph
+    from ..event_bus import EventBus
 
 logger = logging.getLogger(__name__)
 
@@ -79,12 +80,14 @@ class StepExecutor:
         self,
         tool_executor: Optional['RealToolExecutor'] = None,
         user_node_handler: Optional['UserNodeHandler'] = None,
+        event_bus: Optional['EventBus'] = None,
         max_retries: int = 3,
         retry_delay: float = 1.0
     ):
-        # Use RealToolExecutor by default if none provided
-        self.tool_executor = tool_executor or RealToolExecutor()
+        # Pass event_bus to tool executor
+        self.tool_executor = tool_executor or RealToolExecutor(event_bus=event_bus)
         self.user_node_handler = user_node_handler
+        self.event_bus = event_bus
         self.max_retries = max_retries
         self.retry_delay = retry_delay
         
@@ -138,7 +141,21 @@ class StepExecutor:
         
         # Normal agent handling
         agent_name = agent.name if hasattr(agent, 'name') else str(agent)
-        
+
+        # Emit start event if event_bus is available
+        if self.event_bus:
+            from ..status.events import AgentStartEvent
+
+            # Create request summary
+            request_summary = str(request)[:100] if request else None
+
+            await self.event_bus.emit(AgentStartEvent(
+                session_id=context.get("session_id", "unknown"),
+                branch_id=context.get("branch_id"),
+                agent_name=agent_name,
+                request_summary=request_summary
+            ))
+
         # Create step context
         step_context = StepContext(
             session_id=context.get("session_id", ""),
@@ -219,7 +236,21 @@ class StepExecutor:
                 else:
                     raw_response = agent_response
                     context_selection = None
-                
+
+                # Emit thinking event if there's a thought
+                if self.event_bus and isinstance(raw_response, dict):
+                    thought = raw_response.get("thought") or raw_response.get("reasoning")
+                    if thought:
+                        from ..status.events import AgentThinkingEvent
+
+                        await self.event_bus.emit(AgentThinkingEvent(
+                            session_id=context.get("session_id", "unknown"),
+                            branch_id=context.get("branch_id"),
+                            agent_name=agent_name,
+                            thought=thought,
+                            action_type=raw_response.get("next_action")
+                        ))
+
                 # 3. Process response
                 step_result = await self._process_agent_response(
                     agent,
@@ -302,7 +333,21 @@ class StepExecutor:
                         # Store in step result for passing to next agent
                         step_result.saved_context = saved_context
                         logger.debug(f"Extracted saved context from {agent_name}: {list(saved_context.keys())}")
-                
+
+                # Emit completion event
+                if self.event_bus:
+                    from ..status.events import AgentCompleteEvent
+
+                    await self.event_bus.emit(AgentCompleteEvent(
+                        session_id=context.get("session_id", "unknown"),
+                        branch_id=context.get("branch_id"),
+                        agent_name=agent_name,
+                        success=step_result.success,
+                        duration=time.time() - start_time,
+                        next_action=step_result.action_type,
+                        error=step_result.error
+                    ))
+
                 return step_result
                 
             except Exception as e:
@@ -322,7 +367,21 @@ class StepExecutor:
             error=f"Max retries exceeded. Last error: {last_error}",
             requires_retry=False  # Don't retry further
         )
-        
+
+        # Emit failure completion event
+        if self.event_bus:
+            from ..status.events import AgentCompleteEvent
+
+            await self.event_bus.emit(AgentCompleteEvent(
+                session_id=context.get("session_id", "unknown"),
+                branch_id=context.get("branch_id"),
+                agent_name=agent_name,
+                success=False,
+                duration=duration,
+                next_action=None,
+                error=f"Max retries exceeded. Last error: {last_error}"
+            ))
+
         self._update_stats(agent_name, failed_result, retry_count, duration)
         return failed_result
     

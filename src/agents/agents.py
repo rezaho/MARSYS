@@ -2232,6 +2232,7 @@ Example for `final_response`:
         parent_completes_on_spawn: Optional[bool] = None,
         dynamic_convergence_enabled: Optional[bool] = None,
         steering_mode: Optional[str] = None,  # "auto", "always", "never"
+        verbosity: Optional[int] = None,  # NEW: Verbosity level (0-2) for status updates
     ) -> Union[Dict[str, Any], str]:
         """
         Run agent with automatic topology creation from allowed_peers.
@@ -2250,7 +2251,12 @@ Example for `final_response`:
                 - "terminal": Enable terminal-based user interaction
                 - CommunicationManager instance: Use custom communication manager
                 - None (default): No user interaction (auto-injected User nodes auto-complete)
-            
+            verbosity: Optional verbosity level (0-2) for status updates:
+                - 0 (QUIET): Minimal output, only critical events
+                - 1 (NORMAL): Standard output with agent transitions
+                - 2 (VERBOSE): Detailed output with thoughts and tool calls
+                - None (default): Status updates disabled
+
         Returns:
             The final response from the agent execution, either as a dict or string.
             
@@ -2331,19 +2337,23 @@ Example for `final_response`:
             # Note: TopologyAnalyzer will auto-discover all agents from registry
             # No need to manually add peers here
             
-            # Import ExecutionConfig
-            from ..coordination.config import ExecutionConfig
-            
+            # Import ExecutionConfig and StatusConfig
+            from ..coordination.config import ExecutionConfig, StatusConfig
+
             # Create execution config from individual flags if any are specified
             execution_config = None
-            if any(x is not None for x in [auto_detect_convergence, parent_completes_on_spawn, 
-                                          dynamic_convergence_enabled, steering_mode]):
+            if any(x is not None for x in [auto_detect_convergence, parent_completes_on_spawn,
+                                          dynamic_convergence_enabled, steering_mode, verbosity]):
                 execution_config = ExecutionConfig(
                     auto_detect_convergence=auto_detect_convergence if auto_detect_convergence is not None else True,
                     parent_completes_on_spawn=parent_completes_on_spawn if parent_completes_on_spawn is not None else True,
                     dynamic_convergence_enabled=dynamic_convergence_enabled if dynamic_convergence_enabled is not None else True,
                     steering_mode=steering_mode if steering_mode is not None else "auto"
                 )
+
+                # Add status configuration if verbosity is provided
+                if verbosity is not None:
+                    execution_config.status = StatusConfig.from_verbosity(verbosity)
             
             # Prepare execution context
             exec_context = {
@@ -2396,10 +2406,11 @@ Example for `final_response`:
                 else:
                     self.logger.warning(f"Invalid user_interaction value: {user_interaction}")
             
-            # Create Orchestra instance with optional communication
+            # Create Orchestra instance with optional communication and execution config
             orchestra = Orchestra(
                 agent_registry=AgentRegistry,
-                communication_manager=comm_manager  # Pass the manager if available
+                communication_manager=comm_manager,  # Pass the manager if available
+                execution_config=execution_config if execution_config and execution_config.status.enabled else None
             )
             
             # Execute with Orchestra

@@ -39,6 +39,7 @@ from .routing.router import Router
 from .routing.types import RoutingContext
 from .rules.rule_factory import RuleFactory, RuleFactoryConfig
 from .state.state_manager import StateManager
+from .event_bus import EventBus
 
 if TYPE_CHECKING:
     from .communication.manager import CommunicationManager
@@ -123,28 +124,6 @@ class OrchestraResult:
         return isinstance(self.final_response, dict)
 
 
-class EventBus:
-    """Simple event bus for coordination events."""
-    
-    def __init__(self):
-        self.events = []
-        self.listeners = {}
-    
-    async def emit(self, event: Any) -> None:
-        """Emit an event to all listeners."""
-        self.events.append(event)
-        event_type = type(event).__name__
-        if event_type in self.listeners:
-            for listener in self.listeners[event_type]:
-                await listener(event)
-    
-    def subscribe(self, event_type: str, listener: callable) -> None:
-        """Subscribe to events of a specific type."""
-        if event_type not in self.listeners:
-            self.listeners[event_type] = []
-        self.listeners[event_type].append(listener)
-
-
 class Orchestra:
     """
     High-level orchestration component for multi-agent workflows.
@@ -155,25 +134,32 @@ class Orchestra:
     """
     
     def __init__(
-        self, 
-        agent_registry: AgentRegistry, 
+        self,
+        agent_registry: AgentRegistry,
         rule_factory_config: Optional[RuleFactoryConfig] = None,
         state_manager: Optional[StateManager] = None,
-        communication_manager: Optional['CommunicationManager'] = None
+        communication_manager: Optional['CommunicationManager'] = None,
+        execution_config: Optional['ExecutionConfig'] = None
     ):
         """
         Initialize the Orchestra with an agent registry.
-        
+
         Args:
             agent_registry: Registry containing all available agents
             rule_factory_config: Optional configuration for rule generation
             state_manager: Optional state manager for persistence and checkpointing
+            communication_manager: Optional communication manager for user interaction
+            execution_config: Optional execution configuration with status settings
         """
         self.agent_registry = agent_registry
         self._sessions = {}
         self.rule_factory = RuleFactory(rule_factory_config)
         self.state_manager = state_manager
         self.communication_manager = communication_manager
+
+        # Store config for component initialization
+        self._execution_config = execution_config
+
         self._initialize_components()
         logger.info("Orchestra initialized")
     
@@ -181,16 +167,42 @@ class Orchestra:
         """Initialize all internal coordination components."""
         # Create event bus for coordination events
         self.event_bus = EventBus()
-        
+
+        # Get execution config
+        execution_config = getattr(self, '_execution_config', None)
+        if not execution_config:
+            from .config import ExecutionConfig
+            execution_config = ExecutionConfig()  # Default: status disabled
+
+        # Create status manager if enabled
+        self.status_manager = None
+        if execution_config.status.enabled:
+            from .status.manager import StatusManager
+            from .status.channels import CLIChannel
+
+            # Create status manager
+            self.status_manager = StatusManager(self.event_bus, execution_config.status)
+
+            # Add configured channels
+            if "cli" in execution_config.status.channels:
+                self.status_manager.add_channel(CLIChannel(execution_config.status))
+
+            logger.info("Status updates enabled with verbosity: %s",
+                       execution_config.status.verbosity)
+
         # Create execution components
         if self.communication_manager:
             from .communication.user_node_handler import UserNodeHandler
             user_node_handler = UserNodeHandler(self.communication_manager)
-            self.step_executor = StepExecutor(user_node_handler=user_node_handler)
+            self.step_executor = StepExecutor(
+                user_node_handler=user_node_handler,
+                event_bus=self.event_bus  # Pass event_bus at creation
+            )
         else:
-            self.step_executor = StepExecutor()
+            self.step_executor = StepExecutor(event_bus=self.event_bus)  # Pass event_bus at creation
+
         self.topology_analyzer = TopologyAnalyzer()
-        
+
         # These will be created per-topology
         self.topology_graph = None
         self.validation_processor = None
@@ -255,13 +267,14 @@ class Orchestra:
         topology: Any,  # Accepts Topology, PatternConfig, or dict
         agent_registry: Optional[AgentRegistry] = None,
         context: Optional[Dict[str, Any]] = None,
-        execution_config: Optional['ExecutionConfig'] = None,  # NEW
+        execution_config: Optional['ExecutionConfig'] = None,
         max_steps: int = 100,
-        state_manager: Optional[StateManager] = None
+        state_manager: Optional[StateManager] = None,
+        verbosity: Optional[int] = None
     ) -> OrchestraResult:
         """
         Simple one-line execution of a multi-agent workflow.
-        
+
         Args:
             task: The task/prompt to execute
             topology: Definition of agent topology and rules
@@ -270,20 +283,75 @@ class Orchestra:
             execution_config: Optional configuration for execution behavior
             max_steps: Maximum steps before timeout
             state_manager: Optional state manager for persistence
-            
+            verbosity: Simple verbosity level (0-2) for quick status setup
+
         Returns:
             OrchestraResult with execution details
         """
         if agent_registry is None:
             agent_registry = AgentRegistry
-        
-        # Add execution config to context so it flows through the system
+
+        # Handle verbosity parameter
+        if verbosity is not None and execution_config is None:
+            # Create config from verbosity
+            from .config import StatusConfig, ExecutionConfig
+            execution_config = ExecutionConfig(
+                status=StatusConfig.from_verbosity(verbosity)
+            )
+        elif verbosity is not None and execution_config is not None:
+            # Verbosity provided but config exists - only override if status.verbosity is None
+            if execution_config.status.verbosity is None:
+                # Only update verbosity field, don't replace entire StatusConfig!
+                from .config import VerbosityLevel
+                execution_config.status.verbosity = VerbosityLevel(verbosity)
+                execution_config.status.enabled = True  # Ensure status is enabled
+
+        # Default config if none provided
+        if execution_config is None:
+            from .config import ExecutionConfig
+            execution_config = ExecutionConfig()
+
+        # Add to context
         context = context or {}
-        if execution_config:
-            context['execution_config'] = execution_config
-        
-        orchestra = cls(agent_registry, rule_factory_config=None, state_manager=state_manager)
-        return await orchestra.execute(task, topology, context, max_steps)
+        context['execution_config'] = execution_config
+
+        # Create orchestra with execution_config
+        orchestra = cls(
+            agent_registry,
+            rule_factory_config=None,
+            state_manager=state_manager,
+            execution_config=execution_config
+        )
+
+        # Track start time for final response
+        start_time = time.time()
+
+        # Execute
+        result = await orchestra.execute(task, topology, context, max_steps)
+
+        # Emit final response event if status enabled
+        if execution_config.status.enabled and orchestra.event_bus:
+            from .status.events import FinalResponseEvent
+
+            # Create summary
+            summary = result.final_response[:500] if isinstance(result.final_response, str) else str(result.final_response)[:500]
+
+            # Get session_id from result metadata
+            session_id = result.metadata.get("session_id", "unknown")
+
+            await orchestra.event_bus.emit(FinalResponseEvent(
+                session_id=session_id,
+                response_summary=summary,
+                total_duration=time.time() - start_time,
+                total_steps=result.total_steps,
+                success=result.success
+            ))
+
+        # Cleanup status manager if exists
+        if orchestra.status_manager:
+            await orchestra.status_manager.shutdown()
+
+        return result
     
     async def execute(
         self,
