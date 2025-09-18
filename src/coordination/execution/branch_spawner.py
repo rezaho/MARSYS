@@ -1609,8 +1609,34 @@ class DynamicBranchSpawner:
         self.parallel_groups[group_id] = group
         for branch_id in group.branch_ids:
             self.branch_to_group[branch_id] = group_id
-        
+
         logger.info(f"Created parallel group '{group_id}' with {len(all_branches)} branches")
+
+        # Emit ParallelGroupEvent for status tracking
+        if self.event_bus:
+            from ..status.events import ParallelGroupEvent
+
+            # Get agent names for the group (with instance suffixes for pools)
+            # For pools, instances are named as f"{base_name}_{i}" where i is the index
+            agent_names = []
+            for idx, branch in enumerate(all_branches):
+                # Check if this is a pool by looking at the agent registry
+                if self.agent_registry and self.agent_registry.is_pool(agent_name_target):
+                    # Pool instances are named with index suffix
+                    agent_names.append(f"{agent_name_target}_{idx}")
+                else:
+                    # Single agent - use the name as-is
+                    agent_names.append(agent_name_target)
+
+            await self.event_bus.emit(ParallelGroupEvent(
+                session_id=context.get("session_id", "unknown"),
+                group_id=group_id,
+                agent_names=agent_names,
+                status="started",
+                completed_count=0,
+                total_count=len(all_branches),
+                branch_id=parent_branch_id
+            ))
         
         # PHASE 3: Execute using unified batch processing
         all_tasks = await self._execute_branches_in_batches(
@@ -2236,11 +2262,38 @@ class DynamicBranchSpawner:
         # Remove from waiting set
         if parent_branch_id in self.waiting_branches:
             self.waiting_branches[parent_branch_id].discard(child_branch_id)
-            
+
             # Check if all children are done
             remaining = len(self.waiting_branches[parent_branch_id])
             if remaining == 0:
                 logger.info(f"All children completed for parent branch '{parent_branch_id}'")
+
+                # Check if this was a parallel group completion
+                # Find the group that contains these child branches
+                group_id = None
+                for gid, group in self.parallel_groups.items():
+                    if parent_branch_id == group.parent_branch_id:
+                        group_id = gid
+                        break
+
+                # Emit parallel group completed event
+                if group_id and self.event_bus:
+                    from ..status.events import ParallelGroupEvent
+                    group = self.parallel_groups[group_id]
+
+                    # Get context from parent branch
+                    parent_branch = self.branch_info.get(parent_branch_id)
+                    context = parent_branch.metadata.get("context", {}) if parent_branch else {}
+
+                    await self.event_bus.emit(ParallelGroupEvent(
+                        session_id=context.get("session_id", "unknown"),
+                        group_id=group_id,
+                        agent_names=[],  # Not needed for completion
+                        status="completed",
+                        completed_count=group.total_branches,
+                        total_count=group.total_branches,
+                        branch_id=parent_branch_id
+                    ))
             else:
                 logger.info(f"Parent branch '{parent_branch_id}' still waiting for {remaining} children")
     

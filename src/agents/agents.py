@@ -2410,7 +2410,7 @@ Example for `final_response`:
             orchestra = Orchestra(
                 agent_registry=AgentRegistry,
                 communication_manager=comm_manager,  # Pass the manager if available
-                execution_config=execution_config if execution_config and execution_config.status.enabled else None
+                execution_config=execution_config  # Always pass execution_config if it exists
             )
             
             # Execute with Orchestra
