@@ -6,7 +6,7 @@ from abc import ABC, abstractmethod
 import sys
 import time
 from datetime import datetime
-from typing import Optional, TYPE_CHECKING
+from typing import Optional, TYPE_CHECKING, Dict, Set
 import asyncio
 
 if TYPE_CHECKING:
@@ -46,8 +46,12 @@ class CLIChannel(ChannelAdapter):
 
         # Track state for cleaner output
         self.last_agent_name: Optional[str] = None
-        self.last_branch_id: Optional[str] = None
         self.start_time: float = time.time()
+
+        # Track parallel execution groups
+        self.parallel_groups: Dict[str, Set[str]] = {}  # group_id -> set of agent_names
+        self.agent_to_group: Dict[str, str] = {}  # agent_name -> group_id
+        self.active_parallel_groups: Set[str] = set()  # Currently active parallel groups
 
         # ANSI color codes
         self.colors = {
@@ -103,38 +107,69 @@ class CLIChannel(ChannelAdapter):
         c = self.colors
 
         if verbosity == VerbosityLevel.QUIET:
-            # Don't show agent starts in quiet mode
             return
 
-        # New agent section
+        # Check if this agent is in a parallel group
+        in_parallel = event.agent_name in self.agent_to_group
+
+        # Print section header if agent changed
         if event.agent_name != self.last_agent_name:
-            print(f"\n{c['bold']}{c['blue']}━━━ {event.agent_name} ━━━{c['reset']}")
+            if in_parallel:
+                print(f"\n  {c['bold']}{c['blue']}┌─ {event.agent_name} ─┐{c['reset']}")
+            else:
+                print(f"\n{c['bold']}{c['blue']}━━━ {event.agent_name} ━━━{c['reset']}")
             self.last_agent_name = event.agent_name
 
         if verbosity >= VerbosityLevel.NORMAL:
+            indent = "    " if in_parallel else "  "
             status = f"{c['green']}● Starting{c['reset']}"
-            print(f"{ts} {status}")
+            print(f"{indent}{ts} {status}")
 
         if verbosity == VerbosityLevel.VERBOSE and event.request_summary:
-            print(f"    {c['gray']}Request: {event.request_summary[:100]}...{c['reset']}")
+            indent = "    " if in_parallel else "  "
+            print(f"{indent}  {c['gray']}Request: {event.request_summary[:100]}...{c['reset']}")
 
     async def _print_agent_thinking(self, event: 'AgentThinkingEvent', ts: str, verbosity: int):
         """Print agent thinking event."""
         from ..config import VerbosityLevel
         if verbosity < VerbosityLevel.VERBOSE:
-            return  # Only show in verbose mode
+            return
 
         c = self.colors
+
+        # Check if this agent is in a parallel group
+        in_parallel = event.agent_name in self.agent_to_group
+
+        # Print section header if agent changed
+        if event.agent_name != self.last_agent_name:
+            if in_parallel:
+                print(f"\n  {c['bold']}{c['blue']}┌─ {event.agent_name} ─┐{c['reset']}")
+            else:
+                print(f"\n{c['bold']}{c['blue']}━━━ {event.agent_name} ━━━{c['reset']}")
+            self.last_agent_name = event.agent_name
+
+        indent = "    " if in_parallel else "  "
         thought = event.thought[:200] + "..." if len(event.thought) > 200 else event.thought
-        print(f"{ts} {c['yellow']}💭 Thinking:{c['reset']} {thought}")
+        print(f"{indent}{ts} {c['yellow']}💭 Thinking:{c['reset']} {thought}")
 
         if event.action_type:
-            print(f"    {c['gray']}→ Action: {event.action_type}{c['reset']}")
+            print(f"{indent}  {c['gray']}→ Action: {event.action_type}{c['reset']}")
 
     async def _print_agent_complete(self, event: 'AgentCompleteEvent', ts: str, verbosity: int):
         """Print agent completion."""
         from ..config import VerbosityLevel
         c = self.colors
+
+        # Check if this agent is in a parallel group
+        in_parallel = event.agent_name in self.agent_to_group
+
+        # Print section header if agent changed
+        if event.agent_name != self.last_agent_name:
+            if in_parallel:
+                print(f"\n  {c['bold']}{c['blue']}┌─ {event.agent_name} ─┐{c['reset']}")
+            else:
+                print(f"\n{c['bold']}{c['blue']}━━━ {event.agent_name} ━━━{c['reset']}")
+            self.last_agent_name = event.agent_name
 
         if event.success:
             status = f"{c['green']}✓ Completed{c['reset']}"
@@ -142,37 +177,51 @@ class CLIChannel(ChannelAdapter):
             status = f"{c['red']}✗ Failed{c['reset']}"
 
         if verbosity == VerbosityLevel.QUIET:
-            # Only show failures in quiet mode
             if not event.success:
-                print(f"{event.agent_name}: {status}")
+                indent = "    " if in_parallel else "  "
+                print(f"{indent}{event.agent_name}: {status}")
         else:
-            duration = f" ({event.duration:.2f}s)" if self.config.show_timings else ""
-            print(f"{ts} {status}{duration}")
+            indent = "    " if in_parallel else "  "
+            duration = f" ({event.duration:.2f}s)" if self.config.show_timings and event.duration else ""
+            print(f"{indent}{ts} {status}{duration}")
 
             if verbosity >= VerbosityLevel.NORMAL and event.next_action:
-                print(f"    {c['cyan']}→ Next: {event.next_action}{c['reset']}")
+                print(f"{indent}  {c['cyan']}→ Next: {event.next_action}{c['reset']}")
 
             if not event.success and event.error:
-                print(f"    {c['red']}Error: {event.error}{c['reset']}")
+                print(f"{indent}  {c['red']}Error: {event.error}{c['reset']}")
 
     async def _print_tool_call(self, event: 'ToolCallEvent', ts: str, verbosity: int):
         """Print tool call event."""
         from ..config import VerbosityLevel
         if verbosity < VerbosityLevel.VERBOSE:
-            return  # Only in verbose mode
+            return
 
         c = self.colors
 
+        # Check if this agent is in a parallel group
+        in_parallel = event.agent_name in self.agent_to_group
+
+        # Print section header if agent changed
+        if event.agent_name != self.last_agent_name:
+            if in_parallel:
+                print(f"\n  {c['bold']}{c['blue']}┌─ {event.agent_name} ─┐{c['reset']}")
+            else:
+                print(f"\n{c['bold']}{c['blue']}━━━ {event.agent_name} ━━━{c['reset']}")
+            self.last_agent_name = event.agent_name
+
+        indent = "    " if in_parallel else "  "
+
         if event.status == "started":
-            print(f"{ts} {c['cyan']}🔧 Tool:{c['reset']} {event.tool_name}")
+            print(f"{indent}{ts} {c['cyan']}🔧 Tool:{c['reset']} {event.tool_name}")
             if event.arguments:
                 args = str(event.arguments)[:100]
-                print(f"    {c['gray']}Args: {args}{c['reset']}")
+                print(f"{indent}  {c['gray']}Args: {args}{c['reset']}")
         elif event.status == "completed":
             duration = f" ({event.duration:.2f}s)" if event.duration else ""
-            print(f"{ts} {c['green']}✓ Tool completed{c['reset']}{duration}")
+            print(f"{indent}{ts} {c['green']}✓ Tool completed{c['reset']}{duration}")
         else:  # failed
-            print(f"{ts} {c['red']}✗ Tool failed{c['reset']}")
+            print(f"{indent}{ts} {c['red']}✗ Tool failed{c['reset']}")
 
     async def _print_branch_event(self, event: 'BranchEvent', ts: str, verbosity: int):
         """Print branch event."""
@@ -190,11 +239,19 @@ class CLIChannel(ChannelAdapter):
         print(f"{ts} {c['gray']}Branch: {branch_info} → {event.status}{c['reset']}")
 
     async def _print_parallel_group(self, event: 'ParallelGroupEvent', ts: str, verbosity: int):
-        """Print parallel execution group."""
+        """Print parallel execution group and track parallel agents."""
         from ..config import VerbosityLevel
         c = self.colors
 
         if event.status == "started":
+            # Track this parallel group
+            self.parallel_groups[event.group_id] = set(event.agent_names)
+            self.active_parallel_groups.add(event.group_id)
+
+            # Map each agent to this group
+            for agent_name in event.agent_names:
+                self.agent_to_group[agent_name] = event.group_id
+
             agents_str = ", ".join(event.agent_names[:3])
             if len(event.agent_names) > 3:
                 agents_str += f" +{len(event.agent_names) - 3} more"
@@ -212,6 +269,20 @@ class CLIChannel(ChannelAdapter):
             print(f"{ts} Progress: [{bar}] {event.completed_count}/{event.total_count}")
 
         elif event.status == "completed":
+            # Clean up parallel group tracking
+            if event.group_id in self.active_parallel_groups:
+                self.active_parallel_groups.remove(event.group_id)
+
+                # Remove agent mappings for this group
+                if event.group_id in self.parallel_groups:
+                    for agent_name in self.parallel_groups[event.group_id]:
+                        if agent_name in self.agent_to_group and self.agent_to_group[agent_name] == event.group_id:
+                            del self.agent_to_group[agent_name]
+
+                # Clean up group tracking
+                if event.group_id in self.parallel_groups:
+                    del self.parallel_groups[event.group_id]
+
             print(f"{ts} {c['green']}✓ All parallel branches completed{c['reset']}")
 
     async def _print_user_interaction(self, event: 'UserInteractionEvent', ts: str, verbosity: int):
