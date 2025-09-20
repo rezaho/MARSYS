@@ -2173,9 +2173,9 @@ class BrowserTool:
         r = reasoning or ""
         await self.page.goto(url, timeout=timeout)
         try:
-            await self.page.wait_for_load_state("networkidle", timeout=10000)
+            await self.page.wait_for_load_state("networkidle", timeout=5000)
         except Exception:
-            await self.page.wait_for_timeout(1000)
+            await self.page.wait_for_timeout(3000)
         title = await self.page.title()
         self.history.append(
             {
@@ -3040,7 +3040,7 @@ class BrowserTool:
         # body_locator = self.page.locator("body")
         # html = await body_locator.inner_html()
         # first wait until the page is fully loaded
-        await self.page.wait_for_load_state("networkidle")
+        await self.page.wait_for_load_state("networkidle", timeout=5000)
         # then get the html content
         html = await self.page.content()
         self.history.append(
@@ -4166,7 +4166,7 @@ class BrowserTool:
                     return result
                 
                 # Navigate with timeout
-                response = await page.goto(url, wait_until='domcontentloaded', timeout=15000)
+                response = await page.goto(url, wait_until='domcontentloaded', timeout=5000)
                 
                 # Check HTTP status
                 if response and response.status >= 400:
