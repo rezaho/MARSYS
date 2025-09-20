@@ -314,4 +314,342 @@ class CLIChannel(ChannelAdapter):
 
         if verbosity == VerbosityLevel.VERBOSE:
             print(f"\n{c['bold']}Summary:{c['reset']}")
-            print(event.response_summary)
+            # Handle both old and new field names
+            summary = getattr(event, 'final_response', getattr(event, 'response_summary', ''))
+            print(summary)
+
+
+class PrefixedCLIChannel(ChannelAdapter):
+    """
+    CLI channel with dynamic agent name prefixes for clear identification.
+    Simple, elegant, and works with terminal's streaming nature.
+    Completely generic - no hardcoded agent names or types.
+    """
+
+    def __init__(self, config: 'StatusConfig'):
+        super().__init__("prefixed_cli", config.cli_output)
+        self.config = config
+        self.use_colors = config.cli_colors and sys.stdout.isatty()
+
+        # Dynamic configuration
+        self.agent_width = getattr(config, 'prefix_width', 20)
+        self.show_prefixes = getattr(config, 'show_agent_prefixes', True)
+
+        # Dynamic agent tracking
+        self.agent_colors: Dict[str, str] = {}  # Assigned dynamically
+        # Expanded palette with research-based selection for maximum visibility
+        self.color_palette = [
+            'cyan',           # Light blue, high visibility
+            'magenta',        # Purple/pink, very distinct
+            'yellow',         # Bright and visible
+            'blue',           # Standard blue
+            'red',            # High contrast (for agents, not errors)
+            'bright_cyan',    # Brighter variant
+            'bright_magenta', # Brighter purple
+            'bright_yellow',  # Extra bright
+            'bright_blue',    # Bright blue
+            'bright_red',     # Bright red
+            'bright_green',   # Different from User's green
+            'bright_white'    # Very bright, good contrast
+        ]
+        self.color_index = 0
+
+        # State tracking
+        self.start_time = time.time()
+        self.last_agent_name: Optional[str] = None
+
+        # Parallel group tracking (for special formatting)
+        self.parallel_groups: Dict[str, Set[str]] = {}
+        self.agent_to_group: Dict[str, str] = {}
+
+        # User interaction manager reference
+        self.interaction_manager = None  # Will be set by Orchestra
+
+        # ANSI color codes
+        self.colors = self._get_colors() if self.use_colors else self._get_no_colors()
+
+    def _get_colors(self) -> Dict[str, str]:
+        """Get ANSI color codes."""
+        return {
+            # Standard colors
+            'reset': '\033[0m',
+            'bold': '\033[1m',
+            'dim': '\033[2m',
+            'green': '\033[32m',
+            'yellow': '\033[33m',
+            'blue': '\033[34m',
+            'red': '\033[31m',
+            'gray': '\033[90m',
+            'cyan': '\033[36m',
+            'magenta': '\033[35m',
+            'white': '\033[37m',
+            # Bright colors for more distinction
+            'bright_red': '\033[91m',
+            'bright_green': '\033[92m',
+            'bright_yellow': '\033[93m',
+            'bright_blue': '\033[94m',
+            'bright_magenta': '\033[95m',
+            'bright_cyan': '\033[96m',
+            'bright_white': '\033[97m'
+        }
+
+    def _get_no_colors(self) -> Dict[str, str]:
+        """Return empty strings when colors are disabled."""
+        return {k: '' for k in ['reset', 'bold', 'dim', 'green', 'yellow',
+                                'blue', 'red', 'gray', 'cyan', 'magenta', 'white',
+                                'bright_red', 'bright_green', 'bright_yellow',
+                                'bright_blue', 'bright_magenta', 'bright_cyan',
+                                'bright_white']}
+
+    def _get_agent_color(self, agent_name: str) -> str:
+        """
+        Dynamically assign colors to agents as they appear.
+        No hardcoding based on agent type.
+        """
+        if agent_name not in self.agent_colors:
+            # Assign next color from palette
+            color_name = self.color_palette[self.color_index % len(self.color_palette)]
+            self.agent_colors[agent_name] = self.colors[color_name]
+            self.color_index += 1
+
+        return self.agent_colors[agent_name]
+
+    def _format_prefix(self, source: str) -> str:
+        """
+        Create prefix for any source (agent, system, user).
+        Completely generic - works with any name.
+        """
+        if not self.show_prefixes:
+            return ""
+
+        # Handle special sources
+        if source == "System":
+            color = self.colors['bold'] + self.colors['gray']
+        elif source == "User":
+            color = self.colors['bold'] + self.colors['green']
+        else:
+            # Regular agent - use dynamic color
+            color = self._get_agent_color(source)
+
+        reset = self.colors['reset']
+
+        # Dynamic truncation and alignment
+        truncated = source[:self.agent_width]
+        alignment = getattr(self.config, 'prefix_alignment', 'left')
+
+        if alignment == 'left':
+            formatted = truncated.ljust(self.agent_width)
+        elif alignment == 'right':
+            formatted = truncated.rjust(self.agent_width)
+        else:  # center
+            formatted = truncated.center(self.agent_width)
+
+        return f"{color}[{formatted}]{reset} "
+
+    async def send(self, event: 'StatusEvent') -> None:
+        """Process and display status event with agent prefix."""
+        from .events import (
+            AgentStartEvent, AgentThinkingEvent, AgentCompleteEvent,
+            ToolCallEvent, BranchEvent, ParallelGroupEvent,
+            UserInteractionEvent,
+            FinalResponseEvent
+        )
+        from ..config import VerbosityLevel
+
+        # Get timestamp if configured
+        if self.config.show_timings:
+            elapsed = time.time() - self.start_time
+            timestamp = f"[{elapsed:6.2f}s]"
+        else:
+            timestamp = ""
+
+        # Get verbosity level
+        verbosity = self.config.verbosity or VerbosityLevel.NORMAL
+
+        # Handle different event types
+        if isinstance(event, AgentStartEvent):
+            await self._print_agent_start(event, timestamp, verbosity)
+        elif isinstance(event, AgentThinkingEvent):
+            await self._print_agent_thinking(event, timestamp, verbosity)
+        elif isinstance(event, AgentCompleteEvent):
+            await self._print_agent_complete(event, timestamp, verbosity)
+        elif isinstance(event, ToolCallEvent):
+            await self._print_tool_call(event, timestamp, verbosity)
+        elif isinstance(event, ParallelGroupEvent):
+            await self._print_parallel_group(event, timestamp, verbosity)
+        # Removed handling for UserInteractionRequestEvent, UserInteractionResponseEvent, FollowUpRequestEvent
+        # These are now handled by CommunicationManager per separation of concerns
+        elif isinstance(event, FinalResponseEvent):
+            await self._print_final_response(event, timestamp, verbosity)
+        elif isinstance(event, BranchEvent):
+            await self._print_branch_event(event, timestamp, verbosity)
+        elif isinstance(event, UserInteractionEvent):
+            await self._print_user_interaction(event, timestamp, verbosity)
+
+    async def _print_agent_start(self, event: 'AgentStartEvent', ts: str, verbosity: int):
+        """Print agent start event with prefix."""
+        from ..config import VerbosityLevel
+        c = self.colors
+
+        if verbosity == VerbosityLevel.QUIET:
+            return
+
+        prefix = self._format_prefix(event.agent_name)
+
+        # Add section separator if agent changed (optional)
+        if self.last_agent_name != event.agent_name and self.last_agent_name is not None:
+            if not self.show_prefixes:  # Only show separator if not using prefixes
+                print(f"\n{c['dim']}{'─' * 40}{c['reset']}")
+
+        self.last_agent_name = event.agent_name
+
+        # Format and print the start message
+        status = f"{c['green']}● Starting{c['reset']}"
+        print(f"{prefix}{ts} {status}")
+
+        # Show request summary in verbose mode
+        if verbosity == VerbosityLevel.VERBOSE and event.request_summary:
+            request = event.request_summary[:80] + "..." if len(event.request_summary) > 80 else event.request_summary
+            print(f"{prefix}    {c['gray']}Request: {request}{c['reset']}")
+
+    async def _print_agent_thinking(self, event: 'AgentThinkingEvent', ts: str, verbosity: int):
+        """Print agent thinking event with prefix."""
+        from ..config import VerbosityLevel
+        if verbosity < VerbosityLevel.VERBOSE:
+            return
+
+        c = self.colors
+        prefix = self._format_prefix(event.agent_name)
+
+        thought = event.thought[:60] + "..." if len(event.thought) > 60 else event.thought
+        print(f"{prefix}{ts} {c['yellow']}💭 {thought}{c['reset']}")
+
+        if event.action_type:
+            print(f"{prefix}    {c['gray']}→ Action: {event.action_type}{c['reset']}")
+
+    async def _print_agent_complete(self, event: 'AgentCompleteEvent', ts: str, verbosity: int):
+        """Print agent completion with prefix."""
+        from ..config import VerbosityLevel
+        c = self.colors
+
+        prefix = self._format_prefix(event.agent_name)
+
+        if event.success:
+            status = f"{c['green']}✓ Completed{c['reset']}"
+        else:
+            status = f"{c['red']}✗ Failed{c['reset']}"
+
+        if verbosity == VerbosityLevel.QUIET:
+            if not event.success:
+                print(f"{prefix}{status}")
+        else:
+            duration = f" ({event.duration:.2f}s)" if self.config.show_timings and event.duration else ""
+            print(f"{prefix}{ts} {status}{duration}")
+
+            if verbosity >= VerbosityLevel.NORMAL and event.next_action:
+                print(f"{prefix}    {c['cyan']}→ Next: {event.next_action}{c['reset']}")
+
+            if not event.success and event.error:
+                print(f"{prefix}    {c['red']}Error: {event.error}{c['reset']}")
+
+    async def _print_tool_call(self, event: 'ToolCallEvent', ts: str, verbosity: int):
+        """Print tool call event with prefix."""
+        from ..config import VerbosityLevel
+        if verbosity < VerbosityLevel.VERBOSE:
+            return
+
+        c = self.colors
+        prefix = self._format_prefix(event.agent_name)
+
+        if event.status == "started":
+            print(f"{prefix}{ts} {c['cyan']}🔧 Tool:{c['reset']} {event.tool_name}")
+            if event.arguments:
+                args = str(event.arguments)[:100]
+                print(f"{prefix}    {c['gray']}Args: {args}{c['reset']}")
+        elif event.status == "completed":
+            duration = f" ({event.duration:.2f}s)" if event.duration else ""
+            print(f"{prefix}{ts} {c['green']}✓ Tool completed{c['reset']}{duration}")
+        else:  # failed
+            print(f"{prefix}{ts} {c['red']}✗ Tool failed{c['reset']}")
+
+    async def _print_parallel_group(self, event: 'ParallelGroupEvent', ts: str, verbosity: int):
+        """Print parallel execution group."""
+        from ..config import VerbosityLevel
+        c = self.colors
+
+        if event.status == "started":
+            # Track parallel group
+            self.parallel_groups[event.group_id] = set(event.agent_names)
+            for agent_name in event.agent_names:
+                self.agent_to_group[agent_name] = event.group_id
+
+            agents_str = ", ".join(event.agent_names[:3])
+            if len(event.agent_names) > 3:
+                agents_str += f" +{len(event.agent_names) - 3} more"
+
+            # Use system prefix for group events
+            prefix = self._format_prefix("System")
+            print(f"\n{prefix}{c['bold']}{c['yellow']}⚡ Parallel Execution{c['reset']}")
+            print(f"{prefix}{ts} Agents: {agents_str}")
+
+        elif event.status == "completed":
+            # Clean up tracking
+            if event.group_id in self.parallel_groups:
+                for agent_name in self.parallel_groups[event.group_id]:
+                    if agent_name in self.agent_to_group:
+                        del self.agent_to_group[agent_name]
+                del self.parallel_groups[event.group_id]
+
+            prefix = self._format_prefix("System")
+            print(f"{prefix}{ts} {c['green']}✓ All parallel branches completed{c['reset']}")
+
+    async def _print_branch_event(self, event: 'BranchEvent', ts: str, verbosity: int):
+        """Print branch event with prefix."""
+        from ..config import VerbosityLevel
+        if verbosity == VerbosityLevel.QUIET:
+            return
+
+        c = self.colors
+        prefix = self._format_prefix("System")
+
+        branch_info = f"{event.branch_name} ({event.branch_type})"
+        if event.is_parallel:
+            branch_info = f"⚡ {branch_info}"
+
+        print(f"{prefix}{ts} {c['gray']}Branch: {branch_info} → {event.status}{c['reset']}")
+
+    async def _print_user_interaction(self, event: 'UserInteractionEvent', ts: str, verbosity: int):
+        """Print user interaction with prefix."""
+        c = self.colors
+        prefix = self._format_prefix(event.agent_name)
+
+        print(f"\n{prefix}{c['bold']}{c['yellow']}⚠ User Input Required{c['reset']}")
+        print(f"{prefix}{ts} {event.prompt}")
+
+        if event.options:
+            print(f"{prefix}Options:")
+            for i, option in enumerate(event.options, 1):
+                print(f"{prefix}  {i}. {option}")
+
+    # Methods removed due to separation of concerns:
+    # - _print_user_interaction_request: Full content display belongs in CommunicationManager
+    # - _print_user_interaction_response: User input handling is CommunicationManager's responsibility
+    # - _print_follow_up_request: Follow-up workflow is CommunicationManager's domain
+
+    async def _print_final_response(self, event: 'FinalResponseEvent', ts: str, verbosity: int):
+        """Print final response."""
+        from ..config import VerbosityLevel
+        c = self.colors
+
+        # Final response doesn't belong to a specific agent
+        prefix = self._format_prefix("System")
+
+        print(f"\n{prefix}{c['bold']}{c['green']}═══ Workflow Complete ═══{c['reset']}")
+
+        if verbosity >= VerbosityLevel.NORMAL:
+            status = "Success" if event.success else "Failed"
+            print(f"{prefix}Status: {status}")
+            print(f"{prefix}Total Steps: {event.total_steps}")
+
+            if self.config.show_timings:
+                print(f"{prefix}Duration: {event.total_duration:.2f}s")

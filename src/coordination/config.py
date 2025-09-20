@@ -38,6 +38,15 @@ class StatusConfig:
     # Channel configuration
     channels: List[str] = field(default_factory=lambda: ["cli"])
 
+    # Prefixed display configuration
+    show_agent_prefixes: bool = True     # Enable agent name prefixes
+    prefix_width: int = 20                # Width of agent name field
+    prefix_alignment: str = "left"        # left, center, or right
+
+    # Note: User interaction configuration moved to AutoRunConfig
+    # follow_up_timeout kept for backward compatibility
+    follow_up_timeout: float = 30.0  # seconds to wait for follow-up
+
     @classmethod
     def from_verbosity(cls, level: int) -> 'StatusConfig':
         """Create StatusConfig from verbosity level."""
