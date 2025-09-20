@@ -18,13 +18,14 @@ logger = logging.getLogger(__name__)
 class UserNodeHandler:
     """
     Handles execution when control reaches a User node.
-    
+
     This component manages the pause/resume flow, tracks calling agents,
     and determines where execution should continue after user interaction.
     """
-    
-    def __init__(self, communication_manager: CommunicationManager):
+
+    def __init__(self, communication_manager: CommunicationManager, event_bus=None):
         self.communication_manager = communication_manager
+        self.event_bus = event_bus
         self.mode_handlers = {
             CommunicationMode.SYNC: self._handle_sync_mode,
             CommunicationMode.ASYNC_PUBSUB: self._handle_async_pubsub_mode,
@@ -98,28 +99,44 @@ class UserNodeHandler:
             if not display_message or (isinstance(display_message, str) and not display_message.strip()):
                 display_message = "Please provide your input or response."
         
-        # Create interaction with full context
+        # Emit lightweight status event for monitoring (metadata only, no content)
+        if self.event_bus:
+            # Import here to avoid circular dependency
+            from ..status.events import UserInteractionEvent
+
+            # Status event shows WHAT is happening, not the full content
+            status_event = UserInteractionEvent(
+                session_id=context.get("session_id", str(uuid.uuid4())),
+                branch_id=branch.id,
+                agent_name=calling_agent,
+                interaction_type="starting",  # Just metadata
+                prompt=f"Awaiting user response to {calling_agent}",  # Summary, not full content
+                options=None  # Don't duplicate options in status
+            )
+            await self.event_bus.emit(status_event)
+
+        # Create interaction with full context for actual dialogue
         interaction = UserInteraction(
             interaction_id=str(uuid.uuid4()),
             branch_id=branch.id,
             session_id=context.get("session_id", str(uuid.uuid4())),
-            incoming_message=display_message,
+            incoming_message=display_message,  # Full content here for dialogue
             interaction_type=self._determine_interaction_type(incoming_message),
             timestamp=time.time(),
             communication_mode=mode,
-            
+
             # Agent tracing
             calling_agent=calling_agent,
             resume_agent=resume_agent,
             execution_trace=self._get_execution_summary(branch),
-            
+
             # Context for resumption
             branch_context={
                 "memory_snapshot": self._get_memory_snapshot(branch),
                 "step_number": getattr(branch.state, 'step_count', 0),
                 "topology_info": self._get_topology_info(branch)
             },
-            
+
             # Additional context
             metadata=context
         )
@@ -326,11 +343,25 @@ class UserNodeHandler:
             # Clear waiting state and record wait time
             if hasattr(branch, 'state'):
                 branch.state.awaiting_user_response = False
+                wait_time = 0
                 if branch.state.user_wait_start_time:
                     wait_time = time.time() - branch.state.user_wait_start_time
                     branch.state.total_user_wait_time += wait_time
                     branch.state.user_wait_start_time = None
                     logger.debug(f"User wait time: {wait_time:.2f}s, Total: {branch.state.total_user_wait_time:.2f}s")
+
+            # Emit completion status event
+            if self.event_bus:
+                from ..status.events import UserInteractionEvent
+                complete_event = UserInteractionEvent(
+                    session_id=interaction.session_id,
+                    branch_id=branch.id,
+                    agent_name=interaction.calling_agent,
+                    interaction_type="completed",  # Just metadata
+                    prompt=f"User responded to {interaction.calling_agent}",  # Summary only
+                    options=None
+                )
+                await self.event_bus.emit(complete_event)
             
             return StepResult(
                 agent_name="User",

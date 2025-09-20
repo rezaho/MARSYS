@@ -43,6 +43,7 @@ from .event_bus import EventBus
 
 if TYPE_CHECKING:
     from .communication.manager import CommunicationManager
+    from .config import ExecutionConfig
 
 logger = logging.getLogger(__name__)
 
@@ -176,6 +177,7 @@ class Orchestra:
 
         # Create status manager if enabled
         self.status_manager = None
+        # Note: UserInteractionManager removed - use communication_manager instead
         if execution_config.status.enabled:
             from .status.manager import StatusManager
             from .status.channels import CLIChannel, PrefixedCLIChannel
@@ -207,7 +209,7 @@ class Orchestra:
         # Create execution components
         if self.communication_manager:
             from .communication.user_node_handler import UserNodeHandler
-            user_node_handler = UserNodeHandler(self.communication_manager)
+            user_node_handler = UserNodeHandler(self.communication_manager, self.event_bus)
             self.step_executor = StepExecutor(
                 user_node_handler=user_node_handler,
                 event_bus=self.event_bus  # Pass event_bus at creation
@@ -284,7 +286,8 @@ class Orchestra:
         execution_config: Optional['ExecutionConfig'] = None,
         max_steps: int = 100,
         state_manager: Optional[StateManager] = None,
-        verbosity: Optional[int] = None
+        verbosity: Optional[int] = None,
+        allow_follow_ups: bool = False
     ) -> OrchestraResult:
         """
         Simple one-line execution of a multi-agent workflow.
@@ -298,6 +301,7 @@ class Orchestra:
             max_steps: Maximum steps before timeout
             state_manager: Optional state manager for persistence
             verbosity: Simple verbosity level (0-2) for quick status setup
+            allow_follow_ups: Whether to wait for follow-up requests after completion
 
         Returns:
             OrchestraResult with execution details
@@ -342,6 +346,37 @@ class Orchestra:
 
         # Execute
         result = await orchestra.execute(task, topology, context, max_steps)
+
+        # Handle follow-up requests if enabled
+        if allow_follow_ups and result.success and orchestra.communication_manager:
+            # Get session_id from context
+            session_id = context.get('session_id', str(uuid.uuid4())) if context else str(uuid.uuid4())
+
+            # Use CommunicationManager's new follow-up method
+            follow_up_task = await orchestra.communication_manager.present_results_and_wait_for_follow_up(
+                results=result.get_final_response_as_text() if hasattr(result, 'get_final_response_as_text') else str(result.final_response),
+                session_id=session_id,
+                timeout=getattr(execution_config.status, 'follow_up_timeout', 30.0) if execution_config and execution_config.status else 30.0,
+                allow_follow_up=True
+            )
+
+            if follow_up_task:
+                # Process follow-up as new task in same context
+                context = context or {}
+                context['previous_result'] = result.final_response
+
+                # Execute follow-up task
+                follow_up_result = await orchestra.execute(follow_up_task, topology, context, max_steps)
+
+                # Merge results
+                if follow_up_result.success:
+                    # Update the result with combined information
+                    result.final_response = follow_up_result.final_response
+                    result.total_steps += follow_up_result.total_steps
+                    result.total_duration += follow_up_result.total_duration
+                    result.branch_results.extend(follow_up_result.branch_results)
+                    result.metadata['has_follow_up'] = True
+                    result.metadata['follow_up_task'] = follow_up_task
 
         # Emit final response event if status enabled
         if execution_config.status.enabled and orchestra.event_bus:

@@ -2213,44 +2213,106 @@ Example for `final_response`:
 
         return True, None
 
+    def _should_enable_user_interaction(self) -> bool:
+        """
+        Auto-detect if user interaction should be enabled based on topology.
+
+        Returns True if:
+        - This agent has "User" in allowed_peers
+        - OR any reachable agent has "User" in allowed_peers
+
+        Returns:
+            bool: True if user interaction should be enabled
+        """
+        from .registry import AgentRegistry
+
+        visited = set()
+        to_visit = {self.name}
+
+        while to_visit:
+            current = to_visit.pop()
+            if current in visited:
+                continue
+            visited.add(current)
+
+            # Check current agent
+            if current == self.name:
+                # Check self
+                if "User" in self._allowed_peers_init:
+                    return True
+                # Add own peers to visit
+                to_visit.update(self._allowed_peers_init - visited)
+            else:
+                # Check other agent in registry
+                agent = AgentRegistry.get(current)
+                if agent and hasattr(agent, '_allowed_peers_init'):
+                    if "User" in agent._allowed_peers_init:
+                        return True
+                    # Add their peers to visit
+                    to_visit.update(agent._allowed_peers_init - visited)
+
+        return False
+
+    def _enhance_description_for_user_interaction(self):
+        """Auto-enhance agent description with user interaction instructions."""
+        if "User" not in self._allowed_peers_init:
+            return
+
+        # Check if instructions already exist
+        if "invoke_agent" not in self.description and "User" not in self.description:
+            self.description += """
+
+When you need clarification or user input, you can invoke the User node:
+{
+    "next_action": "invoke_agent",
+    "action_input": "User",
+    "message": "Your question or request for the user"
+}
+
+The user will provide their response, and you'll receive it to continue your task."""
 
     async def auto_run(
         self,
         initial_request: Any,
+        config: Optional['AutoRunConfig'] = None,
+        # Backward compatibility kwargs
         request_context: Optional['RequestContext'] = None,
-        max_steps: int = 30,
-        max_re_prompts: int = 3,
+        max_steps: Optional[int] = None,
+        max_re_prompts: Optional[int] = None,
         timeout: Optional[int] = None,
         progress_monitor_func: Optional[
             Callable[
                 [asyncio.Queue, Optional[logging.Logger]], Coroutine[Any, Any, None]
             ]
         ] = None,
-        user_interaction: Optional[Union[str, 'CommunicationManager']] = None,
-        # NEW: Individual config flags instead of ExecutionConfig object
+        user_interaction: Optional[Union[str, bool, 'CommunicationManager']] = None,
+        # Individual config flags for backward compatibility
         auto_detect_convergence: Optional[bool] = None,
         parent_completes_on_spawn: Optional[bool] = None,
         dynamic_convergence_enabled: Optional[bool] = None,
         steering_mode: Optional[str] = None,  # "auto", "always", "never"
-        verbosity: Optional[int] = None,  # NEW: Verbosity level (0-2) for status updates
+        verbosity: Optional[int] = None,  # Verbosity level (0-2) for status updates
     ) -> Union[Dict[str, Any], str]:
         """
         Run agent with automatic topology creation from allowed_peers.
-        
+
         This provides full backward compatibility for the legacy auto_run interface
         while using the modern Orchestra coordination system internally.
-        
+
         Args:
             initial_request: The task/request to execute. Can be string, dict, or custom object.
+            config: Optional AutoRunConfig for unified configuration.
             request_context: Optional RequestContext for tracking execution state.
-            max_steps: Maximum number of execution steps.
+            max_steps: Maximum number of execution steps (overrides config).
             max_re_prompts: Maximum retry attempts on errors (handled by Orchestra internally).
             timeout: Optional timeout in seconds for the entire execution.
             progress_monitor_func: Optional function for monitoring execution progress.
             user_interaction: Optional user interaction mode. Can be:
                 - "terminal": Enable terminal-based user interaction
+                - True: Auto-detect and enable if User in topology
+                - False: Disable user interaction
                 - CommunicationManager instance: Use custom communication manager
-                - None (default): No user interaction (auto-injected User nodes auto-complete)
+                - None (default): Auto-detect based on topology
             verbosity: Optional verbosity level (0-2) for status updates:
                 - 0 (QUIET): Minimal output, only critical events
                 - 1 (NORMAL): Standard output with agent transitions
@@ -2267,9 +2329,56 @@ Example for `final_response`:
         # Import here to avoid circular imports
         import uuid
         from ..coordination import Orchestra
+        from ..coordination.configs.auto_run import AutoRunConfig
+        from ..coordination.config import StatusConfig
         from ..utils.monitoring import default_progress_monitor
         from .registry import AgentRegistry
         from .utils import LogLevel, RequestContext
+
+        # Build config from kwargs if not provided
+        if config is None:
+            config = AutoRunConfig.from_kwargs(
+                max_steps=max_steps,
+                max_re_prompts=max_re_prompts,
+                timeout=timeout,
+                user_interaction=user_interaction,
+                steering_mode=steering_mode,
+                auto_detect_convergence=auto_detect_convergence,
+                parent_completes_on_spawn=parent_completes_on_spawn,
+                dynamic_convergence_enabled=dynamic_convergence_enabled,
+                verbosity=verbosity
+            )
+
+        # Override config with explicit kwargs if provided
+        if max_steps is not None:
+            config.default_max_steps = max_steps
+        if max_re_prompts is not None:
+            config.default_max_re_prompts = max_re_prompts
+        if timeout is not None:
+            config.default_timeout = timeout
+        if verbosity is not None:
+            config.status = StatusConfig.from_verbosity(verbosity)
+            # Also update execution.status since that's what Orchestra uses
+            config.execution.status = config.status
+
+        # Auto-detect user interaction if configured
+        if config and config.user_interaction.auto_detect and config.user_interaction.mode is None:
+            # Check if user_interaction was explicitly set to False
+            if user_interaction is False:
+                config.user_interaction.mode = None
+            elif user_interaction is True or self._should_enable_user_interaction():
+                config.user_interaction.mode = "terminal"
+                if config.user_interaction.warn_on_missing_handler:
+                    self.logger.info(f"Auto-enabled terminal user interaction for {self.name} (User in topology)")
+
+        # Use config values for execution
+        if config:
+            max_steps = config.default_max_steps
+            timeout = config.default_timeout
+        else:
+            # Fallback to defaults if config is still None somehow
+            max_steps = max_steps or 30
+            timeout = timeout
 
         # Validate that agent has allowed_peers
         if not self._allowed_peers_init:
@@ -2296,7 +2405,7 @@ Example for `final_response`:
                 progress_queue=progress_queue,
                 log_level=LogLevel.SUMMARY,
                 max_depth=3,
-                max_interactions=max_steps * 2 + 5,
+                max_interactions=(max_steps or 30) * 2 + 5,
                 interaction_id=str(uuid.uuid4()),
                 depth=0,
                 interaction_count=0,
@@ -2325,7 +2434,7 @@ Example for `final_response`:
             topology = {
                 "nodes": [self.name],
                 "edges": [],  # Will be built automatically from allowed_peers
-                "rules": [f"max_steps({max_steps})"],
+                "rules": [f"max_steps({max_steps or 30})"],
                 "entry_point": self.name,  # Specify this agent as the entry point
                 "exit_points": [self.name]  # Also specify as exit point so it can return final_response
             }
@@ -2338,34 +2447,24 @@ Example for `final_response`:
             # No need to manually add peers here
             
             # Import ExecutionConfig and StatusConfig
-            from ..coordination.config import ExecutionConfig, StatusConfig
+            # ExecutionConfig import removed - now using AutoRunConfig
 
-            # Create execution config from individual flags if any are specified
-            execution_config = None
-            if any(x is not None for x in [auto_detect_convergence, parent_completes_on_spawn,
-                                          dynamic_convergence_enabled, steering_mode, verbosity]):
-                execution_config = ExecutionConfig(
-                    auto_detect_convergence=auto_detect_convergence if auto_detect_convergence is not None else True,
-                    parent_completes_on_spawn=parent_completes_on_spawn if parent_completes_on_spawn is not None else True,
-                    dynamic_convergence_enabled=dynamic_convergence_enabled if dynamic_convergence_enabled is not None else True,
-                    steering_mode=steering_mode if steering_mode is not None else "auto"
-                )
+            # ExecutionConfig is now handled via AutoRunConfig
 
-                # Add status configuration if verbosity is provided
-                if verbosity is not None:
-                    execution_config.status = StatusConfig.from_verbosity(verbosity)
-            
             # Prepare execution context
             exec_context = {
+                "session_id": str(uuid.uuid4()),
                 "initial_agent": self.name,
                 "request_context": request_context,
-                "max_re_prompts": max_re_prompts,
-                "context_messages": context_messages  # Pass any extracted context messages
+                "max_re_prompts": config.default_max_re_prompts if config else 3,
+                "context_messages": context_messages,  # Pass any extracted context messages
+                "auto_run_config": config,  # Pass the config for user interaction detection
+                "progress_queue": getattr(request_context, 'progress_queue', None)
             }
-            
-            # Add execution_config to context if created from flags
-            if execution_config:
-                exec_context["execution_config"] = execution_config
+
+            # Add execution_config to context if created from config
+            if config and config.execution:
+                exec_context["execution_config"] = config.execution
             
             # Log start of execution
             await self._log_progress(
@@ -2380,37 +2479,41 @@ Example for `final_response`:
                 }
             )
             
-            # Create communication manager if requested
+            # Create communication manager based on config
             comm_manager = None
             terminal_channel = None  # Track for cleanup
-            if user_interaction:
-                if isinstance(user_interaction, str) and user_interaction == "terminal":
-                    # Create terminal-based interaction
-                    from ..coordination.communication import CommunicationManager
-                    from ..coordination.communication.channels import TerminalChannel
-                    
-                    comm_manager = CommunicationManager()
-                    terminal_channel = TerminalChannel(f"terminal_{self.name}")
-                    await terminal_channel.start()
-                    comm_manager.register_channel(terminal_channel)
-                    
-                    # Assign to session if context has session_id
-                    if exec_context and "session_id" in exec_context:
-                        comm_manager.assign_channel_to_session(
-                            exec_context["session_id"], 
-                            terminal_channel.channel_id
-                        )
-                elif hasattr(user_interaction, 'register_channel'):
-                    # User provided their own CommunicationManager
-                    comm_manager = user_interaction
-                else:
-                    self.logger.warning(f"Invalid user_interaction value: {user_interaction}")
+
+            # Check if user provided a CommunicationManager instance
+            if hasattr(user_interaction, 'register_channel'):
+                # User provided their own CommunicationManager
+                comm_manager = user_interaction
+            elif config and config.user_interaction and config.user_interaction.mode == "terminal":
+                # Create terminal-based interaction
+                from ..coordination.communication import CommunicationManager
+                from ..coordination.communication.channels import TerminalChannel
+
+                comm_manager = CommunicationManager()
+                terminal_channel = TerminalChannel(f"terminal_{self.name}")
+                await terminal_channel.start()
+                comm_manager.register_channel(terminal_channel)
+
+                # Assign to session if context has session_id
+                if exec_context and "session_id" in exec_context:
+                    comm_manager.assign_channel_to_session(
+                        exec_context["session_id"],
+                        terminal_channel.channel_id
+                    )
+            elif config and config.user_interaction and config.user_interaction.mode == "web":
+                # Web mode could be added here in the future
+                self.logger.info("Web mode user interaction not yet implemented")
+            elif config and config.user_interaction and config.user_interaction.mode and config.user_interaction.warn_on_missing_handler:
+                self.logger.warning(f"Unknown user_interaction mode: {config.user_interaction.mode}")
             
             # Create Orchestra instance with optional communication and execution config
             orchestra = Orchestra(
                 agent_registry=AgentRegistry,
                 communication_manager=comm_manager,  # Pass the manager if available
-                execution_config=execution_config  # Always pass execution_config if it exists
+                execution_config=config.execution if config else None  # Pass execution config from AutoRunConfig
             )
             
             # Execute with Orchestra

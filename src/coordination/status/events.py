@@ -80,17 +80,25 @@ class ParallelGroupEvent(StatusEvent):
 
 @dataclass
 class UserInteractionEvent(StatusEvent):
-    """User interaction required."""
+    """Lightweight status event for user interaction monitoring."""
     agent_name: str
-    interaction_type: str
-    prompt: str
-    options: Optional[List[str]] = None
+    interaction_type: str  # "starting", "completed", "timeout"
+    prompt: str  # Brief description/summary, not full content
+    options: Optional[List[str]] = None  # Deprecated, kept for compatibility
 
 
 @dataclass
 class FinalResponseEvent(StatusEvent):
     """Final response ready."""
-    response_summary: str
+    final_response: str  # Changed from response_summary for clarity
     total_duration: float
     total_steps: int
     success: bool
+
+
+# Events removed due to separation of concerns:
+# - UserInteractionRequestEvent: Content belongs in CommunicationManager
+# - UserInteractionResponseEvent: User input handling is CommunicationManager's responsibility
+# - FollowUpRequestEvent: Follow-up workflow is CommunicationManager's domain
+
+# The remaining UserInteractionEvent provides lightweight metadata for monitoring only
