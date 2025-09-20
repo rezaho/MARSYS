@@ -178,14 +178,28 @@ class Orchestra:
         self.status_manager = None
         if execution_config.status.enabled:
             from .status.manager import StatusManager
-            from .status.channels import CLIChannel
+            from .status.channels import CLIChannel, PrefixedCLIChannel
+            # UserInteractionManager removed - functionality moved to CommunicationManager
 
             # Create status manager
             self.status_manager = StatusManager(self.event_bus, execution_config.status)
 
+            # Create user interaction manager if enabled
+            # UserInteractionManager removed - use communication_manager instead
+            # (user interactions now handled via CommunicationManager)
+
             # Add configured channels
             if "cli" in execution_config.status.channels:
-                self.status_manager.add_channel(CLIChannel(execution_config.status))
+                # Use prefixed channel if configured
+                if getattr(execution_config.status, 'show_agent_prefixes', False):
+                    channel = PrefixedCLIChannel(execution_config.status)
+                else:
+                    channel = CLIChannel(execution_config.status)
+
+                # Connect interaction manager to channel if available
+                # Interaction manager connection removed - using CommunicationManager instead
+
+                self.status_manager.add_channel(channel)
 
             logger.info("Status updates enabled with verbosity: %s",
                        execution_config.status.verbosity)
