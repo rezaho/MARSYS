@@ -4,6 +4,7 @@ Communication manager for handling user interactions across different channels.
 
 import asyncio
 import logging
+import time
 from typing import Any, Callable, Dict, List, Optional, Set
 import uuid
 
@@ -20,10 +21,17 @@ logger = logging.getLogger(__name__)
 
 class CommunicationManager:
     """
-    Central manager for all user communication channels.
-    
-    Handles routing interactions to appropriate channels and managing
-    responses across synchronous and asynchronous communication patterns.
+    Central manager for bi-directional user communication.
+
+    Design Principle: User Dialogue Ownership
+    - Handles the complete interaction experience (content display + input collection)
+    - Manages synchronous (terminal) and asynchronous (web) communication patterns
+    - Owns the presentation layer for user interactions
+    - Routes interactions to appropriate channels based on mode
+
+    This manager is separate from StatusManager, which handles one-way system
+    observability. CommunicationManager focuses on interactive dialogue while
+    StatusManager focuses on event broadcasting and monitoring.
     """
     
     def __init__(self):
@@ -40,7 +48,7 @@ class CommunicationManager:
         
         # Interaction tracking
         self.pending_interactions: Dict[str, UserInteraction] = {}
-        self.interaction_history: List[UserInteraction] = []
+        self.interaction_history: Dict[str, List[UserInteraction]] = {}  # Per-session history
         
         # Response handling
         self.response_futures: Dict[str, asyncio.Future] = {}  # For sync
@@ -77,7 +85,7 @@ class CommunicationManager:
         """
         # Store interaction
         self.pending_interactions[interaction.interaction_id] = interaction
-        self.interaction_history.append(interaction)
+        self.add_to_history(interaction.session_id, interaction)
         
         logger.info(f"Handling interaction {interaction.interaction_id} "
                    f"from {interaction.calling_agent} in {interaction.communication_mode} mode")
@@ -279,17 +287,22 @@ class CommunicationManager:
         
         return interactions
     
+    def add_to_history(self, session_id: str, interaction: UserInteraction) -> None:
+        """Add interaction to session history."""
+        if session_id not in self.interaction_history:
+            self.interaction_history[session_id] = []
+        self.interaction_history[session_id].append(interaction)
+
     def get_interaction_history(
         self,
-        session_id: Optional[str] = None,
-        limit: int = 100
+        session_id: str,
+        limit: Optional[int] = None
     ) -> List[UserInteraction]:
-        """Get interaction history with optional session filter."""
-        history = self.interaction_history
-        if session_id:
-            history = [i for i in history if i.session_id == session_id]
-        
-        return history[-limit:] if len(history) > limit else history
+        """Get interaction history for a specific session."""
+        history = self.interaction_history.get(session_id, [])
+        if limit and len(history) > limit:
+            return history[-limit:]
+        return history.copy()
     
     async def cleanup(self) -> None:
         """Clean up resources."""
@@ -310,3 +323,225 @@ class CommunicationManager:
                 logger.error(f"Error stopping channel {channel.channel_id}: {e}")
         
         logger.info("CommunicationManager cleanup complete")
+
+    async def present_results_and_wait_for_follow_up(
+        self,
+        results: str,
+        session_id: str,
+        timeout: float = 30.0,
+        allow_follow_up: bool = True
+    ) -> Optional[str]:
+        """
+        Present results to user and optionally wait for follow-up request.
+
+        Args:
+            results: The results to present to user
+            session_id: Session identifier
+            timeout: Time to wait for follow-up (seconds)
+            allow_follow_up: Whether to wait for follow-up requests
+
+        Returns:
+            Follow-up request if provided within timeout, None otherwise
+        """
+        # First, present the results
+        await self.present_results(results, session_id)
+
+        if not allow_follow_up:
+            return None
+
+        # Create interaction for follow-up request
+        follow_up_interaction = UserInteraction(
+            interaction_id=str(uuid.uuid4()),
+            session_id=session_id,
+            branch_id=None,  # Not tied to specific branch
+            incoming_message="Enter a follow-up request or press Enter to finish:",
+            interaction_type="follow_up",
+            timestamp=time.time(),
+            communication_mode=CommunicationMode.SYNC,
+            calling_agent="System",
+            resume_agent="System",
+            timeout=timeout
+        )
+
+        try:
+            # Wait for user response with timeout
+            response = await self.handle_interaction(follow_up_interaction)
+
+            # Return response if non-empty, None otherwise
+            if response and isinstance(response, str) and response.strip():
+                return response.strip()
+            return None
+
+        except (asyncio.TimeoutError, TimeoutError):
+            # No follow-up within timeout
+            logger.info(f"No follow-up received within {timeout}s for session {session_id}")
+            return None
+        except Exception as e:
+            logger.error(f"Error waiting for follow-up: {e}")
+            return None
+
+    async def present_results(
+        self,
+        results: str,
+        session_id: str,
+        format: str = "text"  # text, markdown, json
+    ) -> None:
+        """
+        Present results to user without waiting for response.
+
+        Args:
+            results: The results to present
+            session_id: Session identifier
+            format: Format of the results (text, markdown, json)
+        """
+        # Get appropriate channel for session
+        channel = self._get_sync_channel(session_id)
+
+        if channel and hasattr(channel, 'display_results'):
+            # Use channel's display method if available
+            await channel.display_results(results, format)
+        else:
+            # Fallback to creating a display-only interaction
+            display_interaction = UserInteraction(
+                interaction_id=str(uuid.uuid4()),
+                session_id=session_id,
+                branch_id=None,
+                incoming_message=results,
+                interaction_type="result_display",
+                timestamp=time.time(),
+                communication_mode=CommunicationMode.SYNC,
+                calling_agent="System",
+                resume_agent=None,  # No resume needed
+                metadata={"format": format, "display_only": True}
+            )
+
+            # Send to channel for display
+            if channel:
+                await channel.send_interaction(display_interaction)
+            else:
+                # Log if no channel available
+                logger.warning(f"No channel available to display results for session {session_id}")
+
+    async def request_user_confirmation(
+        self,
+        prompt: str,
+        session_id: str,
+        agent_name: Optional[str] = None,
+        timeout: float = 60.0
+    ) -> bool:
+        """
+        Request yes/no confirmation from user.
+
+        Args:
+            prompt: The confirmation prompt
+            session_id: Session identifier
+            agent_name: Name of agent requesting confirmation
+            timeout: Time to wait for response
+
+        Returns:
+            True if confirmed, False otherwise
+        """
+        # Format prompt for confirmation
+        formatted_prompt = f"{prompt}\nProceed? (yes/no):"
+
+        # Create confirmation interaction
+        confirmation_interaction = UserInteraction(
+            interaction_id=str(uuid.uuid4()),
+            session_id=session_id,
+            branch_id=None,
+            incoming_message=formatted_prompt,
+            interaction_type="confirmation",
+            timestamp=time.time(),
+            communication_mode=CommunicationMode.SYNC,
+            calling_agent=agent_name or "System",
+            resume_agent=agent_name or "System",
+            metadata={"options": ["yes", "no"]},
+            timeout=timeout
+        )
+
+        try:
+            response = await self.handle_interaction(confirmation_interaction)
+
+            # Parse response as boolean
+            if response and isinstance(response, str):
+                return response.lower() in ["yes", "y", "true", "1", "ok", "sure"]
+            return False
+
+        except (asyncio.TimeoutError, TimeoutError):
+            logger.warning(f"Confirmation timeout for session {session_id}")
+            return False
+        except Exception as e:
+            logger.error(f"Error getting confirmation: {e}")
+            return False
+
+    async def request_user_choice(
+        self,
+        prompt: str,
+        options: List[str],
+        session_id: str,
+        agent_name: Optional[str] = None,
+        timeout: float = 60.0
+    ) -> Optional[str]:
+        """
+        Request user to choose from options.
+
+        Args:
+            prompt: The choice prompt
+            options: List of valid options
+            session_id: Session identifier
+            agent_name: Name of agent requesting choice
+            timeout: Time to wait for response
+
+        Returns:
+            Selected option or None if timeout/error
+        """
+        # Format prompt with numbered options
+        formatted_options = "\n".join(f"{i+1}. {opt}" for i, opt in enumerate(options))
+        formatted_prompt = f"{prompt}\n\n{formatted_options}\n\nEnter your choice (1-{len(options)}):"
+
+        # Create choice interaction
+        choice_interaction = UserInteraction(
+            interaction_id=str(uuid.uuid4()),
+            session_id=session_id,
+            branch_id=None,
+            incoming_message=formatted_prompt,
+            interaction_type="choice",
+            timestamp=time.time(),
+            communication_mode=CommunicationMode.SYNC,
+            calling_agent=agent_name or "System",
+            resume_agent=agent_name or "System",
+            metadata={"options": options},
+            timeout=timeout
+        )
+
+        try:
+            response = await self.handle_interaction(choice_interaction)
+
+            if response:
+                # Try to parse as number
+                try:
+                    choice_idx = int(response) - 1
+                    if 0 <= choice_idx < len(options):
+                        return options[choice_idx]
+                except ValueError:
+                    pass
+
+                # Try exact match
+                response_lower = response.lower()
+                for option in options:
+                    if option.lower() == response_lower:
+                        return option
+
+                # Try partial match
+                for option in options:
+                    if response_lower in option.lower():
+                        return option
+
+            return None
+
+        except (asyncio.TimeoutError, TimeoutError):
+            logger.warning(f"Choice timeout for session {session_id}")
+            return None
+        except Exception as e:
+            logger.error(f"Error getting user choice: {e}")
+            return None

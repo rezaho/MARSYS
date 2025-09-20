@@ -652,14 +652,42 @@ class BranchExecutor:
             else:
                 # Check if this is an auto-injected User node
                 if branch.metadata.get("auto_injected_user"):
-                    # Auto-complete for auto-injected User nodes without handler
-                    # Pass through the actual request instead of a dummy message
-                    return StepResult(
-                        agent_name="User",
-                        success=True,
-                        response=request if request else {"message": "Auto-injected User node completed"},
-                        metadata={"auto_completed": True}
-                    )
+                    # Check if communication manager is available in context
+                    comm_manager = context.shared_context.get('communication_manager')
+                    config = context.shared_context.get('auto_run_config')  # Get AutoRunConfig if available
+
+                    if comm_manager:
+                        # Use proper user interaction even for auto-injected nodes
+                        # This allows auto_run to work with user interactions seamlessly
+                        from ..communication.user_node_handler import UserNodeHandler
+                        handler = UserNodeHandler(comm_manager, self.event_bus)
+                        return await handler.handle_user_node(
+                            branch=branch,
+                            incoming_message=request,
+                            context=context.shared_context
+                        )
+                    elif config and config.user_interaction.warn_on_missing_handler:
+                        # Emit warning through logger if configured
+                        logger.warning(
+                            "User node reached but no communication manager configured. "
+                            "Consider setting user_interaction='terminal' in auto_run. "
+                            "Auto-completing user interaction."
+                        )
+                        # Auto-complete for backward compatibility
+                        return StepResult(
+                            agent_name="User",
+                            success=True,
+                            response=request if request else {"message": "Auto-injected User node completed"},
+                            metadata={"auto_completed": True, "warning": "No handler configured"}
+                        )
+                    else:
+                        # Silent auto-complete for backward compatibility
+                        return StepResult(
+                            agent_name="User",
+                            success=True,
+                            response=request if request else {"message": "Auto-injected User node completed"},
+                            metadata={"auto_completed": True}
+                        )
                 else:
                     # Explicit User node without handler is an error
                     return StepResult(
