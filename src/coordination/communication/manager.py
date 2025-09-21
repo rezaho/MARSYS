@@ -5,7 +5,7 @@ Communication manager for handling user interactions across different channels.
 import asyncio
 import logging
 import time
-from typing import Any, Callable, Dict, List, Optional, Set
+from typing import Any, Callable, Dict, List, Optional, Set, TYPE_CHECKING
 import uuid
 
 from .core import (
@@ -15,6 +15,9 @@ from .core import (
     AsyncChannel,
     CommunicationChannel
 )
+
+if TYPE_CHECKING:
+    from ..config import CommunicationConfig
 
 logger = logging.getLogger(__name__)
 
@@ -34,7 +37,10 @@ class CommunicationManager:
     StatusManager focuses on event broadcasting and monitoring.
     """
     
-    def __init__(self):
+    def __init__(self, config: Optional['CommunicationConfig'] = None):
+        # Configuration
+        self.config = config
+
         # Channels by type
         self.sync_channels: Dict[str, SyncChannel] = {}
         self.async_channels: Dict[str, AsyncChannel] = {}
@@ -56,9 +62,43 @@ class CommunicationManager:
         
         # Background tasks
         self._tasks: Set[asyncio.Task] = set()
-        
+
+        # Auto-create default terminal channel if configured
+        if config and config.use_enhanced_terminal:
+            self._create_default_terminal_channel()
+
         logger.info("CommunicationManager initialized")
-    
+
+    def _create_default_terminal_channel(self) -> None:
+        """Create and register the default terminal channel based on configuration."""
+        try:
+            if self.config.use_enhanced_terminal:
+                # Try to create enhanced terminal
+                from .channels.enhanced_terminal import EnhancedTerminalChannel
+                channel = EnhancedTerminalChannel(
+                    channel_id="terminal",
+                    use_rich=self.config.use_rich_formatting,
+                    theme_name=self.config.theme_name,
+                    prefix_width=self.config.prefix_width,
+                    show_timestamps=self.config.show_timestamps
+                )
+                self.register_channel(channel)
+                logger.info("Created EnhancedTerminalChannel")
+            else:
+                # Use basic terminal
+                from .channels.terminal import TerminalChannel
+                channel = TerminalChannel(channel_id="terminal")
+                self.register_channel(channel)
+                logger.info("Created basic TerminalChannel")
+        except Exception as e:
+            if self.config.fallback_on_error:
+                logger.warning(f"Failed to create enhanced terminal: {e}, falling back to basic")
+                from .channels.terminal import TerminalChannel
+                channel = TerminalChannel(channel_id="terminal")
+                self.register_channel(channel)
+            else:
+                raise
+
     def register_channel(self, channel: CommunicationChannel) -> None:
         """Register a communication channel."""
         if isinstance(channel, SyncChannel):

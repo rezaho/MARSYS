@@ -2481,27 +2481,34 @@ The user will provide their response, and you'll receive it to continue your tas
             
             # Create communication manager based on config
             comm_manager = None
-            terminal_channel = None  # Track for cleanup
+            # Communication manager handles terminal channel internally
 
             # Check if user provided a CommunicationManager instance
             if hasattr(user_interaction, 'register_channel'):
                 # User provided their own CommunicationManager
                 comm_manager = user_interaction
             elif config and config.user_interaction and config.user_interaction.mode == "terminal":
-                # Create terminal-based interaction
+                # Create terminal-based interaction with enhanced terminal
                 from ..coordination.communication import CommunicationManager
-                from ..coordination.communication.channels import TerminalChannel
+                from ..coordination.config import CommunicationConfig
 
-                comm_manager = CommunicationManager()
-                terminal_channel = TerminalChannel(f"terminal_{self.name}")
-                await terminal_channel.start()
-                comm_manager.register_channel(terminal_channel)
+                # Create config for enhanced terminal
+                comm_config = CommunicationConfig(
+                    use_enhanced_terminal=True,
+                    use_rich_formatting=True,
+                    theme_name="modern",
+                    prefix_width=20,
+                    show_timestamps=True
+                )
+
+                # CommunicationManager will auto-create enhanced terminal with config
+                comm_manager = CommunicationManager(comm_config)
 
                 # Assign to session if context has session_id
                 if exec_context and "session_id" in exec_context:
                     comm_manager.assign_channel_to_session(
                         exec_context["session_id"],
-                        terminal_channel.channel_id
+                        "terminal"  # Use default terminal ID created by manager
                     )
             elif config and config.user_interaction and config.user_interaction.mode == "web":
                 # Web mode could be added here in the future
@@ -2574,14 +2581,8 @@ The user will provide their response, and you'll receive it to continue your tas
             return f"Error: Agent '{self.name}' encountered exception: {str(e)}"
             
         finally:
-            # Cleanup terminal channel if created
-            if terminal_channel:
-                try:
-                    await terminal_channel.stop()
-                    self.logger.debug(f"Stopped terminal channel for agent '{self.name}'")
-                except Exception as e:
-                    self.logger.warning(f"Failed to stop terminal channel: {e}")
-            
+            # Cleanup communication manager if created for terminal interaction
+            # Note: terminal_channel variable no longer exists since it's managed by comm_manager
             if comm_manager and user_interaction == "terminal":
                 try:
                     await comm_manager.cleanup()
