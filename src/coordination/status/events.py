@@ -102,3 +102,31 @@ class FinalResponseEvent(StatusEvent):
 # - FollowUpRequestEvent: Follow-up workflow is CommunicationManager's domain
 
 # The remaining UserInteractionEvent provides lightweight metadata for monitoring only
+
+
+@dataclass
+class CriticalErrorEvent(StatusEvent):
+    """Event for critical errors requiring user attention."""
+    agent_name: Optional[str] = None
+    error_type: str = ""
+    error_code: str = ""
+    message: str = ""
+    provider: Optional[str] = None
+    suggested_action: Optional[str] = None
+    requires_user_action: bool = False
+
+    def get_event_type(self) -> str:
+        return "critical_error"
+
+
+@dataclass
+class ResourceLimitEvent(StatusEvent):
+    """Event for resource limit notifications."""
+    resource_type: str = ""  # "agent_pool", "memory", "cpu", etc.
+    pool_name: Optional[str] = None
+    limit_value: Optional[Any] = None
+    current_value: Optional[Any] = None
+    suggestion: Optional[str] = None
+
+    def get_event_type(self) -> str:
+        return "resource_limit"

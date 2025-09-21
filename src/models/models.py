@@ -78,16 +78,9 @@ class APIProviderAdapter(ABC):
             # 2. Make request (common logic)
             response = requests.post(url, headers=headers, json=payload, timeout=180)
 
-            # Debug: Print the actual response for debugging
+            # # Debug: Print the actual response for debugging
             if response.status_code != 200:
-                print(f"DEBUG - API Error Response:")
-                print(f"  Status Code: {response.status_code}")
-                print(f"  Response Text: {response.text}")
-                print(f"  Request URL: {url}")
-                print(f"  Request Headers: {headers}")
-                print(f"  Request Payload: {payload}")
-
-            response.raise_for_status()
+                response.raise_for_status()
 
             # 3. Get raw response and harmonize
             raw_response = response.json()
@@ -96,28 +89,13 @@ class APIProviderAdapter(ABC):
             return self.harmonize_response(raw_response, request_start_time)
 
         except requests.exceptions.RequestException as e:
-            # Enhanced error handling with response content
-            print(f"DEBUG - Request Exception occurred:")
-            print(f"  Exception: {e}")
-            print(f"  Exception type: {type(e)}")
-
-            if response is not None:
-                print(f"  Response status code: {response.status_code}")
-                print(f"  Response headers: {dict(response.headers)}")
-                try:
-                    response_json = response.json()
-                    print(f"  Response JSON: {response_json}")
-                except:
-                    print(f"  Response text: {response.text}")
-            else:
-                print(f"  No response object available")
-
-            return self.handle_api_error(e, response)
+            try:
+                return self.handle_api_error(e, response)
+            except Exception as api_error:
+                # Re-raise ModelAPIError that was raised by handle_api_error
+                raise api_error
         except Exception as e:
             # Catch any other exceptions (like Pydantic validation errors)
-            print(f"DEBUG - Unexpected Exception occurred:")
-            print(f"  Exception: {e}")
-            print(f"  Exception type: {type(e)}")
 
             if response is not None:
                 print(f"  Response status code: {response.status_code}")
@@ -216,7 +194,6 @@ class AsyncBaseAPIAdapter(APIProviderAdapter):
             ModelError: For any API or network errors
         """
         import aiohttp
-        from src.agents.exceptions import ModelError
 
         try:
             # Record start time for response time calculation
@@ -240,14 +217,6 @@ class AsyncBaseAPIAdapter(APIProviderAdapter):
             ) as response:
                 # Check status before reading body
                 if response.status != 200:
-                    text = await response.text()
-                    print(f"DEBUG - API Error Response:")
-                    print(f"  Status Code: {response.status}")
-                    print(f"  Response Text: {text}")
-                    print(f"  Request URL: {url}")
-                    print(f"  Request Headers: {headers}")
-                    print(f"  Request Payload: {payload}")
-
                     # Raise aiohttp exception
                     response.raise_for_status()
 
@@ -258,14 +227,20 @@ class AsyncBaseAPIAdapter(APIProviderAdapter):
             return self.harmonize_response(raw_response, request_start_time)
 
         except aiohttp.ClientError as e:
-            # Convert aiohttp exceptions to framework's ModelError
-            error_message = f"Async API request failed: {str(e)}"
-            if hasattr(e, 'status'):
-                error_message = f"API error (status {e.status}): {str(e)}"
-            raise ModelError(error_message)
+            # Call handle_api_error like sync adapter does
+            # This ensures proper error classification for async requests
+            try:
+                return self.handle_api_error(e, response=None)
+            except Exception as api_error:
+                # Re-raise ModelAPIError that was raised by handle_api_error
+                raise api_error
         except Exception as e:
-            # Handle unexpected errors
-            raise ModelError(f"Unexpected error in async API call: {str(e)}")
+            # For unexpected errors, also use handle_api_error for consistency
+            try:
+                return self.handle_api_error(e, response=None)
+            except Exception as api_error:
+                # Re-raise ModelAPIError that was raised by handle_api_error
+                raise api_error
 
     async def cleanup(self):
         """
@@ -407,26 +382,24 @@ class OpenAIAdapter(APIProviderAdapter):
         return f"{self.base_url.rstrip('/')}/chat/completions"
 
     def handle_api_error(self, error: Exception, response=None) -> ErrorResponse:
-        error_msg = str(error)
-        error_code = None
-        error_type = None
+        """Enhanced error handling using ModelAPIError classification."""
+        from src.agents.exceptions import ModelAPIError
 
-        if response:
-            try:
-                error_data = response.json()
-                error_info = error_data.get("error", {})
-                error_msg = error_info.get("message", str(error))
-                error_code = error_info.get("code")
-                error_type = error_info.get("type")
-            except:
-                pass
+        # Create classified API error
+        api_error = ModelAPIError.from_provider_response(provider="openai", response=response, exception=error)
 
+        # For critical errors, raise the exception to stop execution
+        if api_error.is_critical():
+            raise api_error
+
+        # For retryable errors, return ErrorResponse for compatibility
         return ErrorResponse(
-            error=error_msg,
-            error_code=error_code,
-            error_type=error_type,
-            provider="openai",
+            error=api_error.developer_message,
+            error_code=api_error.api_error_code,
+            error_type=api_error.api_error_type,
+            provider=api_error.provider,
             model=self.model_name,
+            classification={"category": api_error.classification, "is_retryable": api_error.is_retryable, "retry_after": api_error.retry_after, "suggested_action": api_error.suggested_action},
         )
 
     def harmonize_response(
@@ -649,26 +622,24 @@ class OpenRouterAdapter(APIProviderAdapter):
         return f"{self.base_url.rstrip('/')}/chat/completions"
 
     def handle_api_error(self, error: Exception, response=None) -> ErrorResponse:
-        error_msg = str(error)
-        error_code = None
-        error_type = None
+        """Enhanced error handling using ModelAPIError classification."""
+        from src.agents.exceptions import ModelAPIError
 
-        if response:
-            try:
-                error_data = response.json()
-                error_info = error_data.get("error", {})
-                error_msg = error_info.get("message", str(error))
-                error_code = error_info.get("code")
-                error_type = error_info.get("type")
-            except:
-                pass
+        # Create classified API error
+        api_error = ModelAPIError.from_provider_response(provider="openrouter", response=response, exception=error)
 
+        # For critical errors, raise the exception to stop execution
+        if api_error.is_critical():
+            raise api_error
+
+        # For retryable errors, return ErrorResponse for compatibility
         return ErrorResponse(
-            error=error_msg,
-            error_code=error_code,
-            error_type=error_type,
-            provider="openrouter",
+            error=api_error.developer_message,
+            error_code=api_error.api_error_code,
+            error_type=api_error.api_error_type,
+            provider=api_error.provider,
             model=self.model_name,
+            classification={"category": api_error.classification, "is_retryable": api_error.is_retryable, "retry_after": api_error.retry_after, "suggested_action": api_error.suggested_action},
         )
 
     def _extract_json_from_content(self, content: str) -> dict:
@@ -839,39 +810,36 @@ class AnthropicAdapter(APIProviderAdapter):
         return f"{self.base_url.rstrip('/')}/messages"
 
     def handle_api_error(self, error: Exception, response=None) -> ErrorResponse:
-        error_msg = str(error)
-        error_code = None
-        error_type = None
-        request_id = None
+        """Enhanced error handling using ModelAPIError classification."""
+        from src.agents.exceptions import ModelAPIError
 
+        # Create classified API error
+        api_error = ModelAPIError.from_provider_response(provider="anthropic", response=response, exception=error)
+
+        # For critical errors, raise the exception to stop execution
+        if api_error.is_critical():
+            raise api_error
+
+        # For retryable errors, return ErrorResponse for compatibility
+        # Get request ID if available
+        request_id = None
         if response:
             try:
-                error_data = response.json()
-                print(f"DEBUG - Anthropic Error Data: {error_data}")
-
-                # Anthropic error format: {"type": "error", "error": {"type": "...", "message": "..."}}
-                if "error" in error_data:
-                    error_info = error_data["error"]
-                    error_msg = error_info.get("message", str(error))
-                    error_type = error_info.get("type")
-                    error_code = error_info.get("code")
-
-                # Try to get request ID
-                request_id = response.headers.get("request-id") or error_data.get(
-                    "request_id"
-                )
-
-            except Exception as parse_error:
-                print(f"DEBUG - Failed to parse error response: {parse_error}")
-                print(f"DEBUG - Raw response text: {response.text}")
+                request_id = response.headers.get("request-id")
+                if not request_id:
+                    error_data = response.json() if hasattr(response, "json") else {}
+                    request_id = error_data.get("request_id")
+            except:
+                pass
 
         return ErrorResponse(
-            error=error_msg,
-            error_code=error_code,
-            error_type=error_type,
-            provider="anthropic",
+            error=api_error.message,
+            error_code=api_error.api_error_code,
+            error_type=api_error.api_error_type,
+            provider=api_error.provider,
             model=self.model_name,
             request_id=request_id,
+            classification={"category": api_error.classification, "is_retryable": api_error.is_retryable, "retry_after": api_error.retry_after, "suggested_action": api_error.suggestion},
         )
 
     def harmonize_response(
@@ -1163,7 +1131,6 @@ class GoogleAdapter(APIProviderAdapter):
                 elif image_input.startswith(("http://", "https://")):
                     # URL - would need to download and convert
                     # For now, skip URLs as they need special handling
-                    print(f"Skipping URL image processing: {image_input}")
                     return None
                 elif os.path.exists(image_input):
                     # Local file path
@@ -1186,10 +1153,8 @@ class GoogleAdapter(APIProviderAdapter):
                             "inline_data": {"mime_type": mime_type, "data": base64_data}
                         }
                 else:
-                    print(f"Unrecognized image input format: {image_input[:100]}...")
                     return None
         except Exception as e:
-            print(f"Error processing image for Google API: {e}")
             return None
 
         return None
@@ -1245,26 +1210,24 @@ class GoogleAdapter(APIProviderAdapter):
         return f"{self.base_url.rstrip('/')}/models/{self.model_name}:generateContent?key={self.api_key}"
 
     def handle_api_error(self, error: Exception, response=None) -> ErrorResponse:
-        error_msg = str(error)
-        error_code = None
-        error_type = None
+        """Enhanced error handling using ModelAPIError classification."""
+        from src.agents.exceptions import ModelAPIError
 
-        if response:
-            try:
-                error_data = response.json()
-                error_info = error_data.get("error", {})
-                error_msg = error_info.get("message", str(error))
-                error_code = error_info.get("code")
-                error_type = error_info.get("status")
-            except:
-                pass
+        # Create classified API error
+        api_error = ModelAPIError.from_provider_response(provider="google", response=response, exception=error)
 
+        # For critical errors, raise the exception to stop execution
+        if api_error.is_critical():
+            raise api_error
+
+        # For retryable errors, return ErrorResponse for compatibility
         return ErrorResponse(
-            error=error_msg,
-            error_code=error_code,
-            error_type=error_type,
-            provider="google",
+            error=api_error.developer_message,
+            error_code=api_error.api_error_code,
+            error_type=api_error.api_error_type,
+            provider=api_error.provider,
             model=self.model_name,
+            classification={"category": api_error.classification, "is_retryable": api_error.is_retryable, "retry_after": api_error.retry_after, "suggested_action": api_error.suggested_action},
         )
 
     def harmonize_response(
@@ -1585,12 +1548,7 @@ class BaseLLM:
             Dictionary with consistent format: {"role": "assistant", "content": "...", "tool_calls": []}
         """
         # format the input with the tokenizer
-        text: str = self.tokenizer.apply_chat_template(
-            messages, tokenize=False, add_generation_prompt=True
-        )
-        print(
-            f"\n\n**************************\n\n{text}\n\n**************************\n\n"
-        )
+        text: str = self.tokenizer.apply_chat_template(messages, tokenize=False, add_generation_prompt=True)
         if json_mode:
             text += "```json\n"
         model_inputs = self.tokenizer([text], return_tensors="pt").to(self.model.device)
@@ -1677,8 +1635,6 @@ class BaseVLM:
         # If json_mode is True, add a code block to the text
         if json_mode:
             text += "```json\n"
-        print(text)
-        print("\n\n\n")
         # # use self.fetch_image() to get the image data if it's a URL or path
         # if images:
         #     images = [self.fetch_image(image) for image in images]
@@ -1912,9 +1868,9 @@ class BaseAPIModel:
         Returns:
             HarmonizedResponse object with standardized format and metadata
         """
-        # Import ModelError at method level to ensure it's always in scope
-        from src.agents.exceptions import ModelError
-        
+        # Import ModelAPIError at method level to ensure it's always in scope
+        from src.agents.exceptions import ModelAPIError
+
         try:
             # Include instance thinking_budget if not provided in kwargs and instance has it
             if (
@@ -1937,18 +1893,32 @@ class BaseAPIModel:
 
             # Check if response is an ErrorResponse and convert to exception
             if isinstance(adapter_response, ErrorResponse):
-                # Convert ErrorResponse to ModelError exception
-                # Pass all error details to the exception
-                raise ModelError(
+                # Create ModelAPIError with proper classification instead of generic ModelError
+                from src.agents.exceptions import ModelAPIError
+
+                # Extract classification data if available
+                classification = None
+                is_retryable = False
+                retry_after = None
+                suggested_action = None
+
+                if hasattr(adapter_response, "classification") and isinstance(adapter_response.classification, dict):
+                    classification = adapter_response.classification.get("category")
+                    is_retryable = adapter_response.classification.get("is_retryable", False)
+                    retry_after = adapter_response.classification.get("retry_after")
+                    suggested_action = adapter_response.classification.get("suggested_action")
+
+                raise ModelAPIError(
                     message=f"API Error: {adapter_response.error}",
-                    error_code=adapter_response.error_code,
-                    context={
-                        "error_type": adapter_response.error_type,
-                        "provider": adapter_response.provider,
-                        "model": adapter_response.model,
-                        "request_id": adapter_response.request_id,
-                        "original_error": adapter_response.error,
-                    },
+                    provider=adapter_response.provider,
+                    api_error_code=adapter_response.error_code,
+                    api_error_type=adapter_response.error_type,
+                    classification=classification,
+                    is_retryable=is_retryable,
+                    retry_after=retry_after,
+                    suggested_action=suggested_action,
+                    status_code=getattr(adapter_response, "status_code", None),
+                    raw_response={"error": adapter_response.error, "model": adapter_response.model},
                 )
 
             # Apply custom response processor if provided
@@ -1957,8 +1927,8 @@ class BaseAPIModel:
             else:
                 return adapter_response
 
-        except ModelError:
-            # Re-raise ModelError without additional wrapping
+        except ModelAPIError:
+            # Re-raise ModelAPIError without additional wrapping
             raise
         except Exception as e:
             print(f"BaseAPIModel.run failed: {e}")
@@ -2014,14 +1984,32 @@ class BaseAPIModel:
 
             # Check if response is an ErrorResponse
             if isinstance(adapter_response, ErrorResponse):
-                from src.agents.exceptions import ModelError
-                raise ModelError(
+                # Use ModelAPIError with classification instead of generic ModelError
+                from src.agents.exceptions import ModelAPIError
+
+                # Extract classification data if available
+                classification = None
+                is_retryable = False
+                retry_after = None
+                suggested_action = None
+
+                if hasattr(adapter_response, "classification") and isinstance(adapter_response.classification, dict):
+                    classification = adapter_response.classification.get("category")
+                    is_retryable = adapter_response.classification.get("is_retryable", False)
+                    retry_after = adapter_response.classification.get("retry_after")
+                    suggested_action = adapter_response.classification.get("suggested_action")
+
+                raise ModelAPIError(
                     message=f"API Error: {adapter_response.error}",
-                    error_code=adapter_response.error_code,
-                    context={
-                        "error_type": adapter_response.error_type,
-                        "provider": adapter_response.provider,
-                    }
+                    provider=adapter_response.provider,
+                    api_error_code=adapter_response.error_code,
+                    api_error_type=adapter_response.error_type,
+                    classification=classification,
+                    is_retryable=is_retryable,
+                    retry_after=retry_after,
+                    suggested_action=suggested_action,
+                    status_code=getattr(adapter_response, "status_code", None),
+                    raw_response={"error": adapter_response.error},
                 )
 
             # Apply post-processing if configured

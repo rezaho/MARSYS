@@ -650,6 +650,18 @@ class BranchExecutor:
                 
                 return result
             else:
+                # Check for error recovery request without handler
+                if isinstance(request, dict) and request.get('error_recovery'):
+                    # Error recovery requested but no handler - log error details and fail
+                    error_details = request.get('error_details', {})
+                    logger.error(f"Error recovery requested but User node handler not configured. Error: {error_details.get('message', 'Unknown error')}")
+                    return StepResult(
+                        agent_name="User",
+                        success=False,
+                        error=f"Cannot handle error recovery - User node handler not configured. Original error: {error_details.get('message', 'Unknown error')}",
+                        metadata={"error_details": error_details}
+                    )
+
                 # Check if this is an auto-injected User node
                 if branch.metadata.get("auto_injected_user"):
                     # Check if communication manager is available in context
@@ -821,9 +833,24 @@ class BranchExecutor:
                 if validation.is_valid:
                     result.action_type = validation.action_type.value if validation.action_type else "continue"
                     result.parsed_response = validation.parsed_response
-                    
+
+                    # Handle error recovery routing - transfer error details to metadata
+                    if validation.action_type in [ActionType.ERROR_RECOVERY, ActionType.TERMINAL_ERROR]:
+                        if validation.invocations and len(validation.invocations) > 0:
+                            # Get the User invocation with error details
+                            user_invocation = validation.invocations[0]
+                            if hasattr(user_invocation, 'request'):
+                                # Transfer error details to step result metadata
+                                if not result.metadata:
+                                    result.metadata = {}
+                                result.metadata['error_details'] = user_invocation.request.get('error_details', {})
+                                result.metadata['retry_context'] = user_invocation.request.get('retry_context', {})
+                                result.metadata['failed_agent'] = user_invocation.request.get('retry_context', {}).get('agent_name')
+                                logger.debug(f"Transferring error details to StepResult metadata: {result.metadata['error_details']}")
+                        result.next_agent = "User"  # Route to User node
+
                     # Handle parallel invocation
-                    if validation.action_type == ActionType.PARALLEL_INVOKE:
+                    elif validation.action_type == ActionType.PARALLEL_INVOKE:
                         logger.info(f"Agent '{agent_name}' requested parallel invocation")
                         return await self._handle_parallel_invocation(
                             agent_name, validation, result, context, branch
@@ -1185,6 +1212,27 @@ class BranchExecutor:
     ) -> Any:
         """Prepare request for next agent including saved context."""
         
+        # CASE 0a: Retry failed step - use original request from retry context
+        if step_result.action_type == "retry_failed_step":
+            retry_context = step_result.metadata.get("retry_context", {})
+            original_request = retry_context.get("request")
+            if original_request:
+                return original_request
+            # Fallback to normal flow if no request in context
+
+        # CASE 0b: Error recovery or terminal error - pass error details to User
+        if step_result.action_type in ["error_recovery", "terminal_error"]:
+            # Pass the full error details metadata to User node
+            return {
+                "error_recovery": step_result.action_type == "error_recovery",
+                "error_type": "terminal" if step_result.action_type == "terminal_error" else "fixable",
+                "error_details": step_result.metadata.get("error_details", {}),
+                "retry_context": step_result.metadata.get("retry_context", {}),
+                "failed_agent": step_result.metadata.get("failed_agent"),
+                "message": step_result.metadata.get("error_details", {}).get("message", "An error occurred"),
+                "suggested_actions": step_result.metadata.get("error_details", {}).get("suggested_actions", [])
+            }
+
         # CASE 1: Error from previous step - don't propagate
         if not step_result.success and step_result.error:
             # Special handling for invalid response errors

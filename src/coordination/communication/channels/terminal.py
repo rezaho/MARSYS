@@ -231,6 +231,15 @@ class TerminalChannel(SyncChannel):
         
         This ensures that no other interaction can interfere while waiting for user input.
         """
+        logger.debug(f"Terminal channel send_and_wait_for_response called for interaction {interaction.interaction_id}")
+        logger.debug(f"Channel active: {self.active}, interaction type: {interaction.interaction_type}")
+
+        if not self.active:
+            logger.warning(f"Terminal channel {self.channel_id} is not active, starting it now")
+            await self.start()
+
         async with self._interaction_lock:
             await self.send_interaction(interaction)
-            return await self.get_response(interaction.interaction_id)
+            result = await self.get_response(interaction.interaction_id)
+            logger.debug(f"Got response for interaction {interaction.interaction_id}: {result}")
+            return result

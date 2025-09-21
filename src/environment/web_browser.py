@@ -16,6 +16,15 @@ from PIL import Image as PILImage
 from PIL import ImageDraw, ImageFont
 from playwright.async_api import BrowserContext, Page, async_playwright
 
+# Import framework exceptions
+from src.agents.exceptions import (
+    BrowserError,
+    BrowserNotInitializedError,
+    BrowserConnectionError,
+    ToolExecutionError,
+    ActionValidationError
+)
+
 # Import BeautifulSoup and markdownify if available
 try:
     from bs4 import BeautifulSoup, Comment
@@ -108,7 +117,11 @@ def find_label_position_with_masking(
     
     # Ensure the mask is the correct size
     if global_mask.shape != (image_height, image_width):
-        raise ValueError(f"Mask shape {global_mask.shape} doesn't match image size ({image_height}, {image_width})")
+        raise ActionValidationError(
+            f"Mask shape {global_mask.shape} doesn't match image size ({image_height}, {image_width})",
+            action_name="apply_mask",
+            invalid_params={"mask_shape": global_mask.shape, "expected_shape": (image_height, image_width)}
+        )
     
     # Create hollow rectangle mask around the bbox with padding
     # This represents the search area for label placement
@@ -594,7 +607,11 @@ async def highlight_interactive_elements(
 
     # Ensure at least one output type is requested.
     if not (output_image or output_details):
-        raise ValueError("At least one of output_image or output_details must be True.")
+        raise ActionValidationError(
+            "At least one of output_image or output_details must be True.",
+            action_name="highlight_elements",
+            invalid_params={"output_image": output_image, "output_details": output_details}
+        )
 
     annotated_elements, interactive_details = await get_interactive_elements(
         page=page, visible_only=visible_only, output_details=output_details
@@ -828,7 +845,11 @@ async def mouse_move_smooth(
         else:
             pointer_icon = PILImage.open(cursor_icon_path)
     except Exception as e:
-        raise RuntimeError("Could not load pointer icon images.") from e
+        raise BrowserConnectionError(
+            "Could not load pointer icon images.",
+            browser_type="playwright",
+            install_command="pip install pillow"
+        ) from e
 
     desired_icon_size = (32, 32)
     pointer_icon = pointer_icon.resize(desired_icon_size, PILImage.Resampling.LANCZOS)
@@ -1026,8 +1047,10 @@ def resolve_color(color_name_or_hex: str) -> str:
         return DEFAULT_COLOR_MAP[color_name_or_hex]
     if color_name_or_hex.startswith("#") and len(color_name_or_hex) in [4, 7]:
         return color_name_or_hex
-    raise ValueError(
-        f"Unknown color '{color_name_or_hex}'. Must be a valid hex code or one of {list(DEFAULT_COLOR_MAP.keys())}."
+    raise ActionValidationError(
+        f"Unknown color '{color_name_or_hex}'. Must be a valid hex code or one of {list(DEFAULT_COLOR_MAP.keys())}.",
+        action_name="get_color_hex",
+        invalid_params={"color": color_name_or_hex, "valid_colors": list(DEFAULT_COLOR_MAP.keys())}
     )
 
 
@@ -2393,12 +2416,18 @@ class BrowserTool:
         r = reasoning or ""
 
         if selector and role:
-            raise ValueError(
-                "Only one of 'selector' or 'role' should be provided, not both."
+            raise ActionValidationError(
+                "Only one of 'selector' or 'role' should be provided, not both.",
+                action_name="click",
+                invalid_params={"selector": selector, "role": role}
             )
 
         if not selector and not role:
-            raise ValueError("Either 'selector' or 'role' must be provided.")
+            raise ActionValidationError(
+                "Either 'selector' or 'role' must be provided.",
+                action_name=self.name if hasattr(self, 'name') else 'browser_action',
+                invalid_params={"selector": None, "role": None}
+            )
 
         # If role is provided, construct a selector based on the role
         actual_selector = selector if selector else f'[role="{role}"]'
@@ -2559,12 +2588,18 @@ class BrowserTool:
         r = reasoning or ""
 
         if selector and role:
-            raise ValueError(
-                "Only one of 'selector' or 'role' should be provided, not both."
+            raise ActionValidationError(
+                "Only one of 'selector' or 'role' should be provided, not both.",
+                action_name="click",
+                invalid_params={"selector": selector, "role": role}
             )
 
         if not selector and not role:
-            raise ValueError("Either 'selector' or 'role' must be provided.")
+            raise ActionValidationError(
+                "Either 'selector' or 'role' must be provided.",
+                action_name=self.name if hasattr(self, 'name') else 'browser_action',
+                invalid_params={"selector": None, "role": None}
+            )
 
         # If role is provided, construct a selector based on the role
         actual_selector = selector if selector else f'[role="{role}"]'
@@ -2736,8 +2771,10 @@ class BrowserTool:
             "Alt",
         }
         if key not in allowed_keys:
-            raise ValueError(
-                f"Special key '{key}' is not recognized. Allowed keys: {sorted(allowed_keys)}"
+            raise ActionValidationError(
+                f"Special key '{key}' is not recognized. Allowed keys: {sorted(allowed_keys)}",
+                action_name="press_key",
+                invalid_params={"key": key, "allowed_keys": sorted(allowed_keys)}
             )
 
         r = reasoning or ""
@@ -2772,11 +2809,17 @@ class BrowserTool:
         """
         r = reasoning or ""
         if selector and role:
-            raise ValueError(
-                "Only one of 'selector' or 'role' should be provided, not both."
+            raise ActionValidationError(
+                "Only one of 'selector' or 'role' should be provided, not both.",
+                action_name="click",
+                invalid_params={"selector": selector, "role": role}
             )
         if not selector and not role:
-            raise ValueError("Either 'selector' or 'role' must be provided.")
+            raise ActionValidationError(
+                "Either 'selector' or 'role' must be provided.",
+                action_name=self.name if hasattr(self, 'name') else 'browser_action',
+                invalid_params={"selector": None, "role": None}
+            )
         actual_selector = selector if selector else f'[role="{role}"]'
 
         await self.page.dblclick(actual_selector, timeout=timeout)
@@ -2812,12 +2855,18 @@ class BrowserTool:
         r = reasoning or ""
 
         if selector and role:
-            raise ValueError(
-                "Only one of 'selector' or 'role' should be provided, not both."
+            raise ActionValidationError(
+                "Only one of 'selector' or 'role' should be provided, not both.",
+                action_name="click",
+                invalid_params={"selector": selector, "role": role}
             )
 
         if not selector and not role:
-            raise ValueError("Either 'selector' or 'role' must be provided.")
+            raise ActionValidationError(
+                "Either 'selector' or 'role' must be provided.",
+                action_name=self.name if hasattr(self, 'name') else 'browser_action',
+                invalid_params={"selector": None, "role": None}
+            )
 
         # If role is provided, construct a selector based on the role
         actual_selector = selector if selector else f'[role="{role}"]'
@@ -2854,12 +2903,18 @@ class BrowserTool:
         r = reasoning or ""
 
         if selector and role:
-            raise ValueError(
-                "Only one of 'selector' or 'role' should be provided, not both."
+            raise ActionValidationError(
+                "Only one of 'selector' or 'role' should be provided, not both.",
+                action_name="click",
+                invalid_params={"selector": selector, "role": role}
             )
 
         if not selector and not role:
-            raise ValueError("Either 'selector' or 'role' must be provided.")
+            raise ActionValidationError(
+                "Either 'selector' or 'role' must be provided.",
+                action_name=self.name if hasattr(self, 'name') else 'browser_action',
+                invalid_params={"selector": None, "role": None}
+            )
 
         # If role is provided, construct a selector based on the role
         actual_selector = selector if selector else f'[role="{role}"]'
@@ -2902,15 +2957,19 @@ class BrowserTool:
         if (source_selector and source_role) or (
             not source_selector and not source_role
         ):
-            raise ValueError(
-                "Provide either 'source_selector' or 'source_role' (but not both) for the source element."
+            raise ActionValidationError(
+                "Provide either 'source_selector' or 'source_role' (but not both) for the source element.",
+                action_name="drag_and_drop",
+                invalid_params={"source_selector": source_selector, "source_role": source_role}
             )
 
         if (target_selector and target_role) or (
             not target_selector and not target_role
         ):
-            raise ValueError(
-                "Provide either 'target_selector' or 'target_role' (but not both) for the target element."
+            raise ActionValidationError(
+                "Provide either 'target_selector' or 'target_role' (but not both) for the target element.",
+                action_name="drag_and_drop",
+                invalid_params={"target_selector": target_selector, "target_role": target_role}
             )
 
         actual_source = (
@@ -3357,7 +3416,12 @@ class BrowserTool:
                 return text or ""
             return ""
         except Exception as e:
-            raise RuntimeError(f"Failed to get text from selector '{selector}': {e}")
+            raise ToolExecutionError(
+                f"Failed to get text from selector '{selector}': {e}",
+                tool_name="get_text",
+                tool_args={"selector": selector},
+                execution_error=str(e)
+            )
 
     async def get_attribute(self, selector: str, attribute: str, timeout: Optional[int] = None) -> str:
         """
@@ -3378,7 +3442,12 @@ class BrowserTool:
                 return value or ""
             return ""
         except Exception as e:
-            raise RuntimeError(f"Failed to get attribute '{attribute}' from selector '{selector}': {e}")
+            raise ToolExecutionError(
+                f"Failed to get attribute '{attribute}' from selector '{selector}': {e}",
+                tool_name="get_attribute",
+                tool_args={"selector": selector, "attribute": attribute},
+                execution_error=str(e)
+            )
 
     async def wait_for_selector(self, selector: str, timeout: Optional[int] = None, state: str = "visible") -> str:
         """
@@ -3396,7 +3465,12 @@ class BrowserTool:
             await self.page.wait_for_selector(selector, timeout=timeout, state=state)
             return f"Element matching '{selector}' is now {state}"
         except Exception as e:
-            raise RuntimeError(f"Timeout waiting for selector '{selector}' to be {state}: {e}")
+            raise ToolExecutionError(
+                f"Timeout waiting for selector '{selector}' to be {state}: {e}",
+                tool_name="wait_for_element",
+                tool_args={"selector": selector, "state": state},
+                execution_error=str(e)
+            )
 
     async def go_forward(self, reasoning: Optional[str] = None, timeout: Optional[int] = None) -> None:
         """
@@ -4380,18 +4454,30 @@ class BrowserTool:
             
             # Check if request was successful
             if not response.ok:
-                raise Exception(f"Failed to fetch PDF: HTTP {response.status}")
+                raise BrowserError(
+                    f"Failed to fetch PDF: HTTP {response.status}",
+                    error_code="PDF_FETCH_ERROR",
+                    context={"url": url, "status": response.status}
+                )
             
             # Get the complete PDF content
             pdf_bytes = await response.body()
             
             # Verify we have actual PDF content
             if not pdf_bytes or len(pdf_bytes) < 100:
-                raise Exception("Received empty or invalid PDF content")
+                raise BrowserError(
+                    "Received empty or invalid PDF content",
+                    error_code="PDF_CONTENT_ERROR",
+                    context={"url": url, "content_size": len(pdf_bytes) if pdf_bytes else 0}
+                )
             
             # Check PDF header (PDF files start with %PDF)
             if not pdf_bytes[:5] == b'%PDF-':
-                raise Exception("Content is not a valid PDF file")
+                raise BrowserError(
+                    "Content is not a valid PDF file",
+                    error_code="PDF_INVALID_FORMAT",
+                    context={"url": url, "header": pdf_bytes[:10] if pdf_bytes else None}
+                )
             
             # Try to extract text using available PDF libraries
             extracted_text = ""
@@ -4422,7 +4508,11 @@ class BrowserTool:
                         extracted_text += page.extract_text() + "\n"
                         
                 except ImportError:
-                    raise Exception("No PDF parsing library available. Please install pdfminer.six or PyPDF2.")
+                    raise BrowserConnectionError(
+                        "No PDF parsing library available.",
+                        browser_type="pdf_parser",
+                        install_command="pip install pdfminer.six PyPDF2"
+                    )
             
             # Truncate if needed
             if max_text_length and len(extracted_text) > max_text_length:
@@ -4473,11 +4563,19 @@ class BrowserTool:
                 
                 # Verify we have actual PDF content
                 if not pdf_bytes or len(pdf_bytes) < 100:
-                    raise Exception("Received empty or invalid PDF content")
+                    raise BrowserError(
+                    "Received empty or invalid PDF content",
+                    error_code="PDF_CONTENT_ERROR",
+                    context={"url": url, "content_size": len(pdf_bytes) if pdf_bytes else 0}
+                )
                 
                 # Check PDF header
                 if not pdf_bytes[:5] == b'%PDF-':
-                    raise Exception("Content is not a valid PDF file")
+                    raise BrowserError(
+                    "Content is not a valid PDF file",
+                    error_code="PDF_INVALID_FORMAT",
+                    context={"url": url, "header": pdf_bytes[:10] if pdf_bytes else None}
+                )
                 
                 # Try to extract text using available PDF libraries
                 extracted_text = ""
@@ -4508,7 +4606,11 @@ class BrowserTool:
                             extracted_text += page.extract_text() + "\n"
                             
                     except ImportError:
-                        raise Exception("No PDF parsing library available. Please install pdfminer.six or PyPDF2.")
+                        raise BrowserConnectionError(
+                            "No PDF parsing library available.",
+                            browser_type="pdf_parser",
+                            install_command="pip install pdfminer.six PyPDF2"
+                        )
                 
                 # Truncate if needed
                 if max_text_length and len(extracted_text) > max_text_length:
@@ -5025,7 +5127,9 @@ class BrowserTool:
             Exception: If browser is not initialized or screenshot fails
         """
         if not self.page:
-            raise Exception("Browser page is not initialized.")
+            raise BrowserNotInitializedError(
+                operation="take_screenshot"
+            )
         
         if reasoning:
             logging.info(f"BrowserTool Highlight Bbox: {reasoning}")
@@ -5332,9 +5436,17 @@ class BrowserTool:
         import asyncio
 
         if min_delay >= max_delay:
-            raise ValueError("min_delay must be less than max_delay")
+            raise ActionValidationError(
+                "min_delay must be less than max_delay",
+                action_name="wait",
+                invalid_params={"min_delay": min_delay, "max_delay": max_delay}
+            )
         if variation_factor < 0:
-            raise ValueError("variation_factor must be non-negative")
+            raise ActionValidationError(
+                "variation_factor must be non-negative",
+                action_name="wait",
+                invalid_params={"variation_factor": variation_factor}
+            )
 
         r = reasoning or ""
         

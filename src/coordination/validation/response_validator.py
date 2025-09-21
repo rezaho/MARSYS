@@ -34,6 +34,8 @@ class ActionType(Enum):
     FINAL_RESPONSE = "final_response"      # Complete execution
     END_CONVERSATION = "end_conversation"  # End conversation branch
     WAIT_AND_AGGREGATE = "wait_and_aggregate"  # Wait for parallel results
+    ERROR_RECOVERY = "error_recovery"      # Route to user for error recovery
+    TERMINAL_ERROR = "terminal_error"      # Route to user for terminal error display
 
 
 @dataclass
@@ -478,6 +480,81 @@ class NaturalLanguageProcessor(ResponseProcessor):
         return 10  # Lowest priority
 
 
+class ErrorMessageProcessor(ResponseProcessor):
+    """Handles error Messages from agents (role='error')."""
+
+    def can_process(self, response: Any) -> bool:
+        """Check if this is an error Message."""
+        from ...agents.memory import Message
+        return isinstance(response, Message) and response.role == "error"
+
+    def process(self, response: Any) -> Optional[Dict[str, Any]]:
+        """Extract error information and determine recovery action."""
+        from ...agents.memory import Message
+
+        if not isinstance(response, Message):
+            return None
+
+        try:
+            error_content = json.loads(response.content)
+        except:
+            error_content = {"error": str(response.content)}
+
+        # Use preserved classification data if available
+        classification = error_content.get('classification', 'unknown')
+        is_retryable = error_content.get('is_retryable', False)
+
+        # Map classification to action type
+        from ...agents.exceptions import APIErrorClassification
+
+        # Fixable errors that user can resolve
+        fixable_classifications = [
+            APIErrorClassification.INSUFFICIENT_CREDITS.value,
+            APIErrorClassification.RATE_LIMIT.value,
+            APIErrorClassification.SERVICE_UNAVAILABLE.value,
+            APIErrorClassification.NETWORK_ERROR.value,
+            APIErrorClassification.TIMEOUT.value
+        ]
+
+        # Terminal errors that require config changes
+        terminal_classifications = [
+            APIErrorClassification.AUTHENTICATION_FAILED.value,
+            APIErrorClassification.PERMISSION_DENIED.value,
+            APIErrorClassification.INVALID_MODEL.value,
+            APIErrorClassification.INVALID_REQUEST.value
+        ]
+
+        if classification in fixable_classifications:
+            action_type = "error_recovery"  # Route to user for fixing
+        elif classification in terminal_classifications:
+            action_type = "terminal_error"  # Display and exit
+        else:
+            # Unknown errors default to terminal
+            action_type = "terminal_error"
+
+        error_info = {
+            "message": error_content.get('error', 'Unknown error'),
+            "classification": classification,
+            "provider": error_content.get('provider'),
+            "is_retryable": is_retryable,
+            "retry_after": error_content.get('retry_after'),
+            "suggested_action": error_content.get('suggested_action'),
+            "error_type": error_content.get('error_type', ''),
+            "raw_content": error_content
+        }
+
+        # Log for debugging
+        logger.debug(f"ErrorMessageProcessor created error_info: {error_info}")
+
+        return {
+            "next_action": action_type,
+            "error_info": error_info
+        }
+
+    def priority(self) -> int:
+        return 100  # Highest priority - check for errors first
+
+
 class ValidationProcessor:
     """Central hub for ALL response processing."""
     
@@ -486,6 +563,7 @@ class ValidationProcessor:
         
         # Initialize processors in priority order
         self.processors: List[ResponseProcessor] = sorted([
+            ErrorMessageProcessor(),  # NEW - highest priority
             StructuredJSONProcessor(),
             ToolCallProcessor(),
             NaturalLanguageProcessor()
@@ -498,7 +576,9 @@ class ValidationProcessor:
             ActionType.CALL_TOOL: self._validate_tool_call,
             ActionType.FINAL_RESPONSE: self._validate_final_response,
             ActionType.END_CONVERSATION: self._validate_end_conversation,
-            ActionType.WAIT_AND_AGGREGATE: self._validate_wait_aggregate
+            ActionType.WAIT_AND_AGGREGATE: self._validate_wait_aggregate,
+            ActionType.ERROR_RECOVERY: self._validate_error_recovery,  # NEW
+            ActionType.TERMINAL_ERROR: self._validate_terminal_error   # NEW
         }
     
     def _get_allowed_actions(self, agent: BaseAgent, branch: ExecutionBranch = None) -> List[str]:
@@ -878,7 +958,98 @@ class ValidationProcessor:
         # This would check if there are active sub-branches to wait for
         # For now, always valid
         return ValidationResult(is_valid=True)
-    
+
+    async def _validate_error_recovery(
+        self,
+        parsed: Dict[str, Any],
+        agent: BaseAgent,
+        branch: ExecutionBranch,
+        exec_state: ExecutionState
+    ) -> ValidationResult:
+        """Validate error recovery action - routes to User node."""
+        error_info = parsed.get("error_info", {})
+        logger.debug(f"_validate_error_recovery received error_info: {error_info}")
+
+        # Build suggested actions list
+        suggested_actions = []
+
+        # Include the original suggested_action if available
+        if error_info.get("suggested_action"):
+            suggested_actions.append(error_info["suggested_action"])
+
+        # Add additional actions based on classification
+        if error_info.get("classification") == "insufficient_credits":
+            if "Add credits" not in str(error_info.get("suggested_action", "")):
+                suggested_actions.append("Add credits to your account")
+            suggested_actions.append("Then retry to continue from where you left off")
+
+        # Set the suggested_actions list
+        if suggested_actions:
+            error_info["suggested_actions"] = suggested_actions
+
+        # Create invocation for User node
+        user_invocation = AgentInvocation(
+            agent_name="User",
+            request={
+                "error_details": error_info,
+                "retry_context": {
+                    "agent_name": agent.name,
+                    "branch_id": branch.id
+                }
+            }
+        )
+
+        return ValidationResult(
+            is_valid=True,
+            action_type=ActionType.ERROR_RECOVERY,
+            invocations=[user_invocation],  # Add invocation for User
+            parsed_response={
+                **parsed,
+                "target_agent": "User",  # Always route to User
+                "error_details": error_info,
+                "retry_context": {
+                    "agent_name": agent.name,
+                    "branch_id": branch.id
+                }
+            }
+        )
+
+    async def _validate_terminal_error(
+        self,
+        parsed: Dict[str, Any],
+        agent: BaseAgent,
+        branch: ExecutionBranch,
+        exec_state: ExecutionState
+    ) -> ValidationResult:
+        """Validate terminal error action - shows error then exits."""
+        error_info = parsed.get("error_info", {})
+
+        # Add termination reasons
+        if error_info.get("classification") == "authentication_failed":
+            error_info["termination_reason"] = (
+                "Authentication failed. This requires updating your API key "
+                "in the configuration file. Cannot be fixed while running."
+            )
+
+        # Create invocation for User node
+        user_invocation = AgentInvocation(
+            agent_name="User",
+            request={
+                "error_details": error_info
+            }
+        )
+
+        return ValidationResult(
+            is_valid=True,
+            action_type=ActionType.TERMINAL_ERROR,
+            invocations=[user_invocation],  # Add invocation for User
+            parsed_response={
+                **parsed,
+                "target_agent": "User",  # Route to User for display
+                "error_details": error_info
+            }
+        )
+
     def add_processor(self, processor: ResponseProcessor) -> None:
         """Add a custom response processor."""
         self.processors.append(processor)

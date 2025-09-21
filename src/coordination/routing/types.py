@@ -17,6 +17,8 @@ class StepType(Enum):
     AGGREGATE = "aggregate"      # Aggregate results from branches
     COMPLETE = "complete"        # Complete the branch
     WAIT = "wait"               # Wait for child branches
+    ERROR_NOTIFICATION = "error_notification"      # Route error to user
+    RESOURCE_NOTIFICATION = "resource_notification" # Notify about resource limits
 
 
 @dataclass

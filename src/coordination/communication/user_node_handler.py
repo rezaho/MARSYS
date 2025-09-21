@@ -67,6 +67,23 @@ class UserNodeHandler:
                    f"Resume agent: {resume_agent}, "
                    f"Mode: {mode}")
         
+        # Check for error recovery or terminal error first
+        if isinstance(incoming_message, dict):
+            if incoming_message.get('error_recovery'):
+                # Fixable error - offer retry options
+                return await self._handle_fixable_error(
+                    branch,
+                    incoming_message.get('error_details', {}),
+                    context
+                )
+            elif incoming_message.get('error_type') == 'terminal':
+                # Terminal error - display only
+                return await self._handle_terminal_error(
+                    branch,
+                    incoming_message.get('error_details', {}),
+                    context
+                )
+
         # Extract message from incoming_message
         display_message = incoming_message
         
@@ -487,3 +504,267 @@ class UserNodeHandler:
                 return f"Task: {task}\n\nPlease provide your input:"
         else:
             return f"Task: {str(task)}\n\nPlease provide your input:"
+
+    async def _handle_fixable_error(
+        self,
+        branch: 'ExecutionBranch',
+        error_info: Dict[str, Any],
+        context: Dict[str, Any]
+    ) -> StepResult:
+        """Handle fixable error with retry options."""
+
+        # Format for display with retry options
+        formatted_message = self._format_fixable_error(error_info)
+
+        # Create interaction
+        interaction = UserInteraction(
+            interaction_id=str(uuid.uuid4()),
+            branch_id=branch.id,
+            session_id=context.get("session_id"),
+            incoming_message=formatted_message,
+            interaction_type="error_recovery",
+            communication_mode=CommunicationMode.SYNC,
+            calling_agent=error_info.get('failed_agent', 'Unknown'),
+            metadata={
+                'error_info': error_info,
+                'retry_context': context.get('retry_context')
+            }
+        )
+
+        # Get user response through CommunicationManager
+        if not self.communication_manager:
+            logger.error(f"CommunicationManager not available for error recovery. Error details: {error_info}")
+            # Return abort result since we can't interact with user
+            return StepResult(
+                agent_name="User",
+                response={"action": "abort"},
+                action_type="abort_execution",
+                success=False,
+                error=f"Cannot handle error recovery - no communication manager. Original error: {error_info.get('message', 'Unknown error')}",
+                metadata={"error_aborted": True, "error_details": error_info}
+            )
+
+        response = await self.communication_manager.handle_interaction(interaction)
+
+        # Parse the user's choice
+        user_choice = 'abort'  # default
+        if isinstance(response, dict):
+            user_choice = response.get('choice', 'abort').lower()
+        elif isinstance(response, str):
+            # Try to parse from string response
+            response_lower = response.lower()
+            if 'retry' in response_lower or response_lower == '1':
+                user_choice = 'retry'
+            elif 'skip' in response_lower or response_lower == '2':
+                user_choice = 'skip'
+            else:
+                user_choice = 'abort'
+
+        retry_context = context.get('retry_context', {})
+
+        if user_choice == 'retry':
+            return StepResult(
+                agent_name="User",
+                response={"action": "retry"},
+                action_type="retry_failed_step",
+                success=True,
+                metadata={
+                    "retry_requested": True,
+                    "retry_context": retry_context,
+                    "original_agent": retry_context.get('agent_name')
+                }
+            )
+        elif user_choice == 'skip':
+            return StepResult(
+                agent_name="User",
+                response={"action": "skip"},
+                action_type="skip_failed_step",
+                success=True,
+                metadata={"skip_requested": True}
+            )
+        else:  # abort
+            return StepResult(
+                agent_name="User",
+                response={"action": "abort"},
+                action_type="abort_execution",
+                success=False,
+                error="User chose to abort after error"
+            )
+
+    async def _handle_terminal_error(
+        self,
+        branch: 'ExecutionBranch',
+        error_info: Dict[str, Any],
+        context: Dict[str, Any]
+    ) -> StepResult:
+        """Handle terminal error - display only, no retry."""
+
+        # Format for display without retry options
+        formatted_message = self._format_terminal_error(error_info)
+
+        # Create interaction for display
+        interaction = UserInteraction(
+            interaction_id=str(uuid.uuid4()),
+            branch_id=branch.id,
+            session_id=context.get("session_id"),
+            incoming_message=formatted_message,
+            interaction_type="terminal_error",  # New type
+            communication_mode=CommunicationMode.SYNC,
+            calling_agent=error_info.get('failed_agent', 'Unknown'),
+            metadata={'error_info': error_info}
+        )
+
+        # Display error and wait for acknowledgment
+        await self.communication_manager.handle_interaction(interaction)
+
+        # Return failure to terminate execution
+        return StepResult(
+            agent_name="User",
+            response={"action": "terminate"},
+            action_type="terminal_error",
+            success=False,
+            error=f"Terminal error: {error_info.get('message')}"
+        )
+
+    def _format_fixable_error(self, error_info: Dict[str, Any]) -> Dict[str, Any]:
+        """Format fixable error with retry options."""
+
+        return {
+            'type': 'error_recovery',
+            'title': self._get_error_title(error_info, fixable=True),
+            'content': self._build_fixable_error_content(error_info),
+            'options': ['Retry', 'Skip', 'Abort'],
+            'default': 'Retry'
+        }
+
+    def _format_terminal_error(self, error_info: Dict[str, Any]) -> Dict[str, Any]:
+        """Format terminal error for display only."""
+
+        return {
+            'type': 'terminal_error',
+            'title': self._get_error_title(error_info, fixable=False),
+            'content': self._build_terminal_error_content(error_info),
+            'options': None,  # No options for terminal errors
+            'acknowledge_only': True
+        }
+
+    def _get_error_title(self, error_info: Dict[str, Any], fixable: bool) -> str:
+        """Get appropriate title based on error type and fixability."""
+
+        category = error_info.get('category', 'unknown')
+
+        if not fixable:
+            # Terminal error titles
+            titles = {
+                'api_error': '❌ API Configuration Error',
+                'configuration_error': '❌ Configuration Error',
+                'validation_error': '❌ Validation Error',
+                'unknown': '❌ Fatal Error'
+            }
+
+            # Specific titles for API errors
+            if category == 'api_error':
+                classification = error_info.get('classification')
+                if classification == 'authentication_failed':
+                    return '🔐 Authentication Failed - Cannot Continue'
+                elif classification == 'invalid_model':
+                    return '🚫 Invalid Model - Cannot Continue'
+                elif classification == 'permission_denied':
+                    return '🚫 Permission Denied - Cannot Continue'
+        else:
+            # Fixable error titles
+            titles = {
+                'api_error': '⚠️  API Error - Action Required',
+                'resource_error': '📊 Resource Limit - Action Required',
+                'timeout_error': '⏰ Timeout - Can Retry',
+                'browser_error': '🖥️  Browser Error - Can Fix',
+                'unknown': '⚠️  Error Occurred'
+            }
+
+            if category == 'api_error':
+                classification = error_info.get('classification')
+                if classification == 'insufficient_credits':
+                    return '💳 Insufficient Credits - Can Fix'
+                elif classification == 'rate_limit':
+                    return '⏱️  Rate Limit - Can Wait'
+
+        return titles.get(category, titles['unknown'])
+
+    def _build_terminal_error_content(self, error_info: Dict[str, Any]) -> str:
+        """Build content for terminal error display."""
+
+        lines = []
+
+        # Error icon and severity
+        lines.append("⛔ **EXECUTION CANNOT CONTINUE**\n")
+
+        # Agent that failed
+        failed_agent = error_info.get('failed_agent', 'Unknown')
+        lines.append(f"**Agent**: {failed_agent}")
+        lines.append("")
+
+        # Error message
+        message = error_info.get('message', 'An error occurred')
+        lines.append(f"**Error**: {message}")
+
+        # Provider for API errors
+        if error_info.get('provider'):
+            lines.append(f"**Provider**: {error_info['provider']}")
+
+        lines.append("")
+
+        # Termination reason
+        reason = error_info.get('termination_reason')
+        if reason:
+            lines.append("**Why this cannot be fixed:**")
+            lines.append(f"{reason}")
+        else:
+            lines.append("**Reason**: This error requires changes to configuration or code.")
+
+        lines.append("")
+        lines.append("**Next Steps:**")
+        lines.append("1. Fix the configuration or code issue")
+        lines.append("2. Restart the execution")
+        lines.append("")
+        lines.append("*Press Enter to exit...*")
+
+        return "\n".join(lines)
+
+    def _build_fixable_error_content(self, error_info: Dict[str, Any]) -> str:
+        """Build content for fixable error with options."""
+
+        lines = []
+
+        # Agent that failed
+        failed_agent = error_info.get('failed_agent', 'Unknown')
+        lines.append(f"**Agent**: {failed_agent}")
+        lines.append("")
+
+        # Error message
+        message = error_info.get('message', 'An error occurred')
+        lines.append(f"**Error**: {message}")
+
+        # Provider for API errors
+        if error_info.get('provider'):
+            lines.append(f"**Provider**: {error_info['provider']}")
+
+        lines.append("")
+        lines.append("**Suggested Actions:**")
+
+        # List suggested actions
+        for action in error_info.get('suggested_actions', []):
+            if action:
+                lines.append(f"  • {action}")
+
+        # Add URL if available
+        if error_info.get('action_url'):
+            lines.append("")
+            lines.append(f"  🔗 {error_info['action_url']}")
+
+        lines.append("")
+        lines.append("**What would you like to do?**")
+        lines.append("  1. **Retry** - Try again after fixing the issue")
+        lines.append("  2. **Skip** - Skip this step and continue")
+        lines.append("  3. **Abort** - Stop execution")
+
+        return "\n".join(lines)
