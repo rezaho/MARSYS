@@ -98,6 +98,34 @@ class StatusConfig:
 
 
 @dataclass
+class CommunicationConfig:
+    """Configuration for enhanced communication channels."""
+
+    # Visual settings
+    use_rich_formatting: bool = True
+    theme_name: str = "modern"  # modern, classic, minimal
+    prefix_width: int = 20
+    show_timestamps: bool = True
+
+    # Input settings
+    enable_history: bool = True
+    history_size: int = 1000
+    enable_tab_completion: bool = True
+
+    # Color settings
+    use_colors: bool = True
+    color_depth: str = "truecolor"  # truecolor, 256, 16, none
+
+    # Behavior
+    input_timeout: Optional[float] = None
+    show_typing_indicator: bool = False  # Future enhancement
+
+    # Channel selection
+    use_enhanced_terminal: bool = True  # Use EnhancedTerminalChannel instead of TerminalChannel
+    fallback_on_error: bool = True  # Fall back to basic TerminalChannel if Rich fails
+
+
+@dataclass
 class ExecutionConfig:
     """Configuration for multi-agent system execution."""
 
