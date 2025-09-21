@@ -141,6 +141,7 @@ class ErrorResponse(BaseModel):
     provider: str
     model: Optional[str] = None
     request_id: Optional[str] = None
-    
+    classification: Optional[Dict[str, Any]] = None  # New field for error classification
+
     class Config:
         extra = "allow" 

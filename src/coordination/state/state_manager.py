@@ -19,6 +19,12 @@ from pathlib import Path
 from typing import Any, Dict, List, Optional, Set, Tuple
 import logging
 
+from ...agents.exceptions import (
+    SessionNotFoundError,
+    CheckpointError,
+    StateError
+)
+
 from ..branches.types import (
     ExecutionBranch, 
     BranchType, 
@@ -327,7 +333,10 @@ class StateManager:
         # Load current state
         state = await self.load_session(session_id)
         if not state:
-            raise ValueError(f"Session {session_id} not found")
+            raise SessionNotFoundError(
+                f"Session {session_id} not found",
+                session_id=session_id
+            )
         
         # Create checkpoint ID
         checkpoint_id = f"checkpoint_{session_id}_{checkpoint_name}_{int(time.time())}"
@@ -354,7 +363,11 @@ class StateManager:
         """
         state = await self.storage.load(checkpoint_id)
         if not state:
-            raise ValueError(f"Checkpoint {checkpoint_id} not found")
+            raise CheckpointError(
+                f"Checkpoint {checkpoint_id} not found",
+                checkpoint_id=checkpoint_id,
+                operation="restore"
+            )
         
         logger.info(f"Restored state from checkpoint {checkpoint_id}")
         return state
@@ -389,7 +402,10 @@ class StateManager:
         # Load state
         state = await self.load_session(session_id)
         if not state:
-            raise ValueError(f"Session {session_id} not found")
+            raise SessionNotFoundError(
+                f"Session {session_id} not found",
+                session_id=session_id
+            )
         
         # Check if it was paused
         if not state.get("metadata", {}).get("paused"):

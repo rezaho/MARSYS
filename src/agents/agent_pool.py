@@ -14,6 +14,8 @@ from dataclasses import dataclass, field
 from typing import Any, Dict, List, Optional, Set, Type, Union
 from threading import Lock
 
+from .exceptions import PoolExhaustedError
+
 logger = logging.getLogger(__name__)
 
 
@@ -274,11 +276,14 @@ class AgentPool:
                         
                         return agent_instance
             
-            logger.warning(
-                f"No available instances in pool '{self.base_name}' "
-                f"({len(self.allocated_instances)}/{self.num_instances} in use)"
+            # Raise exception instead of returning None
+            raise PoolExhaustedError(
+                f"No available instances in pool '{self.base_name}'",
+                pool_name=self.base_name,
+                total_instances=self.num_instances,
+                allocated_instances=len(self.allocated_instances),
+                requested_count=1
             )
-            return None
     
     async def acquire_instance_async(
         self,

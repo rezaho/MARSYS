@@ -20,6 +20,37 @@ from ...agents.memory import Message
 from ..branches.types import StepResult, ExecutionBranch
 from .tool_executor import RealToolExecutor
 
+# Enhanced error handling imports
+from ...agents.exceptions import (
+    # Base error
+    AgentFrameworkError,
+
+    # Model/API errors
+    ModelAPIError,
+
+    # Resource errors
+    PoolExhaustedError,
+    TimeoutError as FrameworkTimeoutError,  # Avoid conflict with asyncio.TimeoutError
+    ResourceLimitError,
+    QuotaExceededError,
+
+    # Coordination errors
+    TopologyError,
+    RoutingError,
+    BranchExecutionError,
+
+    # Agent errors
+    AgentPermissionError,
+    AgentLimitError,
+
+    # State errors
+    StateError,
+    SessionNotFoundError,
+
+    # Utility
+    create_error_from_exception
+)
+
 if TYPE_CHECKING:
     from ...agents import BaseAgent
     from ..communication.user_node_handler import UserNodeHandler
@@ -349,15 +380,52 @@ class StepExecutor:
                     ))
 
                 return step_result
-                
+
+            # Enhanced error handling with unified handler
+            except ModelAPIError as e:
+                # Model API errors will be caught by Agent._run() and converted to error Messages
+                # which will then be handled by ValidationProcessor
+                logger.error(f"Model API error in {agent_name}: {str(e)}")
+                raise
+
+            except PoolExhaustedError as e:
+                # Resource errors are terminal
+                logger.error(f"Pool exhausted for {agent_name}: {str(e)}")
+                raise
+
+            except FrameworkTimeoutError as e:
+                # Timeouts are terminal
+                logger.error(f"Timeout in {agent_name}: {str(e)}")
+                raise
+
+            except (TopologyError, RoutingError, AgentPermissionError) as e:
+                # Configuration errors are terminal
+                logger.error(f"Configuration error in {agent_name}: {str(e)}")
+                raise
+
+            except AgentFrameworkError as e:
+                # All other framework errors - retry a few times
+                logger.error(f"Framework error in {agent_name}: {str(e)}")
+                if retry_count < self.max_retries:
+                    retry_count += 1
+                    last_error = str(e)
+                    await asyncio.sleep(2 ** retry_count)  # Exponential backoff
+                else:
+                    raise
+
             except Exception as e:
-                logger.error(f"Error executing agent '{agent_name}' "
-                           f"(retry {retry_count}/{self.max_retries}): {e}")
-                last_error = str(e)
+                # Unknown errors - convert to framework error
+                framework_error = create_error_from_exception(
+                    e,
+                    agent_name=agent_name,
+                    task_id=step_context.session_id,
+                    context={"branch_id": step_context.branch_id}
+                )
+                result = await self._handle_framework_error(framework_error, agent_name, step_context, retry_count)
+                if result is not None:
+                    return result
                 retry_count += 1
-                
-                if retry_count <= self.max_retries:
-                    await asyncio.sleep(self.retry_delay * retry_count)
+                last_error = str(e)
         
         # All retries exhausted
         duration = time.time() - start_time
@@ -1172,8 +1240,14 @@ Detailed structure for the JSON object:
                 result.context_selection = context_selection
             
         elif isinstance(raw_response, Message):
-            # Handle Message objects from agents
-            result.response = raw_response.content
+            # Check if this is an error Message BEFORE storing content
+            if raw_response.role == "error":
+                # Mark this as an error response for ValidationProcessor
+                result.response = raw_response  # Keep the full Message
+                result.is_error_message = True  # Add flag for detection
+            else:
+                # Normal Message handling
+                result.response = raw_response.content
             if raw_response.tool_calls:
                 result.tool_calls = raw_response.tool_calls
                 # Mark these as response-origin since they came from the agent's response
@@ -1328,6 +1402,11 @@ Detailed structure for the JSON object:
         if result.tool_calls and (result.response is None or result.response == "None" or result.response == ""):
             # This is valid - agent wants to execute tools without additional content
             # Tool continuation is already handled above
+            pass
+        # Special case: error Messages are valid and should be processed by ValidationProcessor
+        elif hasattr(result, 'is_error_message') and result.is_error_message:
+            # Error messages will be handled by ErrorMessageProcessor in ValidationProcessor
+            # Don't mark as invalid or require retry
             pass
         # If no action type, no tools, and no next agent specified, this is an invalid response
         elif not result.action_type and not result.tool_calls and not result.next_agent:
@@ -1487,3 +1566,250 @@ Detailed structure for the JSON object:
                 processed_results.append(result)
         
         return processed_results
+
+    # ============================================================================
+    # Enhanced Error Handling Methods
+    # ============================================================================
+
+    async def _notify_critical_error(
+        self,
+        error: AgentFrameworkError,
+        context: Union[StepContext, Dict[str, Any]]
+    ) -> None:
+        """Notify user about critical errors that require immediate attention."""
+
+        if not self.event_bus:
+            return
+
+        from ..status.events import CriticalErrorEvent
+
+        # Extract context info
+        if isinstance(context, StepContext):
+            session_id = context.session_id
+            branch_id = context.branch_id
+            agent_name = context.agent_name
+        else:
+            session_id = context.get("session_id", "unknown")
+            branch_id = context.get("branch_id")
+            agent_name = context.get("agent_name")
+
+        # Determine provider for API errors
+        provider = None
+        if isinstance(error, ModelAPIError):
+            provider = error.provider
+
+        # Create and emit critical error event
+        event = CriticalErrorEvent(
+            session_id=session_id,
+            branch_id=branch_id,
+            agent_name=agent_name,
+            error_type=error.__class__.__name__,
+            error_code=error.error_code,
+            message=error.message,
+            provider=provider,
+            suggested_action=error.suggestion,
+            requires_user_action=True,
+            timestamp=time.time()
+        )
+
+        await self.event_bus.emit(event)
+
+        logger.critical(
+            f"CRITICAL ERROR: {error.message}\n"
+            f"Action Required: {error.suggestion}"
+        )
+
+    async def _handle_model_api_error(
+        self,
+        error: ModelAPIError,
+        agent_name: str,
+        step_context: StepContext,
+        retry_count: int
+    ) -> Optional[StepResult]:
+        """Handle ModelAPIError with intelligent retry logic."""
+
+        logger.error(f"API error for agent '{agent_name}': {error.message}")
+        logger.debug(f"Error classification: {error.classification}")
+
+        # Check if critical (non-retryable)
+        if error.is_critical():
+            # Notify user immediately for critical errors
+            await self._notify_critical_error(error, step_context)
+
+            return StepResult(
+                agent_name=agent_name,
+                response=None,
+                action_type="error",
+                success=False,
+                error=error.message,
+                metadata={
+                    "error_type": "critical_api_error",
+                    "error_classification": error.classification,
+                    "suggested_action": error.suggestion,
+                    "provider": error.provider
+                }
+            )
+
+        # Check retry logic for retryable errors
+        if error.is_retryable and retry_count < self.max_retries:
+            # Use error's retry_after if available
+            wait_time = error.retry_after or (self.retry_delay * (retry_count + 1))
+
+            logger.info(f"Retrying after {wait_time}s (attempt {retry_count + 1}/{self.max_retries})")
+            await asyncio.sleep(wait_time)
+
+            # Return None to trigger retry in main loop
+            return None
+
+        # Max retries exhausted
+        return StepResult(
+            agent_name=agent_name,
+            response=None,
+            action_type="error",
+            success=False,
+            error=error.message,
+            requires_retry=False,
+            metadata={
+                "error_type": "api_error",
+                "error_classification": error.classification,
+                "max_retries_exhausted": True
+            }
+        )
+
+    async def _handle_pool_exhausted_error(
+        self,
+        error: PoolExhaustedError,
+        agent_name: str,
+        step_context: StepContext,
+        retry_count: int
+    ) -> Optional[StepResult]:
+        """Handle pool exhaustion with limited retries."""
+
+        MAX_POOL_RETRIES = 2  # Limit retries for pool exhaustion
+
+        if retry_count < MAX_POOL_RETRIES:
+            wait_time = 5.0  # Fixed wait for pool availability
+            logger.warning(f"Pool exhausted for '{agent_name}', waiting {wait_time}s...")
+
+            # Emit resource limit event if available
+            if self.event_bus:
+                from ..status.events import ResourceLimitEvent
+                await self.event_bus.emit(ResourceLimitEvent(
+                    session_id=step_context.session_id,
+                    branch_id=step_context.branch_id,
+                    resource_type="agent_pool",
+                    pool_name=error.pool_name,
+                    limit_value=error.total_instances,
+                    current_value=error.allocated_instances,
+                    suggestion="Wait for instances to become available"
+                ))
+
+            await asyncio.sleep(wait_time)
+            return None  # Trigger retry
+
+        return StepResult(
+            agent_name=agent_name,
+            response=None,
+            action_type="error",
+            success=False,
+            error=error.message,
+            metadata={
+                "error_type": "pool_exhausted",
+                "pool_name": error.pool_name,
+                "allocated": error.allocated_instances,
+                "total": error.total_instances
+            }
+        )
+
+    async def _handle_timeout_error(
+        self,
+        error: FrameworkTimeoutError,
+        agent_name: str,
+        step_context: StepContext
+    ) -> StepResult:
+        """Handle timeout errors (usually not retryable)."""
+
+        logger.error(f"Timeout for agent '{agent_name}': {error.message}")
+
+        return StepResult(
+            agent_name=agent_name,
+            response=None,
+            action_type="error",
+            success=False,
+            error=error.message,
+            requires_retry=False,
+            metadata={
+                "error_type": "timeout",
+                "operation": error.operation,
+                "timeout_seconds": error.timeout_seconds,
+                "elapsed_seconds": error.elapsed_seconds
+            }
+        )
+
+    async def _handle_configuration_error(
+        self,
+        error: AgentFrameworkError,
+        agent_name: str,
+        step_context: StepContext
+    ) -> StepResult:
+        """Handle configuration errors that should never be retried."""
+
+        logger.error(f"Configuration error for agent '{agent_name}': {error.message}")
+
+        # Notify about configuration issues
+        if self.event_bus:
+            from ..status.events import CriticalErrorEvent
+            await self.event_bus.emit(CriticalErrorEvent(
+                session_id=step_context.session_id,
+                branch_id=step_context.branch_id,
+                agent_name=agent_name,
+                error_type="configuration_error",
+                error_code=error.error_code,
+                message=error.message,
+                suggested_action=error.suggestion,
+                requires_user_action=True
+            ))
+
+        return StepResult(
+            agent_name=agent_name,
+            response=None,
+            action_type="error",
+            success=False,
+            error=error.message,
+            requires_retry=False,
+            metadata={
+                "error_type": "configuration_error",
+                "error_code": error.error_code,
+                "suggestion": error.suggestion
+            }
+        )
+
+    async def _handle_framework_error(
+        self,
+        error: AgentFrameworkError,
+        agent_name: str,
+        step_context: StepContext,
+        retry_count: int
+    ) -> Optional[StepResult]:
+        """Handle generic framework errors with standard retry logic."""
+
+        logger.error(f"Framework error for agent '{agent_name}': {error.message}")
+
+        if retry_count < self.max_retries:
+            wait_time = self.retry_delay * (retry_count + 1)
+            logger.info(f"Retrying after {wait_time}s (attempt {retry_count + 1}/{self.max_retries})")
+            await asyncio.sleep(wait_time)
+            return None  # Trigger retry
+
+        return StepResult(
+            agent_name=agent_name,
+            response=None,
+            action_type="error",
+            success=False,
+            error=error.message,
+            metadata={
+                "error_type": "framework_error",
+                "error_code": error.error_code,
+                "context": error.context
+            }
+        )

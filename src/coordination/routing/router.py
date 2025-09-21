@@ -63,7 +63,12 @@ class Router:
             RoutingDecision with next steps and branch specifications
         """
         logger.debug(f"Routing for action type: {validation_result.action_type}")
-        
+
+        # Check for error conditions in metadata first
+        error_decision = self._check_error_conditions(routing_context)
+        if error_decision:
+            return error_decision
+
         # Handle invalid validation results
         if not validation_result.is_valid:
             return self._handle_invalid_result(validation_result, routing_context)
@@ -89,6 +94,16 @@ class Router:
             )
         elif action_type == ActionType.END_CONVERSATION:
             return self._route_end_conversation(
+                validation_result, current_branch, routing_context
+            )
+        elif action_type == ActionType.ERROR_RECOVERY:
+            # Route fixable error to user for recovery
+            return self._route_error_recovery(
+                validation_result, current_branch, routing_context
+            )
+        elif action_type == ActionType.TERMINAL_ERROR:
+            # Route terminal error to user for display
+            return self._route_terminal_error(
                 validation_result, current_branch, routing_context
             )
         elif action_type == ActionType.WAIT_AND_AGGREGATE:
@@ -412,7 +427,115 @@ class Router:
         # NEVER auto-convert to conversation based on edges
         # This fixes the hub-and-spoke pattern issue
         return False
-    
+
+    def _check_error_conditions(self, routing_context: RoutingContext) -> Optional[RoutingDecision]:
+        """
+        Check for error conditions in the routing context metadata.
+        Routes critical errors to User for notification.
+
+        Args:
+            routing_context: Context containing metadata about errors
+
+        Returns:
+            RoutingDecision if error routing is needed, None otherwise
+        """
+        metadata = routing_context.metadata or {}
+
+        # Check for critical API errors
+        if metadata.get('critical_api_error'):
+            logger.warning("Routing to User due to critical API error")
+            error_step = ExecutionStep(
+                step_type=StepType.ERROR_NOTIFICATION,
+                agent_name="User",
+                request={
+                    "error_type": "critical_api_error",
+                    "error_details": metadata.get('error_details', {}),
+                    "suggested_action": metadata.get('suggested_action', 'Check API configuration'),
+                    "provider": metadata.get('provider')
+                },
+                metadata={
+                    "auto_resume": False,
+                    "requires_user_action": True
+                }
+            )
+            return RoutingDecision(
+                next_steps=[error_step],
+                should_continue=False,
+                completion_reason="Critical API error requires user intervention",
+                metadata={"routing_type": "error_notification"}
+            )
+
+        # Check for coordination errors
+        if metadata.get('coordination_error'):
+            logger.warning("Routing to User due to coordination error")
+            error_step = ExecutionStep(
+                step_type=StepType.ERROR_NOTIFICATION,
+                agent_name="User",
+                request={
+                    "error_type": "coordination_error",
+                    "error_details": metadata.get('error_details', {}),
+                    "suggested_action": metadata.get('suggested_action', 'Check topology configuration')
+                },
+                metadata={
+                    "auto_resume": True,
+                    "requires_user_action": False
+                }
+            )
+            return RoutingDecision(
+                next_steps=[error_step],
+                should_continue=True,  # Can continue after notification
+                metadata={"routing_type": "error_notification"}
+            )
+
+        # Check for resource exhaustion
+        if metadata.get('pool_exhausted'):
+            logger.info("Notifying user about resource exhaustion")
+            resource_step = ExecutionStep(
+                step_type=StepType.RESOURCE_NOTIFICATION,
+                agent_name="User",
+                request={
+                    "error_type": "pool_exhausted",
+                    "pool_name": metadata.get('pool_name'),
+                    "allocated": metadata.get('allocated_instances'),
+                    "total": metadata.get('total_instances'),
+                    "suggested_action": "Wait for resources or increase pool size"
+                },
+                metadata={
+                    "auto_resume": True,
+                    "retry_after": 5
+                }
+            )
+            return RoutingDecision(
+                next_steps=[resource_step],
+                should_continue=True,  # Can retry after resources available
+                metadata={"routing_type": "resource_notification"}
+            )
+
+        # Check for timeout errors
+        if metadata.get('timeout_error'):
+            logger.warning("Operation timed out")
+            timeout_step = ExecutionStep(
+                step_type=StepType.ERROR_NOTIFICATION,
+                agent_name="User",
+                request={
+                    "error_type": "timeout",
+                    "operation": metadata.get('operation'),
+                    "timeout_seconds": metadata.get('timeout_seconds'),
+                    "suggested_action": "Retry operation or increase timeout"
+                },
+                metadata={
+                    "auto_resume": False
+                }
+            )
+            return RoutingDecision(
+                next_steps=[timeout_step],
+                should_continue=False,
+                completion_reason="Operation timed out",
+                metadata={"routing_type": "error_notification"}
+            )
+
+        return None  # No error conditions found
+
     def _create_completion_decision(self, reason: str) -> RoutingDecision:
         """Create a decision that completes the branch."""
         return RoutingDecision(
@@ -422,6 +545,110 @@ class Router:
             metadata={"routing_type": "error_completion"}
         )
     
+    def _route_error_recovery(
+        self,
+        validation_result: ValidationResult,
+        current_branch: ExecutionBranch,
+        routing_context: RoutingContext
+    ) -> RoutingDecision:
+        """Route fixable error to User for recovery interaction."""
+
+        # Check if we have invocations with the error details
+        if validation_result.invocations and len(validation_result.invocations) > 0:
+            # Get the User invocation which contains error details
+            user_invocation = validation_result.invocations[0]
+            request_data = user_invocation.request if hasattr(user_invocation, 'request') else {}
+            error_details = request_data.get('error_details', {})
+            retry_context = request_data.get('retry_context', {})
+
+            logger.debug(f"Router _route_error_recovery - Using invocation data: error_details={error_details}")
+        else:
+            # Fallback to parsed response or routing context
+            parsed = validation_result.parsed_response or {}
+            error_details = parsed.get('error_details', {})
+            retry_context = parsed.get('retry_context', {})
+
+            logger.debug(f"Router _route_error_recovery - Using parsed_response: {parsed}")
+
+            # Final fallback to routing_context metadata if not in parsed response
+            if not error_details:
+                metadata = routing_context.metadata or {}
+                error_details = metadata.get('error_details', {})
+                retry_context = metadata.get('retry_context', {})
+
+        # Create error recovery step for User node
+        recovery_step = ExecutionStep(
+            step_type=StepType.ERROR_NOTIFICATION,
+            agent_name="User",
+            request={
+                "error_recovery": True,
+                "error_type": "fixable",
+                "error_details": error_details,
+                "retry_context": retry_context,
+                "message": error_details.get('message', 'An error occurred'),
+                "suggested_actions": error_details.get('suggested_actions', []),
+                "failed_agent": retry_context.get('agent_name') or routing_context.current_agent
+            },
+            metadata={
+                "requires_user_action": True,
+                "can_retry": True,
+                "retry_context": retry_context
+            }
+        )
+
+        return RoutingDecision(
+            next_steps=[recovery_step],
+            should_continue=True,  # Can continue after user fixes issue
+            metadata={
+                "routing_type": "error_recovery",
+                "error_fixable": True
+            }
+        )
+
+    def _route_terminal_error(
+        self,
+        validation_result: ValidationResult,
+        current_branch: ExecutionBranch,
+        routing_context: RoutingContext
+    ) -> RoutingDecision:
+        """Route terminal error to User for display before termination."""
+
+        # Get error details from ValidationResult's parsed_response first, then fallback to routing_context
+        parsed = validation_result.parsed_response or {}
+        error_details = parsed.get('error_details', {})
+
+        # Fallback to routing_context metadata if not in parsed response
+        if not error_details:
+            metadata = routing_context.metadata or {}
+            error_details = metadata.get('error_details', {})
+
+        # Create terminal error display step
+        error_step = ExecutionStep(
+            step_type=StepType.ERROR_NOTIFICATION,
+            agent_name="User",
+            request={
+                "error_type": "terminal",
+                "error_details": error_details,
+                "message": error_details.get('message', 'A fatal error occurred'),
+                "termination_reason": error_details.get('termination_reason'),
+                "failed_agent": routing_context.current_agent
+            },
+            metadata={
+                "terminal": True,
+                "no_retry": True
+            }
+        )
+
+        return RoutingDecision(
+            next_steps=[error_step],
+            should_continue=False,  # Will terminate after display
+            completion_reason="Terminal error - cannot continue",
+            metadata={
+                "routing_type": "terminal_error",
+                "error_terminal": True
+            }
+        )
+
     def suggest_alternative_route(
         self,
         current_agent: str,

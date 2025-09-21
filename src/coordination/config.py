@@ -3,7 +3,7 @@ Configuration classes for the coordination system.
 """
 
 from dataclasses import dataclass, field
-from typing import Literal, Optional, List
+from typing import Literal, Optional, List, Dict, Any
 from enum import IntEnum
 
 
@@ -160,3 +160,76 @@ class ExecutionConfig:
             return True
         else:  # auto mode - only on retries
             return is_retry
+
+
+@dataclass
+class ErrorHandlingConfig:
+    """
+    Configuration for enhanced error handling system.
+
+    Attributes:
+        use_error_classification: Enable intelligent error classification
+        notify_on_critical_errors: Send notifications for critical errors
+        auto_retry_on_rate_limits: Automatically retry rate-limited requests
+        max_rate_limit_retries: Maximum retries for rate limit errors
+        pool_retry_attempts: Number of retries for pool exhaustion
+        pool_retry_delay: Delay between pool retry attempts (seconds)
+        timeout_seconds: Default timeout for operations
+        enable_error_routing: Route errors to User node for intervention
+        preserve_error_context: Include full error context in responses
+    """
+
+    # Core features
+    use_error_classification: bool = True
+    notify_on_critical_errors: bool = True
+    enable_error_routing: bool = True
+    preserve_error_context: bool = True
+
+    # Retry configuration
+    auto_retry_on_rate_limits: bool = True
+    max_rate_limit_retries: int = 3
+    pool_retry_attempts: int = 2
+    pool_retry_delay: float = 5.0
+
+    # Timeout configuration
+    timeout_seconds: float = 300.0  # 5 minutes default
+    timeout_retry_enabled: bool = False
+
+    # Provider-specific settings
+    provider_settings: Dict[str, Dict[str, Any]] = field(default_factory=lambda: {
+        "openai": {
+            "max_retries": 3,
+            "base_retry_delay": 60,
+            "insufficient_quota_action": "raise"  # "raise", "notify", "fallback"
+        },
+        "anthropic": {
+            "max_retries": 3,
+            "base_retry_delay": 30,
+            "insufficient_quota_action": "raise"
+        },
+        "google": {
+            "max_retries": 3,
+            "base_retry_delay": 60,
+            "insufficient_quota_action": "notify"
+        },
+        "openrouter": {
+            "max_retries": 2,
+            "base_retry_delay": 120,
+            "insufficient_quota_action": "raise"
+        },
+        "xai": {
+            "max_retries": 2,
+            "base_retry_delay": 120,  # xAI has strict rate limits
+            "insufficient_quota_action": "notify"
+        }
+    })
+
+    def get_provider_setting(
+        self,
+        provider: str,
+        setting: str,
+        default: Any = None
+    ) -> Any:
+        """Get a specific setting for a provider."""
+        provider_config = self.provider_settings.get(provider, {})
+        return provider_config.get(setting, default)

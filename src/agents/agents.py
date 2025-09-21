@@ -4071,17 +4071,28 @@ class Agent(BaseAgent):
             return assistant_message
 
         except Exception as e:
-            # Return error as a Message with error_code embedded in content
-            error_code = "MODEL_ERROR"
-            if hasattr(e, "error_code"):
-                error_code = e.error_code
-
-            # Create structured error content that includes the error code
+            # Extract all relevant error information
             error_content = {
                 "error": f"LLM call failed: {e}",
-                "error_code": error_code,
+                "error_code": getattr(e, "error_code", "MODEL_ERROR"),
                 "error_type": type(e).__name__,
             }
+
+            # Preserve ModelAPIError classification data
+            if hasattr(e, 'classification'):
+                error_content['classification'] = e.classification
+            if hasattr(e, 'provider'):
+                error_content['provider'] = e.provider
+            if hasattr(e, 'is_retryable'):
+                error_content['is_retryable'] = e.is_retryable
+            if hasattr(e, 'retry_after'):
+                error_content['retry_after'] = e.retry_after
+            if hasattr(e, 'suggested_action'):
+                error_content['suggested_action'] = e.suggested_action
+            if hasattr(e, 'api_error_code'):
+                error_content['api_error_code'] = e.api_error_code
+            if hasattr(e, 'api_error_type'):
+                error_content['api_error_type'] = e.api_error_type
 
             error_message = Message(
                 role="error",

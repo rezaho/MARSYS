@@ -10,6 +10,8 @@ from enum import Enum
 from typing import Dict, List, Optional, Set, Tuple, Any
 import logging
 
+from ...agents.exceptions import TopologyError
+
 logger = logging.getLogger(__name__)
 
 
@@ -367,9 +369,11 @@ class TopologyGraph:
         
         if user_nodes:
             if len(user_nodes) > 1:
-                raise ValueError(
+                raise TopologyError(
                     f"Multiple User nodes found: {user_nodes}. "
-                    "Only one User node is allowed per topology."
+                    "Only one User node is allowed per topology.",
+                    topology_issue="multiple_user_nodes",
+                    affected_nodes=user_nodes
                 )
             return user_nodes
         
@@ -381,16 +385,20 @@ class TopologyGraph:
         
         # Validate single entry point
         if not entry_points:
-            raise ValueError(
+            raise TopologyError(
                 "No entry point found. Topology must have exactly one node "
-                "with no incoming edges."
+                "with no incoming edges.",
+                topology_issue="no_entry_point",
+                affected_nodes=list(self.nodes.keys())
             )
-        
+
         if len(entry_points) > 1:
-            raise ValueError(
+            raise TopologyError(
                 f"Multiple entry points found: {entry_points}. "
                 "Topology must have exactly one entry point. "
-                "Consider adding a User node or restructuring the topology."
+                "Consider adding a User node or restructuring the topology.",
+                topology_issue="multiple_entry_points",
+                affected_nodes=entry_points
             )
         
         return entry_points
@@ -424,35 +432,55 @@ class TopologyGraph:
             # With User node, manual_entry specifies agent after User
             if manual_entry:
                 if manual_entry not in self.nodes:
-                    raise ValueError(f"Specified entry_point '{manual_entry}' not in nodes")
+                    raise TopologyError(
+                        f"Specified entry_point '{manual_entry}' not in nodes",
+                        topology_issue="invalid_entry_point",
+                        affected_nodes=[manual_entry]
+                    )
                 if manual_entry == user_node:
-                    raise ValueError("entry_point cannot be the User node itself")
+                    raise TopologyError(
+                        "entry_point cannot be the User node itself",
+                        topology_issue="user_as_entry_point",
+                        affected_nodes=[user_node]
+                    )
                 
                 # Verify User has edge to entry_point
                 if manual_entry not in self.get_next_agents(user_node):
-                    raise ValueError(
+                    raise TopologyError(
                         f"User node has no edge to specified entry_point '{manual_entry}'. "
-                        f"Available targets: {self.get_next_agents(user_node)}"
+                        f"Available targets: {self.get_next_agents(user_node)}",
+                        topology_issue="invalid_user_edge",
+                        affected_nodes=[user_node, manual_entry]
                     )
                 return (user_node, manual_entry)
             
             # No manual entry - check User's outgoing edges
             user_targets = self.get_next_agents(user_node)
             if not user_targets:
-                raise ValueError("User node has no outgoing edges")
+                raise TopologyError(
+                    "User node has no outgoing edges",
+                    topology_issue="user_no_edges",
+                    affected_nodes=[user_node]
+                )
             elif len(user_targets) == 1:
                 return (user_node, user_targets[0])
             else:
-                raise ValueError(
+                raise TopologyError(
                     f"User has multiple outgoing edges to {user_targets}. "
-                    "Please specify entry_point in topology."
+                    "Please specify entry_point in topology.",
+                    topology_issue="user_multiple_edges",
+                    affected_nodes=[user_node] + user_targets
                 )
         
         else:
             # No User node - entry_point is the starting node
             if manual_entry:
                 if manual_entry not in self.nodes:
-                    raise ValueError(f"Specified entry_point '{manual_entry}' not in nodes")
+                    raise TopologyError(
+                        f"Specified entry_point '{manual_entry}' not in nodes",
+                        topology_issue="invalid_entry_point",
+                        affected_nodes=[manual_entry]
+                    )
                 return (None, manual_entry)
             
             # Find nodes with no incoming edges
@@ -460,16 +488,20 @@ class TopologyGraph:
                          if not node.incoming_edges]
             
             if not candidates:
-                raise ValueError(
+                raise TopologyError(
                     "No entry point found. Graph has cycles without clear start. "
-                    "Please specify entry_point in topology."
+                    "Please specify entry_point in topology.",
+                    topology_issue="no_entry_cycles",
+                    affected_nodes=list(self.nodes.keys())
                 )
             elif len(candidates) == 1:
                 return (None, candidates[0])
             else:
-                raise ValueError(
+                raise TopologyError(
                     f"Multiple entry candidates found: {candidates}. "
-                    "Please specify entry_point in topology."
+                    "Please specify entry_point in topology.",
+                    topology_issue="multiple_entry_candidates",
+                    affected_nodes=candidates
                 )
     
     def find_exit_points_with_manual(self, manual_exits: Optional[List[str]] = None) -> List[str]:
@@ -478,7 +510,11 @@ class TopologyGraph:
             # Validate manual exits
             for exit_point in manual_exits:
                 if exit_point not in self.nodes:
-                    raise ValueError(f"Specified exit_point '{exit_point}' not in nodes")
+                    raise TopologyError(
+                        f"Specified exit_point '{exit_point}' not in nodes",
+                        topology_issue="invalid_exit_point",
+                        affected_nodes=[exit_point]
+                    )
             return manual_exits
         
         # Find nodes with no outgoing edges (excluding User nodes)
@@ -500,9 +536,11 @@ class TopologyGraph:
             if conversation_nodes:
                 return conversation_nodes
             else:
-                raise ValueError(
+                raise TopologyError(
                     "No exit points found. All nodes have outgoing edges. "
-                    "Please specify exit_points in topology."
+                    "Please specify exit_points in topology.",
+                    topology_issue="no_exit_points",
+                    affected_nodes=list(self.nodes.keys())
                 )
         
         return exit_points
@@ -669,9 +707,15 @@ class TopologyGraph:
         # Validate entry points
         try:
             entry_points = self.find_entry_points()
+        except TopologyError:
+            # Re-raise TopologyErrors as-is
+            raise
         except ValueError as e:
-            # Re-raise with more context
-            raise ValueError(f"Invalid topology structure: {e}")
+            # Convert generic ValueError to TopologyError
+            raise TopologyError(
+                f"Invalid topology structure: {e}",
+                topology_issue="validation_failed"
+            )
         
         # Check for isolated nodes (warning only)
         isolated = []

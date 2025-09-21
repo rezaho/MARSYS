@@ -14,6 +14,12 @@ from dataclasses import dataclass, field
 from typing import Any, Dict, List, Optional, Set, Tuple, TYPE_CHECKING
 
 from ..agents.registry import AgentRegistry
+from ..agents.exceptions import (
+    TopologyError,
+    StateError,
+    SessionNotFoundError,
+    CheckpointError
+)
 from .branches.types import (
     ExecutionBranch,
     BranchType,
@@ -548,7 +554,11 @@ class Orchestra:
         # Find entry point(s)
         entry_agents = self._find_entry_agents()
         if not entry_agents:
-            raise ValueError("No entry agents found in topology")
+            raise TopologyError(
+                "No entry agents found in topology",
+                topology_issue="no_entry_agents",
+                affected_nodes=list(self.topology_graph.agents) if self.topology_graph else []
+            )
         
         logger.info(f"Starting execution with entry agents: {entry_agents}")
         
@@ -784,7 +794,11 @@ class Orchestra:
             
             if not entry_agents:
                 # This shouldn't happen after validation, but be defensive
-                raise ValueError("No entry agents found in topology")
+                raise TopologyError(
+                    "No entry agents found in topology after validation",
+                    topology_issue="no_entry_agents_post_validation",
+                    affected_nodes=list(self.topology_graph.agents) if self.topology_graph else []
+                )
             
             logger.info(f"Starting execution with entry agent: {entry_agents[0]}")
             return entry_agents
@@ -997,12 +1011,18 @@ class Orchestra:
             OrchestraResult from continued execution
         """
         if not self.state_manager:
-            raise ValueError("Cannot resume session without StateManager")
-        
+            raise StateError(
+                "Cannot resume session without StateManager",
+                error_code="STATE_MANAGER_MISSING"
+            )
+
         # Load paused state
         state = await self.state_manager.resume_execution(session_id)
         if not state:
-            raise ValueError(f"Failed to load state for session {session_id}")
+            raise SessionNotFoundError(
+                f"Failed to load state for session {session_id}",
+                session_id=session_id
+            )
         
         # Reconstruct execution context
         task = state.get("task")
@@ -1039,8 +1059,11 @@ class Orchestra:
             Checkpoint ID
         """
         if not self.state_manager:
-            raise ValueError("Cannot create checkpoint without StateManager")
-        
+            raise StateError(
+                "Cannot create checkpoint without StateManager",
+                error_code="STATE_MANAGER_MISSING"
+            )
+
         return await self.state_manager.create_checkpoint(session_id, checkpoint_name)
     
     async def restore_checkpoint(self, checkpoint_id: str) -> Dict[str, Any]:
@@ -1054,8 +1077,11 @@ class Orchestra:
             Restored state
         """
         if not self.state_manager:
-            raise ValueError("Cannot restore checkpoint without StateManager")
-        
+            raise StateError(
+                "Cannot restore checkpoint without StateManager",
+                error_code="STATE_MANAGER_MISSING"
+            )
+
         return await self.state_manager.restore_checkpoint(checkpoint_id)
     
     async def create_session(
