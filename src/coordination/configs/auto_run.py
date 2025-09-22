@@ -67,6 +67,11 @@ class AutoRunConfig:
             config.execution.parent_completes_on_spawn = kwargs['parent_completes_on_spawn']
         if 'dynamic_convergence_enabled' in kwargs:
             config.execution.dynamic_convergence_enabled = kwargs['dynamic_convergence_enabled']
+        # Map user interaction settings to execution config
+        if 'user_first' in kwargs and kwargs['user_first'] is not None:
+            config.execution.user_first = kwargs['user_first']
+        if 'initial_user_msg' in kwargs and kwargs['initial_user_msg'] is not None:
+            config.execution.initial_user_msg = kwargs['initial_user_msg']
 
         # Map status settings
         if 'verbosity' in kwargs:

@@ -434,6 +434,26 @@ class DynamicBranchSpawner:
     
     def _extract_divergence_request(self, response: Any, target_agent: str) -> Any:
         """Extract request for specific target in divergence."""
+        # Check if this is a user-first mode initial response
+        if isinstance(response, dict) and response.get("interaction_type") == "initial_query":
+            # This is the initial User interaction in user-first mode
+            user_response = response.get("user_response", "")
+            pending_task = self.context.get("pending_task")
+
+            # Combine task with user response
+            if pending_task:
+                if isinstance(pending_task, dict):
+                    combined_task = {**pending_task, "user_response": user_response}
+                elif isinstance(pending_task, str):
+                    combined_task = {
+                        "task": pending_task,
+                        "user_response": user_response
+                    }
+                else:
+                    combined_task = pending_task  # Fallback
+                logger.info(f"User-first mode: Combined task with user response for {target_agent}")
+                return combined_task
+
         # Check for agent-specific requests
         if isinstance(response, dict):
             # Unified format with per-agent requests
@@ -441,19 +461,19 @@ class DynamicBranchSpawner:
                 for item in response["action_input"]:
                     if isinstance(item, dict) and item.get("agent_name") == target_agent:
                         return item.get("request", "")
-            
+
             # Check agent_requests mapping
             if "agent_requests" in response:
                 agent_requests = response["agent_requests"]
                 if isinstance(agent_requests, dict):
                     return agent_requests.get(target_agent, "")
-        
+
         # Default to response content if available
         if hasattr(response, 'content'):
             return response.content or ""
         elif isinstance(response, dict) and 'content' in response:
             return response.get('content', "")
-        
+
         return ""
         
     async def handle_agent_completion(

@@ -143,6 +143,11 @@ class ExecutionConfig:
 
     # Status configuration
     status: StatusConfig = field(default_factory=StatusConfig)
+
+    # NEW: User interaction control fields (Orchestra only)
+    user_first: bool = False  # Enable user-first execution mode
+    initial_user_msg: Optional[str] = None  # Message shown to user in user-first mode
+    user_interaction: str = "terminal"  # Type of user interaction: "terminal", "none"
     
     def should_apply_steering(self, is_retry: bool = False) -> bool:
         """
