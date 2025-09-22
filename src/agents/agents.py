@@ -974,12 +974,12 @@ Example for `final_response`:
                 raw_prompt = {
                     k: v for k, v in prompt.items() if k != "passed_referenced_context"
                 }
-            if isinstance(raw_prompt, dict):
-                raw_prompt = json.dumps(raw_prompt, ensure_ascii=False, indent=2)
-            return str(raw_prompt), context_messages
+            # if isinstance(raw_prompt, dict):
+            #     raw_prompt = json.dumps(raw_prompt, ensure_ascii=False, indent=2)
+            return raw_prompt, context_messages
 
         # Non-dict input ➜ treat as plain string prompt, no extra context
-        return str(prompt), []
+        return prompt, []
 
     async def invoke_agent(
         self, target_agent_name: str, request: Any, request_context: RequestContext
@@ -2168,14 +2168,14 @@ Example for `final_response`:
         pass
 
     async def _validate_initial_request(
-        self, initial_request: Any, request_context: RequestContext
+        self, task: Any, request_context: RequestContext
     ) -> Tuple[bool, Optional[str]]:
         """
         Validate the initial request against the agent's input schema.
         Handles all validation logic and logging internally.
 
         Args:
-            initial_request: The request to validate
+            task: The task to validate
             request_context: The request context for logging
 
         Returns:
@@ -2185,17 +2185,17 @@ Example for `final_response`:
             return True, None
 
         # Extract the actual data to validate
-        validation_data = initial_request
-        if isinstance(initial_request, dict):
+        validation_data = task
+        if isinstance(task, dict):
             # If it's a complex request dict, try to extract the main content
-            if "prompt" in initial_request:
-                validation_data = initial_request["prompt"]
+            if "prompt" in task:
+                validation_data = task["prompt"]
             elif (
-                len(initial_request) == 1
-                and "passed_referenced_context" not in initial_request
+                len(task) == 1
+                and "passed_referenced_context" not in task
             ):
                 # Single key that's not context, use its value
-                validation_data = list(initial_request.values())[0]
+                validation_data = list(task.values())[0]
 
         is_valid, error = validate_data(validation_data, self._compiled_input_schema)
         if not is_valid:
@@ -2273,8 +2273,12 @@ The user will provide their response, and you'll receive it to continue your tas
 
     async def auto_run(
         self,
-        initial_request: Any,
+        task: Any,  # Renamed from initial_request
         config: Optional['AutoRunConfig'] = None,
+        # New user control parameters
+        initial_user_msg: Optional[str] = None,  # Message shown to user in user-first mode
+        auto_inject_user: bool = True,  # Control auto-injection of User node
+        user_first: bool = False,  # Enable user-first execution mode
         # Backward compatibility kwargs
         request_context: Optional['RequestContext'] = None,
         max_steps: Optional[int] = None,
@@ -2300,8 +2304,11 @@ The user will provide their response, and you'll receive it to continue your tas
         while using the modern Orchestra coordination system internally.
 
         Args:
-            initial_request: The task/request to execute. Can be string, dict, or custom object.
+            task: The task/request to execute. Can be string, dict, or custom object.
             config: Optional AutoRunConfig for unified configuration.
+            initial_user_msg: Optional message shown to user in user-first mode.
+            auto_inject_user: Control auto-injection of User node (default True for compatibility).
+            user_first: Enable user-first execution mode (default False).
             request_context: Optional RequestContext for tracking execution state.
             max_steps: Maximum number of execution steps (overrides config).
             max_re_prompts: Maximum retry attempts on errors (handled by Orchestra internally).
@@ -2346,7 +2353,10 @@ The user will provide their response, and you'll receive it to continue your tas
                 auto_detect_convergence=auto_detect_convergence,
                 parent_completes_on_spawn=parent_completes_on_spawn,
                 dynamic_convergence_enabled=dynamic_convergence_enabled,
-                verbosity=verbosity
+                verbosity=verbosity,
+                # Add user interaction parameters
+                user_first=user_first,
+                initial_user_msg=initial_user_msg
             )
 
         # Override config with explicit kwargs if provided
@@ -2387,8 +2397,8 @@ The user will provide their response, and you'll receive it to continue your tas
                 f"Use allowed_peers parameter during initialization."
             )
         
-        # Extract prompt and context from initial_request
-        prompt, context_messages = self._extract_prompt_and_context(initial_request)
+        # Extract prompt and context from task
+        prompt, context_messages = self._extract_prompt_and_context(task)
         
         # Create RequestContext if not provided
         monitor_task = None
@@ -2459,7 +2469,10 @@ The user will provide their response, and you'll receive it to continue your tas
                 "max_re_prompts": config.default_max_re_prompts if config else 3,
                 "context_messages": context_messages,  # Pass any extracted context messages
                 "auto_run_config": config,  # Pass the config for user interaction detection
-                "progress_queue": getattr(request_context, 'progress_queue', None)
+                "progress_queue": getattr(request_context, 'progress_queue', None),
+                # Only pass auto_inject_user - it's needed by TopologyAnalyzer
+                # user_first and initial_user_msg are now in config.execution
+                "auto_inject_user": auto_inject_user and user_interaction is not None
             }
 
             # Add execution_config to context if created from config
@@ -2472,7 +2485,7 @@ The user will provide their response, and you'll receive it to continue your tas
                 LogLevel.SUMMARY,
                 f"Agent '{self.name}' starting auto_run for task '{request_context.task_id}'",
                 data={
-                    "initial_request_preview": str(prompt)[:200],
+                    "task_preview": str(prompt)[:200],
                     "max_steps": max_steps,
                     "max_re_prompts": max_re_prompts,
                     "allowed_peers": list(self._allowed_peers_init)

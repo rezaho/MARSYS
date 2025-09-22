@@ -160,11 +160,56 @@ class UserNodeHandler:
         
         # Store interaction context in branch for resumption
         self._store_interaction_context(branch, interaction)
-        
+
         # Handle based on mode
         handler = self.mode_handlers.get(mode, self._handle_sync_mode)
-        return await handler(interaction, context, branch)
+        result = await handler(interaction, context, branch)
+
+        # Check if this is user-first mode initial response that needs task combination
+        if (result.success and
+            result.response and
+            interaction.interaction_type == "initial_query" and
+            context.get("pending_task")):
+            result = self._combine_pending_task_with_user_response(result, context)
+
+        return result
     
+    def _combine_pending_task_with_user_response(self, result: StepResult, context: Dict[str, Any]) -> StepResult:
+        """
+        Combine the pending task with user response in user-first mode.
+        This ensures the first agent receives both the original task and user input.
+
+        Args:
+            result: The StepResult from the user interaction
+            context: The execution context containing pending_task
+
+        Returns:
+            Modified StepResult with combined task and user response
+        """
+        pending_task = context.get("pending_task")
+        user_response = result.response
+
+        # Combine task with user response based on task type
+        if isinstance(pending_task, dict):
+            # Add user_response as a new key to the existing task dict
+            combined_response = {**pending_task, "user_response": user_response}
+        else:
+            # Create new dict with task and user_response keys
+            combined_response = {
+                "initial_task": pending_task,
+                "user_response": user_response
+            }
+
+        logger.info(f"User-first mode: Combined task with user response for next agent")
+
+        # Remove pending_task from context after using it
+        context.pop("pending_task", None)
+
+        # Update the result with the combined response
+        result.response = combined_response
+
+        return result
+
     def _determine_communication_mode(self, context: Dict[str, Any]) -> CommunicationMode:
         """Determine communication mode from context."""
         mode_str = context.get("communication_mode", "sync")

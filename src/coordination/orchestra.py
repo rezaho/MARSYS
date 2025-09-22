@@ -441,18 +441,23 @@ class Orchestra:
             # Convert to canonical Topology format
             canonical_topology = self._ensure_topology(topology)
             
-            # Extract or create execution config
-            execution_config = context.get('execution_config') if context else None
+            # Use the execution config from initialization
+            execution_config = self._execution_config
             if execution_config is None:
                 # Create default config if not provided
+                from .config import ExecutionConfig
                 execution_config = ExecutionConfig()
-                context = context or {}
-                context['execution_config'] = execution_config
+                self._execution_config = execution_config
                 logger.debug("Created default ExecutionConfig")
-            
-            # Store config in topology metadata BEFORE analysis
+
+            # Add execution_config to context - it contains all the settings
+            # Both _execute_with_dynamic_branching and step_executor will read from this
+            context["execution_config"] = execution_config
+
+            # Store ONLY what's needed in topology metadata for TopologyAnalyzer
             canonical_topology.metadata = canonical_topology.metadata or {}
-            canonical_topology.metadata['execution_config'] = execution_config
+            # auto_inject_user is read by TopologyAnalyzer (only for auto_run pattern)
+            canonical_topology.metadata['auto_inject_user'] = context.get('auto_inject_user', False)
             
             # Analyze topology and create graph (will use config from metadata)
             self.topology_graph = self.topology_analyzer.analyze(canonical_topology)
@@ -564,20 +569,59 @@ class Orchestra:
         
         # Create initial branch(es)
         initial_branches = []
-        
+
+        # Determine execution mode from ExecutionConfig
+        execution_config = context.get("execution_config")
+        user_first = execution_config.user_first if execution_config else False
+        initial_user_msg = execution_config.initial_user_msg if execution_config else None
+
         # Special handling for User entry point
         if len(entry_agents) == 1 and entry_agents[0] == "User":
-            # Create User branch first to show initial task
-            user_branch = self._create_initial_branch(
-                "User",
-                {"message": f"Task: {task}", "interaction_type": "task"},
-                context,
-                branch_id="main_user"
-            )
-            initial_branches.append(user_branch)
-            # Don't create agent branches yet - wait for User response
+            # Check if there's an agent that should receive the task
+            agent_after_user = self.topology_graph.metadata.get("agent_after_user")
+
+            if user_first:
+                # User-first mode: Show initial message to User
+                # Use provided message or generic fallback
+                user_message = initial_user_msg if initial_user_msg else "How can I assist you today?"
+
+                user_branch = self._create_initial_branch(
+                    "User",
+                    {
+                        "message": user_message,
+                        "interaction_type": "initial_query",
+                        "expects_response": True,
+                        "next_agent": agent_after_user
+                    },
+                    context,
+                    branch_id="main_user"
+                )
+                initial_branches.append(user_branch)
+                # Store original task for later combination with user response
+                context["pending_task"] = task
+                logger.info(f"User-first mode: showing message to User: {user_message[:50]}...")
+
+            elif agent_after_user and not user_first:
+                # Agent-first mode (default): Task goes to designated agent
+                initial_branches.append(self._create_initial_branch(
+                    agent_after_user,
+                    task,  # Full task goes to agent
+                    context,
+                    branch_id="main"
+                ))
+                logger.info(f"Agent-first mode: task routed to {agent_after_user}")
+            else:
+                # Fallback: No agent_after_user or user-first without message
+                # Show task to User (original behavior)
+                user_branch = self._create_initial_branch(
+                    "User",
+                    {"message": f"Task: {task}", "interaction_type": "task"},
+                    context,
+                    branch_id="main_user"
+                )
+                initial_branches.append(user_branch)
         else:
-            # Normal entry point handling
+            # Normal entry point handling (non-User entries)
             for idx, agent in enumerate(entry_agents):
                 initial_branches.append(self._create_initial_branch(
                     agent,
@@ -616,8 +660,12 @@ class Orchestra:
         
         # Execute initial branches
         for branch in initial_branches:
+            # Use the branch's initial_task if it was set (e.g., for User branch in user-first mode)
+            # This contains the correct message for the User node
+            branch_task = branch.metadata.get("initial_task", task) if branch.metadata else task
+
             task_obj = asyncio.create_task(
-                self.branch_executor.execute_branch(branch, task, context)
+                self.branch_executor.execute_branch(branch, branch_task, context)
             )
             all_tasks.append(task_obj)
             branch_states[branch.id] = branch

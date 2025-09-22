@@ -97,15 +97,19 @@ class TopologyAnalyzer:
         metadata = topology_def.metadata if hasattr(topology_def, 'metadata') else topology_def.get('metadata', {})
         manual_entry = metadata.get("entry_point")
         manual_exits = metadata.get("exit_points")
-        
+        auto_inject_user = metadata.get("auto_inject_user", False)  # Default False for explicit control
+
         try:
             # Find entry point (with manual override)
             user_node, entry_agent = graph.find_entry_point_with_manual(manual_entry)
-            
-            if not user_node:
-                # No User node exists - need to auto-inject
+
+            if not user_node and auto_inject_user:
+                # No User node exists AND auto-injection is explicitly enabled
                 exit_agents = graph.find_exit_points_with_manual(manual_exits)
                 graph.auto_inject_user_node(entry_agent, exit_agents)
+                logger.info(f"Auto-injected User node (auto_inject_user=True)")
+            elif not user_node and not auto_inject_user:
+                logger.debug(f"No User node exists, auto-injection disabled (auto_inject_user=False)")
             else:
                 # User exists - store which agent comes after User if specified
                 if entry_agent != user_node:
