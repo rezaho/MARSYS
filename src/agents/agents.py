@@ -877,6 +877,36 @@ Example for `final_response`:
         
         return "\n".join(instructions) if instructions else ""
 
+    def _get_environmental_context(self) -> str:
+        """
+        Generate environmental context information to inject into system prompts.
+
+        Returns:
+            Formatted string with contextual information
+        """
+        from datetime import datetime
+
+        # Get current date and time
+        now = datetime.now()
+        date_str = now.strftime("%A, %B %d, %Y")
+
+        context_lines = []
+        context_lines.append("--- ENVIRONMENTAL CONTEXT ---")
+        context_lines.append(f"Today's date: {date_str}")
+
+        # Future context items can be added here:
+        # - Time zone information
+        # - Session/branch IDs for debugging
+        # - Execution metrics (step count, elapsed time)
+        # - Resource limits and quotas
+        # - Environment mode (production/staging/dev)
+        # - User preferences
+        # - Working directory context
+        # - Active feature flags
+
+        context_lines.append("--- END ENVIRONMENTAL CONTEXT ---")
+        return "\n".join(context_lines)
+
     def _construct_full_system_prompt(
         self,
         base_description: str,
@@ -902,6 +932,11 @@ Example for `final_response`:
                 else cleaned_description
             )
         ]
+
+        # --- 3) Add environmental context ---
+        environmental_context = self._get_environmental_context()
+        if environmental_context:
+            full_prompt_parts.append(environmental_context)
 
         tool_instructions = self._get_tool_instructions(
             # current_tools_schema=current_tools_schema # Argument removed

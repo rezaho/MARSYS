@@ -453,6 +453,36 @@ class StepExecutor:
         self._update_stats(agent_name, failed_result, retry_count, duration)
         return failed_result
     
+    def _get_environmental_context(self) -> str:
+        """
+        Generate environmental context information to inject into system prompts.
+
+        Returns:
+            Formatted string with contextual information
+        """
+        from datetime import datetime
+
+        # Get current date and time
+        now = datetime.now()
+        date_str = now.strftime("%A, %B %d, %Y")
+
+        context_lines = []
+        context_lines.append("--- ENVIRONMENTAL CONTEXT ---")
+        context_lines.append(f"Today's date: {date_str}")
+
+        # Future context items can be added here:
+        # - Time zone information
+        # - Session/branch IDs for debugging
+        # - Execution metrics (step count, elapsed time)
+        # - Resource limits and quotas
+        # - Environment mode (production/staging/dev)
+        # - User preferences
+        # - Working directory context
+        # - Active feature flags
+
+        context_lines.append("--- END ENVIRONMENTAL CONTEXT ---")
+        return "\n".join(context_lines)
+
     def _get_dynamic_format_instructions(
         self,
         agent: 'BaseAgent',
@@ -467,21 +497,26 @@ class StepExecutor:
         if not topology_graph:
             # Fall back to agent's own system prompt if no topology
             return ""
-        
+
         agent_name = agent.name if hasattr(agent, 'name') else str(agent)
-        
+
         # Build complete system prompt components
         system_prompt_parts = []
-        
+
         # 1. Start with agent's description (cleaned of schema hints)
         if not hasattr(agent, 'description'):
             raise RuntimeError(
                 f"Agent '{agent_name}' does not have a description attribute. "
                 "All agents must have a description for proper system prompt generation."
             )
-        
+
         cleaned_description = self._strip_schema_hints(agent.description)
         system_prompt_parts.append(cleaned_description)
+
+        # 2. Add environmental context
+        environmental_context = self._get_environmental_context()
+        if environmental_context:
+            system_prompt_parts.append(environmental_context)
         
         # 2. Add tool instructions if agent has tools
         tool_instructions = self._get_tool_instructions(agent)
