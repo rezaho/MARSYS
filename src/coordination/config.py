@@ -137,9 +137,13 @@ class ExecutionConfig:
     parent_completes_on_spawn: bool = True
     auto_detect_convergence: bool = True  # Automatically mark exit nodes and parents as convergence
 
-    # Timeouts
-    convergence_timeout: float = 300.0
-    branch_timeout: float = 600.0
+    # Timeouts (in seconds)
+    convergence_timeout: float = 300.0  # Waiting for children branches to complete
+    branch_timeout: float = 600.0  # Overall branch execution timeout
+    agent_acquisition_timeout: float = 240.0  # Acquiring agent from pool
+    step_timeout: float = 300.0  # Individual step execution timeout
+    tool_execution_timeout: float = 60.0  # Tool call execution timeout
+    user_interaction_timeout: float = 300.0  # Waiting for user input
 
     # Status configuration
     status: StatusConfig = field(default_factory=StatusConfig)

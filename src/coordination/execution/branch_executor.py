@@ -1057,8 +1057,8 @@ class BranchExecutor:
                     from datetime import datetime
                     if hasattr(group, 'created_at'):
                         age_seconds = (datetime.now() - group.created_at).total_seconds()
-                        # Use timeout from branch_spawner
-                        timeout = getattr(self.branch_spawner, 'group_timeout_seconds', 3600)
+                        # Use timeout from branch_spawner (default 600s = 10 minutes)
+                        timeout = getattr(self.branch_spawner, 'group_timeout_seconds', 600)
                         if age_seconds > timeout:
                             logger.error(
                                 f"DEADLOCK DETECTED: Group '{group_id}' timed out after {age_seconds:.1f}s. "

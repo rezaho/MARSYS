@@ -79,6 +79,20 @@ class AutoRunConfig:
             # Also set execution.status since Orchestra uses that
             config.execution.status = config.status
 
+        # Map timeout settings to ExecutionConfig
+        if 'convergence_timeout' in kwargs:
+            config.execution.convergence_timeout = kwargs['convergence_timeout']
+        if 'agent_acquisition_timeout' in kwargs:
+            config.execution.agent_acquisition_timeout = kwargs['agent_acquisition_timeout']
+        if 'step_timeout' in kwargs:
+            config.execution.step_timeout = kwargs['step_timeout']
+        if 'tool_execution_timeout' in kwargs:
+            config.execution.tool_execution_timeout = kwargs['tool_execution_timeout']
+        if 'user_interaction_timeout' in kwargs:
+            config.execution.user_interaction_timeout = kwargs['user_interaction_timeout']
+        if 'branch_timeout' in kwargs:
+            config.execution.branch_timeout = kwargs['branch_timeout']
+
         # Set auto_run specific defaults
         config.default_max_steps = kwargs.get('max_steps', 30)
         config.default_max_re_prompts = kwargs.get('max_re_prompts', 3)

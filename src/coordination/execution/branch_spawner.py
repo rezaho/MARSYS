@@ -255,7 +255,8 @@ class DynamicBranchSpawner:
         agent_registry: Optional[AgentRegistry] = None,
         max_completed_agents: Optional[int] = None,
         max_completed_branches: Optional[int] = None,
-        max_branch_results: Optional[int] = None
+        max_branch_results: Optional[int] = None,
+        convergence_timeout: float = 600.0  # Timeout for waiting at convergence points (10 minutes default)
     ):
         self.graph = topology_graph
         self.branch_executor = branch_executor
@@ -310,7 +311,7 @@ class DynamicBranchSpawner:
         self.parallel_groups: Dict[str, ParallelInvocationGroup] = {}
         self.branch_to_group: Dict[str, str] = {}  # branch_id -> group_id
         self.completed_groups: Set[str] = set()  # For cleanup tracking
-        self.group_timeout_seconds: int = self.DEFAULT_GROUP_TIMEOUT_SECONDS  # Use constant
+        self.group_timeout_seconds: float = convergence_timeout  # Use configured timeout
         
         # Identify convergence points from topology
         self._identify_convergence_points()
@@ -1929,8 +1930,15 @@ class DynamicBranchSpawner:
 
         try:
             # Phase 1: Acquire resource (will queue if none available)
+            # Get timeout from ExecutionConfig if available
+            execution_config = context.get('execution_config')
+            if execution_config and hasattr(execution_config, 'agent_acquisition_timeout'):
+                timeout = execution_config.agent_acquisition_timeout
+            else:
+                timeout = 240.0  # Default fallback
+
             resource = await self._acquire_agent_for_branch(
-                agent_name, branch_id, timeout=120.0
+                agent_name, branch_id, timeout=timeout
             )
 
             # Phase 2: Execute using EXISTING logic (no duplication!)

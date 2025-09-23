@@ -2331,6 +2331,7 @@ The user will provide their response, and you'll receive it to continue your tas
         dynamic_convergence_enabled: Optional[bool] = None,
         steering_mode: Optional[str] = None,  # "auto", "always", "never"
         verbosity: Optional[int] = None,  # Verbosity level (0-2) for status updates
+        **kwargs  # Additional parameters (e.g., timeout configurations)
     ) -> Union[Dict[str, Any], str]:
         """
         Run agent with automatic topology creation from allowed_peers.
@@ -2391,7 +2392,9 @@ The user will provide their response, and you'll receive it to continue your tas
                 verbosity=verbosity,
                 # Add user interaction parameters
                 user_first=user_first,
-                initial_user_msg=initial_user_msg
+                initial_user_msg=initial_user_msg,
+                # Pass all additional kwargs (including timeout configurations)
+                **kwargs
             )
 
         # Override config with explicit kwargs if provided
