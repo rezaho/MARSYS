@@ -163,7 +163,14 @@ class CommunicationManager:
             future.set_result(user_response)
             
             # Wait for response (blocking)
-            timeout = interaction.timeout or 300  # Default 5 minute timeout
+            # Get timeout from ExecutionConfig if available in interaction metadata
+            default_timeout = 300  # Default 5 minute timeout
+            if interaction.metadata and 'execution_config' in interaction.metadata:
+                config = interaction.metadata['execution_config']
+                if hasattr(config, 'user_interaction_timeout'):
+                    default_timeout = config.user_interaction_timeout
+
+            timeout = interaction.timeout or default_timeout
             try:
                 response = await asyncio.wait_for(future, timeout=timeout)
                 logger.info(f"Received sync response for interaction {interaction.interaction_id}")

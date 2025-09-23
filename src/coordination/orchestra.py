@@ -491,11 +491,14 @@ class Orchestra:
                 rules_engine=self.rules_engine,
                 topology_graph=self.topology_graph
             )
+            # Get convergence timeout from execution config
+            convergence_timeout = execution_config.convergence_timeout if execution_config else 600.0
             self.branch_spawner = DynamicBranchSpawner(
                 topology_graph=self.topology_graph,
                 branch_executor=self.branch_executor,
                 event_bus=self.event_bus,
-                agent_registry=self.agent_registry
+                agent_registry=self.agent_registry,
+                convergence_timeout=convergence_timeout
             )
             
             # Set circular reference - branch_executor needs branch_spawner
