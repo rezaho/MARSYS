@@ -325,26 +325,92 @@ class EnhancedTerminalChannel(TerminalChannel):
         return await self._get_rich_text_input(interaction_id)
 
     async def _get_rich_text_input(self, interaction_id: str) -> Tuple[str, Any]:
-        """Get text input using Rich Prompt."""
+        """Get text input with visual border around input area."""
+        import re
+        import io
+        from rich.text import Text
+        from rich.console import Console as RichConsole
+
+        def wrap_ansi_for_readline(text: str) -> str:
+            """Wrap ANSI sequences with readline markers to fix backspace bug.
+
+            This wraps ANSI escape codes with \x01 and \x02 so readline knows
+            they're non-printing characters. This fixes the bug where backspace
+            deletes multiple characters equal to the prompt length.
+            """
+            # Pattern matches: ESC [ <numbers/semicolons> <letter>
+            ansi_pattern = r'(\x1b\[[0-9;]*[a-zA-Z])'
+
+            def wrap_match(match):
+                return f'\x01{match.group(1)}\x02'
+
+            return re.sub(ansi_pattern, wrap_match, text)
+
+        # NOTE: Question already displayed by status manager, so we skip displaying it here
+        # to avoid duplicate display
+
+        # Create visual border around input area using Unicode box characters
+        width = 94  # Inner width (96 - 2 for borders)
+
+        # Top border with title
+        title = " Response Required "
+        title_len = len(title)
+        left_padding = (width - title_len) // 2
+        right_padding = width - title_len - left_padding
+
+        self.console.print(f"[cyan]╭{'─' * left_padding}[bold cyan]{title}[/cyan]{'─' * right_padding}╮[/]")
+
+        # Empty line inside box for spacing
+        self.console.print(f"[cyan]│[/]{' ' * width}[cyan]│[/]")
+
+        # Get input (appears inside the visual box)
         loop = asyncio.get_event_loop()
 
-        # Create prompt string
-        prompt_str = "[bright_green]💬[/] Your response"
+        try:
+            # Create readline-safe prompt with properly wrapped ANSI codes
+            # Include the border in the prompt so readline knows about it
+            text_obj = Text.from_markup("[cyan]│[/] [bright_green]Your response:[/] ")
 
-        # Run Rich Prompt in executor to avoid blocking
-        # Prompt.ask uses the default console or the one specified at creation
-        response = await loop.run_in_executor(
-            None,
-            lambda: Prompt.ask(prompt_str, console=self.console)
-        )
+            # Render to ANSI string using a temporary console
+            string_buffer = io.StringIO()
+            temp_console = RichConsole(
+                file=string_buffer,
+                force_terminal=True,
+                legacy_windows=False,
+                width=80  # Arbitrary width for rendering
+            )
+            temp_console.print(text_obj, end='')
+            full_prompt = string_buffer.getvalue()
+
+            # Wrap ANSI codes for readline compatibility
+            safe_prompt = wrap_ansi_for_readline(full_prompt)
+
+            # Get input with readline-safe prompt (fixes backspace bug)
+            response = await loop.run_in_executor(
+                None,
+                lambda: input(safe_prompt)
+            )
+
+        except (KeyboardInterrupt, EOFError):
+            # Handle Ctrl+C or Ctrl+D gracefully
+            response = ""
+
+        # Add empty line inside box after input
+        self.console.print(f"[cyan]│[/]{' ' * width}[cyan]│[/]")
+
+        # Bottom border
+        self.console.print(f"[cyan]╰{'─' * width}╯[/]")
 
         # Validate response
         if not response.strip():
-            if self.console:
-                self.console.print("[error]❌ Please provide a response to continue.[/]")
-            else:
-                print("❌ Please provide a response to continue.")
+            self.console.print()
+            self.console.print("[yellow]⚠ Response cannot be empty. Please try again.[/]")
+            self.console.print()
             return await self._get_rich_text_input(interaction_id)
+
+        # Show confirmation
+        self.console.print()
+        self.console.print(f"[green]✓ Response captured:[/] {response.strip()[:50]}{'...' if len(response.strip()) > 50 else ''}")
 
         return (interaction_id, response.strip())
 
