@@ -248,9 +248,6 @@ class BaseAgent(ABC):
         # Store memory retention settings
         self._memory_retention = memory_retention
         self._memory_storage_path = memory_storage_path
-        
-        # Initialize topology constraints
-        self._can_return_final_response = False  # Default to False, require explicit permission from topology
 
         # Initialize context selector
         self._context_selector = ContextSelector(self.name)
@@ -260,9 +257,6 @@ class BaseAgent(ABC):
 
         # Initialize agent state (including persistent memory if needed)
         self._initialize_agent()
-        
-        # Topology constraints
-        self._can_return_final_response = False  # Default to False, require explicit permission
 
         # Resource management for unified acquisition
         self._allocated_to_branch: Optional[str] = None
@@ -313,17 +307,18 @@ class BaseAgent(ABC):
         """Set reference to topology graph for dynamic allowed_peers lookup."""
         self._topology_graph_ref = topology_graph
         logger.debug(f"Set topology reference for agent {self.name}")
-    
-    def set_topology_constraints(self, constraints: Dict[str, Any]) -> None:
+
+    def can_return_final_response(self) -> bool:
         """
-        Set topology-based constraints for the agent.
-        
-        Args:
-            constraints: Dict with keys like 'can_return_final_response'
+        Dynamically check if this agent can return final responses.
+        Uses topology graph to determine if agent has user access.
+
+        Returns:
+            True if agent can return final responses, False otherwise
         """
-        if "can_return_final_response" in constraints:
-            self._can_return_final_response = constraints["can_return_final_response"]
-            logger.debug(f"Agent '{self.name}' can_return_final_response: {self._can_return_final_response}")
+        if self._topology_graph_ref:
+            return self._topology_graph_ref.has_user_access(self.name)
+        return False  # Default to False if no topology available
 
     def _format_parameters(self, properties: Dict, required: List[str], indent: int = 2) -> List[str]:
         """Recursively format parameters including nested structures."""
@@ -710,7 +705,7 @@ class BaseAgent(ABC):
                 )
             
             # Check if agent can return final response
-            if getattr(self, '_can_return_final_response', False):
+            if self.can_return_final_response():
                 available_actions.append("'final_response'")
                 action_descriptions.append(
                     '- If `next_action` is `"final_response"`:\n'
@@ -1599,7 +1594,7 @@ Example for `final_response`:
                 or not hasattr(self, "_last_system_prompt_context")
                 or self._last_system_prompt_context.get("run_mode") != run_mode
                 or self._last_system_prompt_context.get("tools_count") != len(self.tools_schema)
-                or self._last_system_prompt_context.get("can_return_final") != getattr(self, '_can_return_final_response', False)
+                or self._last_system_prompt_context.get("can_return_final") != self.can_return_final_response()
             )
             
             # If we need to rebuild the system prompt
@@ -1625,7 +1620,7 @@ Example for `final_response`:
                 self._last_system_prompt_context = {
                     "run_mode": run_mode,
                     "tools_count": len(self.tools_schema),
-                    "can_return_final": getattr(self, '_can_return_final_response', False),
+                    "can_return_final": self.can_return_final_response(),
                     "system_prompt": system_prompt,
                 }
             else:
@@ -1857,7 +1852,7 @@ Example for `final_response`:
             or self._last_system_prompt_context.get("tools_count")
             != len(self.tools_schema)
             or self._last_system_prompt_context.get("can_return_final")
-            != getattr(self, '_can_return_final_response', False)
+            != self.can_return_final_response()
         )
 
         # Extract format instructions from context if available
