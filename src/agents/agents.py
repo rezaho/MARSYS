@@ -275,6 +275,12 @@ class BaseAgent(ABC):
         """Safely unregister the agent, even during interpreter shutdown."""
         agent_display_name = getattr(self, "name", "UnknownAgent")
 
+        # Check internal flag first - most reliable during shutdown
+        if getattr(self, "_is_pool_instance", False):
+            # This is a pool instance - skip individual unregistration
+            # The pool's cleanup method will handle proper cleanup
+            return
+
         # All globals may already be None at shutdown – guard every access.
         try:
             registry_cls = globals().get("AgentRegistry")  # type: ignore[arg-type]
@@ -3838,6 +3844,24 @@ class Agent(BaseAgent):
             model=self.model if memory_type == "kg" else None,
         )
         self._model_config = model_config  # Store the ModelConfig instance
+
+    async def cleanup(self) -> None:
+        """
+        Clean up resources used by the agent, including model sessions.
+
+        This method ensures proper cleanup of aiohttp sessions and other resources.
+        Should be called when the agent is no longer needed.
+        """
+        # Clean up the model's async resources (e.g., aiohttp sessions)
+        if hasattr(self.model, 'cleanup'):
+            try:
+                if asyncio.iscoroutinefunction(self.model.cleanup):
+                    await self.model.cleanup()
+                else:
+                    self.model.cleanup()
+            except Exception as e:
+                logger = logging.getLogger(__name__)
+                logger.warning(f"Error cleaning up model for agent {self.name}: {e}")
 
     def _create_model_from_config(
         self, config: ModelConfig  # Changed type hint

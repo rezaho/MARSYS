@@ -810,9 +810,21 @@ class BrowserAgent(Agent):
                 await self.browser_tool.close()
             except Exception as e:
                 logger.warning(f"Error during browser cleanup: {e}")
-        
+
         self.browser_tool = None
         logger.info(f"Browser closed for {self.name}")
+
+    async def cleanup(self) -> None:
+        """
+        Clean up all resources including browser and model sessions.
+
+        This method is called by AgentPool and ensures complete cleanup.
+        """
+        # First close browser-specific resources
+        await self.close()
+
+        # Then call parent's cleanup to clean up model sessions
+        await super().cleanup()
 
     async def _take_auto_screenshot(self) -> Optional[str]:
         """

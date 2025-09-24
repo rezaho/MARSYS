@@ -99,6 +99,9 @@ class AgentPool:
             # Create the instance
             try:
                 instance = self.agent_class(*self._original_args, **instance_kwargs)
+                # Mark this as a pool instance to prevent individual unregistration
+                instance._is_pool_instance = True
+                instance._pool_name = self.base_name
                 self.instances.append(instance)
                 self.available_instances.add(i)
                 
@@ -187,6 +190,9 @@ class AgentPool:
                 )
                 raise result
             else:
+                # Mark this as a pool instance to prevent individual unregistration
+                result._is_pool_instance = True
+                result._pool_name = self.base_name
                 self.instances.append(result)
                 self.available_instances.add(i)
                 logger.debug(

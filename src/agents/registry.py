@@ -245,6 +245,9 @@ class AgentRegistry:
                 if hasattr(instance, 'name'):
                     # Update the instance's internal name if it has one
                     instance.name = instance_name
+                # Ensure the pool instance flag is set (defensive programming)
+                instance._is_pool_instance = True
+                instance._pool_name = pool_name
                 cls._agents[instance_name] = instance
                 cls._pool_instance_map[instance_name] = pool_name  # Track mapping
                 
