@@ -120,39 +120,6 @@ class BranchExecutor:
         self._last_step_result: Optional[StepResult] = None
         self._last_agent_name: Optional[str] = None
     
-    def _update_agent_constraints(self, branch: ExecutionBranch) -> None:
-        """
-        Update agent constraints based on topology.
-        
-        This sets which agents can return final responses based on
-        their connections to User nodes.
-        """
-        if not self.topology_graph:
-            # Need reference to topology graph
-            logger.warning("No topology_graph available for constraint setting")
-            return
-        
-        # Get agents that can return final response
-        agents_with_user_access = self.topology_graph.get_agents_with_user_access()
-        
-        logger.info(f"Agents with User access: {agents_with_user_access}")
-        
-        # Update each agent in the branch
-        for agent_name in branch.topology.agents:
-            # Skip User nodes - they're not real agents
-            if agent_name == "User":
-                continue
-            agent = self.agent_registry.get(agent_name)
-            if agent and hasattr(agent, 'set_topology_constraints'):
-                # Agent can return final if connected to User
-                can_return_final = agent_name in agents_with_user_access
-                agent.set_topology_constraints({
-                    "can_return_final_response": can_return_final
-                })
-                logger.info(f"Set constraints for {agent_name}: can_return_final={can_return_final}")
-            else:
-                logger.warning(f"Agent {agent_name} not found or doesn't support constraints")
-
     async def execute_branch(
         self,
         branch: ExecutionBranch,
@@ -192,10 +159,7 @@ class BranchExecutor:
         # Update branch state
         branch.state.status = BranchStatus.RUNNING
         branch.state.start_time = start_time
-        
-        # Set agent constraints based on topology
-        self._update_agent_constraints(branch)
-        
+
         try:
             # Route to appropriate executor based on branch type
             if branch.type == BranchType.SIMPLE:

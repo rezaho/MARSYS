@@ -578,17 +578,13 @@ class StepExecutor:
         
         # 3. CRITICAL: Check if agent can return final response
         can_return_final = False
-        
-        # Check static flag first (set at branch start)
-        if hasattr(agent, '_can_return_final_response') and agent._can_return_final_response:
+
+        # Check if agent has user access in topology (the official way)
+        if topology_graph and topology_graph.has_user_access(agent_name):
             can_return_final = True
-        
-        # Check if agent has user access in topology
-        if topology_graph.has_user_access(agent_name):
-            can_return_final = True
-        
-        # Check if agent is an exit point
-        if hasattr(topology_graph, 'exit_points') and agent_name in topology_graph.exit_points:
+
+        # Also check if agent is an exit point (for auto_run scenarios)
+        if topology_graph and hasattr(topology_graph, 'exit_points') and agent_name in topology_graph.exit_points:
             can_return_final = True
         
         if can_return_final:
