@@ -396,7 +396,7 @@ class Orchestra:
 
             await orchestra.event_bus.emit(FinalResponseEvent(
                 session_id=session_id,
-                response_summary=summary,
+                final_response=summary,
                 total_duration=time.time() - start_time,
                 total_steps=result.total_steps,
                 success=result.success
