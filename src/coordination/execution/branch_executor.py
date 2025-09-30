@@ -923,6 +923,7 @@ class BranchExecutor:
                         "action_type": result.action_type,
                         "next_agent": result.next_agent,
                         "branch_type": branch.type.value,
+                        "step_result": result,  # Pass the complete step result for rules to access
                     },
                     branch_metadata=branch.metadata
                 )
@@ -1230,13 +1231,16 @@ class BranchExecutor:
         elif isinstance(base_request, dict) and "agent_name" in base_request:
             logger.warning(f"Base request looks like an invocation dict: {base_request}")
 
+        # Prepend caller agent name to request content (for agent-to-agent invocations)
+        base_request = self._prepend_caller_name(base_request, step_result.agent_name)
+
         # FIX: Check for saved_context instead of context_selection
         if not hasattr(step_result, 'saved_context') or not step_result.saved_context:
             return base_request
-        
+
         # Format and include saved context
         return self._include_context_in_request(
-            base_request, 
+            base_request,
             step_result.saved_context,
             step_result.agent_name
         )
@@ -1266,7 +1270,57 @@ class BranchExecutor:
             return action_input
 
         return step_result.response
-    
+
+    def _prepend_caller_name(self, request: Any, caller_name: str) -> Any:
+        """
+        Prepend the caller agent's name to the request content.
+        This makes it clear to the receiving agent who is requesting the task.
+
+        Args:
+            request: The request content (can be string, dict, or other)
+            caller_name: Name of the agent making the request
+
+        Returns:
+            Modified request with caller name prepended
+        """
+        if not request or not caller_name:
+            return request
+
+        # Skip prepending for None or empty requests (e.g., tool continuations)
+        if request is None or request == "":
+            return request
+
+        caller_prefix = f"[Request from {caller_name}]\n"
+
+        # Handle string requests
+        if isinstance(request, str):
+            return f"{caller_prefix}{request}"
+
+        # Handle dict requests
+        elif isinstance(request, dict):
+            # Make a copy to avoid mutating the original
+            request_copy = request.copy()
+
+            # If there's a 'prompt' or 'task' field, prepend to it
+            if 'prompt' in request_copy:
+                if isinstance(request_copy['prompt'], str):
+                    request_copy['prompt'] = f"{caller_prefix}{request_copy['prompt']}"
+            elif 'task' in request_copy:
+                if isinstance(request_copy['task'], str):
+                    request_copy['task'] = f"{caller_prefix}{request_copy['task']}"
+            elif 'message' in request_copy:
+                if isinstance(request_copy['message'], str):
+                    request_copy['message'] = f"{caller_prefix}{request_copy['message']}"
+            else:
+                # No standard field found, add a 'from_agent' field instead
+                request_copy['from_agent'] = caller_name
+
+            return request_copy
+
+        # For other types (list, etc.), return as-is
+        # Lists are typically handled at a higher level (parallel invocations)
+        return request
+
     def _include_context_in_request(
         self, 
         base_request: Any, 
