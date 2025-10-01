@@ -310,19 +310,33 @@ class RulesEngine:
     ) -> List[RuleResult]:
         """
         Check post-execution rules.
-        
+
         Args:
             context: Execution context
             execution_result: Result of execution
-            
+
         Returns:
             List of rule results
         """
         context.rule_type = RuleType.POST_EXECUTION
         context.metadata["execution_result"] = execution_result
-        
+
         results = await self._execute_rules(RuleType.POST_EXECUTION, context)
-        
+
+        # Also check PRE_EXECUTION rules that handle POST (like AgentTimeoutRule)
+        # These are dual-purpose rules that track state across pre/post
+        for rule in self.rules_by_type.get(RuleType.PRE_EXECUTION, []):
+            if rule.enabled:
+                # Check if this rule handles post-execution too
+                # (AgentTimeoutRule will check context.rule_type internally)
+                try:
+                    result = await rule.check(context)
+                    # Only add if the rule actually processed the POST_EXECUTION
+                    if result and result.rule_name == rule.name:
+                        results.append(result)
+                except Exception as e:
+                    logger.error(f"Error in rule {rule.name} during POST_EXECUTION: {e}")
+
         # Post-execution rules typically don't block but may trigger actions
         for result in results:
             if result.action == "terminate":

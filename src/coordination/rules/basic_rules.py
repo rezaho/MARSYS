@@ -665,6 +665,286 @@ class AlternatingAgentRule(Rule):
         return f"Alternating agents: {agents_str} (max {self.max_turns} turns)"
 
 
+class AgentTimeoutRule(Rule):
+    """
+    Rule that enforces per-agent execution time limits.
+
+    Only counts actual agent processing time, excluding:
+    - User interaction wait time
+    - Time between steps (when control is elsewhere)
+    - Network delays or external tool execution
+
+    The timer accumulates time per agent across their steps until they
+    complete or delegate their task.
+    """
+
+    def __init__(
+        self,
+        name: str = "agent_timeout_rule",
+        agent_timeouts: Optional[Dict[str, float]] = None,
+        default_timeout: float = 180.0,  # 3 minutes default
+        warning_threshold: float = 0.8,  # Warn at 80%
+        priority: RulePriority = RulePriority.HIGH
+    ):
+        """
+        Initialize agent timeout rule.
+
+        Args:
+            name: Rule name
+            agent_timeouts: Dict mapping agent names to timeout seconds
+                           e.g., {"OrchestratorAgent": 120, "BrowserAgent": 300}
+            default_timeout: Default timeout for agents not in agent_timeouts
+            warning_threshold: Fraction of timeout to trigger warning (0.8 = 80%)
+            priority: Rule priority
+        """
+        # Initialize as PRE_EXECUTION rule (will handle POST too)
+        super().__init__(name, RuleType.PRE_EXECUTION, priority)
+        self.agent_timeouts = agent_timeouts or {}
+        self.default_timeout = default_timeout
+        self.warning_threshold = warning_threshold
+
+    async def check(self, context: RuleContext) -> RuleResult:
+        """
+        Check agent timeout.
+
+        For PRE_EXECUTION: Start timing this step and check cumulative time
+        For POST_EXECUTION: Record step duration and update cumulative time
+        """
+        agent_name = context.agent_name
+        if not agent_name or agent_name == "User":
+            return RuleResult(
+                rule_name=self.name,
+                passed=True,
+                action="allow"
+            )
+
+        # Get or initialize agent timing data
+        agent_timings = context.branch_metadata.get("agent_execution_times", {})
+        if "agent_execution_times" not in context.branch_metadata:
+            context.branch_metadata["agent_execution_times"] = agent_timings
+
+        current_time = time.time()
+
+        # Handle based on rule type
+        if context.rule_type == RuleType.PRE_EXECUTION:
+            return await self._handle_pre_execution(
+                agent_name, agent_timings, current_time, context
+            )
+        elif context.rule_type == RuleType.POST_EXECUTION:
+            return await self._handle_post_execution(
+                agent_name, agent_timings, current_time, context
+            )
+
+        return RuleResult(
+            rule_name=self.name,
+            passed=True,
+            action="allow"
+        )
+
+    async def _handle_pre_execution(
+        self,
+        agent_name: str,
+        agent_timings: Dict,
+        current_time: float,
+        context: RuleContext
+    ) -> RuleResult:
+        """
+        Handle pre-execution: Start timing and check cumulative timeout.
+        """
+        # Initialize agent data if first time
+        if agent_name not in agent_timings:
+            agent_timings[agent_name] = {
+                "cumulative_time": 0.0,
+                "current_step_start": None,
+                "task_start_time": current_time,  # When task began
+                "steps_count": 0
+            }
+
+        agent_data = agent_timings[agent_name]
+
+        # Mark step start time
+        agent_data["current_step_start"] = current_time
+
+        # Get timeout for this agent
+        timeout = self.agent_timeouts.get(agent_name, self.default_timeout)
+
+        # Check cumulative time BEFORE this step
+        cumulative = agent_data["cumulative_time"]
+
+        # Check if already exceeded timeout
+        if cumulative > timeout:
+            intervention_msg = self._build_intervention_message(
+                agent_name, cumulative, timeout, context
+            )
+
+            logger.warning(
+                f"Agent {agent_name} timeout: {cumulative:.1f}s > {timeout}s limit"
+            )
+
+            return RuleResult(
+                rule_name=self.name,
+                passed=False,
+                action="modify",
+                reason=f"Agent {agent_name} exceeded {timeout}s timeout (actual work time: {cumulative:.1f}s)",
+                severity="error",
+                modifications={
+                    "inject_intervention": intervention_msg,
+                    "timeout_exceeded": True
+                },
+                metadata={
+                    "agent_name": agent_name,
+                    "cumulative_time": cumulative,
+                    "timeout": timeout
+                }
+            )
+
+        # Check if approaching timeout
+        warning_time = timeout * self.warning_threshold
+        if cumulative > warning_time:
+            remaining = timeout - cumulative
+            logger.info(
+                f"Agent {agent_name} timeout warning: {remaining:.1f}s remaining"
+            )
+
+            return RuleResult(
+                rule_name=self.name,
+                passed=True,
+                action="allow",
+                reason=f"Agent {agent_name} approaching timeout ({remaining:.1f}s remaining)",
+                severity="warning",
+                suggestions={
+                    "timeout_warning": f"⏱️ TIME WARNING: You have {remaining:.1f}s of execution time remaining. Please complete or delegate your task soon."
+                }
+            )
+
+        # All good, continue
+        return RuleResult(
+            rule_name=self.name,
+            passed=True,
+            action="allow"
+        )
+
+    async def _handle_post_execution(
+        self,
+        agent_name: str,
+        agent_timings: Dict,
+        current_time: float,
+        context: RuleContext
+    ) -> RuleResult:
+        """
+        Handle post-execution: Record step duration and potentially reset timer.
+        """
+        if agent_name not in agent_timings:
+            # Shouldn't happen, but be safe
+            logger.warning(f"Post-execution for {agent_name} without pre-execution timing")
+            return RuleResult(
+                rule_name=self.name,
+                passed=True,
+                action="allow"
+            )
+
+        agent_data = agent_timings[agent_name]
+
+        # Calculate step duration
+        if agent_data["current_step_start"] is not None:
+            step_duration = current_time - agent_data["current_step_start"]
+            agent_data["cumulative_time"] += step_duration
+            agent_data["steps_count"] += 1
+            agent_data["current_step_start"] = None  # Reset for next step
+
+            logger.debug(
+                f"Agent {agent_name} step took {step_duration:.2f}s "
+                f"(cumulative: {agent_data['cumulative_time']:.2f}s)"
+            )
+
+        # Check if task was completed or delegated
+        # This information should come from the step result
+        if hasattr(context, 'metadata') and context.metadata.get('step_result'):
+            step_result = context.metadata['step_result']
+            if hasattr(step_result, 'action_type'):
+                # Reset timer if task was handed off or completed
+                if step_result.action_type in ["final_response", "invoke_agent", "parallel_invoke"]:
+                    logger.info(
+                        f"Agent {agent_name} completed/delegated task after "
+                        f"{agent_data['cumulative_time']:.2f}s across "
+                        f"{agent_data['steps_count']} steps"
+                    )
+
+                    # Reset for next task
+                    agent_data["cumulative_time"] = 0.0
+                    agent_data["task_start_time"] = current_time
+                    agent_data["steps_count"] = 0
+
+        return RuleResult(
+            rule_name=self.name,
+            passed=True,
+            action="allow"
+        )
+
+    def _build_intervention_message(
+        self,
+        agent_name: str,
+        duration: float,
+        timeout: float,
+        context: RuleContext
+    ) -> str:
+        """Build timeout intervention message based on agent capabilities."""
+        from ....agents.registry import AgentRegistry
+
+        # Check if it's a pool
+        if AgentRegistry.is_pool(agent_name):
+            # For pools, just use generic message
+            agent = None
+        else:
+            agent = AgentRegistry.get(agent_name)
+
+        msg = f"""
+⚠️ TIMEOUT: Your cumulative execution time ({duration:.1f}s) has exceeded the {timeout}s limit.
+
+You must respond IMMEDIATELY with one of these actions:
+"""
+
+        if agent:
+            can_invoke = bool(agent.allowed_peers) if hasattr(agent, 'allowed_peers') else False
+            can_return_final = agent.can_return_final_response() if hasattr(agent, 'can_return_final_response') else False
+
+            if can_invoke and agent.allowed_peers:
+                peers = list(agent.allowed_peers)[:3]
+                msg += f"""
+• Delegate task to another agent: {', '.join(peers)}
+  Use: [{{"agent_name": "AgentName", "request": {{...}}}}]
+"""
+
+            if can_return_final:
+                msg += """
+• Return final response with your current findings:
+  Use: {"next_action": "final_response", "response": "..."}
+"""
+
+            if not can_invoke and not can_return_final:
+                msg += """
+• Return an error status:
+  Use: {"next_action": "error", "message": "Task incomplete due to timeout"}
+"""
+        else:
+            # Generic message for pools or unknown agents
+            msg += """
+• Complete your current operation immediately
+• Or delegate the task if possible
+"""
+
+        msg += """
+This is your FINAL opportunity - respond now or execution will terminate."""
+
+        return msg
+
+    def description(self) -> str:
+        timeouts_str = ", ".join([f"{k}:{v}s" for k, v in self.agent_timeouts.items()])
+        if not timeouts_str:
+            timeouts_str = f"default:{self.default_timeout}s"
+        return f"Agent timeout rule: {timeouts_str}"
+
+
 class SymmetricAccessRule(Rule):
     """
     Allows symmetric access between peers (Peer Pattern).

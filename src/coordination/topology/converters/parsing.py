@@ -281,7 +281,34 @@ def _parse_string_rule(rule_str: str) -> 'Rule':
         agents_str = max_turns_match.group(1)
         max_turns = int(max_turns_match.group(2))
         # Use max_steps as max_turns * 2 (each turn is 2 steps)
-        return MaxStepsRule(max_steps=max_turns * 2, 
+        return MaxStepsRule(max_steps=max_turns * 2,
                           name=f"max_turns_{agents_str}_{max_turns}")
-    
+
+    # Parse agent_timeout rule with specific timeouts
+    # Format: agent_timeout(Agent1:120, Agent2:180, default:90)
+    agent_timeout_match = re.match(r'agent_timeout\((.*?)\)', rule_str)
+    if agent_timeout_match:
+        from ...rules.basic_rules import AgentTimeoutRule
+
+        params_str = agent_timeout_match.group(1)
+        agent_timeouts = {}
+        default_timeout = 180.0  # Default 3 minutes
+
+        for param in params_str.split(','):
+            param = param.strip()
+            if ':' in param:
+                name, timeout_str = param.split(':', 1)
+                name = name.strip()
+                timeout = float(timeout_str.strip())
+
+                if name.lower() == 'default':
+                    default_timeout = timeout
+                else:
+                    agent_timeouts[name] = timeout
+
+        return AgentTimeoutRule(
+            agent_timeouts=agent_timeouts,
+            default_timeout=default_timeout
+        )
+
     raise ValueError(f"Unknown rule format: {rule_str}")
