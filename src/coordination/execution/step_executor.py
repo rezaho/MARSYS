@@ -112,7 +112,7 @@ class StepExecutor:
         tool_executor: Optional['RealToolExecutor'] = None,
         user_node_handler: Optional['UserNodeHandler'] = None,
         event_bus: Optional['EventBus'] = None,
-        max_retries: int = 3,
+        max_retries: int = 5,
         retry_delay: float = 1.0
     ):
         # Pass event_bus to tool executor
@@ -849,12 +849,26 @@ Example for `final_response`:
             "Invoke them in separate steps based on your information dependencies."
         )
         
-        prompt_lines.append("\nEach invocation object must contain:")
+        prompt_lines.append("\n**REQUEST REQUIREMENTS:**")
+        prompt_lines.append(
+            "Each invocation object must contain:"
+        )
         prompt_lines.append(
             "- `agent_name`: (String) The name of the agent to invoke from the list below (must be an exact match)."
         )
         prompt_lines.append(
-            "- `request`: (String or Object) The specific task, question, or data payload for the target agent."
+            "- `request`: (String or Object) A clear description of what you need the agent to do. This should include:"
+        )
+        prompt_lines.append(
+            "  • **Task description**: What specific task or action the agent should perform"
+        )
+        prompt_lines.append(
+            "  • **Necessary context**: Any information the agent needs to complete the task"
+        )
+        prompt_lines.append(
+            "  • **Expected response** (only if you need results back): If the workflow will return control to you "
+            "and you need the agent's results to continue your work, specify what response format or data you expect. "
+            "If the agent is simply the next step in a chain and won't return to you, you don't need to specify this."
         )
         
         prompt_lines.append("\n**EXAMPLES OF CORRECT INVOCATION PATTERNS:**")
