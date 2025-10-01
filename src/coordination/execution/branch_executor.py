@@ -233,8 +233,10 @@ class BranchExecutor:
         # Start with the entry agent
         current_agent = branch.topology.entry_agent
         
-        # Track retry attempts per agent
-        retry_counts = defaultdict(int)
+        # Track retry attempts per agent (stored on branch for persistence across pause/resume)
+        if not hasattr(branch, 'retry_counts'):
+            branch.retry_counts = defaultdict(int)
+        retry_counts = branch.retry_counts
         
         while True:
             # Check completion condition
@@ -827,20 +829,13 @@ class BranchExecutor:
                     result.success = False
                     result.error = validation.error_message
                     result.requires_retry = True
-                    
-                    # CRITICAL: Add retry flag to parsed_response so branch spawner sees it
-                    if result.parsed_response is None:
-                        result.parsed_response = {}
-                    if isinstance(result.parsed_response, dict):
-                        result.parsed_response['requires_retry'] = True
-                        result.parsed_response['validation_error'] = validation.error_message
-                    
+
                     # FIX: Send validation error back to agent as user message
                     if hasattr(agent, 'memory') and validation.error_message:
                         error_message = f"Your response format was invalid. {validation.error_message}"
                         if validation.retry_suggestion:
                             error_message += f"\n{validation.retry_suggestion}"
-                        
+
                         # Add error message to agent's memory
                         agent.memory.add(
                             role="user",
@@ -1686,15 +1681,23 @@ class BranchExecutor:
     ) -> BranchResult:
         """Continue a simple branch after resumption."""
         execution_trace = []
-        
+
+        # Track retry attempts per agent (use branch's retry_counts for persistence)
+        if not hasattr(branch, 'retry_counts'):
+            branch.retry_counts = defaultdict(int)
+        retry_counts = branch.retry_counts
+
         # Continue from current agent with aggregated results
         current_request = resume_request
-        
+
         while True:
             # Check completion condition
             if await self._should_complete(branch, context, execution_trace):
                 break
-            
+
+            # Pass actual retry count in context metadata (same as _execute_simple_branch)
+            context.metadata["agent_retry_count"] = retry_counts.get(current_agent, 0)
+
             # Determine next agent (might be the same agent continuing)
             step_result = await self._execute_agent_step(
                 current_agent,
@@ -1710,18 +1713,27 @@ class BranchExecutor:
             if not hasattr(branch, '_execution_trace'):
                 branch._execution_trace = []
             branch._execution_trace.append(step_result)
-            
+
             if not step_result.success:
-                return BranchResult(
-                    branch_id=branch.id,
-                    success=False,
-                    final_response=step_result.response,
-                    total_steps=branch.state.current_step,
-                    execution_trace=execution_trace,
-                    branch_memory=context.branch_memory,
-                    error=step_result.error
-                )
-            
+                # Handle failure with retry logic (same as _execute_simple_branch)
+                if step_result.requires_retry and retry_counts[current_agent] < self.max_retries:
+                    retry_counts[current_agent] += 1
+                    logger.warning(f"Retrying agent '{current_agent}' after failure (attempt {retry_counts[current_agent]}/{self.max_retries})")
+                    current_request = None  # Use None for retry to let agent continue
+                    continue  # Continue the while loop for retry
+                else:
+                    if retry_counts[current_agent] >= self.max_retries:
+                        logger.error(f"Max retries ({self.max_retries}) reached for agent '{current_agent}'")
+                    return BranchResult(
+                        branch_id=branch.id,
+                        success=False,
+                        final_response=step_result.response,
+                        total_steps=branch.state.current_step,
+                        execution_trace=execution_trace,
+                        branch_memory=context.branch_memory,
+                        error=step_result.error
+                    )
+
             # Check if this is a final response
             if step_result.action_type == "final_response":
                 # Extract the actual content from parsed response if available
