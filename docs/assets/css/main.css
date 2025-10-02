@@ -251,6 +251,61 @@
   margin: 2rem 0;
 }
 
+/* Material grid cards support */
+.md-typeset .grid {
+  display: grid;
+  gap: 1rem;
+  grid-template-columns: repeat(auto-fit, minmax(250px, 1fr));
+  margin: 1rem 0;
+}
+
+.md-typeset .grid.cards > ul,
+.md-typeset .grid.cards > ol,
+.md-typeset .grid > .card {
+  display: contents;
+}
+
+.md-typeset .grid.cards > ul > li,
+.md-typeset .grid.cards > ol > li,
+.md-typeset .grid > .card > * {
+  background: var(--glass-bg);
+  backdrop-filter: blur(var(--blur-amount));
+  -webkit-backdrop-filter: blur(var(--blur-amount));
+  border: 1px solid var(--glass-border);
+  border-radius: 0.5rem;
+  padding: 1.5rem;
+  box-shadow: 0 4px 20px var(--shadow-color);
+  transition: transform 0.3s ease, box-shadow 0.3s ease;
+  margin: 0;
+}
+
+.md-typeset .grid.cards > ul > li:hover,
+.md-typeset .grid.cards > ol > li:hover,
+.md-typeset .grid > .card > *:hover {
+  transform: translateY(-5px);
+  box-shadow: 0 8px 30px var(--shadow-color);
+}
+
+/* Icon styling in cards */
+.md-typeset .grid .twemoji,
+.md-typeset .grid .emojione {
+  width: 1.5em;
+  height: 1.5em;
+  vertical-align: middle;
+  margin-right: 0.5rem;
+}
+
+.md-typeset .grid .lg.twemoji,
+.md-typeset .grid .lg.emojione {
+  width: 2em;
+  height: 2em;
+}
+
+.md-typeset .grid .middle.twemoji,
+.md-typeset .grid .middle.emojione {
+  vertical-align: middle;
+}
+
 .feature-card {
   background: var(--glass-bg);
   backdrop-filter: blur(var(--blur-amount));

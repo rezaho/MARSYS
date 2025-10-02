@@ -1,365 +1,620 @@
-# Error Handling & Exception System
+# Error Handling
 
-MARSYS provides a comprehensive exception hierarchy for robust error handling and debugging across the multi-agent framework. This system ensures predictable error responses, rich context information, and enables programmatic error recovery.
+MARSYS provides a comprehensive error handling system that ensures robust operation, graceful degradation, and intelligent recovery in multi-agent workflows.
 
-## Overview
+## 🎯 Overview
 
-The exception system is designed with the following principles:
+The error handling system provides:
 
-1. **Granular Error Categorization**: Specific exception types for different error scenarios
-2. **Rich Context Information**: Error codes, agent names, task IDs, timestamps, and suggestions
-3. **Programmatic Error Handling**: Structured error data for automated recovery
-4. **Consistent Error Messages**: Standardized format across the framework
-5. **Future Extensibility**: Hierarchical design for easy expansion
+- **Hierarchical Exceptions**: Granular error categorization with rich context
+- **Intelligent Recovery**: Automatic retry strategies and fallback mechanisms
+- **Error Routing**: Route errors to User nodes for human intervention
+- **Provider-Specific Handling**: Tailored strategies for different AI providers
+- **Comprehensive Logging**: Detailed error tracking and monitoring
 
-## Exception Hierarchy
+## 🏗️ Architecture
+
+```mermaid
+graph TB
+    subgraph "Error Classification"
+        CE[Critical Errors<br/>System Failures]
+        RE[Recoverable Errors<br/>Transient Issues]
+        VE[Validation Errors<br/>Input Problems]
+        PE[Permission Errors<br/>Access Denied]
+    end
+
+    subgraph "Recovery Strategies"
+        AR[Auto Retry<br/>Exponential Backoff]
+        FB[Fallback<br/>Alternative Paths]
+        UR[User Recovery<br/>Human Intervention]
+        CB[Circuit Breaker<br/>Failure Prevention]
+    end
+
+    subgraph "Error Flow"
+        Error[Error Occurs] --> EC[Error Classifier]
+        EC --> Strategy[Select Strategy]
+        Strategy --> Execute[Execute Recovery]
+        Execute --> Result[Success/Failure]
+    end
+
+    CE --> UR
+    RE --> AR
+    VE --> FB
+    PE --> UR
+
+    style CE fill:#ff6b6b
+    style RE fill:#ffd93d
+    style VE fill:#6bcf7f
+```
+
+## 📦 Exception Hierarchy
 
 ### Base Exception
 
-All framework exceptions inherit from `AgentFrameworkError`:
+All MARSYS exceptions inherit from `MarsysError`:
 
 ```python
-from src.agents.exceptions import AgentFrameworkError
+from src.coordination.exceptions import MarsysError
 
-try:
-    # Framework operation
+class MarsysError(Exception):
+    """Base exception for all MARSYS errors."""
+
+    def __init__(
+        self,
+        message: str,
+        error_code: Optional[str] = None,
+        context: Optional[Dict[str, Any]] = None,
+        suggestion: Optional[str] = None,
+        recoverable: bool = False
+    ):
+        self.message = message
+        self.error_code = error_code or self.__class__.__name__
+        self.context = context or {}
+        self.suggestion = suggestion
+        self.recoverable = recoverable
+        self.timestamp = datetime.now()
+        super().__init__(message)
+
+    def to_dict(self) -> Dict[str, Any]:
+        """Convert to dictionary for logging/serialization."""
+        return {
+            "error_type": self.__class__.__name__,
+            "error_code": self.error_code,
+            "message": self.message,
+            "context": self.context,
+            "suggestion": self.suggestion,
+            "recoverable": self.recoverable,
+            "timestamp": self.timestamp.isoformat()
+        }
+```
+
+### Error Categories
+
+```python
+# Validation Errors
+class ValidationError(MarsysError):
+    """Input validation failures."""
     pass
-except AgentFrameworkError as e:
-    print(f"Error Code: {e.error_code}")
-    print(f"Agent: {e.agent_name}")
-    print(f"Suggestion: {e.suggestion}")
-```
 
-**Key Attributes:**
-- `error_code`: Unique identifier for programmatic handling
-- `agent_name`: Name of the agent where error occurred
-- `task_id`: Task ID for tracking multi-step operations
-- `timestamp`: When the error occurred
-- `user_message`: User-friendly error description
-- `developer_message`: Technical details for debugging
-- `suggestion`: Recommended fix or next steps
-
-### Message Handling Errors
-
-#### MessageFormatError
-Raised when JSON parsing or message structure validation fails:
-
-```python
-from src.agents.exceptions import MessageFormatError
-
-# Example: Invalid JSON response from model
-try:
-    parsed_data = agent._robust_json_loads(response)
-except MessageFormatError as e:
-    # Handle parsing error with detailed context
-    print(f"Invalid format: {e.invalid_content}")
-    print(f"Expected: {e.expected_format}")
-```
-
-**Use Cases:**
-- JSON parsing failures
-- Multiple concatenated JSON objects
-- Missing required message fields
-- Invalid response structure
-
-#### ActionValidationError
-Raised when agent action validation fails:
-
-```python
-from src.agents.exceptions import ActionValidationError
-
-try:
-    # Validate agent action
-    validate_action(action)
-except ActionValidationError as e:
-    print(f"Invalid action: {e.action}")
-    print(f"Valid actions: {e.valid_actions}")
-    print(f"Suggestion: {e.suggestion}")
-```
-
-**Common Scenarios:**
-- Invalid `next_action` values
-- Missing `action_input` fields
-- Tool call validation failures
-- Schema compliance issues
-
-### Agent Implementation Errors
-
-#### AgentConfigurationError
-Raised for agent setup and configuration issues:
-
-```python
-from src.agents.exceptions import AgentConfigurationError
-
-try:
-    agent = Agent(model_config=invalid_config)
-except AgentConfigurationError as e:
-    print(f"Config issue: {e.config_key} = {e.config_value}")
-    print(f"Fix: {e.suggestion}")
-```
-
-#### AgentPermissionError
-Raised when agent permission/access is denied:
-
-```python
-from src.agents.exceptions import AgentPermissionError
-
-try:
-    response = await caller_agent.invoke_agent("restricted_agent", request)
-except AgentPermissionError as e:
-    print(f"Cannot invoke: {e.target_agent}")
-    print(f"Allowed agents: {e.allowed_agents}")
-```
-
-### Model & API Errors
-
-#### ModelResponseError
-Raised when model responses are invalid or incomplete:
-
-```python
-from src.agents.exceptions import ModelResponseError
-
-try:
-    response = model.run(messages)
-    validate_response(response)
-except ModelResponseError as e:
-    print(f"Response type: {e.response_type}")
-    print(f"Missing fields: {e.missing_fields}")
-```
-
-#### ModelAPIError
-Raised for API connection and authentication issues:
-
-```python
-from src.agents.exceptions import ModelAPIError
-
-try:
-    response = api_model.run(messages)
-except ModelAPIError as e:
-    print(f"API endpoint: {e.api_endpoint}")
-    print(f"Status code: {e.status_code}")
-    print(f"API error: {e.api_error_code}")
-```
-
-### Browser & Tool Errors
-
-#### BrowserNotInitializedError
-Raised when browser operations are attempted before initialization:
-
-```python
-from src.agents.exceptions import BrowserNotInitializedError
-
-try:
-    await browser_agent.click("button")
-except BrowserNotInitializedError as e:
-    print(f"Browser state: {e.browser_state}")
-    print(f"Fix: {e.suggestion}")
-```
-
-## Error Context and Recovery
-
-### Rich Error Context
-
-All exceptions include comprehensive context information:
-
-```python
-try:
-    # Framework operation
+class MessageFormatError(ValidationError):
+    """Message parsing/formatting errors."""
     pass
-except AgentFrameworkError as e:
-    # Access rich context
-    context = {
-        "error_code": e.error_code,
-        "agent_name": e.agent_name,
-        "task_id": e.task_id,
-        "timestamp": e.timestamp,
-        "context": e.context,
-        "user_message": e.user_message,
-        "developer_message": e.developer_message,
-        "suggestion": e.suggestion
-    }
+
+class ActionValidationError(ValidationError):
+    """Invalid agent actions."""
+    pass
+
+# Configuration Errors
+class ConfigurationError(MarsysError):
+    """Configuration problems."""
+    pass
+
+class AgentConfigurationError(ConfigurationError):
+    """Agent setup errors."""
+    pass
+
+class TopologyError(ConfigurationError):
+    """Topology definition errors."""
+    pass
+
+# Execution Errors
+class ExecutionError(MarsysError):
+    """Runtime execution failures."""
+    pass
+
+class AgentExecutionError(ExecutionError):
+    """Agent execution failures."""
+    pass
+
+class TimeoutError(ExecutionError):
+    """Operation timeout."""
+    pass
+
+# Permission Errors
+class PermissionError(MarsysError):
+    """Access control violations."""
+    pass
+
+class AgentPermissionError(PermissionError):
+    """Agent invocation denied."""
+    pass
+
+# API Errors
+class APIError(MarsysError):
+    """External API failures."""
+    pass
+
+class RateLimitError(APIError):
+    """API rate limit exceeded."""
+    recoverable = True
 ```
 
-### Programmatic Error Recovery
+## 🎯 Error Handling Patterns
 
-The structured error information enables automated error handling:
-
-```python
-from src.agents.exceptions import (
-    ModelTokenLimitError, 
-    AgentPermissionError,
-    BrowserConnectionError
-)
-
-async def resilient_agent_operation(agent, request):
-    max_retries = 3
-    for attempt in range(max_retries):
-        try:
-            return await agent.handle_invocation(request, context)
-            
-        except ModelTokenLimitError as e:
-            # Reduce input size and retry
-            request = truncate_request(request, e.token_limit)
-            continue
-            
-        except AgentPermissionError as e:
-            # Try alternative agent
-            alternative = find_alternative_agent(e.target_agent, e.allowed_agents)
-            if alternative:
-                request["target_agent"] = alternative
-                continue
-            raise
-            
-        except BrowserConnectionError as e:
-            # Reinitialize browser and retry
-            await agent.reinitialize_browser()
-            continue
-            
-    raise Exception(f"Operation failed after {max_retries} attempts")
-```
-
-## Best Practices
-
-### Exception Handling in Agents
-
-1. **Catch Specific Exceptions**: Use specific exception types rather than generic `Exception`
-2. **Provide Context**: Include relevant agent and task information in error messages
-3. **Suggest Solutions**: Always provide actionable suggestions when possible
-4. **Log Appropriately**: Use appropriate log levels for different error types
+### Try-Catch with Context
 
 ```python
-async def _run(self, prompt, request_context, run_mode, **kwargs):
+async def execute_agent_task(agent, task, context):
+    """Execute task with comprehensive error handling."""
     try:
-        # Agent logic
-        response = await self.model.run(messages)
-        return self._process_response(response)
-        
-    except MessageFormatError as e:
-        # Specific handling for format errors
-        await self._log_progress(
-            request_context, 
-            LogLevel.MINIMAL,
-            f"Response format error: {e.user_message}"
+        result = await agent.run(task, context)
+        return result
+
+    except ValidationError as e:
+        # Handle validation errors
+        logger.warning(f"Validation error: {e.message}")
+        if e.suggestion:
+            logger.info(f"Suggestion: {e.suggestion}")
+        # Try with corrected input
+        corrected_task = correct_validation_issues(task, e)
+        return await agent.run(corrected_task, context)
+
+    except RateLimitError as e:
+        # Handle rate limits with backoff
+        wait_time = e.context.get("retry_after", 60)
+        logger.info(f"Rate limited. Waiting {wait_time}s...")
+        await asyncio.sleep(wait_time)
+        return await execute_agent_task(agent, task, context)
+
+    except AgentPermissionError as e:
+        # Route to user for permission
+        if context.get("user_recovery"):
+            return await route_to_user_for_permission(e, context)
+        raise
+
+    except TimeoutError as e:
+        # Handle timeout with retry or cancellation
+        if e.recoverable and context.get("retry_count", 0) < 3:
+            context["retry_count"] = context.get("retry_count", 0) + 1
+            return await execute_agent_task(agent, task, context)
+        raise
+
+    except MarsysError as e:
+        # Log framework errors
+        logger.error(f"Framework error: {e.to_dict()}")
+        raise
+
+    except Exception as e:
+        # Wrap unexpected errors
+        wrapped = ExecutionError(
+            f"Unexpected error: {str(e)}",
+            context={"original_error": str(e), "type": type(e).__name__}
         )
-        return self._create_error_response(e)
-        
-    except ModelAPIError as e:
-        # Specific handling for API errors
-        if e.status_code == 429:  # Rate limit
-            await asyncio.sleep(e.retry_after or 60)
-            return await self._run(prompt, request_context, run_mode, **kwargs)
-        raise  # Re-raise for other API errors
+        logger.error(f"Unexpected error: {wrapped.to_dict()}")
+        raise wrapped
 ```
 
-### Error Message Guidelines
-
-1. **User-Friendly Messages**: Clear, actionable error descriptions
-2. **Technical Details**: Sufficient information for debugging
-3. **Suggestions**: Specific steps to resolve the issue
-4. **Context**: Include relevant state information
+### Retry with Exponential Backoff
 
 ```python
-# Good error message
-raise AgentConfigurationError(
-    "Agent memory configuration invalid: KGMemory requires a model instance",
-    agent_name=self.name,
-    config_key="memory_type",
-    config_value="kg",
-    user_message="Knowledge graph memory requires a language model for fact extraction",
-    suggestion="Provide a model instance or use 'conversation_history' memory type"
+class RetryHandler:
+    """Intelligent retry with exponential backoff."""
+
+    def __init__(
+        self,
+        max_retries: int = 3,
+        base_delay: float = 1.0,
+        max_delay: float = 60.0,
+        exponential_base: float = 2.0
+    ):
+        self.max_retries = max_retries
+        self.base_delay = base_delay
+        self.max_delay = max_delay
+        self.exponential_base = exponential_base
+
+    async def execute_with_retry(
+        self,
+        func: Callable,
+        *args,
+        **kwargs
+    ) -> Any:
+        """Execute function with retry logic."""
+        last_exception = None
+
+        for attempt in range(self.max_retries):
+            try:
+                return await func(*args, **kwargs)
+
+            except RateLimitError as e:
+                # Use API-provided retry delay if available
+                delay = e.context.get("retry_after", self._calculate_delay(attempt))
+                logger.info(f"Rate limited. Retry {attempt + 1}/{self.max_retries} in {delay}s")
+                await asyncio.sleep(delay)
+                last_exception = e
+
+            except TimeoutError as e:
+                if not e.recoverable:
+                    raise
+                delay = self._calculate_delay(attempt)
+                logger.warning(f"Timeout. Retry {attempt + 1}/{self.max_retries} in {delay}s")
+                await asyncio.sleep(delay)
+                last_exception = e
+
+            except APIError as e:
+                if e.context.get("status_code") in [500, 502, 503, 504]:
+                    # Retry on server errors
+                    delay = self._calculate_delay(attempt)
+                    logger.warning(f"Server error. Retry {attempt + 1}/{self.max_retries} in {delay}s")
+                    await asyncio.sleep(delay)
+                    last_exception = e
+                else:
+                    raise
+
+            except Exception as e:
+                # Don't retry unexpected errors
+                raise
+
+        # Max retries exceeded
+        raise ExecutionError(
+            f"Max retries ({self.max_retries}) exceeded",
+            context={"last_error": str(last_exception)},
+            suggestion="Consider increasing timeout or using a different approach"
+        )
+
+    def _calculate_delay(self, attempt: int) -> float:
+        """Calculate exponential backoff delay."""
+        delay = self.base_delay * (self.exponential_base ** attempt)
+        # Add jitter
+        delay = delay * (0.5 + random.random())
+        return min(delay, self.max_delay)
+```
+
+### Circuit Breaker Pattern
+
+```python
+class CircuitBreaker:
+    """Prevent cascading failures with circuit breaker."""
+
+    def __init__(
+        self,
+        failure_threshold: int = 5,
+        recovery_timeout: float = 60.0,
+        expected_exception: type = APIError
+    ):
+        self.failure_threshold = failure_threshold
+        self.recovery_timeout = recovery_timeout
+        self.expected_exception = expected_exception
+        self.failure_count = 0
+        self.last_failure_time = None
+        self.state = "closed"  # closed, open, half-open
+
+    async def call(self, func: Callable, *args, **kwargs) -> Any:
+        """Execute function with circuit breaker protection."""
+
+        # Check circuit state
+        if self.state == "open":
+            if self._should_attempt_reset():
+                self.state = "half-open"
+            else:
+                raise ExecutionError(
+                    "Circuit breaker is open",
+                    context={"failure_count": self.failure_count},
+                    suggestion=f"Wait {self.recovery_timeout}s for recovery"
+                )
+
+        # Execute function
+        try:
+            result = await func(*args, **kwargs)
+
+            # Success - reset circuit
+            if self.state == "half-open":
+                self._reset()
+
+            return result
+
+        except self.expected_exception as e:
+            self._record_failure()
+
+            if self.failure_count >= self.failure_threshold:
+                self._trip()
+
+            raise
+
+    def _should_attempt_reset(self) -> bool:
+        """Check if we should try to reset circuit."""
+        return (
+            self.last_failure_time and
+            (datetime.now() - self.last_failure_time).total_seconds() >= self.recovery_timeout
+        )
+
+    def _record_failure(self):
+        """Record a failure."""
+        self.failure_count += 1
+        self.last_failure_time = datetime.now()
+
+    def _reset(self):
+        """Reset circuit to closed state."""
+        self.failure_count = 0
+        self.last_failure_time = None
+        self.state = "closed"
+
+    def _trip(self):
+        """Trip circuit to open state."""
+        self.state = "open"
+        logger.warning(f"Circuit breaker tripped after {self.failure_count} failures")
+```
+
+## 🔧 Error Configuration
+
+### ErrorHandlingConfig
+
+```python
+from src.coordination.config import ErrorHandlingConfig
+
+config = ErrorHandlingConfig(
+    # Classification
+    use_error_classification=True,
+    classify_as_critical=["PermissionError", "ConfigurationError"],
+    classify_as_recoverable=["RateLimitError", "TimeoutError"],
+
+    # Notifications
+    notify_on_critical_errors=True,
+    notification_channels=["terminal", "log"],
+
+    # Recovery
+    enable_error_routing=True,  # Route to User node
+    error_recovery_timeout=300.0,
+
+    # Retry settings
+    auto_retry_on_rate_limits=True,
+    max_rate_limit_retries=3,
+    base_retry_delay=1.0,
+    max_retry_delay=60.0,
+
+    # Circuit breaker
+    enable_circuit_breaker=True,
+    circuit_breaker_threshold=5,
+    circuit_breaker_timeout=60.0,
+
+    # Provider-specific
+    provider_settings={
+        "openai": {
+            "max_retries": 3,
+            "base_retry_delay": 60,
+            "rate_limit_strategy": "exponential_backoff",
+            "insufficient_quota_action": "fallback"
+        },
+        "anthropic": {
+            "max_retries": 2,
+            "base_retry_delay": 30,
+            "rate_limit_strategy": "fixed_delay",
+            "insufficient_quota_action": "raise"
+        },
+        "google": {
+            "max_retries": 3,
+            "base_retry_delay": 45,
+            "rate_limit_strategy": "exponential_backoff",
+            "insufficient_quota_action": "queue"
+        }
+    }
 )
 ```
 
-## Integration Examples
+## 🎯 Error Recovery Strategies
 
-### Auto-Run Error Handling
+### User-Driven Recovery
 
-The agent's `auto_run` method demonstrates comprehensive error handling:
+Route errors to User node for human intervention:
 
 ```python
-try:
-    # Parse model response
-    parsed_content = self._robust_json_loads(response.content)
-except MessageFormatError as e:
-    if re_prompt_attempt_count < max_re_prompts:
-        # Provide specific guidance to the model
-        error_feedback = (
-            f"JSON parsing failed: {e.user_message}\n"
-            f"Your response: {response.content[:200]}...\n"
-            f"Expected: {e.expected_format}\n"
-            f"Suggestion: {e.suggestion}"
-        )
-        # Continue with re-prompting logic
-    else:
-        # Max retries exceeded
-        return f"Error: {e.user_message}"
+class UserRecoveryHandler:
+    """Handle error recovery through user interaction."""
+
+    async def handle_error_with_user(
+        self,
+        error: MarsysError,
+        context: Dict[str, Any],
+        topology: Topology
+    ) -> Optional[Any]:
+        """Route error to User node for recovery."""
+
+        if not topology.has_node("User"):
+            return None
+
+        # Format error for user
+        error_message = self._format_error_for_user(error)
+
+        # Create recovery options
+        options = self._get_recovery_options(error)
+
+        # Ask user for decision
+        user_prompt = f"""
+{error_message}
+
+How would you like to proceed?
+{self._format_options(options)}
+"""
+
+        # Get user response
+        response = await self._get_user_input(user_prompt, context)
+
+        # Execute recovery based on user choice
+        return await self._execute_recovery(response, error, context)
+
+    def _get_recovery_options(self, error: MarsysError) -> List[str]:
+        """Get recovery options based on error type."""
+        options = ["Abort execution"]
+
+        if error.recoverable:
+            options.insert(0, "Retry operation")
+
+        if isinstance(error, ValidationError):
+            options.insert(0, "Provide corrected input")
+
+        if isinstance(error, PermissionError):
+            options.insert(0, "Grant permission")
+
+        if isinstance(error, RateLimitError):
+            options.insert(0, "Wait and retry")
+
+        return options
 ```
 
-### Tool Execution Error Handling
+### Fallback Strategies
 
 ```python
-try:
-    tool_result = await self.tools[tool_name](**tool_args)
-except Exception as e:
-    # Convert to framework exception
-    tool_error = ToolExecutionError(
-        f"Tool '{tool_name}' execution failed: {str(e)}",
-        tool_name=tool_name,
-        tool_args=tool_args,
-        original_error=str(e),
-        agent_name=self.name,
-        task_id=request_context.task_id
-    )
-    # Handle tool error appropriately
-    return self._handle_tool_error(tool_error)
+class FallbackHandler:
+    """Implement fallback strategies for errors."""
+
+    def __init__(self, fallback_map: Dict[str, List[str]]):
+        self.fallback_map = fallback_map  # Primary -> [fallbacks]
+
+    async def execute_with_fallback(
+        self,
+        primary_agent: str,
+        task: str,
+        context: Dict[str, Any]
+    ) -> Any:
+        """Execute with fallback agents on failure."""
+
+        agents_to_try = [primary_agent] + self.fallback_map.get(primary_agent, [])
+
+        for agent_name in agents_to_try:
+            try:
+                agent = AgentRegistry.get_agent(agent_name)
+                if not agent:
+                    continue
+
+                result = await agent.run(task, context)
+                if agent_name != primary_agent:
+                    logger.info(f"Fallback to {agent_name} succeeded")
+                return result
+
+            except MarsysError as e:
+                logger.warning(f"Agent {agent_name} failed: {e.message}")
+                if agent_name == agents_to_try[-1]:
+                    # No more fallbacks
+                    raise ExecutionError(
+                        f"All agents failed: {', '.join(agents_to_try)}",
+                        context={"last_error": str(e)},
+                        suggestion="Consider revising the task or adding more fallback agents"
+                    )
+                continue
 ```
 
-## Utility Functions
+## 📋 Best Practices
 
-The exception system provides utility functions for common error handling patterns:
+### 1. **Use Specific Exceptions**
 
 ```python
-from src.agents.exceptions import create_error_from_exception, get_error_summary
+# ✅ GOOD - Specific exception with context
+raise MessageFormatError(
+    "Invalid JSON in model response",
+    context={
+        "response": response[:200],
+        "expected": "JSON object with 'next_action' field"
+    },
+    suggestion="Ensure model is prompted to return valid JSON",
+    recoverable=True
+)
 
-# Convert generic exceptions to framework exceptions
+# ❌ BAD - Generic exception
+raise Exception("Invalid response")
+```
+
+### 2. **Provide Recovery Information**
+
+```python
+# ✅ GOOD - Actionable error
+raise RateLimitError(
+    "OpenAI API rate limit exceeded",
+    context={
+        "limit": "10000 tokens/min",
+        "used": "10500 tokens",
+        "retry_after": 60
+    },
+    suggestion="Wait 60 seconds or use a different API key",
+    recoverable=True
+)
+
+# ❌ BAD - No recovery info
+raise APIError("Rate limit hit")
+```
+
+### 3. **Chain Exceptions**
+
+```python
+# ✅ GOOD - Preserve original context
 try:
-    # Some operation
-    pass
+    result = await risky_operation()
 except ValueError as e:
-    # Convert to framework exception with context
-    framework_error = create_error_from_exception(
-        e, 
-        agent_name="MyAgent",
-        task_id="task-123",
-        error_category="validation"
-    )
-    raise framework_error
+    raise ValidationError(
+        f"Operation failed: {str(e)}",
+        context={"original_error": str(e), "traceback": traceback.format_exc()}
+    ) from e
 
-# Get error summary for logging
+# ❌ BAD - Lost context
 try:
-    # Framework operation
-    pass
-except AgentFrameworkError as e:
-    summary = get_error_summary(e)
-    logger.error(f"Agent error: {summary}")
+    result = await risky_operation()
+except:
+    raise ValidationError("Operation failed")
 ```
 
-## Future Extensions
-
-The hierarchical exception design allows for easy extension:
+### 4. **Log at Appropriate Levels**
 
 ```python
-# Add new specialized exceptions
-class CustomAgentError(AgentError):
-    """Custom error for specialized agent types"""
-    
-    def __init__(self, message, custom_field=None, **kwargs):
-        self.custom_field = custom_field
-        super().__init__(
-            message,
-            error_code="CUSTOM_AGENT_ERROR",
-            **kwargs
-        )
+# ✅ GOOD - Appropriate logging
+try:
+    result = await operation()
+except ValidationError as e:
+    logger.warning(f"Validation failed: {e.message}")  # Warning for recoverable
+except PermissionError as e:
+    logger.error(f"Permission denied: {e.message}")  # Error for critical
+except Exception as e:
+    logger.exception(f"Unexpected error: {e}")  # Full traceback for unexpected
 ```
 
-This comprehensive exception system ensures robust error handling throughout the MARSYS framework, enabling better debugging, monitoring, and automated error recovery in multi-agent systems. 
+## 🚦 Next Steps
+
+<div class="grid cards" markdown="1">
+
+- :material-shield:{ .lg .middle } **[Validation](../api/validation.md)**
+
+    ---
+
+    Input and output validation
+
+- :material-refresh:{ .lg .middle } **[Retry Strategies](../guides/retry-strategies.md)**
+
+    ---
+
+    Advanced retry patterns
+
+- :material-account:{ .lg .middle } **[User Recovery](../docs/USER_NODE_GUIDE.md)**
+
+    ---
+
+    Human-in-the-loop error handling
+
+- :material-api:{ .lg .middle } **[API Reference](../api/exceptions.md)**
+
+    ---
+
+    Complete exception API
+
+</div>
+
+---
+
+!!! success "Error Handling Ready!"
+    You now understand MARSYS error handling. Robust error management ensures your multi-agent workflows are resilient and maintainable.
