@@ -16,6 +16,15 @@ from PIL import Image as PILImage
 from PIL import ImageDraw, ImageFont
 from playwright.async_api import BrowserContext, Page, async_playwright
 
+# Import framework exceptions
+from src.agents.exceptions import (
+    BrowserError,
+    BrowserNotInitializedError,
+    BrowserConnectionError,
+    ToolExecutionError,
+    ActionValidationError
+)
+
 # Import BeautifulSoup and markdownify if available
 try:
     from bs4 import BeautifulSoup, Comment
@@ -108,7 +117,11 @@ def find_label_position_with_masking(
     
     # Ensure the mask is the correct size
     if global_mask.shape != (image_height, image_width):
-        raise ValueError(f"Mask shape {global_mask.shape} doesn't match image size ({image_height}, {image_width})")
+        raise ActionValidationError(
+            f"Mask shape {global_mask.shape} doesn't match image size ({image_height}, {image_width})",
+            action_name="apply_mask",
+            invalid_params={"mask_shape": global_mask.shape, "expected_shape": (image_height, image_width)}
+        )
     
     # Create hollow rectangle mask around the bbox with padding
     # This represents the search area for label placement
@@ -594,7 +607,11 @@ async def highlight_interactive_elements(
 
     # Ensure at least one output type is requested.
     if not (output_image or output_details):
-        raise ValueError("At least one of output_image or output_details must be True.")
+        raise ActionValidationError(
+            "At least one of output_image or output_details must be True.",
+            action_name="highlight_elements",
+            invalid_params={"output_image": output_image, "output_details": output_details}
+        )
 
     annotated_elements, interactive_details = await get_interactive_elements(
         page=page, visible_only=visible_only, output_details=output_details
@@ -828,7 +845,11 @@ async def mouse_move_smooth(
         else:
             pointer_icon = PILImage.open(cursor_icon_path)
     except Exception as e:
-        raise RuntimeError("Could not load pointer icon images.") from e
+        raise BrowserConnectionError(
+            "Could not load pointer icon images.",
+            browser_type="playwright",
+            install_command="pip install pillow"
+        ) from e
 
     desired_icon_size = (32, 32)
     pointer_icon = pointer_icon.resize(desired_icon_size, PILImage.Resampling.LANCZOS)
@@ -1026,8 +1047,10 @@ def resolve_color(color_name_or_hex: str) -> str:
         return DEFAULT_COLOR_MAP[color_name_or_hex]
     if color_name_or_hex.startswith("#") and len(color_name_or_hex) in [4, 7]:
         return color_name_or_hex
-    raise ValueError(
-        f"Unknown color '{color_name_or_hex}'. Must be a valid hex code or one of {list(DEFAULT_COLOR_MAP.keys())}."
+    raise ActionValidationError(
+        f"Unknown color '{color_name_or_hex}'. Must be a valid hex code or one of {list(DEFAULT_COLOR_MAP.keys())}.",
+        action_name="get_color_hex",
+        invalid_params={"color": color_name_or_hex, "valid_colors": list(DEFAULT_COLOR_MAP.keys())}
     )
 
 
@@ -2173,9 +2196,9 @@ class BrowserTool:
         r = reasoning or ""
         await self.page.goto(url, timeout=timeout)
         try:
-            await self.page.wait_for_load_state("networkidle", timeout=10000)
+            await self.page.wait_for_load_state("networkidle", timeout=5000)
         except Exception:
-            await self.page.wait_for_timeout(1000)
+            await self.page.wait_for_timeout(3000)
         title = await self.page.title()
         self.history.append(
             {
@@ -2393,12 +2416,18 @@ class BrowserTool:
         r = reasoning or ""
 
         if selector and role:
-            raise ValueError(
-                "Only one of 'selector' or 'role' should be provided, not both."
+            raise ActionValidationError(
+                "Only one of 'selector' or 'role' should be provided, not both.",
+                action_name="click",
+                invalid_params={"selector": selector, "role": role}
             )
 
         if not selector and not role:
-            raise ValueError("Either 'selector' or 'role' must be provided.")
+            raise ActionValidationError(
+                "Either 'selector' or 'role' must be provided.",
+                action_name=self.name if hasattr(self, 'name') else 'browser_action',
+                invalid_params={"selector": None, "role": None}
+            )
 
         # If role is provided, construct a selector based on the role
         actual_selector = selector if selector else f'[role="{role}"]'
@@ -2559,12 +2588,18 @@ class BrowserTool:
         r = reasoning or ""
 
         if selector and role:
-            raise ValueError(
-                "Only one of 'selector' or 'role' should be provided, not both."
+            raise ActionValidationError(
+                "Only one of 'selector' or 'role' should be provided, not both.",
+                action_name="click",
+                invalid_params={"selector": selector, "role": role}
             )
 
         if not selector and not role:
-            raise ValueError("Either 'selector' or 'role' must be provided.")
+            raise ActionValidationError(
+                "Either 'selector' or 'role' must be provided.",
+                action_name=self.name if hasattr(self, 'name') else 'browser_action',
+                invalid_params={"selector": None, "role": None}
+            )
 
         # If role is provided, construct a selector based on the role
         actual_selector = selector if selector else f'[role="{role}"]'
@@ -2736,8 +2771,10 @@ class BrowserTool:
             "Alt",
         }
         if key not in allowed_keys:
-            raise ValueError(
-                f"Special key '{key}' is not recognized. Allowed keys: {sorted(allowed_keys)}"
+            raise ActionValidationError(
+                f"Special key '{key}' is not recognized. Allowed keys: {sorted(allowed_keys)}",
+                action_name="press_key",
+                invalid_params={"key": key, "allowed_keys": sorted(allowed_keys)}
             )
 
         r = reasoning or ""
@@ -2772,11 +2809,17 @@ class BrowserTool:
         """
         r = reasoning or ""
         if selector and role:
-            raise ValueError(
-                "Only one of 'selector' or 'role' should be provided, not both."
+            raise ActionValidationError(
+                "Only one of 'selector' or 'role' should be provided, not both.",
+                action_name="click",
+                invalid_params={"selector": selector, "role": role}
             )
         if not selector and not role:
-            raise ValueError("Either 'selector' or 'role' must be provided.")
+            raise ActionValidationError(
+                "Either 'selector' or 'role' must be provided.",
+                action_name=self.name if hasattr(self, 'name') else 'browser_action',
+                invalid_params={"selector": None, "role": None}
+            )
         actual_selector = selector if selector else f'[role="{role}"]'
 
         await self.page.dblclick(actual_selector, timeout=timeout)
@@ -2812,12 +2855,18 @@ class BrowserTool:
         r = reasoning or ""
 
         if selector and role:
-            raise ValueError(
-                "Only one of 'selector' or 'role' should be provided, not both."
+            raise ActionValidationError(
+                "Only one of 'selector' or 'role' should be provided, not both.",
+                action_name="click",
+                invalid_params={"selector": selector, "role": role}
             )
 
         if not selector and not role:
-            raise ValueError("Either 'selector' or 'role' must be provided.")
+            raise ActionValidationError(
+                "Either 'selector' or 'role' must be provided.",
+                action_name=self.name if hasattr(self, 'name') else 'browser_action',
+                invalid_params={"selector": None, "role": None}
+            )
 
         # If role is provided, construct a selector based on the role
         actual_selector = selector if selector else f'[role="{role}"]'
@@ -2854,12 +2903,18 @@ class BrowserTool:
         r = reasoning or ""
 
         if selector and role:
-            raise ValueError(
-                "Only one of 'selector' or 'role' should be provided, not both."
+            raise ActionValidationError(
+                "Only one of 'selector' or 'role' should be provided, not both.",
+                action_name="click",
+                invalid_params={"selector": selector, "role": role}
             )
 
         if not selector and not role:
-            raise ValueError("Either 'selector' or 'role' must be provided.")
+            raise ActionValidationError(
+                "Either 'selector' or 'role' must be provided.",
+                action_name=self.name if hasattr(self, 'name') else 'browser_action',
+                invalid_params={"selector": None, "role": None}
+            )
 
         # If role is provided, construct a selector based on the role
         actual_selector = selector if selector else f'[role="{role}"]'
@@ -2902,15 +2957,19 @@ class BrowserTool:
         if (source_selector and source_role) or (
             not source_selector and not source_role
         ):
-            raise ValueError(
-                "Provide either 'source_selector' or 'source_role' (but not both) for the source element."
+            raise ActionValidationError(
+                "Provide either 'source_selector' or 'source_role' (but not both) for the source element.",
+                action_name="drag_and_drop",
+                invalid_params={"source_selector": source_selector, "source_role": source_role}
             )
 
         if (target_selector and target_role) or (
             not target_selector and not target_role
         ):
-            raise ValueError(
-                "Provide either 'target_selector' or 'target_role' (but not both) for the target element."
+            raise ActionValidationError(
+                "Provide either 'target_selector' or 'target_role' (but not both) for the target element.",
+                action_name="drag_and_drop",
+                invalid_params={"target_selector": target_selector, "target_role": target_role}
             )
 
         actual_source = (
@@ -3040,7 +3099,7 @@ class BrowserTool:
         # body_locator = self.page.locator("body")
         # html = await body_locator.inner_html()
         # first wait until the page is fully loaded
-        await self.page.wait_for_load_state("networkidle")
+        await self.page.wait_for_load_state("networkidle", timeout=5000)
         # then get the html content
         html = await self.page.content()
         self.history.append(
@@ -3357,7 +3416,12 @@ class BrowserTool:
                 return text or ""
             return ""
         except Exception as e:
-            raise RuntimeError(f"Failed to get text from selector '{selector}': {e}")
+            raise ToolExecutionError(
+                f"Failed to get text from selector '{selector}': {e}",
+                tool_name="get_text",
+                tool_args={"selector": selector},
+                execution_error=str(e)
+            )
 
     async def get_attribute(self, selector: str, attribute: str, timeout: Optional[int] = None) -> str:
         """
@@ -3378,7 +3442,12 @@ class BrowserTool:
                 return value or ""
             return ""
         except Exception as e:
-            raise RuntimeError(f"Failed to get attribute '{attribute}' from selector '{selector}': {e}")
+            raise ToolExecutionError(
+                f"Failed to get attribute '{attribute}' from selector '{selector}': {e}",
+                tool_name="get_attribute",
+                tool_args={"selector": selector, "attribute": attribute},
+                execution_error=str(e)
+            )
 
     async def wait_for_selector(self, selector: str, timeout: Optional[int] = None, state: str = "visible") -> str:
         """
@@ -3396,7 +3465,12 @@ class BrowserTool:
             await self.page.wait_for_selector(selector, timeout=timeout, state=state)
             return f"Element matching '{selector}' is now {state}"
         except Exception as e:
-            raise RuntimeError(f"Timeout waiting for selector '{selector}' to be {state}: {e}")
+            raise ToolExecutionError(
+                f"Timeout waiting for selector '{selector}' to be {state}: {e}",
+                tool_name="wait_for_element",
+                tool_args={"selector": selector, "state": state},
+                execution_error=str(e)
+            )
 
     async def go_forward(self, reasoning: Optional[str] = None, timeout: Optional[int] = None) -> None:
         """
@@ -4074,7 +4148,7 @@ class BrowserTool:
         reasoning: Optional[str] = None
     ) -> Dict[str, Any]:
         """
-        Navigate to a URL and extract main content.
+        Enhanced version with anti-bot evasion and retry strategies.
 
         Parameters:
             url: URL to extract content from
@@ -4086,68 +4160,513 @@ class BrowserTool:
         Returns:
             Dictionary with extracted content information
         """
+        import random
+        import asyncio
+        
         r = reasoning or ""
         
         # Save current URL to return to later
         original_url = self.page.url
         
+        # Define retry strategies with different user agents and settings
+        strategies = [
+            {
+                'name': 'standard_desktop',
+                'user_agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36',
+                'viewport': {'width': 1920, 'height': 1080},
+                'headers': {
+                    'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8',
+                    'Accept-Language': 'en-US,en;q=0.5',
+                    'Accept-Encoding': 'gzip, deflate, br',
+                    'DNT': '1',
+                    'Connection': 'keep-alive',
+                    'Upgrade-Insecure-Requests': '1'
+                }
+            },
+            {
+                'name': 'mobile_safari',
+                'user_agent': 'Mozilla/5.0 (iPhone; CPU iPhone OS 16_6 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/16.6 Mobile/15E148 Safari/604.1',
+                'viewport': {'width': 390, 'height': 844},
+                'headers': {
+                    'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
+                    'Accept-Language': 'en-US,en;q=0.9'
+                }
+            },
+            {
+                'name': 'googlebot',  # Some sites allow Googlebot
+                'user_agent': 'Mozilla/5.0 (compatible; Googlebot/2.1; +http://www.google.com/bot.html)',
+                'viewport': {'width': 1024, 'height': 768}
+            }
+        ]
+        
+        for i, strategy in enumerate(strategies):
+            context = None
+            try:
+                logger.info(f"Attempting extraction with strategy: {strategy['name']} (attempt {i+1}/{len(strategies)})")
+                
+                # Create new context with user agent
+                context = await self.browser.new_context(
+                    user_agent=strategy['user_agent'],
+                    viewport=strategy['viewport'],
+                    extra_http_headers=strategy.get('headers', {})
+                )
+                page = await context.new_page()
+                
+                # Add random delay to appear more human
+                await asyncio.sleep(random.uniform(0.5, 2.0))
+                
+                # First, check if it's a PDF
+                try:
+                    head_response = await page.request.head(url)
+                    content_type = head_response.headers.get('content-type', '').lower()
+                except:
+                    content_type = ''
+                
+                is_pdf = (
+                    'application/pdf' in content_type or
+                    url.lower().endswith('.pdf') or
+                    '/pdf/' in url.lower()
+                )
+                
+                if is_pdf:
+                    # Use dedicated PDF extraction
+                    result = await self.extract_pdf_content_from_url(
+                        url,
+                        output_format="markdown" if return_markdown else "json",
+                        max_text_length=max_text_length,
+                        reasoning=reasoning
+                    )
+                    await context.close()
+                    return result
+                
+                # Navigate with timeout
+                response = await page.goto(url, wait_until='domcontentloaded', timeout=5000)
+                
+                # Check HTTP status
+                if response and response.status >= 400:
+                    logger.warning(f"HTTP {response.status} for {url}")
+                    await context.close()
+                    continue
+                
+                # Wait for content with shorter timeout
+                try:
+                    await page.wait_for_selector(selector, timeout=5000)
+                except:
+                    # Try body as fallback
+                    await page.wait_for_selector('body', timeout=2000)
+                
+                # Check for bot detection
+                content = await page.content()
+                if self._is_bot_blocked(content):
+                    logger.warning(f"Bot detection triggered with strategy {strategy['name']}")
+                    await context.close()
+                    continue
+                
+                # Extract and validate content
+                extracted = await self._extract_with_validation(page, selector, max_text_length, return_markdown)
+                
+                if extracted and len(extracted.get('content', '')) > 100:
+                    logger.info(f"Successfully extracted content with strategy: {strategy['name']}")
+                    
+                    result = {
+                        "success": True,
+                        "url": url,
+                        "title": extracted['title'],
+                        "content": extracted['content'],
+                        "content_length": extracted['length'],
+                        "format": "markdown" if return_markdown else "text",
+                        "type": "html",
+                        "strategy_used": strategy['name']
+                    }
+                    
+                    self.history.append(
+                        {
+                            "action": "extract_content_from_url",
+                            "reasoning": r,
+                            "url": url,
+                            "title": extracted['title'],
+                            "content_length": extracted['length'],
+                            "type": "html",
+                            "success": True,
+                            "strategy": strategy['name']
+                        }
+                    )
+                    
+                    await context.close()
+                    return result
+                
+                await context.close()
+                
+            except Exception as e:
+                logger.warning(f"Strategy {strategy['name']} failed: {str(e)[:100]}")
+                if context:
+                    await context.close()
+                continue
+        
+        # All strategies failed
+        logger.error(f"All extraction strategies failed for {url}")
+        error_msg = f"Unable to extract content from {url} after {len(strategies)} attempts"
+        
+        self.history.append(
+            {
+                "action": "extract_content_from_url",
+                "reasoning": r,
+                "url": url,
+                "success": False,
+                "error": error_msg
+            }
+        )
+        
+        return {
+            "success": False,
+            "error": error_msg,
+            "url": url,
+            "message": error_msg
+        }
+        
+        # Note: removed finally block since we're not navigating with self.page anymore
+
+    def _is_bot_blocked(self, content: str) -> bool:
+        """Check for common bot detection/blocking indicators."""
+        if not content:
+            return False
+            
+        content_lower = content.lower()
+        
+        # Bot detection services
+        indicators = [
+            # Cloudflare
+            'cf-browser-verification',
+            'cloudflare ray id',
+            'cf_clearance',
+            'checking your browser',
+            'ddos protection by cloudflare',
+            
+            # Incapsula/Imperva
+            'incapsula incident',
+            'incap_ses',
+            'visid_incap',
+            
+            # Distil Networks
+            'distil_referrer',
+            'distilnetworks',
+            
+            # PerimeterX
+            'perimeterx',
+            '_px',
+            
+            # DataDome
+            'datadome',
+            
+            # Generic blocks
+            '403 forbidden',
+            'access denied',
+            'permission denied',
+            'unauthorized access',
+            'bot detection',
+            'are you a robot',
+            'prove you are human'
+        ]
+        
+        for indicator in indicators:
+            if indicator in content_lower:
+                logger.debug(f"Bot detection indicator found: {indicator}")
+                return True
+        
+        # Check for suspiciously short content that might be a block page
+        text_only = re.sub(r'<[^>]+>', '', content)  # Strip HTML
+        if len(text_only.strip()) < 100 and any(word in text_only.lower() for word in ['blocked', 'denied', 'forbidden']):
+            return True
+        
+        return False
+
+    async def _extract_with_validation(self, page, selector, max_text_length, return_markdown):
+        """Extract content and validate it's meaningful."""
         try:
-            # Navigate to the target URL
-            await self.page.goto(url)
-            await self.page.wait_for_load_state("networkidle")
+            # Try primary selector
+            element = await page.query_selector(selector)
+            if not element:
+                # Fallback to body
+                element = await page.query_selector('body')
             
-            # Get page title
-            title = await self.page.title()
-            
-            # Try to find main content using the selector
-            content_element = await self.page.query_selector(selector)
-            
-            if content_element:
+            if element:
                 if return_markdown:
-                    html = await content_element.inner_html()
-                    content = markdownify.markdownify(html, strip=["script", "style"])
+                    html = await element.inner_html()
+                    import markdownify
+                    content = markdownify.markdownify(html, strip=['script', 'style'])
                 else:
-                    content = await content_element.text_content()
-            else:
-                # Fallback to body content
-                if return_markdown:
-                    html = await self.page.content()
-                    content = markdownify.markdownify(html, strip=["script", "style"])
-                else:
-                    content = await self.page.text_content("body")
+                    content = await element.text_content()
+                
+                # Validate content is not just JavaScript
+                if content:
+                    # Check if content is mostly JavaScript/minified code
+                    js_indicators = ['function(', 'var ', 'const ', 'let ', '=>', '});', 'window.', 'document.']
+                    js_count = sum(1 for ind in js_indicators if ind in content[:500])
+                    
+                    if js_count > 3:
+                        logger.warning("Content appears to be JavaScript code, not article text")
+                        return None
+                    
+                    # Truncate if needed
+                    if max_text_length and len(content) > max_text_length:
+                        content = content[:max_text_length] + "..."
+                    
+                    title = await page.title()
+                    
+                    return {
+                        'url': page.url,
+                        'title': title,
+                        'content': content,
+                        'length': len(content)
+                    }
             
-            # Clean and truncate content
-            if content:
-                content = content.strip()
-                if max_text_length and len(content) > max_text_length:
-                    content = content[:max_text_length] + "..."
-            else:
-                content = ""
+        except Exception as e:
+            logger.error(f"Content extraction failed: {e}")
+            return None
+
+    async def extract_pdf_content_from_url(
+        self,
+        url: str,
+        output_format: str = "markdown",  # "markdown" or "json"
+        max_text_length: Optional[int] = 10000,
+        reasoning: Optional[str] = None
+    ) -> Dict[str, Any]:
+        """
+        Extract text content from PDF URLs with proper loading.
+        
+        Parameters:
+            url: URL of the PDF document
+            output_format: Return format - "markdown" or "json"
+            max_text_length: Maximum length of extracted text
+            reasoning: The reasoning chain for this action
+            
+        Returns:
+            Dictionary with extracted content and metadata
+        """
+        import io
+        
+        r = reasoning or ""
+        
+        try:
+            # Method 1: Use request context for more reliable PDF download
+            # This ensures we get the complete PDF content
+            response = await self.page.request.get(url)
+            
+            # Check if request was successful
+            if not response.ok:
+                raise BrowserError(
+                    f"Failed to fetch PDF: HTTP {response.status}",
+                    error_code="PDF_FETCH_ERROR",
+                    context={"url": url, "status": response.status}
+                )
+            
+            # Get the complete PDF content
+            pdf_bytes = await response.body()
+            
+            # Verify we have actual PDF content
+            if not pdf_bytes or len(pdf_bytes) < 100:
+                raise BrowserError(
+                    "Received empty or invalid PDF content",
+                    error_code="PDF_CONTENT_ERROR",
+                    context={"url": url, "content_size": len(pdf_bytes) if pdf_bytes else 0}
+                )
+            
+            # Check PDF header (PDF files start with %PDF)
+            if not pdf_bytes[:5] == b'%PDF-':
+                raise BrowserError(
+                    "Content is not a valid PDF file",
+                    error_code="PDF_INVALID_FORMAT",
+                    context={"url": url, "header": pdf_bytes[:10] if pdf_bytes else None}
+                )
+            
+            # Try to extract text using available PDF libraries
+            extracted_text = ""
+            
+            # Try pdfminer.six first (better for complex PDFs)
+            try:
+                from pdfminer.high_level import extract_text_to_fp
+                from pdfminer.layout import LAParams
+                
+                output_string = io.StringIO()
+                extract_text_to_fp(
+                    io.BytesIO(pdf_bytes),
+                    output_string,
+                    laparams=LAParams(),
+                    output_type='text',
+                    codec='utf-8'
+                )
+                extracted_text = output_string.getvalue()
+                
+            except ImportError:
+                # Fallback to PyPDF2 if pdfminer.six is not available
+                try:
+                    from PyPDF2 import PdfReader
+                    
+                    pdf_file = io.BytesIO(pdf_bytes)
+                    reader = PdfReader(pdf_file)
+                    for page in reader.pages:
+                        extracted_text += page.extract_text() + "\n"
+                        
+                except ImportError:
+                    raise BrowserConnectionError(
+                        "No PDF parsing library available.",
+                        browser_type="pdf_parser",
+                        install_command="pip install pdfminer.six PyPDF2"
+                    )
+            
+            # Truncate if needed
+            if max_text_length and len(extracted_text) > max_text_length:
+                extracted_text = extracted_text[:max_text_length] + "..."
+            
+            # Format output
+            if output_format == "markdown":
+                # Convert to markdown format with title from URL
+                title = url.split('/')[-1].replace('.pdf', '')
+                content = f"# PDF Document: {title}\n\n**Source:** {url}\n\n---\n\n{extracted_text}"
+            else:  # json
+                content = {
+                    "url": url,
+                    "text": extracted_text,
+                    "format": "pdf",
+                    "length": len(extracted_text)
+                }
             
             result = {
-                "url": url,
-                "title": title,
+                "success": True,
                 "content": content,
-                "content_length": len(content),
-                "format": "markdown" if return_markdown else "text"
+                "url": url,
+                "format": output_format,
+                "type": "pdf"
             }
             
             self.history.append(
                 {
-                    "action": "extract_content_from_url",
+                    "action": "extract_pdf_content_from_url",
                     "reasoning": r,
                     "url": url,
-                    "title": title,
-                    "content_length": len(content),
+                    "content_length": len(extracted_text),
+                    "success": True
                 }
             )
             
             return result
             
-        finally:
-            # Return to original URL
-            if original_url != url:
-                await self.page.goto(original_url)
+        except Exception as e:
+            # Fallback: Try navigation method with proper waiting
+            try:
+                response = await self.page.goto(url, wait_until="networkidle")
+                
+                # Wait for response to be fully loaded
+                await response.finished()
+                
+                pdf_bytes = await response.body()
+                
+                # Verify we have actual PDF content
+                if not pdf_bytes or len(pdf_bytes) < 100:
+                    raise BrowserError(
+                    "Received empty or invalid PDF content",
+                    error_code="PDF_CONTENT_ERROR",
+                    context={"url": url, "content_size": len(pdf_bytes) if pdf_bytes else 0}
+                )
+                
+                # Check PDF header
+                if not pdf_bytes[:5] == b'%PDF-':
+                    raise BrowserError(
+                    "Content is not a valid PDF file",
+                    error_code="PDF_INVALID_FORMAT",
+                    context={"url": url, "header": pdf_bytes[:10] if pdf_bytes else None}
+                )
+                
+                # Try to extract text using available PDF libraries
+                extracted_text = ""
+                
+                # Try pdfminer.six first (better for complex PDFs)
+                try:
+                    from pdfminer.high_level import extract_text_to_fp
+                    from pdfminer.layout import LAParams
+                    
+                    output_string = io.StringIO()
+                    extract_text_to_fp(
+                        io.BytesIO(pdf_bytes),
+                        output_string,
+                        laparams=LAParams(),
+                        output_type='text',
+                        codec='utf-8'
+                    )
+                    extracted_text = output_string.getvalue()
+                    
+                except ImportError:
+                    # Fallback to PyPDF2 if pdfminer.six is not available
+                    try:
+                        from PyPDF2 import PdfReader
+                        
+                        pdf_file = io.BytesIO(pdf_bytes)
+                        reader = PdfReader(pdf_file)
+                        for page in reader.pages:
+                            extracted_text += page.extract_text() + "\n"
+                            
+                    except ImportError:
+                        raise BrowserConnectionError(
+                            "No PDF parsing library available.",
+                            browser_type="pdf_parser",
+                            install_command="pip install pdfminer.six PyPDF2"
+                        )
+                
+                # Truncate if needed
+                if max_text_length and len(extracted_text) > max_text_length:
+                    extracted_text = extracted_text[:max_text_length] + "..."
+                
+                # Format output
+                if output_format == "markdown":
+                    title = url.split('/')[-1].replace('.pdf', '')
+                    content = f"# PDF Document: {title}\n\n**Source:** {url}\n\n---\n\n{extracted_text}"
+                else:  # json
+                    content = {
+                        "url": url,
+                        "text": extracted_text,
+                        "format": "pdf",
+                        "length": len(extracted_text)
+                    }
+                
+                result = {
+                    "success": True,
+                    "content": content,
+                    "url": url,
+                    "format": output_format,
+                    "type": "pdf"
+                }
+                
+                self.history.append(
+                    {
+                        "action": "extract_pdf_content_from_url",
+                        "reasoning": r,
+                        "url": url,
+                        "content_length": len(extracted_text),
+                        "success": True
+                    }
+                )
+                
+                return result
+                
+            except Exception as e2:
+                error_msg = f"Primary method: {str(e)}, Fallback method: {str(e2)}"
+                
+                self.history.append(
+                    {
+                        "action": "extract_pdf_content_from_url",
+                        "reasoning": r,
+                        "url": url,
+                        "success": False,
+                        "error": error_msg
+                    }
+                )
+                
+                return {
+                    "success": False,
+                    "error": error_msg,
+                    "url": url,
+                    "message": f"Failed to extract PDF content"
+                }
 
     async def press_key(self, key: str, reasoning: Optional[str] = None, delay: Optional[int] = None) -> None:
         """
@@ -4608,7 +5127,9 @@ class BrowserTool:
             Exception: If browser is not initialized or screenshot fails
         """
         if not self.page:
-            raise Exception("Browser page is not initialized.")
+            raise BrowserNotInitializedError(
+                operation="take_screenshot"
+            )
         
         if reasoning:
             logging.info(f"BrowserTool Highlight Bbox: {reasoning}")
@@ -4915,9 +5436,17 @@ class BrowserTool:
         import asyncio
 
         if min_delay >= max_delay:
-            raise ValueError("min_delay must be less than max_delay")
+            raise ActionValidationError(
+                "min_delay must be less than max_delay",
+                action_name="wait",
+                invalid_params={"min_delay": min_delay, "max_delay": max_delay}
+            )
         if variation_factor < 0:
-            raise ValueError("variation_factor must be non-negative")
+            raise ActionValidationError(
+                "variation_factor must be non-negative",
+                action_name="wait",
+                invalid_params={"variation_factor": variation_factor}
+            )
 
         r = reasoning or ""
         

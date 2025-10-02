@@ -8,6 +8,9 @@ from io import BytesIO
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
+# Import framework exceptions
+from src.agents.exceptions import ToolExecutionError
+
 try:
     import pdfminer.high_level
 
@@ -108,7 +111,12 @@ def extract_text_from_pdf(file_path: str) -> str:
     try:
         return pdfminer.high_level.extract_text(file_path)
     except Exception as e:
-        raise RuntimeError(f"Failed to extract text from PDF: {e}")
+        raise ToolExecutionError(
+            f"Failed to extract text from PDF: {e}",
+            tool_name="pdf_extractor",
+            tool_args={"file_path": str(file_path)},
+            execution_error=str(e)
+        )
 
 
 async def clean_and_extract_html(

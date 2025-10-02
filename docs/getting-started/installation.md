@@ -1,154 +1,352 @@
-\
-<!-- filepath: /home/rezaho/research_projects/Multi-agent_AI_Learning/docs/getting-started/installation.md -->
 # Installation
 
-## Prerequisites
+Get MARSYS up and running on your system in just a few minutes.
 
-- Python 3.12 (as specified in `pyproject.toml`)
-- pip package manager
-- Git
+## 📋 Prerequisites
 
-## Basic Installation
+- **Python 3.8+** (3.12 recommended)
+- **pip** package manager
+- **Git** for cloning the repository
+- **API Keys** from at least one provider (OpenAI, Anthropic, Google)
 
-### 1. Clone the Repository
+## 🚀 Quick Install
 
+### Option 1: Install from PyPI (Recommended)
 ```bash
-git clone https://github.com/rezaho/MARSys.git 
-cd MARSys 
+pip install marsys
 ```
 
-### 2. Create Virtual Environment
-
-It is highly recommended to use a virtual environment to manage project dependencies.
-
+### Option 2: Install from Source
 ```bash
-python -m venv venv
-source venv/bin/activate  # On Windows: venv\\Scripts\\activate
+# Clone the repository
+git clone https://github.com/rezaho/MARSYS.git
+cd MARSYS
+
+# Install in development mode
+pip install -e .
 ```
 
-### 3. Install Dependencies
+## 🔧 Detailed Installation
 
-The project uses `pyproject.toml` to manage dependencies. Install them using pip:
+### 1. Set Up Virtual Environment
+
+!!! tip "Best Practice"
+    Always use a virtual environment to avoid dependency conflicts
+
+=== "venv"
+    ```bash
+    python -m venv marsys-env
+    source marsys-env/bin/activate  # On Windows: marsys-env\Scripts\activate
+    ```
+
+=== "conda"
+    ```bash
+    conda create -n marsys python=3.12
+    conda activate marsys
+    ```
+
+=== "poetry"
+    ```bash
+    poetry new marsys-project
+    cd marsys-project
+    poetry add marsys
+    ```
+
+### 2. Install Core Dependencies
 
 ```bash
-pip install .
+# Install MARSYS with all features
+pip install marsys[all]
+
+# Or install specific features
+pip install marsys[browser]  # Browser automation
+pip install marsys[local]    # Local model support
+pip install marsys[dev]      # Development tools
 ```
-This command will install all necessary packages listed in the `pyproject.toml` file, including core libraries and those for optional features like local model support.
 
-### 4. Set Up Environment Variables
+### 3. Configure API Keys
 
-Create a `.env` file in the project root by copying the example file if provided, or create it manually:
+Create a `.env` file in your project root:
 
-```env
+```bash
 # .env
+# Required: At least one API key
+OPENAI_API_KEY="sk-..."           # OpenAI GPT models
+ANTHROPIC_API_KEY="sk-ant-..."    # Claude models
+GOOGLE_API_KEY="AIza..."          # Gemini models
 
-# OpenAI API Key (Required for OpenAI models)
-OPENAI_API_KEY="your_openai_api_key_here"
-
-# Anthropic API Key (Optional, for Anthropic models)
-# ANTHROPIC_API_KEY="your_anthropic_api_key_here"
-
-# Google API Key (Optional, for Google models)
-# GOOGLE_API_KEY="your_google_api_key_here"
-
-# Configuration for browser automation tools (e.g., Playwright)
-# HEADLESS=true # Set to false to see browser UI, true for headless mode
+# Optional: Additional configurations
+HEADLESS=true                      # Browser automation mode
+LOG_LEVEL=INFO                     # Logging verbosity
 ```
-Fill in your actual API keys and adjust other settings as needed.
 
-## Optional Components
+!!! warning "Security"
+    Never commit `.env` files to version control. Add `.env` to your `.gitignore` file.
 
-The core dependencies installed via `pip install .` already include support for:
-- **Browser Automation:** Using Playwright. Ensure browser binaries are installed if needed:
-  ```bash
-  playwright install # Installs default browsers like Chromium
-  # playwright install chromium # To install a specific browser
-  ```
-- **Local Models:** Using libraries like `torch`, `transformers`, `vllm`, etc.
+### 4. Install Browser Automation (Optional)
 
-Refer to the `pyproject.toml` for a full list of dependencies.
+For web scraping and browser agents:
 
-## Verification
+```bash
+# Install Playwright browsers
+playwright install chromium
 
-To verify your installation, you can try running a simple script or importing core modules. For example, create a Python file (e.g., `verify_install.py`) in the project root:
+# Install all browsers (Chrome, Firefox, Safari)
+playwright install
+
+# Install system dependencies (Linux only)
+playwright install-deps
+```
+
+## ✅ Verify Installation
+
+Run this quick test to verify everything is working:
 
 ```python
-# verify_install.py
-try:
-    from src.agents import Agent
-    from src.models.models import ModelConfig
-    # Add any other core imports you want to test
-    print("MARSYS framework core modules imported successfully!")
-    print("Installation appears to be successful.")
-except ImportError as e:
-    print(f"Error importing modules: {e}")
-    print("There might be an issue with the installation or your Python environment.")
+# test_installation.py
+import asyncio
+from src.coordination import Orchestra
+from src.agents import Agent
+from src.models import ModelConfig
 
-# Run it with: python verify_install.py
+async def test():
+    # Create a simple agent
+    agent = Agent(
+        model_config=ModelConfig(
+            type="api",
+            name="gpt-4",
+            provider="openai"
+        ),
+        agent_name="TestAgent",
+        description="Test agent for verification"
+    )
+
+    # Run a simple task
+    result = await Orchestra.run(
+        task="Say 'Hello, MARSYS is working!'",
+        topology={"nodes": ["TestAgent"], "edges": []}
+    )
+
+    print("✅ Installation successful!")
+    print(f"Response: {result.final_response}")
+
+if __name__ == "__main__":
+    asyncio.run(test())
 ```
-<!-- TODO: Provide a more concrete example or a simple CLI command if available for verification -->
 
-## Docker Installation
-<!-- TODO: Verify Docker entrypoint as src/main.py is currently empty. -->
-<!-- TODO: Ensure Dockerfile is up-to-date with pyproject.toml based installation. -->
+Run the test:
+```bash
+python test_installation.py
+```
 
-If a `Dockerfile` and `docker-compose.yml` are provided and maintained:
+## 🐳 Docker Installation
+
+For containerized deployments:
 
 ### Using Docker Compose
 
-Example `docker-compose.yml` (ensure this matches the actual file):
 ```yaml
+# docker-compose.yml
 version: '3.8'
+
 services:
-  multi-agent-ai:
-    build:
-      context: .
-      # dockerfile: Dockerfile # Specify if not named Dockerfile
+  marsys:
+    image: marsys:latest
+    build: .
     environment:
-      # Pass API keys and other necessary environment variables
       - OPENAI_API_KEY=${OPENAI_API_KEY}
-      # - ANTHROPIC_API_KEY=${ANTHROPIC_API_KEY}
-      # - GOOGLE_API_KEY=${GOOGLE_API_KEY}
-      # - HEADLESS=${HEADLESS}
+      - ANTHROPIC_API_KEY=${ANTHROPIC_API_KEY}
+      - GOOGLE_API_KEY=${GOOGLE_API_KEY}
     volumes:
-      - ./src:/app/src # Mount your source code
-      # Add other volume mounts if needed, e.g., for logs or data
-    # command: python -m src.main # Adjust if your entry point is different
-    # user: "${UID}:${GID}" # Optional: For running as non-root user
-    # ports: # Optional: Expose ports if your application runs a server
-    #  - "8000:8000"
+      - ./workspace:/app/workspace
+      - ./logs:/app/logs
+    ports:
+      - "8000:8000"  # If running web interface
 ```
 
-### Build and Run with Docker
-
+Build and run:
 ```bash
-# Ensure you have Docker and Docker Compose installed
-# Create a .env file with your API keys at the project root, Docker Compose will pick it up
-
+# Build the image
 docker-compose build
+
+# Run the container
 docker-compose up
 ```
 
-## Troubleshooting
+### Using Docker CLI
 
-### Common Issues
+```bash
+# Build image
+docker build -t marsys .
 
-1.  **Import Errors**:
-    *   Ensure you are in the project root directory.
-    *   Confirm that your virtual environment is activated (`source venv/bin/activate` or `venv\\Scripts\\activate`).
-    *   Verify that `pip install .` completed successfully.
-2.  **API Key Errors**:
-    *   Double-check that your `.env` file is in the project root and correctly formatted.
-    *   Ensure the environment variables (e.g., `OPENAI_API_KEY`) are correctly named and have valid keys.
-3.  **Playwright Issues**:
-    *   If you encounter errors related to browser automation, try running `playwright install` to ensure necessary browser binaries are downloaded.
-    *   On some Linux systems, you might need to install additional system dependencies for Playwright: `playwright install-deps`.
-4.  **Dependency Conflicts or Issues**:
-    *   Ensure `pip`, `setuptools`, and `wheel` are up to date: `pip install --upgrade pip setuptools wheel`.
-    *   If you encounter persistent issues, try creating a fresh virtual environment and reinstalling dependencies.
+# Run container
+docker run -it \
+  -e OPENAI_API_KEY=$OPENAI_API_KEY \
+  -v $(pwd)/workspace:/app/workspace \
+  marsys
+```
 
-### Getting Help
+## 📦 Package Structure
 
-- Check the [FAQ](../project/faq.md) for answers to common questions.
-- Open an issue on the project's [GitHub Issues page](https://github.com/rezaho/MARSys/issues). 
-- Join our community forum or chat (e.g., Discord, Slack) if available. <!-- TODO: Update with actual community link if one exists, e.g., https://discord.gg/YOUR_INVITE_CODE -->
+After installation, you'll have access to:
+
+```
+marsys/
+├── src/
+│   ├── coordination/     # Orchestra and topology system
+│   ├── agents/           # Agent implementations
+│   ├── models/           # Model configurations
+│   ├── environment/      # Browser and OS tools
+│   └── utils/            # Utility functions
+├── examples/             # Example implementations
+├── tests/                # Test suite
+└── docs/                 # Documentation
+```
+
+## 🔧 Configuration Options
+
+### Environment Variables
+
+| Variable | Description | Default |
+|----------|-------------|---------|
+| `OPENAI_API_KEY` | OpenAI API key | Required* |
+| `ANTHROPIC_API_KEY` | Anthropic API key | Required* |
+| `GOOGLE_API_KEY` | Google AI API key | Required* |
+| `HEADLESS` | Run browsers headlessly | `true` |
+| `LOG_LEVEL` | Logging level | `INFO` |
+| `MAX_RETRIES` | API retry attempts | `3` |
+| `TIMEOUT` | Default timeout (seconds) | `300` |
+
+*At least one API key is required
+
+### Model Providers Setup
+
+=== "OpenAI"
+    ```python
+    ModelConfig(
+        type="api",
+        name="gpt-4",
+        provider="openai",
+        api_key=os.getenv("OPENAI_API_KEY")
+    )
+    ```
+
+=== "Anthropic"
+    ```python
+    ModelConfig(
+        type="api",
+        name="claude-3-sonnet",
+        provider="anthropic",
+        api_key=os.getenv("ANTHROPIC_API_KEY")
+    )
+    ```
+
+=== "Google"
+    ```python
+    ModelConfig(
+        type="api",
+        name="gemini-pro",
+        provider="google",
+        api_key=os.getenv("GOOGLE_API_KEY")
+    )
+    ```
+
+=== "Local (Ollama)"
+    ```python
+    ModelConfig(
+        type="local",
+        name="llama2",
+        provider="ollama",
+        base_url="http://localhost:11434"
+    )
+    ```
+
+## 🔍 Troubleshooting
+
+### Common Issues and Solutions
+
+??? error "ImportError: No module named 'src'"
+    **Solution**: Ensure you're in the project root and have installed MARSYS:
+    ```bash
+    cd MARSYS
+    pip install -e .
+    ```
+
+??? error "API Key not found"
+    **Solution**: Check your `.env` file is in the project root:
+    ```bash
+    # Verify .env exists
+    ls -la .env
+
+    # Check environment variable
+    echo $OPENAI_API_KEY
+    ```
+
+??? error "Playwright browser not found"
+    **Solution**: Install browser binaries:
+    ```bash
+    playwright install chromium
+    # For all browsers
+    playwright install
+    ```
+
+??? error "Async syntax error"
+    **Solution**: MARSYS requires Python 3.8+ for async support:
+    ```bash
+    python --version  # Should be 3.8 or higher
+    ```
+
+### Platform-Specific Issues
+
+=== "macOS"
+    - For M1/M2 Macs, use Python 3.10+ for best compatibility
+    - Install Rosetta 2 if needed: `softwareupdate --install-rosetta`
+
+=== "Windows"
+    - Use PowerShell or WSL2 for best experience
+    - Ensure long path support is enabled in Windows
+
+=== "Linux"
+    - Install system dependencies for Playwright:
+      ```bash
+      playwright install-deps
+      ```
+    - On Ubuntu/Debian, you may need: `sudo apt-get install python3-dev`
+
+## 🚦 Next Steps
+
+Installation complete! Now you're ready to:
+
+<div class="grid cards" markdown="1">
+
+- :material-rocket-launch:{ .lg .middle } **[Quick Start](quick-start/)**
+
+    ---
+
+    Build your first multi-agent system in 10 minutes
+
+- :material-robot:{ .lg .middle } **[Create Your First Agent](first-agent/)**
+
+    ---
+
+    Learn how to create custom agents with tools
+
+- :material-cog:{ .lg .middle } **[Configuration Guide](configuration/)**
+
+    ---
+
+    Explore advanced configuration options
+
+</div>
+
+## 🆘 Need Help?
+
+- 📖 Check the [FAQ](../project/faq/)
+- 🐛 Report issues on [GitHub](https://github.com/rezaho/MARSYS/issues)
+- 💬 Join our [Discord Community](https://discord.gg/marsys)
+- 📧 Email support: [support@marsys.io](mailto:support@marsys.io)
+
+---
+
+!!! success "Ready to build?"
+    Head to the [Quick Start Guide](quick-start/) to create your first multi-agent system!

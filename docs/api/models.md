@@ -1,356 +1,619 @@
 # Models API Reference
 
-The MARSYS models system provides a unified interface for both local and API-based language models, with support for text-only (LLM) and vision-language (VLM) models.
+Complete API documentation for the MARSYS model system, providing unified interfaces for local and API-based language models.
 
-## Model Configuration
+## 📦 ModelConfig
 
-### ModelConfig
+Configuration schema for all model types using Pydantic validation.
 
-Pydantic schema for validating and configuring language models.
+### Class Definition
 
 ```python
-from src.models.models import ModelConfig
+from pydantic import BaseModel, Field
+from typing import Literal, Optional, Dict, Any
 
-# API Model Configuration
-api_config = ModelConfig(
+class ModelConfig(BaseModel):
+    """Unified configuration for all model types."""
+
+    # Core settings
+    type: Literal["local", "api"] = Field(
+        description="Model type - local or API-based"
+    )
+    name: str = Field(
+        description="Model identifier or HuggingFace path"
+    )
+
+    # API settings
+    provider: Optional[str] = Field(
+        default=None,
+        description="API provider (openai, anthropic, google, groq)"
+    )
+    base_url: Optional[str] = Field(
+        default=None,
+        description="Custom API endpoint URL"
+    )
+    api_key: Optional[str] = Field(
+        default=None,
+        description="API key (auto-loaded from env if None)"
+    )
+
+    # Generation parameters
+    max_tokens: int = Field(
+        default=1024,
+        description="Maximum output tokens"
+    )
+    temperature: float = Field(
+        default=0.7,
+        ge=0.0,
+        le=2.0,
+        description="Sampling temperature"
+    )
+    top_p: float = Field(
+        default=1.0,
+        ge=0.0,
+        le=1.0,
+        description="Nucleus sampling parameter"
+    )
+    frequency_penalty: float = Field(
+        default=0.0,
+        ge=-2.0,
+        le=2.0,
+        description="Frequency penalty"
+    )
+    presence_penalty: float = Field(
+        default=0.0,
+        ge=-2.0,
+        le=2.0,
+        description="Presence penalty"
+    )
+
+    # Local model settings
+    model_class: Optional[Literal["llm", "vlm"]] = Field(
+        default=None,
+        description="Local model class"
+    )
+    torch_dtype: str = Field(
+        default="auto",
+        description="PyTorch dtype (auto, float16, bfloat16, float32)"
+    )
+    device_map: str = Field(
+        default="auto",
+        description="Device mapping strategy"
+    )
+    quantization_config: Optional[Dict[str, Any]] = Field(
+        default=None,
+        description="Quantization configuration"
+    )
+
+    # Additional parameters
+    parameters: Dict[str, Any] = Field(
+        default_factory=dict,
+        description="Provider-specific parameters"
+    )
+```
+
+### Usage Examples
+
+```python
+from src.models import ModelConfig
+
+# OpenAI GPT-4
+gpt4_config = ModelConfig(
     type="api",
-    name="gpt-4o",
     provider="openai",
-    max_tokens=2048,
-    temperature=0.7
+    name="gpt-4",
+    temperature=0.7,
+    max_tokens=2000
 )
 
-# Local Model Configuration  
-local_config = ModelConfig(
+# Anthropic Claude
+claude_config = ModelConfig(
+    type="api",
+    provider="anthropic",
+    name="claude-3-opus-20240229",
+    temperature=0.5,
+    max_tokens=4000
+)
+
+# Local Llama 2
+llama_config = ModelConfig(
     type="local",
-    name="mistralai/Mistral-7B-Instruct-v0.1",
+    name="meta-llama/Llama-2-7b-chat-hf",
     model_class="llm",
-    torch_dtype="bfloat16",
+    torch_dtype="float16",
     device_map="auto",
     max_tokens=1024
 )
+
+# Custom API endpoint
+custom_config = ModelConfig(
+    type="api",
+    name="custom-model",
+    base_url="https://api.mycompany.com/v1",
+    api_key="custom-key",
+    parameters={"custom_param": "value"}
+)
 ```
 
-#### Parameters
-
-| Parameter | Type | Description |
-|-----------|------|-------------|
-| `type` | `Literal["local", "api"]` | Model type - local or API-based |
-| `name` | `str` | Model identifier or path |
-| `provider` | `Optional[str]` | API provider (openai, anthropic, google, etc.) |
-| `base_url` | `Optional[str]` | Custom API endpoint URL |
-| `api_key` | `Optional[str]` | API key (reads from env if None) |
-| `max_tokens` | `int` | Default maximum tokens (default: 1024) |
-| `temperature` | `float` | Sampling temperature (default: 0.7) |
-| `model_class` | `Optional[str]` | For local models: "llm" or "vlm" |
-| `torch_dtype` | `Optional[str]` | PyTorch dtype (default: "auto") |
-| `device_map` | `Optional[str]` | Device mapping (default: "auto") |
-
-#### Supported Providers
-
-| Provider | Base URL | Environment Variable |
-|----------|----------|---------------------|
-| `openai` | `https://api.openai.com/v1/` | `OPENAI_API_KEY` |
-| `openrouter` | `https://openrouter.ai/api/v1` | `OPENROUTER_API_KEY` |
-| `anthropic` | `https://api.anthropic.com/v1` | `ANTHROPIC_API_KEY` |
-| `google` | `https://generativelanguage.googleapis.com/v1beta/models` | `GOOGLE_API_KEY` |
-| `groq` | `https://api.groq.com/openai/v1` | `GROQ_API_KEY` |
-
-## Base Model Classes
+## 🤖 Model Classes
 
 ### BaseLLM
 
-Wrapper for local text-based language models using HuggingFace Transformers.
+Base class for local language models using HuggingFace Transformers.
 
 ```python
-from src.models.models import BaseLLM
+class BaseLLM:
+    """Local language model wrapper."""
 
-# Initialize local LLM
-llm = BaseLLM(
-    model_name="microsoft/DialoGPT-medium",
-    max_tokens=512,
-    torch_dtype="auto",
-    device_map="auto"
-)
+    def __init__(
+        self,
+        model_name: str,
+        max_tokens: int = 512,
+        torch_dtype: str = "auto",
+        device_map: str = "auto",
+        quantization_config: Optional[Dict] = None
+    ):
+        """
+        Initialize local LLM.
 
-# Run model
-response = llm.run(
-    messages=[
-        {"role": "user", "content": "Hello, how are you?"}
-    ],
-    max_tokens=256,
-    json_mode=False
-)
+        Args:
+            model_name: HuggingFace model identifier
+            max_tokens: Maximum generation tokens
+            torch_dtype: PyTorch data type
+            device_map: Device mapping strategy
+            quantization_config: Quantization settings
+        """
 ```
 
 #### Methods
 
-##### `run(messages, json_mode=False, max_tokens=None, tools=None, **kwargs)`
+##### `run(messages, **kwargs) -> Dict[str, Any]`
 
-Execute the language model with input messages.
-
-**Parameters:**
-- `messages` (List[Dict[str, str]]): List of message dictionaries
-- `json_mode` (bool): Enable JSON output mode (default: False)
-- `max_tokens` (Optional[int]): Override default max tokens
-- `tools` (Optional[List[Dict]]): Tool definitions (not yet supported)
-- `**kwargs`: Additional generation parameters
-
-**Returns:**
-- `Dict[str, Any]`: Standardized response format
-  ```python
-  {
-      "role": "assistant",
-      "content": "Generated response text",
-      "tool_calls": []  # Empty for local models
-  }
-  ```
-
-### BaseVLM
-
-Wrapper for local vision-language models supporting both text and image inputs.
-
-```python
-from src.models.models import BaseVLM
-
-# Initialize vision model
-vlm = BaseVLM(
-    model_name="microsoft/kosmos-2-patch14-224",
-    max_tokens=512,
-    torch_dtype="auto",
-    device_map="auto"
-)
-
-# Run vision model
-response = vlm.run(
-    messages=[
-        {
-            "role": "user", 
-            "content": [
-                {"type": "text", "text": "What's in this image?"},
-                {"type": "image", "image": "path/to/image.jpg"}
-            ]
-        }
-    ],
-    max_tokens=256
-)
-```
-
-#### Methods
-
-##### `run(messages, role="assistant", tools=None, images=None, json_mode=False, max_tokens=None, **kwargs)`
-
-Execute the vision-language model with text and optional image inputs.
+Execute the model with input messages.
 
 **Parameters:**
-- `messages` (List[Dict[str, str]]): Message list with text/image content
-- `role` (str): Response role (default: "assistant")
-- `tools` (Optional[List[Dict]]): Tool definitions
-- `images` (Optional[List]): Explicit image list (alternative to message content)
+- `messages` (List[Dict[str, str]]): Conversation messages
 - `json_mode` (bool): Enable JSON output mode
-- `max_tokens` (Optional[int]): Override default max tokens
-- `**kwargs`: Additional generation parameters
-
-**Returns:**
-- `Dict[str, Any]`: Standardized response format
-
-##### `fetch_image(image)`
-
-Process image inputs from various formats.
-
-**Parameters:**
-- `image` (str | dict | PIL.Image): Image URL, path, dict, or PIL Image
-
-**Returns:**
-- `PIL.Image`: Processed RGB image
-
-**Supported Formats:**
-- HTTP/HTTPS URLs
-- File paths (with or without `file://` prefix)
-- Base64 encoded images (`data:image/...;base64,...`)
-- PIL Image objects
-- Message dict format: `{"type": "image", "image": "..."}`
-
-### BaseAPIModel
-
-Base class for API-based language models with OpenAI-compatible interfaces.
-
-```python
-from src.models.models import BaseAPIModel
-
-# Initialize API model
-api_model = BaseAPIModel(
-    model_name="gpt-4o",
-    api_key="your-api-key",
-    base_url="https://api.openai.com/v1/",
-    max_tokens=1024,
-    temperature=0.7
-)
-
-# Run API model
-response = api_model.run(
-    messages=[
-        {"role": "system", "content": "You are a helpful assistant."},
-        {"role": "user", "content": "Explain quantum computing."}
-    ],
-    json_mode=True,
-    temperature=0.5
-)
-```
-
-#### Methods
-
-##### `run(messages, json_mode=False, max_tokens=None, temperature=None, **kwargs)`
-
-Send messages to API endpoint and return response.
-
-**Parameters:**
-- `messages` (List[Dict[str, str]]): OpenAI-format message list
-- `json_mode` (bool): Request JSON response format
 - `max_tokens` (Optional[int]): Override max tokens
 - `temperature` (Optional[float]): Override temperature
-- `**kwargs`: Additional API parameters (top_p, presence_penalty, etc.)
+- `tools` (Optional[List[Dict]]): Tool definitions
+- `**kwargs`: Additional generation parameters
 
 **Returns:**
-- `Dict[str, Any]`: Standardized response format
-  ```python
-  {
-      "role": "assistant",
-      "content": "API response text",
-      "tool_calls": [...]  # Tool calls if requested
-  }
-  ```
-
-## PEFT Support
-
-### PeftHead
-
-Wrapper for Parameter-Efficient Fine-Tuning (PEFT) with LoRA support.
-
-```python
-from src.models.models import PeftHead, BaseLLM
-
-# Initialize base model
-base_model = BaseLLM("microsoft/DialoGPT-medium")
-
-# Add PEFT head
-peft_model = PeftHead(model=base_model)
-peft_model.prepare_peft_model(
-    target_modules=["q_proj", "v_proj"],
-    lora_rank=16,
-    lora_alpha=32,
-    lora_dropout=0.1
-)
-
-# Load pretrained PEFT weights
-peft_model.load_peft("path/to/peft/weights", is_trainable=True)
-
-# Save PEFT weights
-peft_model.save_pretrained("path/to/save/peft")
-```
-
-#### Methods
-
-##### `prepare_peft_model(target_modules=None, lora_rank=8, lora_alpha=32, lora_dropout=0.1)`
-
-Initialize PEFT configuration and wrap base model.
-
-**Parameters:**
-- `target_modules` (Optional[List[str]]): Target modules for LoRA
-- `lora_rank` (Optional[int]): LoRA rank (default: 8)
-- `lora_alpha` (Optional[int]): LoRA alpha (default: 32)
-- `lora_dropout` (Optional[float]): LoRA dropout (default: 0.1)
-
-##### `load_peft(peft_path, is_trainable=True)`
-
-Load pretrained PEFT weights from path.
-
-##### `save_pretrained(path)`
-
-Save current PEFT weights to path.
-
-## Model Factory Integration
-
-Models are typically created through agent configuration:
-
-```python
-from src.agents.agents import Agent
-from src.models.models import ModelConfig
-
-# Create agent with model config
-model_config = ModelConfig(
-    type="api",
-    name="gpt-4o",
-    provider="openai",
-    max_tokens=2048
-)
-
-agent = Agent(
-    model_config=model_config,
-    description="Research assistant",
-    max_tokens=1024  # Override config default
-)
-```
-
-The `Agent._create_model_from_config()` method handles model instantiation based on configuration type.
-
-## Response Format Standardization
-
-All models return consistent response format:
-
 ```python
 {
-    "role": "assistant",           # Always "assistant"
-    "content": "...",             # String, dict, or list content
-    "tool_calls": [...]           # List of tool calls (empty if none)
+    "role": "assistant",
+    "content": "Generated response text",
+    "tool_calls": [],  # If tools were used
+    "finish_reason": "stop",  # stop, length, tool_calls
+    "usage": {
+        "prompt_tokens": 100,
+        "completion_tokens": 50,
+        "total_tokens": 150
+    }
 }
 ```
 
-This standardization enables:
-- Consistent error handling
-- Unified message processing
-- Seamless model switching
-- Tool integration compatibility
-
-## Error Handling
-
-Models integrate with the MARSYS exception system:
-
+**Example:**
 ```python
-from src.agents.exceptions import ModelAPIError, ModelResponseError
+from src.models import BaseLLM
 
-try:
-    response = api_model.run(messages)
-except ModelAPIError as e:
-    print(f"API Error: {e.status_code} - {e.api_error_code}")
-except ModelResponseError as e:
-    print(f"Response Error: {e.response_type}")
+llm = BaseLLM(
+    model_name="mistralai/Mistral-7B-Instruct-v0.1",
+    max_tokens=1024,
+    torch_dtype="bfloat16"
+)
+
+response = llm.run(
+    messages=[
+        {"role": "system", "content": "You are a helpful assistant."},
+        {"role": "user", "content": "Explain quantum computing"}
+    ],
+    temperature=0.7
+)
+
+print(response["content"])
 ```
 
-## Best Practices
+### BaseVLM
 
-### Model Selection
+Base class for vision-language models.
 
-1. **Local Models**: Use for fine-tuning, offline operation, or full control
-2. **API Models**: Use for latest capabilities, no infrastructure management
-3. **Vision Models**: Use BaseVLM for multimodal tasks
+```python
+class BaseVLM:
+    """Vision-language model wrapper."""
 
-### Configuration Management
+    def __init__(
+        self,
+        model_name: str,
+        max_tokens: int = 512,
+        torch_dtype: str = "auto",
+        device_map: str = "auto"
+    ):
+        """
+        Initialize VLM.
 
-1. **Environment Variables**: Store API keys securely
-2. **Model Config**: Use ModelConfig for validation and consistency
-3. **Resource Management**: Configure device_map and torch_dtype appropriately
+        Args:
+            model_name: HuggingFace model identifier
+            max_tokens: Maximum generation tokens
+            torch_dtype: PyTorch data type
+            device_map: Device mapping strategy
+        """
+```
 
-### Performance Optimization
+#### Methods
 
-1. **Quantization**: Use quantization_config for local models
-2. **Batch Processing**: Process multiple requests together when possible
-3. **Token Management**: Set appropriate max_tokens limits
-4. **Temperature Tuning**: Adjust temperature based on use case
+##### `run(messages, images=None, **kwargs) -> Dict[str, Any]`
 
-### Integration with Agents
+Execute VLM with text and optional images.
 
-1. **Factory Pattern**: Use `_create_model_from_config()` for consistency
-2. **Response Validation**: Rely on `_validate_and_normalize_model_response()`
-3. **Error Handling**: Use specific exception types
-4. **Memory Management**: Consider model memory usage in agent design 
+**Parameters:**
+- `messages` (List[Dict]): Conversation with optional images
+- `images` (Optional[List[str]]): Image paths or base64 data
+- `**kwargs`: Additional generation parameters
+
+**Example:**
+```python
+from src.models import BaseVLM
+
+vlm = BaseVLM(
+    model_name="llava-hf/llava-1.5-7b-hf",
+    max_tokens=512
+)
+
+response = vlm.run(
+    messages=[
+        {
+            "role": "user",
+            "content": "What's in this image?",
+            "images": ["path/to/image.jpg"]
+        }
+    ]
+)
+```
+
+### BaseAPIModel
+
+Base class for API-based models.
+
+```python
+class BaseAPIModel:
+    """API model wrapper."""
+
+    def __init__(
+        self,
+        provider: str,
+        model_name: str,
+        api_key: Optional[str] = None,
+        base_url: Optional[str] = None,
+        max_tokens: int = 1024,
+        **kwargs
+    ):
+        """
+        Initialize API model.
+
+        Args:
+            provider: API provider name
+            model_name: Model identifier
+            api_key: API key (auto-loaded from env if None)
+            base_url: Custom endpoint URL
+            max_tokens: Maximum tokens
+            **kwargs: Provider-specific parameters
+        """
+```
+
+#### Supported Providers
+
+| Provider | Models | Environment Variable |
+|----------|--------|---------------------|
+| `openai` | gpt-4, gpt-3.5-turbo | `OPENAI_API_KEY` |
+| `anthropic` | claude-3-opus, claude-3-sonnet | `ANTHROPIC_API_KEY` |
+| `google` | gemini-pro, gemini-ultra | `GOOGLE_API_KEY` |
+| `groq` | mixtral-8x7b, llama2-70b | `GROQ_API_KEY` |
+| `openrouter` | Various models | `OPENROUTER_API_KEY` |
+
+#### Methods
+
+##### `run(messages, **kwargs) -> Dict[str, Any]`
+
+Execute API model.
+
+**Parameters:**
+- `messages` (List[Dict]): Conversation messages
+- `json_mode` (bool): Force JSON response
+- `tools` (Optional[List[Dict]]): Function definitions
+- `tool_choice` (Optional[str]): Tool selection strategy
+- `**kwargs`: Provider-specific parameters
+
+**Example:**
+```python
+from src.models import BaseAPIModel
+
+model = BaseAPIModel(
+    provider="openai",
+    model_name="gpt-4",
+    temperature=0.7
+)
+
+response = await model.run(
+    messages=[
+        {"role": "user", "content": "Hello!"}
+    ],
+    tools=[{
+        "type": "function",
+        "function": {
+            "name": "get_weather",
+            "description": "Get weather for a location",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "location": {"type": "string"}
+                },
+                "required": ["location"]
+            }
+        }
+    }]
+)
+
+if response.get("tool_calls"):
+    for tool_call in response["tool_calls"]:
+        print(f"Tool: {tool_call['function']['name']}")
+        print(f"Args: {tool_call['function']['arguments']}")
+```
+
+## 🏭 Model Factory
+
+### create_model
+
+Factory function to create model instances from configuration.
+
+```python
+def create_model(config: ModelConfig) -> Union[BaseLLM, BaseVLM, BaseAPIModel]:
+    """
+    Create model instance from configuration.
+
+    Args:
+        config: ModelConfig instance
+
+    Returns:
+        Appropriate model instance
+
+    Raises:
+        ValueError: If configuration is invalid
+    """
+```
+
+**Example:**
+```python
+from src.models import create_model, ModelConfig
+
+# Create from config
+config = ModelConfig(
+    type="api",
+    provider="openai",
+    name="gpt-4"
+)
+
+model = create_model(config)
+
+# Use model
+response = await model.run(
+    messages=[{"role": "user", "content": "Hello!"}]
+)
+```
+
+## 🎯 Advanced Features
+
+### Tool Calling
+
+Models support OpenAI-compatible function calling:
+
+```python
+tools = [
+    {
+        "type": "function",
+        "function": {
+            "name": "search_web",
+            "description": "Search the web for information",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "query": {
+                        "type": "string",
+                        "description": "Search query"
+                    },
+                    "max_results": {
+                        "type": "integer",
+                        "description": "Maximum results",
+                        "default": 5
+                    }
+                },
+                "required": ["query"]
+            }
+        }
+    }
+]
+
+response = await model.run(
+    messages=[
+        {"role": "user", "content": "Find information about Mars rovers"}
+    ],
+    tools=tools,
+    tool_choice="auto"  # auto, none, or specific function name
+)
+
+# Handle tool calls
+if response.get("tool_calls"):
+    for call in response["tool_calls"]:
+        if call["function"]["name"] == "search_web":
+            args = json.loads(call["function"]["arguments"])
+            results = search_web(args["query"], args.get("max_results", 5))
+
+            # Add tool result to conversation
+            messages.append({
+                "role": "tool",
+                "content": json.dumps(results),
+                "tool_call_id": call["id"]
+            })
+```
+
+### JSON Mode
+
+Force structured JSON output:
+
+```python
+response = await model.run(
+    messages=[
+        {
+            "role": "system",
+            "content": "Always respond with JSON: {\"answer\": str, \"confidence\": float}"
+        },
+        {
+            "role": "user",
+            "content": "What is 2+2?"
+        }
+    ],
+    json_mode=True
+)
+
+data = json.loads(response["content"])
+print(f"Answer: {data['answer']} (Confidence: {data['confidence']})")
+```
+
+### Streaming Responses
+
+Stream model output (when supported):
+
+```python
+async for chunk in model.stream(
+    messages=[{"role": "user", "content": "Write a story"}]
+):
+    print(chunk["content"], end="", flush=True)
+```
+
+## 🛡️ Error Handling
+
+### Model Errors
+
+```python
+from src.models.exceptions import (
+    ModelError,
+    ModelAPIError,
+    ModelTimeoutError,
+    ModelRateLimitError,
+    ModelTokenLimitError
+)
+
+try:
+    response = await model.run(messages)
+
+except ModelRateLimitError as e:
+    # Handle rate limiting
+    wait_time = e.retry_after or 60
+    await asyncio.sleep(wait_time)
+
+except ModelTokenLimitError as e:
+    # Reduce input size
+    messages = truncate_messages(messages, e.limit)
+
+except ModelTimeoutError as e:
+    # Handle timeout
+    logger.error(f"Model timeout: {e}")
+
+except ModelAPIError as e:
+    # Handle API errors
+    logger.error(f"API error: {e.status_code} - {e.message}")
+```
+
+## 📊 Usage Tracking
+
+### Token Usage
+
+```python
+response = await model.run(messages)
+
+usage = response.get("usage", {})
+print(f"Prompt tokens: {usage.get('prompt_tokens', 0)}")
+print(f"Completion tokens: {usage.get('completion_tokens', 0)}")
+print(f"Total tokens: {usage.get('total_tokens', 0)}")
+
+# Estimate cost (OpenAI pricing example)
+cost_per_1k_prompt = 0.03  # $0.03 per 1K tokens
+cost_per_1k_completion = 0.06  # $0.06 per 1K tokens
+
+prompt_cost = (usage.get('prompt_tokens', 0) / 1000) * cost_per_1k_prompt
+completion_cost = (usage.get('completion_tokens', 0) / 1000) * cost_per_1k_completion
+total_cost = prompt_cost + completion_cost
+
+print(f"Estimated cost: ${total_cost:.4f}")
+```
+
+## 🚦 Best Practices
+
+### 1. Configuration Management
+
+```python
+# ✅ GOOD - Environment-based config
+import os
+from src.models import ModelConfig
+
+config = ModelConfig(
+    type="api",
+    provider="openai",
+    name=os.getenv("MODEL_NAME", "gpt-4"),
+    temperature=float(os.getenv("MODEL_TEMPERATURE", "0.7")),
+    max_tokens=int(os.getenv("MAX_TOKENS", "2000"))
+)
+
+# ❌ BAD - Hardcoded values
+config = ModelConfig(
+    type="api",
+    provider="openai",
+    name="gpt-4",
+    api_key="sk-..."  # Never hardcode!
+)
+```
+
+### 2. Error Recovery
+
+```python
+# ✅ GOOD - Graceful degradation
+async def robust_model_call(messages, fallback_model=None):
+    try:
+        return await primary_model.run(messages)
+    except ModelError as e:
+        if fallback_model:
+            logger.warning(f"Primary failed, using fallback: {e}")
+            return await fallback_model.run(messages)
+        raise
+
+# ❌ BAD - No error handling
+response = await model.run(messages)  # Can fail!
+```
+
+### 3. Resource Management
+
+```python
+# ✅ GOOD - Proper cleanup for local models
+class ModelManager:
+    def __init__(self):
+        self.models = {}
+
+    def get_model(self, config: ModelConfig):
+        key = f"{config.type}:{config.name}"
+        if key not in self.models:
+            self.models[key] = create_model(config)
+        return self.models[key]
+
+    def cleanup(self):
+        for model in self.models.values():
+            if hasattr(model, 'cleanup'):
+                model.cleanup()
+```
+
+## 🔗 Related Documentation
+
+- [Agents](../concepts/agents.md) - How agents use models
+- [Configuration](../getting-started/configuration.md) - Model configuration guide
+- [Error Handling](../concepts/error-handling.md) - Error management
+- [Examples](../examples/) - Model usage examples

@@ -1,471 +1,640 @@
 # Agents
 
-Agents are the core building blocks of the Multi-Agent Reasoning Systems (MARSYS) framework. They are autonomous entities that can perceive their environment, make decisions, and take actions based on their configuration and interactions.
+Agents are the fundamental building blocks of MARSYS - autonomous AI entities that can perceive, reason, and take actions to accomplish tasks.
 
-## What is an Agent in MARSYS?
+## 🎯 Overview
 
-An agent in this framework is typically characterized by:
-- An **identity**: A unique name within the `AgentRegistry`.
-- An **AI Model**: Powered by an underlying language model (LLM), vision-language model (VLM), or API-based model, configured via `ModelConfig`.
-- **Capabilities**: Ability to use tools (functions) and invoke other registered agents.
-- **Memory**: Maintains conversational context and history through a `MemoryManager` instance.
-- **Instructions/Description**: A textual description defining its role, persona, and objectives.
+Agents in MARSYS are designed with a **pure execution model** - they implement stateless `_run()` methods with no side effects, enabling:
 
-## Agent Class Hierarchy (Simplified)
+- **True Parallel Execution**: Multiple instances run concurrently without conflicts
+- **Branch Isolation**: Each execution branch maintains independent state
+- **State Persistence**: Clean serialization for pause/resume capabilities
+- **Testability**: Pure functions are easier to test and debug
 
-The primary classes involved are `BaseAgent`, `Agent`, `BrowserAgent`, and `LearnableAgent`.
+## 🏗️ Architecture
 
 ```mermaid
-classDiagram
-    BaseAgent <|-- Agent
-    Agent <|-- LearnableAgent
-    Agent <|-- BrowserAgent # BrowserAgent inherits from Agent
+graph TB
+    subgraph "Agent System"
+        BA[BaseAgent<br/>Abstract Interface]
+        A[Agent<br/>Standard Implementation]
+        BA2[BrowserAgent<br/>Web Automation]
+        LA[LearnableAgent<br/>Fine-tunable]
+        AP[AgentPool<br/>Parallel Instances]
+    end
 
-    class ModelConfig {
-        +type: str
-        +name: str
-        +provider: Optional[str]
-        +api_key: Optional[str]
-        +max_tokens: int
-        +temperature: float
-        +model_class: Optional[str] # For local models ('llm', 'vlm')
-    }
+    subgraph "Core Components"
+        M[Memory<br/>ConversationMemory]
+        T[Tools<br/>Function Registry]
+        MO[Model<br/>LLM/VLM/API]
+        AR[AgentRegistry<br/>Global Registry]
+    end
 
-    class BaseAgent {
-        +name: str
-        +model_instance: Union[BaseLLM, BaseVLM, BaseAPIModel] # Renamed from model to model_instance
-        +description: str
-        +tools: Dict[str, Callable]
-        +tools_schema: List[Dict]
-        +allowed_peers: Set[str]
-        +logger: logging.Logger
-        +__init__(model_config: ModelConfig, description: str, tools, agent_name, allowed_peers)
-        +invoke_agent(target_agent_name: str, request: Any, request_context: RequestContext) Message
-        # ... other methods ...
-    }
+    BA --> A
+    A --> BA2
+    A --> LA
+    A --> AP
 
-    class Agent {
-        +memory: MemoryManager
-        +__init__(model_config: ModelConfig, description: str, tools, agent_name, allowed_peers, memory_type, max_tokens, system_message_processor, user_message_processor, assistant_message_processor)
-        +auto_run(initial_prompt: Any, request_context: Optional[RequestContext], max_steps: int) Message # Return type updated
-        # +_run(prompt: Any, request_context: RequestContext, run_mode: str) Message
-        # ... other methods ...
-    }
+    A --> M
+    A --> T
+    A --> MO
+    A --> AR
 
-    class BrowserAgent {
-        +browser_tool: Optional[BrowserTool]
-        +__init__(model_config: ModelConfig, generation_description: str, critic_description: str, memory_type, max_tokens, agent_name, allowed_peers)
-        +create_safe(model_config: ModelConfig, ...) BrowserAgent
-        # ... browser specific methods ...
-    }
-
-    class LearnableAgent {
-        +learning_memory: LearningMemory
-        +feedback_mechanism: FeedbackMechanism
-        +__init__(..., learning_config: LearningConfig)
-        # +learn_from_feedback(feedback: Feedback) None
-        # +adapt_behavior() None
-        # ... learning specific methods ...
-    }
-
-    class MemoryManager {
-        +history: List[Message]
-        +update_memory(message: Message)
-        +retrieve_recent(limit: int) List[Message]
-        +to_llm_format() List[Dict]
-    }
-
-    class Message {
-        +role: str
-        +content: Any
-        +message_id: str
-        +tool_calls: Optional[List[Dict]]
-        +tool_call_id: Optional[str]
-        +name: Optional[str]
-    }
-
-    class RequestContext {
-        +request_id: str # Renamed from task_id
-        +interaction_id: str
-        +interaction_count: int
-        +depth: int
-        +caller_agent_name: Optional[str]
-    }
-
-    ModelConfig ..> BaseAgent : provides configuration for
-    BaseAgent ..> AgentRegistry : registers with
-    Agent ..> MemoryManager : uses
-    Agent ..> Message : processes and stores
-    Agent ..> RequestContext : uses for operations
-    BaseAgent ..> "BaseLLM, BaseVLM, BaseAPIModel" : uses model_instance of
-    BrowserAgent ..> "BrowserTool" : uses
-    LearnableAgent ..> "LearningMemory" : uses
-    LearnableAgent ..> "FeedbackMechanism" : uses
+    style BA fill:#e1f5fe
+    style A fill:#4fc3f7
+    style AP fill:#29b6f6
 ```
-*Note: The diagram is a conceptual representation. Refer to the source code for exact method signatures and relationships.* 
 
-## Creating an Agent
+## 📦 Agent Classes
 
-Agents are instantiated by providing a model configuration, a description, and optionally tools and other settings.
+### BaseAgent (Abstract)
 
-### Basic Agent Example
+The foundation interface all agents must implement:
 
 ```python
-from src.agents.agents import Agent
-from src.models.models import ModelConfig
+from abc import ABC, abstractmethod
+from src.agents.memory import Message
 
-# Define the model configuration
-openai_model_config = ModelConfig(
-    type="api",
-    provider="openai",
-    name="gpt-4-turbo", # Ensure this is a valid model name for your provider
-    temperature=0.7,
-    max_tokens=1500
-    # API key will be read from OPENAI_API_KEY environment variable by default
+class BaseAgent(ABC):
+    def __init__(
+        self,
+        model: Union[BaseVLM, BaseLLM, BaseAPIModel],
+        description: str,
+        tools: Optional[Dict[str, Callable]] = None,
+        max_tokens: int = 512,
+        agent_name: Optional[str] = None,
+        allowed_peers: Optional[List[str]] = None,
+        memory_retention: str = "session"
+    ):
+        # Auto-generates tool schemas from function signatures
+        # Registers with AgentRegistry
+        # Initializes memory manager
+        pass
+
+    @abstractmethod
+    async def _run(
+        self,
+        prompt: Any,
+        context: Dict[str, Any],
+        **kwargs
+    ) -> Message:
+        """Pure execution logic - NO side effects"""
+        pass
+```
+
+!!! warning "Pure Execution Rule"
+    The `_run()` method must be **pure** - no memory manipulation, no logging to files, no global state changes. All side effects are handled by the coordination layer.
+
+### Agent (Standard Implementation)
+
+The standard agent with built-in capabilities:
+
+```python
+from src.agents import Agent
+from src.models import ModelConfig
+
+agent = Agent(
+    model_config=ModelConfig(
+        type="api",
+        name="gpt-4",
+        provider="openai",
+        api_key=os.getenv("OPENAI_API_KEY"),
+        parameters={"temperature": 0.7}
+    ),
+    agent_name="DataAnalyst",
+    description="Expert data analyst specializing in trends and insights",
+    system_prompt="You are a thorough data analyst...",
+    tools=[analyze_data, create_chart],
+    memory_retention="session"  # single_run, session, or persistent
+)
+```
+
+### BrowserAgent
+
+Specialized for web automation tasks:
+
+```python
+from src.agents import BrowserAgent
+
+browser = BrowserAgent(
+    model_config=config,
+    agent_name="WebResearcher",
+    description="Web research specialist with browser access",
+    headless=True,
+    viewport_size=(1920, 1080)
 )
 
-# Create the agent instance
-assistant_agent = Agent(
-    model=openai_model_config, # Pass the ModelConfig object
-    description="You are a helpful and friendly AI assistant. Your goal is to provide accurate and concise answers.",
-    agent_name="HelpfulAssistant" # Optional: specify a unique name
+# Browser-specific capabilities
+await browser.navigate("https://example.com")
+await browser.click("button#submit")
+content = await browser.extract_content()
+```
+
+### LearnableAgent
+
+Supports fine-tuning with PEFT methods:
+
+```python
+from src.agents import LearnableAgent
+
+learnable = LearnableAgent(
+    model_config=config,
+    agent_name="AdaptiveAssistant",
+    learning_config={
+        "method": "lora",
+        "rank": 8,
+        "alpha": 32,
+        "dropout": 0.1
+    }
 )
 
-# To run the agent (example)
-# async def main():
-#     response = await assistant_agent.auto_run(initial_request="Hello, who are you?")
-#     print(response)
-# import asyncio
-# asyncio.run(main())
+# Fine-tune on examples
+await learnable.learn_from_examples(training_data)
+```
+
+## 🔄 AgentPool
+
+For true parallel execution with isolated instances:
+
+```python
+from src.agents.agent_pool import AgentPool
+
+# Create pool of 3 browser agents
+pool = AgentPool(
+    agent_class=BrowserAgent,
+    num_instances=3,
+    model_config=config,
+    agent_name="BrowserPool",
+    headless=True
+)
+
+# Acquire instance for branch (automatic queue management)
+async with pool.acquire(branch_id="branch_123") as agent:
+    result = await agent.run(task)
+
+# Pool handles:
+# - Instance creation with unique names (BrowserPool_0, BrowserPool_1, etc.)
+# - Fair allocation with queue-based waiting
+# - Automatic release after use
+# - Statistics tracking
+# - Cleanup on destruction
+```
+
+!!! tip "When to Use AgentPool"
+    Use AgentPool when you need:
+    - True parallel execution of the same agent type
+    - Resource isolation (browser instances, API connections)
+    - Fair allocation across multiple branches
+    - Prevent state conflicts between parallel executions
+
+## 🎯 Creating Agents
+
+### Basic Agent
+
+```python
+from src.agents import Agent
+from src.models import ModelConfig
+
+# Simple agent
+assistant = Agent(
+    model_config=ModelConfig(
+        type="api",
+        name="gpt-4",
+        provider="openai"
+    ),
+    agent_name="Assistant",
+    description="A helpful AI assistant"
+)
+
+# Run the agent
+response = await assistant.run(
+    prompt="Explain quantum computing",
+    context={"user_id": "123"}
+)
 ```
 
 ### Agent with Tools
 
-Tools are Python functions that the agent can decide to call to perform actions.
-
 ```python
-from src.agents.agents import Agent
-from src.models.models import ModelConfig
-from datetime import datetime
+def search_web(query: str, max_results: int = 5) -> List[Dict]:
+    """
+    Search the web for information.
 
-def get_current_time(timezone: Optional[str] = None) -> str:
-    """Returns the current date and time, optionally for a specific timezone."""
-    # Basic implementation, for real timezone handling, use pytz or similar
-    return f"The current date and time is: {datetime.now().isoformat()}" 
+    Args:
+        query: Search query string
+        max_results: Maximum number of results
 
-research_model_config = ModelConfig(
-    type="api", provider="openai", name="gpt-4-turbo"
+    Returns:
+        List of search results with title, url, snippet
+    """
+    # Implementation here
+    return results
+
+def analyze_data(data: List[float], method: str = "mean") -> float:
+    """
+    Analyze numerical data.
+
+    Args:
+        data: List of numerical values
+        method: Analysis method (mean, median, std)
+
+    Returns:
+        Analysis result
+    """
+    # Implementation here
+    return result
+
+researcher = Agent(
+    model_config=config,
+    agent_name="Researcher",
+    description="Research specialist with web search and analysis capabilities",
+    tools=[search_web, analyze_data]  # Auto-generates OpenAI-compatible schemas
 )
-
-researcher_agent = Agent(
-    model=research_model_config,
-    description="You are a research assistant. You can use tools to find information.",
-    tools={"get_current_time_tool": get_current_time},
-    agent_name="Researcher"
-)
-
-# Example of running the researcher agent
-# async def main():
-#     response = await researcher_agent.auto_run(initial_request="What time is it now?")
-#     print(response)
-# import asyncio
-# asyncio.run(main())
 ```
-Tool schemas are generated automatically from the function signature and docstring.
 
-## Creating Custom Agents
+!!! info "Automatic Schema Generation"
+    Tool schemas are automatically generated from function signatures and docstrings. Ensure your functions have proper type hints and docstrings for accurate schema generation.
 
-For more specialized behavior, you can create custom agent classes by inheriting from `BaseAgent` or `Agent`.
+### Custom Agent Class
 
 ```python
-from src.agents.agents import Agent # Or BaseAgent for more fundamental customization
-from src.models.models import ModelConfig
-from src.agents.memory import Message # Correct import for Message
-from src.agents.utils import RequestContext # Correct import for RequestContext
-from typing import Any
+from src.agents import BaseAgent
+from src.agents.memory import Message
 
-class MyCustomAgent(Agent): # Inherit from Agent for auto_run, memory etc.
-    def __init__(self, model: ModelConfig, description: str, agent_name: Optional[str] = None, **kwargs):
-        super().__init__(model=model, description=description, agent_name=agent_name, **kwargs)
-        # Custom initialization for your agent
-        self.my_custom_state = "initialized"
+class CustomAnalyzer(BaseAgent):
+    def __init__(self, model, **kwargs):
+        super().__init__(model, **kwargs)
+        # NO instance variables that change during execution
+        self.analysis_patterns = self._load_patterns()  # OK - static config
 
-    async def _run(
-        self, prompt: Any, request_context: RequestContext, run_mode: str, **kwargs: Any
-    ) -> Message:
-        # Override _run for custom step logic within auto_run
-        # This is a simplified example. A real _run would involve:
-        # 1. Updating memory with the input prompt.
-        # 2. Preparing messages for the LLM using self.memory.to_llm_format().
-        # 3. Constructing the system prompt using self._construct_full_system_prompt().
-        # 4. Calling self.model.run() with messages, tools_schema, json_mode, etc.
-        # 5. Processing the LLM response into a Message object (e.g. using Message.from_response_dict).
-        # 6. Updating memory with the response Message.
+    async def _run(self, prompt, context, **kwargs):
+        """Pure execution - no side effects"""
 
-        await self._log_progress(request_context, LogLevel.INFO, f"MyCustomAgent ({self.name}) received prompt: {str(prompt)[:100]}")
+        # Prepare messages
+        messages = self._prepare_messages(prompt)
 
-        # Example: Add custom behavior before calling the model or processing its response
-        if "special_trigger" in str(prompt):
-            # Perform a custom action
-            pass
-
-        # Call the parent's _run or reimplement its logic carefully
-        # For this example, we'll simulate a simple response
-        # In a real scenario, you would interact with self.model here
-        # and use self.memory, self.tools_schema etc.
-
-        system_prompt_str = self._construct_full_system_prompt(
-            base_description=self.description,
-            json_mode_for_output=(run_mode == "auto_step") # auto_step expects JSON
-        )
-
-        # Prepare messages for the model
-        # This would typically involve self.memory.update_memory(input_message_obj)
-        # and then self.memory.to_llm_format()
-        # For simplicity, creating a dummy input message list:
-        current_messages_for_llm = [
-            {"role": "system", "content": system_prompt_str},
-            {"role": "user", "content": str(prompt)} # Simplified
-        ]
-
-        # Simulate model call
-        # llm_response_data = await self.model.run(
-        #     messages=current_messages_for_llm,
-        #     json_mode=(run_mode == "auto_step"),
-        #     tools=self.tools_schema if self.tools_schema else None,
-        #     max_tokens=self.max_tokens
-        # )
-
-        # For this example, let's assume llm_response_data is a dict like:
-        # {"role": "assistant", "content": "...", "tool_calls": [...]}
-        # This would come from self.model.run()
-        # Ensure the response from self.model.run() is compatible with Message.from_response_dict
-        # or process it accordingly.
-
-        # Example: Directly creating a Message if not calling LLM or for specific logic
-        response_content = f"Custom agent {self.name} processed: {str(prompt)[:50]}"
-        if run_mode == "auto_step": # auto_step expects a JSON response for next_action
-            response_content = json.dumps({
-                "thought": "This is a custom thought from MyCustomAgent.",
-                "next_action": "final_response",
-                "action_input": {"response": response_content}
+        # Add analysis context
+        if context.get("analysis_type") == "detailed":
+            messages.append({
+                "role": "system",
+                "content": "Provide detailed analysis with examples"
             })
 
-        output_message = Message(
+        # Call model (pure)
+        response = await self.model.run(messages)
+
+        # Return pure Message
+        return Message(
             role="assistant",
-            content=response_content,
-            name=self.name
+            content=response.content,
+            metadata={"analyzed": True}
         )
-        
-        # Update memory with the output message
-        # await self.memory.update_memory(output_message)
-
-        return output_message
-
-# Example usage:
-# custom_agent_config = ModelConfig(type="api", provider="openai", name="gpt-4.1-mini")
-# my_agent = MyCustomAgent(model=custom_agent_config, description="A custom agent example.", agent_name="CustomBot")
-# async def main():
-#    final_response = await my_agent.auto_run(initial_request="Hello custom agent!")
-#    print(final_response)
-# import asyncio
-# asyncio.run(main())
 ```
 
-## Agent Capabilities
+## 💬 Response Formats
 
-### 1. **Autonomous Multi-Step Execution (`auto_run`)**
+Agents communicate using standardized response formats:
 
-Agents can perform tasks over multiple steps, deciding to call tools, invoke other agents, or provide a final response.
+### Sequential Agent Invocation
 
 ```python
-# Assuming 'assistant_agent' is an initialized Agent instance
-# async def main():
-#     response_string = await assistant_agent.auto_run(
-#         initial_request="Research the latest trends in AI for 2025 and then ask the SummarizerAgent to summarize it.",
-#         max_steps=10 # Max iterations of thought-action-observation loop
-#     )
-#     print(f"Final response from auto_run: {response_string}")
-# import asyncio
-# asyncio.run(main())
+{
+    "thought": "I need help from the DataAnalyzer",
+    "next_action": "invoke_agent",
+    "action_input": "DataAnalyzer"
+}
 ```
 
-### 2. **Tool Usage**
-
-If an agent has tools, its underlying LLM can decide to use them. The `Agent` class handles the orchestration.
+### Parallel Agent Invocation
 
 ```python
-# Assuming 'researcher_agent' has the 'get_current_time_tool'
-# async def main():
-#     response = await researcher_agent.auto_run(
-#         initial_request="What is the current time? Please use your tools.",
-#         max_steps=3
-#     )
-#     print(response)
-# import asyncio
-# asyncio.run(main())
+{
+    "thought": "These analyses can run in parallel",
+    "next_action": "parallel_invoke",
+    "agents": ["Analyzer1", "Analyzer2", "Analyzer3"],
+    "agent_requests": {
+        "Analyzer1": "Analyze sales data for Q1",
+        "Analyzer2": "Analyze sales data for Q2",
+        "Analyzer3": "Analyze sales data for Q3"
+    }
+}
 ```
 
-### 3. **Inter-Agent Communication (`invoke_agent`)**
-
-Agents can invoke other registered agents if they are in their `allowed_peers` list. This is typically handled within the `auto_run` loop if the LLM decides to take the `invoke_agent` action.
+### Tool Call
 
 ```python
-# orchestrator_config = ModelConfig(type="api", provider="openai", name="gpt-4-turbo")
-# researcher_config = ModelConfig(type="api", provider="openai", name="gpt-4-turbo")
-
-# researcher = Agent(model=researcher_config, description="I find information.", agent_name="ResearcherAgent")
-# orchestrator = Agent(
-#     model=orchestrator_config, 
-#     description="I coordinate tasks and can talk to other agents.", 
-#     agent_name="OrchestratorAgent",
-#     allowed_peers=["ResearcherAgent"] # Allows OrchestratorAgent to call ResearcherAgent
-# )
-
-# async def main():
-#     # The orchestrator might decide to call ResearcherAgent based on the task
-#     response = await orchestrator.auto_run(
-#         initial_request="Ask the ResearcherAgent to find out about quantum computing progress.",
-#         max_steps=5
-#     )
-#     print(response)
-# import asyncio
-# asyncio.run(main())
+{
+    "next_action": "call_tool",
+    "tool_calls": [
+        {
+            "id": "call_abc123",
+            "type": "function",
+            "function": {
+                "name": "search_web",
+                "arguments": "{\"query\": \"latest AI research\", \"max_results\": 10}"
+            }
+        }
+    ]
+}
 ```
 
-## Agent Description (System Prompt Foundation)
-
-The `description` provided during agent initialization is a crucial part of its system prompt, defining its role, personality, and high-level goals.
+### Final Response
 
 ```python
-code_reviewer_description = """
-You are an expert Python code reviewer. Your primary goal is to help developers write better code.
-Key Responsibilities:
-1. Review Python code snippets for adherence to PEP 8 style guidelines.
-2. Identify potential bugs, logical errors, or inefficiencies.
-3. Suggest improvements for clarity, performance, and maintainability.
-4. Always provide constructive, polite, and actionable feedback.
+{
+    "next_action": "final_response",
+    "content": "Here is my analysis..."
+}
 
-Output Format:
-- For code suggestions, use Markdown code blocks with the `python` language identifier.
-- Clearly explain the reasoning behind each suggestion.
+# Or structured response
+{
+    "next_action": "final_response",
+    "content": {
+        "summary": "Key findings",
+        "details": [...],
+        "recommendations": [...]
+    }
+}
+```
+
+## 🧠 Memory Management
+
+Each agent maintains its conversation history through a `ConversationMemory`:
+
+```python
+# Memory retention policies
+agent = Agent(
+    model_config=config,
+    agent_name="Assistant",
+    memory_retention="session"  # Options: single_run, session, persistent
+)
+
+# Memory is automatically managed during execution
+# - single_run: Cleared after each run
+# - session: Maintained for workflow duration
+# - persistent: Saved to disk for long-term retention
+```
+
+For more details, see [Memory Documentation](memory.md).
+
+## 🔧 Agent Configuration
+
+### Model Configuration
+
+```python
+from src.models import ModelConfig
+
+# API Model (OpenAI, Anthropic, Google)
+api_config = ModelConfig(
+    type="api",
+    provider="openai",
+    name="gpt-4",
+    api_key=os.getenv("OPENAI_API_KEY"),
+    parameters={
+        "temperature": 0.7,
+        "max_tokens": 2000,
+        "top_p": 0.9
+    }
+)
+
+# Local LLM
+local_config = ModelConfig(
+    type="local",
+    name="llama-2-7b",
+    model_path="/models/llama-2-7b",
+    device="cuda",
+    parameters={
+        "temperature": 0.8,
+        "max_length": 1024
+    }
+)
+
+# Vision-Language Model
+vlm_config = ModelConfig(
+    type="vlm",
+    provider="openai",
+    name="gpt-4-vision",
+    parameters={
+        "detail": "high",
+        "max_tokens": 4096
+    }
+)
+```
+
+### Agent Parameters
+
+```python
+agent = Agent(
+    model_config=config,
+    agent_name="Expert",  # Unique identifier
+    description="Domain expert in...",  # Role definition
+    system_prompt="Detailed instructions...",  # System message
+    tools=[...],  # Available functions
+    max_tokens=2000,  # Response limit
+    allowed_peers=["Agent1", "Agent2"],  # Can invoke these agents
+    memory_retention="session",  # Memory policy
+    input_schema=InputSchema,  # Validate inputs
+    output_schema=OutputSchema  # Validate outputs
+)
+```
+
+## 📋 Best Practices
+
+### 1. **Keep _run() Pure**
+
+```python
+# ✅ GOOD - Pure function
+async def _run(self, prompt, context, **kwargs):
+    messages = self._prepare_messages(prompt)
+    response = await self.model.run(messages)
+    return Message(role="assistant", content=response.content)
+
+# ❌ BAD - Side effects
+async def _run(self, prompt, context, **kwargs):
+    self.memory.add_message(...)  # NO! Memory handled externally
+    await self.save_to_database(...)  # NO! Side effects
+    self.state_counter += 1  # NO! Mutable state
+    return response
+```
+
+### 2. **Clear Agent Descriptions**
+
+```python
+# ✅ GOOD - Specific and actionable
+description = """
+You are a Python code reviewer specializing in security and performance.
+Your responsibilities:
+1. Identify security vulnerabilities (SQL injection, XSS, etc.)
+2. Suggest performance optimizations
+3. Ensure PEP 8 compliance
+4. Provide actionable feedback with code examples
+Output format: Markdown with code blocks
 """
 
-# code_reviewer_config = ModelConfig(type="api", provider="openai", name="gpt-4-turbo")
-# code_reviewer_agent = Agent(
-#     model=code_reviewer_config,
-#     description=code_reviewer_description,
-#     agent_name="CodeReviewer"
-# )
+# ❌ BAD - Vague
+description = "You review code"
 ```
 
-## Agent Registration and Discovery
-
-Agents are automatically registered with the `AgentRegistry` upon instantiation using their `agent_name` (or a generated one if `agent_name` is not provided). This allows them to be discovered and invoked by other agents.
+### 3. **Robust Tool Design**
 
 ```python
-from src.agents.registry import AgentRegistry
+# ✅ GOOD - Type hints, docstring, error handling
+def fetch_data(
+    source: str,
+    filters: Optional[Dict[str, Any]] = None,
+    limit: int = 100
+) -> List[Dict[str, Any]]:
+    """
+    Fetch data from specified source.
 
-# Agent is registered automatically during __init__
-# helper_config = ModelConfig(type="api", provider="openai", name="gpt-4.1-mini")
-# helper_agent = Agent(model=helper_config, description="A simple helper.", agent_name="MyHelperAgent")
+    Args:
+        source: Data source identifier
+        filters: Optional filtering criteria
+        limit: Maximum records to return
 
-# Retrieve an agent from the registry
-# retrieved_agent = AgentRegistry.get("MyHelperAgent")
-# if retrieved_agent:
-#     print(f"Agent '{retrieved_agent.name}' is registered and retrieved.")
-# else:
-#     print("Agent not found in registry.")
+    Returns:
+        List of data records
 
-# Agents are also unregistered automatically when they are deleted (via __del__).
+    Raises:
+        ValueError: If source is invalid
+        ConnectionError: If source is unreachable
+    """
+    try:
+        # Implementation
+        return data
+    except Exception as e:
+        logger.error(f"Failed to fetch data: {e}")
+        raise
+
+# ❌ BAD - No types, poor docs, no error handling
+def fetch_data(source, filters=None):
+    """Get data"""
+    return get_from_db(source)
 ```
 
-## Agent Memory (`MemoryManager`)
-
-Each `Agent` instance has its own `MemoryManager` (by default, `ConversationMemory`) which stores the history of interactions (user inputs, agent responses, tool calls, tool responses).
-
-- The memory is updated automatically within the `_run` method of the `Agent` class.
-- Messages are stored in chronological order.
-- The `memory.to_llm_format()` method prepares the history in a format suitable for the LLM.
+### 4. **Use AgentPool for Parallelism**
 
 ```python
-# Memory is managed internally by the Agent during auto_run
-# async def main():
-#     chat_config = ModelConfig(type="api", provider="openai", name="gpt-4.1-mini")
-#     chat_agent = Agent(model=chat_config, description="A conversational agent.", agent_name="Chatty")
+# ✅ GOOD - Pool for parallel execution
+pool = AgentPool(BrowserAgent, num_instances=3, ...)
+tasks = ["url1", "url2", "url3"]
 
-#     response1 = await chat_agent.auto_run(initial_request="Hi there! My favorite color is blue.")
-#     print(f"Response 1: {response1}")
+async def process_url(url, branch_id):
+    async with pool.acquire(branch_id) as agent:
+        return await agent.scrape(url)
 
-#     # The agent's memory now contains the first interaction.
-#     response2 = await chat_agent.auto_run(initial_request="What was my favorite color?")
-#     print(f"Response 2: {response2}") # Agent should remember "blue"
-# import asyncio
-# asyncio.run(main())
+results = await asyncio.gather(*[
+    process_url(url, f"branch_{i}")
+    for i, url in enumerate(tasks)
+])
+
+# ❌ BAD - Reusing single instance
+agent = BrowserAgent(...)
+# This will have conflicts with parallel execution
+results = await asyncio.gather(*[
+    agent.scrape(url) for url in tasks
+])
 ```
-For more details, see [Memory Concepts](./memory.md).
 
-## Best Practices for Agent Design
+## 🎯 Common Patterns
 
-1.  **Clear and Specific Descriptions**: The agent's `description` is key. Make it detailed about the agent's role, capabilities, limitations, and expected output format.
-2.  **Appropriate Model Selection**: Choose a `ModelConfig` (provider, model name, parameters) that suits the complexity and requirements of the agent's tasks.
-3.  **Well-Defined Tools**: If using tools, ensure they are robust, have clear docstrings (for schema generation), and handle potential errors.
-4.  **Consider `allowed_peers`**: Explicitly define which other agents an agent can invoke to control interaction flows and prevent unintended calls.
-5.  **Iterative Testing**: Test agents with various inputs and scenarios to refine their descriptions, tools, and overall behavior.
-6.  **Error Handling in Custom Agents**: If creating custom agents by overriding `_run`, ensure robust error handling and that `Message` objects (even for errors) are returned as per framework expectations.
-
-## Advanced Usage
-
-### Customizing Agent Behavior by Overriding `_run`
-
-As shown in the "Creating Custom Agents" section, inheriting from `Agent` and overriding the `_run` method allows for fine-grained control over each step of the agent's execution cycle within `auto_run`. This is where you can inject custom logic for prompt engineering, model interaction, response parsing, and memory updates.
-
-### Agent Composition and Orchestration
-
-Design multiple specialized agents and an orchestrator agent to manage them. The orchestrator's `description` would guide it to delegate sub-tasks to the appropriate specialized agents via `invoke_agent`.
+### Research Team Pattern
 
 ```python
-# Conceptual example:
-# research_writer_config = ModelConfig(type="api", provider="openai", name="gpt-4-turbo")
-# editor_config = ModelConfig(type="api", provider="openai", name="gpt-4.1-mini")
-# main_orchestrator_config = ModelConfig(type="api", provider="openai", name="gpt-4-turbo")
+# Specialized agents
+data_collector = Agent(config, agent_name="DataCollector",
+                       tools=[search_web, scrape_page])
+analyzer = Agent(config, agent_name="Analyzer",
+                tools=[statistical_analysis, create_charts])
+writer = Agent(config, agent_name="Writer",
+              description="Technical writer...")
 
-# research_writer = Agent(
-#     model=research_writer_config,
-#     description="I research topics and write initial drafts.",
-#     agent_name="ResearchWriterAgent"
-# )
-# editor = Agent(
-#     model=editor_config,
-#     description="I review and edit drafts for clarity and grammar.",
-#     agent_name="EditorAgent"
-# )
-
-# orchestrator = Agent(
-#     model=main_orchestrator_config,
-#     description=(
-#         "You are a project manager. Your goal is to produce a high-quality article. "
-#         "First, ask ResearchWriterAgent to draft an article on a given topic. "
-#         "Then, ask EditorAgent to review and refine the draft from ResearchWriterAgent. "
-#         "Finally, present the edited article as your final response."
-#     ),
-#     agent_name="ProjectManagerAgent",
-#     allowed_peers=["ResearchWriterAgent", "EditorAgent"]
-# )
-
-# async def main():
-#     final_article = await orchestrator.auto_run(
-#         initial_request="Produce an article about the future of renewable energy."
-#     )
-#     print("--- Final Article ---")
-#     print(final_article)
-# import asyncio
-# asyncio.run(main())
+# Coordinator orchestrates them
+coordinator = Agent(
+    config,
+    agent_name="Coordinator",
+    description="""
+    You coordinate research projects. Your workflow:
+    1. Ask DataCollector to gather information
+    2. Ask Analyzer to process the data
+    3. Ask Writer to create the report
+    """,
+    allowed_peers=["DataCollector", "Analyzer", "Writer"]
+)
 ```
 
-## Next Steps
+### Error Recovery Pattern
 
-- Learn about [Messages](./messages.md) - The structure of communication data.
-- Explore [Memory](./memory.md) - How agents maintain context and history.
-- Understand [Tools](./tools.md) - How to extend agent capabilities with functions.
-- Review [Core Concepts](./core-concepts.md) for a broader overview.
+```python
+class ResilientAgent(BaseAgent):
+    async def _run(self, prompt, context, **kwargs):
+        try:
+            # Primary logic
+            response = await self.primary_approach(prompt)
+            return Message(role="assistant", content=response)
+        except SpecificError as e:
+            # Fallback approach
+            response = await self.fallback_approach(prompt)
+            return Message(
+                role="assistant",
+                content=response,
+                metadata={"fallback_used": True}
+            )
+```
+
+### Validation Pattern
+
+```python
+from pydantic import BaseModel, Field
+
+class AnalysisInput(BaseModel):
+    data: List[float] = Field(..., min_items=1)
+    method: str = Field(..., pattern="^(mean|median|std)$")
+
+class AnalysisOutput(BaseModel):
+    result: float
+    confidence: float = Field(..., ge=0, le=1)
+    metadata: Dict[str, Any]
+
+validator_agent = Agent(
+    config,
+    agent_name="ValidatedAnalyzer",
+    input_schema=AnalysisInput,
+    output_schema=AnalysisOutput
+)
+```
+
+## 🚦 Next Steps
+
+<div class="grid cards" markdown="1">
+
+- :material-memory:{ .lg .middle } **[Memory System](memory.md)**
+
+    ---
+
+    Learn how agents maintain context and conversation history
+
+- :material-tools:{ .lg .middle } **[Tool Integration](tools.md)**
+
+    ---
+
+    Extend agent capabilities with custom functions
+
+- :material-message:{ .lg .middle } **[Messages](messages.md)**
+
+    ---
+
+    Understand the message format and types
+
+- :material-api:{ .lg .middle } **[Agent API Reference](../api/agent-class.md)**
+
+    ---
+
+    Complete API documentation for agent classes
+
+</div>
+
+---
+
+!!! success "Agent System Ready!"
+    You now understand the agent architecture in MARSYS. Agents provide the intelligence, while the Orchestra provides the coordination.
