@@ -1,201 +1,504 @@
-# Basic Agent Usage Tutorial
+# Basic Usage
 
-Welcome to the basic agent usage tutorial! This guide will walk you through creating and using your first MARSYS agent.
+Learn the fundamentals of MARSYS through hands-on examples.
 
-## Prerequisites
+## 🎯 What You'll Learn
 
-Before starting this tutorial, make sure you have:
+- Create and configure agents
+- Execute tasks with Orchestra
+- Use tools and memory
+- Handle responses and errors
+- Build multi-agent systems
 
-- Python 3.8 or higher installed
-- MARSYS framework installed (`pip install marsys`)
-- An API key for a supported model provider (optional for local models)
+## 📦 Your First Agent
 
-## What You'll Learn
-
-By the end of this tutorial, you'll know how to:
-
-- Create a basic agent with a language model
-- Add tools to your agent
-- Run simple tasks and commands
-- Handle agent responses and errors
-
-## Step 1: Import Required Components
+### Step 1: Import Required Components
 
 ```python
 import asyncio
-from marsys import Agent, ModelConfig
-
-# For tools, we'll use a simple function
-def get_current_time():
-    """Get the current time as a string."""
-    from datetime import datetime
-    return datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+from src.agents import Agent
+from src.models import ModelConfig
+from src.coordination import Orchestra
 ```
 
-## Step 2: Configure Your Model
+### Step 2: Configure Your Model
 
 ```python
-# Example with OpenAI API (requires API key)
-config = ModelConfig(
+# OpenAI Configuration
+openai_config = ModelConfig(
     type="api",
     name="gpt-4",
-    api_key="your-api-key-here",  # Replace with your actual API key
-    max_tokens=1000,
-    temperature=0.7
+    provider="openai",
+    api_key="your-api-key",
+    parameters={
+        "temperature": 0.7,
+        "max_tokens": 2000
+    }
 )
 
-# Alternative: Use a local model (requires more setup)
-# config = ModelConfig(
-#     type="local",
-#     name="microsoft/DialoGPT-medium",
-#     model_class="llm",
-#     max_tokens=1000
-# )
+# Or use Claude
+claude_config = ModelConfig(
+    type="api",
+    name="claude-3-opus",
+    provider="anthropic",
+    api_key="your-api-key"
+)
+
+# Or use local Ollama
+ollama_config = ModelConfig(
+    type="api",
+    name="llama2",
+    provider="ollama",
+    base_url="http://localhost:11434"
+)
 ```
 
-## Step 3: Create Your Agent
+### Step 3: Create Your Agent
 
 ```python
+# Basic agent
 agent = Agent(
-    model_config=config,
-    description="A helpful assistant that can answer questions and provide the current time",
-    tools={"get_current_time": get_current_time},
-    agent_name="TimeAssistant"
+    model_config=openai_config,
+    agent_name="Assistant",
+    description="A helpful AI assistant",
+    system_prompt="""You are a helpful assistant.
+    Be concise, accurate, and friendly."""
+)
+
+# Agent with tools
+def calculate(expression: str) -> float:
+    """Safely evaluate a mathematical expression."""
+    # Safe evaluation implementation
+    return eval(expression, {"__builtins__": {}})
+
+agent_with_tools = Agent(
+    model_config=openai_config,
+    agent_name="Calculator",
+    description="An agent that can perform calculations",
+    tools={"calculate": calculate}
 )
 ```
 
-## Step 4: Run Your First Task
+## 🚀 Running Tasks
+
+### Simple Task Execution
 
 ```python
-async def main():
-    # Simple conversation
-    response = await agent.auto_run(
-        "Hello! Can you tell me what time it is?"
+async def run_simple_task():
+    result = await Orchestra.run(
+        task="What is the capital of France?",
+        topology={
+            "nodes": ["Assistant"],
+            "edges": []
+        }
     )
-    print(f"Agent response: {response}")
 
-# Run the async function
-if __name__ == "__main__":
-    asyncio.run(main())
+    print(f"Success: {result.success}")
+    print(f"Response: {result.final_response}")
+    print(f"Duration: {result.total_duration:.2f}s")
+
+# Run the task
+asyncio.run(run_simple_task())
 ```
 
-## Complete Example
-
-Here's the complete working example:
+### Task with Context
 
 ```python
-import asyncio
-from datetime import datetime
-from marsys import Agent, ModelConfig
-
-def get_current_time():
-    """Get the current time as a string."""
-    return datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-
-async def main():
-    # Configure the model
-    config = ModelConfig(
-        type="api",
-        name="gpt-4",
-        api_key="your-api-key-here",
-        max_tokens=1000,
-        temperature=0.7
-    )
-    
-    # Create the agent
-    agent = Agent(
-        model_config=config,
-        description="A helpful assistant that can answer questions and provide the current time",
-        tools={"get_current_time": get_current_time},
-        agent_name="TimeAssistant"
-    )
-    
-    # Run a task
-    response = await agent.auto_run(
-        "Hello! Can you tell me what time it is and explain what you can do?"
-    )
-    
-    print(f"Agent response: {response}")
-
-if __name__ == "__main__":
-    asyncio.run(main())
-```
-
-## What Happens Under the Hood
-
-When you run this example:
-
-1. **Agent Creation**: The agent is initialized with your model configuration and tools
-2. **Task Processing**: The `auto_run` method processes your request through multiple steps
-3. **Tool Usage**: The agent can call the `get_current_time` function when needed
-4. **Response Generation**: The agent formulates a comprehensive response
-
-## Common Patterns
-
-### Adding Multiple Tools
-
-```python
-def calculate_sum(a: float, b: float) -> float:
-    """Calculate the sum of two numbers."""
-    return a + b
-
-def get_weather(city: str) -> str:
-    """Get weather for a city (mock implementation)."""
-    return f"The weather in {city} is sunny and 75°F"
-
-tools = {
-    "get_current_time": get_current_time,
-    "calculate_sum": calculate_sum,
-    "get_weather": get_weather
+context = {
+    "user_name": "Alice",
+    "preferences": {
+        "language": "French",
+        "style": "formal"
+    }
 }
 
-agent = Agent(
-    model_config=config,
-    description="A multi-tool assistant",
-    tools=tools
+result = await Orchestra.run(
+    task="Write a greeting message",
+    topology={"nodes": ["Assistant"], "edges": []},
+    context=context
 )
+```
+
+## 🔧 Using Tools
+
+### Weather Agent Example
+
+```python
+import requests
+
+def get_weather(city: str) -> dict:
+    """Get current weather for a city."""
+    # In production, use real API
+    return {
+        "city": city,
+        "temperature": "22°C",
+        "condition": "Sunny",
+        "humidity": "60%"
+    }
+
+def search_web(query: str, max_results: int = 5) -> list:
+    """Search the web for information."""
+    # Implementation here
+    return [
+        {"title": "Result 1", "url": "...", "snippet": "..."},
+        # More results...
+    ]
+
+# Create weather assistant
+weather_agent = Agent(
+    model_config=openai_config,
+    agent_name="WeatherAssistant",
+    description="Provides weather information",
+    system_prompt="You help users with weather information.",
+    tools={
+        "get_weather": get_weather,
+        "search_web": search_web
+    }
+)
+
+# Use the agent
+result = await Orchestra.run(
+    task="What's the weather like in Paris?",
+    topology={"nodes": ["WeatherAssistant"], "edges": []}
+)
+```
+
+## 💬 Multi-Agent Conversation
+
+### Two-Agent Dialogue
+
+```python
+# Create two agents
+analyst = Agent(
+    model_config=openai_config,
+    agent_name="Analyst",
+    description="Data analysis expert",
+    system_prompt="You analyze data and provide insights."
+)
+
+reviewer = Agent(
+    model_config=claude_config,
+    agent_name="Reviewer",
+    description="Reviews and critiques analyses",
+    system_prompt="You review analyses for accuracy and completeness."
+)
+
+# Define conversation topology
+topology = {
+    "nodes": ["Analyst", "Reviewer"],
+    "edges": ["Analyst <-> Reviewer"],  # Bidirectional
+    "rules": ["max_turns(3)"]  # Limit conversation
+}
+
+# Run conversation
+result = await Orchestra.run(
+    task="Analyze the impact of AI on employment",
+    topology=topology
+)
+```
+
+## 🎯 Hub-and-Spoke Pattern
+
+### Research Team Example
+
+```python
+from src.coordination.topology.patterns import PatternConfig
+
+# Create specialized agents
+coordinator = Agent(
+    agent_name="Coordinator",
+    description="Coordinates research tasks",
+    system_prompt="You coordinate research by delegating to specialists."
+)
+
+data_collector = Agent(
+    agent_name="DataCollector",
+    description="Gathers data from various sources",
+    tools={"search_web": search_web}
+)
+
+analyzer = Agent(
+    agent_name="Analyzer",
+    description="Analyzes collected data",
+    system_prompt="You provide deep analysis of data."
+)
+
+writer = Agent(
+    agent_name="Writer",
+    description="Writes comprehensive reports",
+    system_prompt="You write clear, well-structured reports."
+)
+
+# Hub-and-spoke topology
+topology = PatternConfig.hub_and_spoke(
+    hub="Coordinator",
+    spokes=["DataCollector", "Analyzer", "Writer"],
+    parallel_spokes=True  # Run spokes in parallel
+)
+
+# Execute research task
+result = await Orchestra.run(
+    task="Research the latest developments in quantum computing",
+    topology=topology,
+    execution_config=ExecutionConfig(
+        status=StatusConfig(
+            enabled=True,
+            verbosity=1  # Show progress
+        )
+    )
+)
+```
+
+## 📝 Handling Responses
+
+### Response Structure
+
+```python
+# OrchestraResult contains:
+result = await Orchestra.run(task, topology)
+
+# Access results
+print(f"Success: {result.success}")
+print(f"Final response: {result.final_response}")
+print(f"Total steps: {result.total_steps}")
+print(f"Duration: {result.total_duration}s")
+
+# Branch results (for multi-agent)
+for branch_result in result.branch_results:
+    print(f"Branch {branch_result.branch_id}:")
+    print(f"  Status: {branch_result.status}")
+    print(f"  Agent: {branch_result.final_agent}")
+    print(f"  Response: {branch_result.final_response}")
+
+# Metadata
+print(f"Metadata: {result.metadata}")
 ```
 
 ### Error Handling
 
 ```python
-async def run_with_error_handling():
-    try:
-        response = await agent.auto_run("What's the weather in Paris?")
-        print(response)
-    except Exception as e:
-        print(f"Error occurred: {e}")
+try:
+    result = await Orchestra.run(
+        task="Complex task",
+        topology=topology,
+        max_steps=50,
+        execution_config=ExecutionConfig(
+            step_timeout=30.0,
+            convergence_timeout=300.0
+        )
+    )
+
+    if result.success:
+        print(f"Success: {result.final_response}")
+    else:
+        print(f"Failed: {result.error}")
+
+except TimeoutError:
+    print("Task timed out")
+except Exception as e:
+    print(f"Error: {e}")
 ```
 
-## Next Steps
+## 💾 Memory Management
 
-Now that you've created your first agent, you can:
+### Agent with Memory
 
-- **[Add More Tools](../concepts/tools.md)** - Learn about the tool system
-- **[Explore Memory](../concepts/memory.md)** - Understand how agents remember conversations
-- **[Multi-Agent Systems](multi-agent.md)** - Create agents that work together
-- **[Browser Automation](browser-automation.md)** - Build agents that can interact with web pages
+```python
+# Session memory (default)
+agent_with_memory = Agent(
+    model_config=config,
+    agent_name="MemoryAgent",
+    memory_retention="session"  # Keeps memory during session
+)
 
-## Troubleshooting
+# First interaction
+result1 = await Orchestra.run(
+    task="My name is Alice",
+    topology={"nodes": ["MemoryAgent"], "edges": []}
+)
 
-### Common Issues
+# Second interaction (remembers context)
+result2 = await Orchestra.run(
+    task="What's my name?",
+    topology={"nodes": ["MemoryAgent"], "edges": []}
+)
+# Response: "Your name is Alice"
 
-**API Key Errors**:
-- Make sure your API key is valid and has sufficient credits
-- Check that you're using the correct model name
+# Clear memory
+agent_with_memory.memory.clear()
+```
 
-**Import Errors**:
-- Ensure MARSYS is properly installed: `pip install marsys`
-- Check your Python version is 3.8 or higher
+## ⚙️ Configuration Options
 
-**Model Loading Issues** (for local models):
-- Local models require additional setup and dependencies
-- Consider starting with API-based models for simplicity
+### Execution Configuration
 
-### Getting Help
+```python
+from src.coordination.config import ExecutionConfig, StatusConfig
 
-- **[Documentation](../concepts/overview.md)** - Comprehensive guides
-- **[API Reference](../api/overview.md)** - Technical details
-- **[Community](../contributing/overview.md)** - Ask questions and get support
+config = ExecutionConfig(
+    # Timeouts
+    step_timeout=30.0,
+    convergence_timeout=300.0,
+    branch_timeout=600.0,
 
-Great job completing your first MARSYS tutorial! 🎉 
+    # Status display
+    status=StatusConfig(
+        enabled=True,
+        verbosity=1,  # 0=quiet, 1=normal, 2=verbose
+        show_agent_thoughts=False,
+        show_tool_calls=True
+    ),
+
+    # Behavior
+    max_steps=100,
+    allow_parallel=True,
+    auto_retry_on_error=True
+)
+
+result = await Orchestra.run(
+    task="Your task",
+    topology=topology,
+    execution_config=config
+)
+```
+
+## 🎓 Complete Example
+
+### Customer Support System
+
+```python
+import asyncio
+from src.agents import Agent
+from src.models import ModelConfig
+from src.coordination import Orchestra
+from src.coordination.topology.patterns import PatternConfig
+
+async def create_support_system():
+    # Configure model
+    config = ModelConfig(
+        type="api",
+        provider="openai",
+        name="gpt-4",
+        api_key="your-api-key"
+    )
+
+    # Create support agents
+    greeter = Agent(
+        model_config=config,
+        agent_name="Greeter",
+        description="Greets customers and understands their needs",
+        system_prompt="""You are a friendly customer service greeter.
+        - Welcome customers warmly
+        - Understand their needs
+        - Route to appropriate department"""
+    )
+
+    technical_support = Agent(
+        model_config=config,
+        agent_name="TechnicalSupport",
+        description="Handles technical issues",
+        system_prompt="You are a technical support specialist."
+    )
+
+    billing_support = Agent(
+        model_config=config,
+        agent_name="BillingSupport",
+        description="Handles billing inquiries",
+        system_prompt="You are a billing specialist."
+    )
+
+    # Define topology
+    topology = {
+        "nodes": ["User", "Greeter", "TechnicalSupport", "BillingSupport"],
+        "edges": [
+            "User -> Greeter",
+            "Greeter -> User",
+            "Greeter -> TechnicalSupport",
+            "Greeter -> BillingSupport",
+            "TechnicalSupport -> User",
+            "BillingSupport -> User"
+        ]
+    }
+
+    # Run support session
+    result = await Orchestra.run(
+        task="I can't login to my account and I have a billing question",
+        topology=topology,
+        execution_config=ExecutionConfig(
+            status=StatusConfig(enabled=True, verbosity=1)
+        )
+    )
+
+    return result
+
+# Run the system
+if __name__ == "__main__":
+    result = asyncio.run(create_support_system())
+    print(f"Support session completed: {result.success}")
+    print(f"Resolution: {result.final_response}")
+```
+
+## 📚 Best Practices
+
+### 1. **Agent Design**
+- Keep agents focused on specific tasks
+- Write clear, specific system prompts
+- Use descriptive agent names
+
+### 2. **Tool Usage**
+- Provide comprehensive docstrings
+- Handle errors gracefully in tools
+- Return structured data when possible
+
+### 3. **Memory Management**
+- Clear memory when starting new contexts
+- Use appropriate retention policies
+- Don't store sensitive information
+
+### 4. **Error Handling**
+- Set appropriate timeouts
+- Implement retry logic
+- Provide fallback behaviors
+
+### 5. **Performance**
+- Use parallel execution when possible
+- Limit conversation turns
+- Monitor token usage
+
+## 🚦 Next Steps
+
+<div class="grid cards" markdown="1">
+
+- :material-layers:{ .lg .middle } **[Multi-Agent Systems](../concepts/advanced/topology.md)**
+
+    ---
+
+    Build complex agent networks
+
+- :material-tools:{ .lg .middle } **[Advanced Tools](../concepts/tools.md)**
+
+    ---
+
+    Create powerful tool integrations
+
+- :material-brain:{ .lg .middle } **[Learning Agents](../concepts/learning-agents.md)**
+
+    ---
+
+    Build adaptive agents
+
+- :material-code-tags:{ .lg .middle } **[API Reference](../api/overview.md)**
+
+    ---
+
+    Complete API documentation
+
+</div>
+
+---
+
+!!! success "Ready for More!"
+    You've learned the basics of MARSYS! Continue with the tutorials to build more complex multi-agent systems.
+
+!!! tip "Pro Tip"
+    Start simple with single agents, then gradually add complexity with multi-agent topologies. The Orchestra handles all the coordination complexity for you!

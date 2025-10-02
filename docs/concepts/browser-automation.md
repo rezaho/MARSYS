@@ -1,560 +1,673 @@
-<!-- filepath: /home/rezaho/research_projects/Multi-agent_AI_Learning/docs/concepts/browser-automation.md -->
 # Browser Automation
 
-Web scraping, interaction, and automation using the `BrowserAgent` and its underlying `BrowserTool`.
+MARSYS provides powerful browser automation capabilities through the BrowserAgent, enabling web scraping, interaction, and intelligent navigation for multi-agent workflows.
 
-## Overview
+## 🎯 Overview
 
-The `BrowserAgent` extends the base `Agent` with web automation capabilities. It utilizes the `BrowserTool`, which leverages the Playwright library, to:
-- Navigate websites
-- Extract information
-- Fill forms
-- Click elements
-- Take screenshots
-- Handle dynamic content
+The browser automation system provides:
 
-The `BrowserAgent` uses its configured Language Model (LLM) to understand tasks, plan steps, and decide which browser tools to employ.
+- **Web Navigation**: Navigate, scrape, and interact with websites
+- **Intelligent Automation**: LLM-guided browser control and decision making
+- **Dynamic Content Handling**: JavaScript execution and async content loading
+- **Form Automation**: Fill forms, click elements, and handle interactions
+- **Robust Error Handling**: Retry mechanisms and resilient operations
 
-## Basic Browser Agent
+## 🏗️ Architecture
 
-### Creating a Browser Agent
+```mermaid
+graph TB
+    subgraph "Browser System"
+        BA[BrowserAgent<br/>High-level Interface]
+        BT[BrowserTool<br/>Low-level Operations]
+        PW[Playwright<br/>Browser Control]
+    end
 
-To create a `BrowserAgent`, you typically use its `create` or `create_safe` class methods.
+    subgraph "Capabilities"
+        NAV[Navigation<br/>URLs, History]
+        INT[Interaction<br/>Clicks, Forms]
+        EXT[Extraction<br/>Text, Data]
+        SCR[Screenshots<br/>Debugging]
+    end
 
-```python
-import asyncio
-from src.agents.browser_agent import BrowserAgent
-from src.models.models import ModelConfig # Corrected import
+    subgraph "Execution"
+        Agent[Agent Logic] --> Plan[Plan Actions]
+        Plan --> Execute[Execute Tools]
+        Execute --> Validate[Validate Results]
+    end
 
-# Example: Create a BrowserAgent instance
-async def main():
-    browser_agent = await BrowserAgent.create_safe( # Using create_safe for robust initialization
-        agent_name="web_navigator",
-        model_config=ModelConfig(
-            type="api",
-            provider="openai",
-            name="gpt-4o", # A capable model for planning
-            # For tasks involving visual understanding of screenshots, a vision model might be beneficial,
-            # though BrowserAgent primarily uses the LLM for planning and tool use.
-        ),
-        generation_description="You are a web automation expert. Navigate carefully and extract information accurately.",
-        temp_dir="./tmp/browser_agent_screenshots", # Directory for screenshots
-        headless_browser=True  # Run without a visible browser window
-    )
-    
-    # Remember to close the browser when done
-    try:
-        # Use the agent...
-        pass
-    finally:
-        if browser_agent.browser_tool:
-            await browser_agent.browser_tool.close_browser()
+    BA --> BT
+    BT --> PW
+    BA --> NAV
+    BA --> INT
+    BA --> EXT
 
-if __name__ == "__main__":
-    asyncio.run(main())
+    style BA fill:#4fc3f7
+    style BT fill:#29b6f6
+    style PW fill:#e1f5fe
 ```
 
-### Using the Browser Agent with `auto_run`
+## 📦 BrowserAgent
 
-The `auto_run` method allows the agent to autonomously execute a task by planning and using its tools.
+### Creating a BrowserAgent
 
 ```python
-# Assuming browser_agent is created as shown above
-# and RequestContext is available or created
-from src.agents.agents import RequestContext
+from src.agents import BrowserAgent
+from src.models import ModelConfig
 
-# response = await browser_agent.auto_run(
-#     initial_prompt="Go to example.com and tell me what the main heading says",
-#     request_context=RequestContext(request_id="my_task_123"), # Provide a request context
-#     max_steps=5 # Limit the number of steps
-# )
-# print(response.content)
+# Create browser agent
+browser_agent = await BrowserAgent.create_safe(
+    agent_name="web_navigator",
+    model_config=ModelConfig(
+        type="api",
+        provider="openai",
+        name="gpt-4",  # Use capable model for planning
+        temperature=0.3  # Lower temperature for consistent behavior
+    ),
+    description="Expert web automation agent for scraping and interaction",
+    headless_browser=True,  # Run without visible window
+    temp_dir="./tmp/screenshots",  # Directory for screenshots
+    playwright_browser_launch_options={
+        "args": ["--disable-blink-features=AutomationControlled"],
+        "ignore_default_args": ["--enable-automation"]
+    }
+)
+
+# Always clean up
+try:
+    # Use the agent
+    result = await browser_agent.run("Navigate to example.com and extract the main heading")
+finally:
+    if browser_agent.browser_tool:
+        await browser_agent.browser_tool.close_browser()
 ```
-*Note: The `auto_run` example is commented out as it requires a running event loop and proper context setup.*
 
-## Browser Tools
+### Using AgentPool for Parallel Browsing
 
-The `BrowserAgent`'s capabilities stem from the `BrowserTool` it encapsulates. When `auto_run` is used, the LLM decides which tools to call. If you are building a custom agent by subclassing `BrowserAgent`, you can directly invoke methods on `self.browser_tool`.
+```python
+from src.agents import AgentPool
 
-Below are common browser operations and their corresponding `BrowserTool` methods:
+# Create pool of browser agents
+browser_pool = AgentPool(
+    agent_class=BrowserAgent,
+    num_instances=3,
+    model_config=config,
+    agent_name="BrowserPool",
+    headless=True
+)
+
+# Parallel scraping
+async def scrape_urls(urls: List[str]):
+    tasks = []
+    for i, url in enumerate(urls):
+        async with browser_pool.acquire(f"branch_{i}") as agent:
+            task = agent.run(f"Scrape content from {url}")
+            tasks.append(task)
+
+    results = await asyncio.gather(*tasks)
+    return results
+
+# Cleanup pool
+await browser_pool.cleanup()
+```
+
+## 🔧 Browser Tools
 
 ### Navigation Tools
 
 ```python
-# In a custom agent method or after direct BrowserTool instantiation:
-# await self.browser_tool.navigate_to_url(url="https://example.com")
-# await self.browser_tool.go_back_in_history()
-# await self.browser_tool.refresh_page()
-# current_url = await self.browser_tool.get_current_page_url()
-```
+class NavigationAgent(BrowserAgent):
+    """Agent with navigation capabilities."""
 
-**Example Task for `auto_run`:**
-`"Navigate to https://example.com, then go to its 'More information...' link, then go back."`
+    async def navigate_with_history(self, urls: List[str], context):
+        """Navigate through multiple pages with history."""
+        for url in urls:
+            await self.browser_tool.navigate_to_url(url)
+            await self._log_progress(context, LogLevel.INFO, f"Navigated to {url}")
+
+            # Wait for page to load
+            await self.browser_tool.wait_for_load_state("networkidle")
+
+            # Take screenshot for debugging
+            await self.browser_tool.take_screenshot_of_page(
+                path=f"./screenshots/{url.replace('/', '_')}.png"
+            )
+
+        # Navigate back through history
+        for _ in range(len(urls) - 1):
+            await self.browser_tool.go_back_in_history()
+            current = await self.browser_tool.get_current_page_url()
+            await self._log_progress(context, LogLevel.INFO, f"Back to {current}")
+```
 
 ### Interaction Tools
 
 ```python
-# In a custom agent method:
-# await self.browser_tool.click_element(selector="button#submit")
-# await self.browser_tool.fill_form_field(selector="input[name=\'email\']", value="test@example.com")
-# await self.browser_tool.select_option_in_dropdown(selector="select#country", value_or_label="US")
-# await self.browser_tool.type_text_into_field(selector="textarea#message", text="Hello world", delay_per_char=0.05)
-```
+class InteractionAgent(BrowserAgent):
+    """Agent for web interactions."""
 
-### Information Extraction
+    async def smart_form_fill(self, form_data: Dict, context):
+        """Intelligently fill forms based on field types."""
 
-```python
-# In a custom agent method:
-# text = await self.browser_tool.get_text_content(selector="h1.title")
-# href = await self.browser_tool.get_element_attribute(selector="a.link", attribute_name="href")
+        for field_name, value in form_data.items():
+            # Try different selector strategies
+            selectors = [
+                f"input[name='{field_name}']",
+                f"input[id='{field_name}']",
+                f"textarea[name='{field_name}']",
+                f"select[name='{field_name}']"
+            ]
 
-# Extract structured data from multiple elements
-# products_data = await self.browser_tool.extract_multiple_elements_data(
-#     main_selector="div.product",
-#     properties={
-#         "name": "h2.product-name", # Selector for name relative to main_selector
-#         "price": "span.price",    # Selector for price
-#         "link": "a.product-link[href]" # Selector for link, also extracts 'href' attribute
-#     },
-#     extract_attributes={"link": "href"} # Specify which property should get an attribute
-# )
-```
+            for selector in selectors:
+                try:
+                    element = await self.browser_tool.query_selector_on_page(selector)
+                    if element and element.get('is_visible'):
+                        # Determine field type and fill appropriately
+                        if 'select' in selector:
+                            await self.browser_tool.select_option_in_dropdown(
+                                selector, value
+                            )
+                        elif element.get('type') == 'checkbox':
+                            if value:  # Check if should be checked
+                                await self.browser_tool.click_element(selector)
+                        else:
+                            await self.browser_tool.fill_form_field(selector, value)
 
-## Advanced Patterns: Custom Browser Agents
+                        await self._log_progress(
+                            context, LogLevel.DEBUG,
+                            f"Filled {field_name} with {value}"
+                        )
+                        break
+                except Exception:
+                    continue
 
-You can create specialized agents by subclassing `BrowserAgent` and implementing custom logic that utilizes `self.browser_tool`.
+    async def smart_click(self, text: str, context, element_type: str = "button"):
+        """Click element by text content."""
 
-### Web Scraping Agent
+        # XPath to find element by text
+        xpath = f"//{element_type}[contains(text(), '{text}')]"
 
-```python
-from typing import List, Dict, Optional
-from src.agents.agents import LogLevel, RequestContext # For logging
-
-class WebScraperAgent(BrowserAgent):
-    """Specialized agent for web scraping."""
-    
-    async def scrape_products(self, url: str, request_context: RequestContext) -> List[Dict]:
-        """Scrape product information from an e-commerce site."""
-        await self.browser_tool.navigate_to_url(url=url)
-        await self.browser_tool.wait_for_selector_to_be_visible(selector="div.product-grid")
-        
-        products = await self.browser_tool.evaluate_javascript_in_page(script="""
-            () => {
-                return Array.from(document.querySelectorAll('.product')).map(product => ({
-                    name: product.querySelector('.name')?.textContent.trim(),
-                    price: product.querySelector('.price')?.textContent.trim(),
-                    image: product.querySelector('img')?.src,
-                    link: product.querySelector('a')?.href
-                }));
-            }
-        """)
-        await self._log_progress(request_context, LogLevel.INFO, f"Scraped {len(products)} products from {url}")
-        return products
-    
-    async def scrape_with_pagination(self, start_url: str, request_context: RequestContext, max_pages: int = 5) -> List[Dict]:
-        """Scrape multiple pages with pagination."""
-        all_products = []
-        current_url = start_url
-        
-        for page_num in range(max_pages):
-            await self._log_progress(request_context, LogLevel.INFO, f"Scraping page {page_num + 1}: {current_url}")
-            products_on_page = await self.scrape_products(url=current_url, request_context=request_context)
-            all_products.extend(products_on_page)
-            
-            next_button_selector = "a.next-page" # Adjust selector as needed
-            next_button_info = await self.browser_tool.query_selector_on_page(selector=next_button_selector)
-
-            if next_button_info and next_button_info.get('is_visible'):
-                await self.browser_tool.click_element(selector=next_button_selector)
-                await self.browser_tool.wait_for_load_state(state="networkidle")
-                current_url = await self.browser_tool.get_current_page_url()
-            else:
-                await self._log_progress(request_context, LogLevel.INFO, "No next page button found or it's not visible.")
-                break
-        
-        return all_products
-```
-
-### Form Automation Agent
-
-```python
-class FormAutomationAgent(BrowserAgent):
-    """Agent for automating form submissions."""
-    
-    async def fill_contact_form(self, data: Dict[str, str], request_context: RequestContext) -> bool:
-        """Fill and submit a contact form."""
         try:
-            await self.browser_tool.fill_form_field(selector="input[name=\'name\']", value=data.get("name", ""))
-            await self.browser_tool.fill_form_field(selector="input[name=\'email\']", value=data.get("email", ""))
-            await self.browser_tool.fill_form_field(selector="textarea[name=\'message\']", value=data.get("message", ""))
-            
-            if "subject" in data:
-                await self.browser_tool.select_option_in_dropdown(selector="select[name=\'subject\']", value_or_label=data["subject"])
-            
-            if data.get("subscribe", False): # Assuming a checkbox
-                await self.browser_tool.click_element(selector="input[type=\'checkbox\'][name=\'subscribe\']")
-            
-            await self.browser_tool.click_element(selector="button[type=\'submit\']")
-            await self.browser_tool.wait_for_selector_to_be_visible(selector=".success-message", timeout_ms=10000)
-            await self._log_progress(request_context, LogLevel.INFO, "Contact form submitted successfully.")
-            return True
-            
+            await self.browser_tool.wait_for_selector_to_be_visible(xpath, 5000)
+            await self.browser_tool.click_element(xpath)
+            await self._log_progress(context, LogLevel.INFO, f"Clicked '{text}' {element_type}")
         except Exception as e:
-            await self._log_progress(request_context, LogLevel.MINIMAL, f"Form submission failed: {e}")
-            return False
+            # Fallback to JavaScript click
+            script = f"""
+            Array.from(document.querySelectorAll('{element_type}')).
+                find(el => el.textContent.includes('{text}'))?.click()
+            """
+            await self.browser_tool.evaluate_javascript_in_page(script)
 ```
 
-### Dynamic Content Handling Agent
+### Data Extraction
 
 ```python
-import asyncio # For sleep
+class ScraperAgent(BrowserAgent):
+    """Advanced web scraping agent."""
 
-class DynamicContentAgent(BrowserAgent):
-    """Agent to handle JavaScript-heavy sites."""
-    
-    async def wait_for_specific_text(self, text_content: str, request_context: RequestContext, timeout_ms: int = 30000):
-        """Wait for specific text to appear on the page."""
-        js_expression = f"document.body.textContent.includes('{text_content}')"
-        await self.browser_tool.wait_for_function_to_return_true(expression=js_expression, timeout_ms=timeout_ms)
-        await self._log_progress(request_context, LogLevel.DETAILED, f"Text '{text_content}' found on page.")
+    async def extract_structured_data(self, url: str, schema: Dict, context):
+        """Extract data according to schema."""
 
-    async def scroll_to_load_items(self, item_selector: str, target_count: int, request_context: RequestContext):
-        """Scroll to load more items (infinite scroll pattern)."""
-        previous_height = -1
-        
-        while True:
-            items = await self.browser_tool.query_selector_all_on_page(selector=item_selector)
-            current_count = len(items)
-            await self._log_progress(request_context, LogLevel.DEBUG, f"Found {current_count} items of selector '{item_selector}'. Target: {target_count}.")
+        await self.browser_tool.navigate_to_url(url)
+        await self.browser_tool.wait_for_load_state("domcontentloaded")
 
-            if current_count >= target_count:
-                await self._log_progress(request_context, LogLevel.INFO, f"Reached target count of {target_count} items.")
-                break
-            
-            current_scroll_height = await self.browser_tool.evaluate_javascript_in_page("document.body.scrollHeight")
-            if current_scroll_height == previous_height:
-                await self._log_progress(request_context, LogLevel.WARNING, "Scroll height did not change. Stopping scroll.")
-                break # Avoid infinite loop if no new content loads
+        # Extract based on schema
+        extracted_data = {}
 
-            await self.browser_tool.evaluate_javascript_in_page("window.scrollTo(0, document.body.scrollHeight)")
-            previous_height = current_scroll_height
-            
+        for field_name, config in schema.items():
+            selector = config.get('selector')
+            attribute = config.get('attribute')
+            multiple = config.get('multiple', False)
+
             try:
-                # Wait for new content to load, e.g., by checking if scroll height increased or new items appeared.
-                # This is a simplified wait; a more robust solution might watch for specific network activity or DOM changes.
-                await self.browser_tool.wait_for_function_to_return_true(
-                    expression=f"document.body.scrollHeight > {previous_height} || document.querySelectorAll('{item_selector}').length > {current_count}",
-                    timeout_ms=10000 # Wait up to 10 seconds for new content
-                )
-            except Exception: # Timeout means no new content
-                await self._log_progress(request_context, LogLevel.WARNING, "Timeout waiting for new content after scroll.")
-                break
-            await asyncio.sleep(1) # Small delay before next scroll
-```
+                if multiple:
+                    # Extract from multiple elements
+                    elements = await self.browser_tool.query_selector_all_on_page(selector)
+                    values = []
 
-### Authentication Handling Agent
+                    for element in elements:
+                        if attribute:
+                            value = element.get(attribute)
+                        else:
+                            value = element.get('text_content', '').strip()
+                        values.append(value)
 
-```python
-class AuthenticationAgent(BrowserAgent):
-    """Agent to handle website authentication."""
-    
-    async def login(self, username: str, password: str, login_url: str, request_context: RequestContext) -> bool:
-        """Perform login on a website."""
-        try:
-            await self.browser_tool.navigate_to_url(url=login_url)
-            await self.browser_tool.fill_form_field(selector="input[name=\'username\']", value=username) # Adjust selectors
-            await self.browser_tool.fill_form_field(selector="input[name=\'password\']", value=password) # Adjust selectors
-            await self.browser_tool.click_element(selector="button[type=\'submit\']") # Adjust selector
-            
-            # Wait for a post-login indicator (e.g., dashboard element or URL change)
-            # This is a simplified example. Robust waiting might involve checking multiple conditions.
-            try:
-                await self.browser_tool.wait_for_selector_to_be_visible(selector=".dashboard", timeout_ms=10000) # Adjust
-                await self._log_progress(request_context, LogLevel.INFO, "Login successful (dashboard visible).")
-                return True
-            except Exception:
-                # Check if URL changed away from login page (another sign of success/failure)
-                current_url = await self.browser_tool.get_current_page_url()
-                if login_url not in current_url:
-                    await self._log_progress(request_context, LogLevel.INFO, f"Login attempt: URL changed to {current_url}.")
-                    # Further checks might be needed here to confirm success
-                    return True # Assuming URL change means success for this example
-                await self._log_progress(request_context, LogLevel.WARNING, "Login failed (dashboard not visible, URL unchanged).")
-                return False
-            
-        except Exception as e:
-            await self._log_progress(request_context, LogLevel.MINIMAL, f"Login process error: {e}")
-            return False
-
-    async def handle_cookie_consent(self, request_context: RequestContext, accept: bool = True):
-        """Handle common cookie consent popups."""
-        common_selectors = [
-            "button[id*='accept-cookies']", "button[class*='cookie-accept']",
-            "//button[contains(text(),'Accept') or contains(text(),'Agree') or contains(text(),'Allow')]" # XPath example
-        ]
-        for selector in common_selectors:
-            try:
-                # Use a short timeout to quickly check for each selector
-                element_info = await self.browser_tool.query_selector_on_page(selector=selector)
-                if element_info and element_info.get('is_visible'):
-                    if accept:
-                        await self.browser_tool.click_element(selector=selector)
-                        await self._log_progress(request_context, LogLevel.INFO, f"Clicked cookie consent button: {selector}")
-                        await asyncio.sleep(1) # Wait a bit for popup to disappear
-                        return True # Assume one click is enough
+                    extracted_data[field_name] = values
+                else:
+                    # Extract from single element
+                    if attribute:
+                        value = await self.browser_tool.get_element_attribute(
+                            selector, attribute
+                        )
                     else:
-                        # Logic for rejecting cookies if needed
-                        await self._log_progress(request_context, LogLevel.INFO, f"Cookie consent button found but not clicked: {selector}")
-                        return True # Indicated presence
-            except Exception:
-                continue # Selector not found or other error, try next
-        await self._log_progress(request_context, LogLevel.DEBUG, "No common cookie consent popups found or handled.")
-        return False
+                        value = await self.browser_tool.get_text_content(selector)
+
+                    extracted_data[field_name] = value
+
+            except Exception as e:
+                await self._log_progress(
+                    context, LogLevel.WARNING,
+                    f"Failed to extract {field_name}: {e}"
+                )
+                extracted_data[field_name] = None
+
+        return extracted_data
+
+    async def extract_table_data(self, table_selector: str, context):
+        """Extract data from HTML tables."""
+
+        script = f"""
+        () => {{
+            const table = document.querySelector('{table_selector}');
+            if (!table) return null;
+
+            const headers = Array.from(table.querySelectorAll('th'))
+                .map(th => th.textContent.trim());
+
+            const rows = Array.from(table.querySelectorAll('tbody tr'))
+                .map(tr => {{
+                    const cells = Array.from(tr.querySelectorAll('td'));
+                    const rowData = {{}};
+                    cells.forEach((td, i) => {{
+                        rowData[headers[i] || `col_${{i}}`] = td.textContent.trim();
+                    }});
+                    return rowData;
+                }});
+
+            return {{headers, rows}};
+        }}
+        """
+
+        return await self.browser_tool.evaluate_javascript_in_page(script)
 ```
 
-## Error Handling and Resilience
+## 🎯 Advanced Patterns
 
-### Retry Mechanisms
+### Pagination Handling
+
+```python
+class PaginationAgent(BrowserAgent):
+    """Handle paginated content."""
+
+    async def scrape_all_pages(
+        self,
+        start_url: str,
+        item_selector: str,
+        next_button_selector: str,
+        max_pages: int = 10,
+        context = None
+    ):
+        """Scrape data across multiple pages."""
+
+        all_items = []
+        current_page = 1
+
+        await self.browser_tool.navigate_to_url(start_url)
+
+        while current_page <= max_pages:
+            # Wait for items to load
+            await self.browser_tool.wait_for_selector_to_be_visible(
+                item_selector, timeout_ms=10000
+            )
+
+            # Extract items from current page
+            items = await self.browser_tool.evaluate_javascript_in_page(f"""
+                Array.from(document.querySelectorAll('{item_selector}'))
+                    .map(el => el.textContent.trim())
+            """)
+
+            all_items.extend(items)
+            await self._log_progress(
+                context, LogLevel.INFO,
+                f"Page {current_page}: Extracted {len(items)} items"
+            )
+
+            # Check for next page
+            next_button = await self.browser_tool.query_selector_on_page(
+                next_button_selector
+            )
+
+            if next_button and next_button.get('is_visible'):
+                await self.browser_tool.click_element(next_button_selector)
+                await self.browser_tool.wait_for_load_state("networkidle")
+                current_page += 1
+            else:
+                break
+
+        return all_items
+```
+
+### Dynamic Content Loading
+
+```python
+class DynamicContentAgent(BrowserAgent):
+    """Handle JavaScript-heavy sites."""
+
+    async def wait_for_ajax_content(
+        self,
+        content_indicator: str,
+        timeout: int = 30,
+        context = None
+    ):
+        """Wait for AJAX content to load."""
+
+        # Wait for specific text or element
+        await self.browser_tool.wait_for_function_to_return_true(
+            f"document.body.textContent.includes('{content_indicator}')",
+            timeout_ms=timeout * 1000
+        )
+
+    async def infinite_scroll_scrape(
+        self,
+        item_selector: str,
+        target_count: int,
+        context = None
+    ):
+        """Handle infinite scroll patterns."""
+
+        items_found = 0
+        no_new_items_count = 0
+        max_no_new = 3
+
+        while items_found < target_count:
+            # Count current items
+            current_items = await self.browser_tool.evaluate_javascript_in_page(
+                f"document.querySelectorAll('{item_selector}').length"
+            )
+
+            if current_items == items_found:
+                no_new_items_count += 1
+                if no_new_items_count >= max_no_new:
+                    break
+            else:
+                no_new_items_count = 0
+                items_found = current_items
+
+            # Scroll to bottom
+            await self.browser_tool.evaluate_javascript_in_page(
+                "window.scrollTo(0, document.body.scrollHeight)"
+            )
+
+            # Wait for potential new content
+            await asyncio.sleep(2)
+
+            await self._log_progress(
+                context, LogLevel.DEBUG,
+                f"Found {items_found} items, target: {target_count}"
+            )
+
+        # Extract all items
+        return await self.browser_tool.evaluate_javascript_in_page(f"""
+            Array.from(document.querySelectorAll('{item_selector}'))
+                .map(el => el.textContent.trim())
+        """)
+```
+
+### Authentication Handling
+
+```python
+class AuthAgent(BrowserAgent):
+    """Handle authentication flows."""
+
+    async def login_with_cookies(
+        self,
+        login_url: str,
+        cookies: List[Dict],
+        context = None
+    ):
+        """Login using saved cookies."""
+
+        # Navigate to site
+        await self.browser_tool.navigate_to_url(login_url)
+
+        # Set cookies
+        for cookie in cookies:
+            await self.browser_tool.context.add_cookies([cookie])
+
+        # Refresh to apply cookies
+        await self.browser_tool.refresh_page()
+
+        # Verify login success
+        return await self.verify_login_status(context)
+
+    async def handle_2fa(
+        self,
+        code_input_selector: str,
+        get_2fa_code: Callable,
+        context = None
+    ):
+        """Handle two-factor authentication."""
+
+        # Wait for 2FA input
+        await self.browser_tool.wait_for_selector_to_be_visible(
+            code_input_selector, timeout_ms=30000
+        )
+
+        # Get 2FA code (from email, SMS, authenticator, etc.)
+        code = await get_2fa_code()
+
+        # Enter code
+        await self.browser_tool.fill_form_field(code_input_selector, code)
+
+        # Submit (usually auto-submits, but can click submit if needed)
+        await self.browser_tool.press_key("Enter")
+
+        # Wait for redirect after successful 2FA
+        await self.browser_tool.wait_for_load_state("networkidle")
+```
+
+## 🛡️ Error Handling
+
+### Resilient Operations
 
 ```python
 class ResilientBrowserAgent(BrowserAgent):
     """Browser agent with enhanced error handling."""
-    
-    async def safe_click(self, selector: str, request_context: RequestContext, retries: int = 3, delay_s: int = 1) -> bool:
-        """Click an element with retry logic."""
-        for attempt in range(retries):
+
+    async def retry_operation(
+        self,
+        operation: Callable,
+        max_retries: int = 3,
+        backoff_factor: float = 2.0,
+        context = None
+    ):
+        """Execute operation with exponential backoff retry."""
+
+        last_error = None
+        wait_time = 1.0
+
+        for attempt in range(max_retries):
             try:
-                await self.browser_tool.wait_for_selector_to_be_visible(selector=selector, timeout_ms=5000)
-                await self.browser_tool.click_element(selector=selector)
-                await self._log_progress(request_context, LogLevel.DETAILED, f"Clicked '{selector}' on attempt {attempt + 1}.")
-                return True
+                result = await operation()
+                if attempt > 0:
+                    await self._log_progress(
+                        context, LogLevel.INFO,
+                        f"Operation succeeded on attempt {attempt + 1}"
+                    )
+                return result
+
             except Exception as e:
-                await self._log_progress(request_context, LogLevel.WARNING, f"Attempt {attempt + 1} to click '{selector}' failed: {e}")
-                if attempt == retries - 1:
-                    await self._log_progress(request_context, LogLevel.MINIMAL, f"Failed to click '{selector}' after {retries} attempts.")
-                    return False
-                await asyncio.sleep(delay_s)
-        return False # Should not be reached if retries > 0
-```
-
-### Screenshot for Debugging
-
-```python
-from datetime import datetime # For timestamping screenshots
-
-class DebugBrowserAgent(BrowserAgent):
-    """Browser agent with debugging capabilities."""
-    
-    async def take_debug_screenshot(self, label: str, request_context: RequestContext, full_page: bool = True):
-        """Take a screenshot for debugging purposes."""
-        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-        # Ensure temp_dir exists (it's passed during BrowserAgent.create)
-        # Defaulting to a local temp if not configured, though BrowserTool handles its own temp dir.
-        # For BrowserAgent, self.browser_tool.temp_dir is the one to use.
-        screenshot_dir = self.browser_tool.temp_dir if self.browser_tool else "./tmp_screenshots" 
-        filename = os.path.join(screenshot_dir, f"debug_{label}_{timestamp}.png")
-        
-        try:
-            await self.browser_tool.take_screenshot_of_page(path=filename, full_page=full_page)
-            await self._log_progress(request_context, LogLevel.DETAILED, f"Debug screenshot saved: {filename}")
-        except Exception as e:
-            await self._log_progress(request_context, LogLevel.ERROR, f"Failed to save debug screenshot {filename}: {e}")
-
-    async def highlight_and_screenshot(self, selector: str, label: str, request_context: RequestContext):
-        """Highlight an element and take a screenshot."""
-        original_style = ""
-        try:
-            # Get original style to restore it later
-            original_style = await self.browser_tool.evaluate_javascript_in_page(
-                f"let el = document.querySelector('{selector}'); el ? el.style.border : ''"
-            )
-            await self.browser_tool.evaluate_javascript_in_page(
-                f"let el = document.querySelector('{selector}'); if (el) el.style.border = '3px solid red';"
-            )
-            await self.take_debug_screenshot(label=f"{label}_highlighted_{selector.replace(' ','_')}", request_context=request_context)
-        except Exception as e:
-            await self._log_progress(request_context, LogLevel.WARNING, f"Could not highlight or screenshot {selector}: {e}")
-        finally:
-            # Restore original style
-            if original_style is not None: # Check if original_style was fetched
-                 await self.browser_tool.evaluate_javascript_in_page(
-                    f"let el = document.querySelector('{selector}'); if (el) el.style.border = '{original_style}';"
+                last_error = e
+                await self._log_progress(
+                    context, LogLevel.WARNING,
+                    f"Attempt {attempt + 1} failed: {e}"
                 )
 
+                if attempt < max_retries - 1:
+                    await asyncio.sleep(wait_time)
+                    wait_time *= backoff_factor
+
+        raise Exception(f"Operation failed after {max_retries} attempts: {last_error}")
+
+    async def safe_extract(
+        self,
+        selector: str,
+        default: Any = None,
+        context = None
+    ):
+        """Safely extract element with fallback."""
+
+        try:
+            element = await self.browser_tool.query_selector_on_page(selector)
+            if element and element.get('is_visible'):
+                return element.get('text_content', '').strip()
+        except Exception as e:
+            await self._log_progress(
+                context, LogLevel.DEBUG,
+                f"Failed to extract {selector}: {e}"
+            )
+
+        return default
 ```
 
-## Performance Optimization
+## 🚀 Performance Optimization
 
-### Customizing Browser Launch Options
-
-You can pass Playwright launch options when creating the `BrowserTool` instance, usually via the `BrowserAgent.create` method, to optimize performance (e.g., disable images or JavaScript if not needed).
+### Resource Blocking
 
 ```python
 class OptimizedBrowserAgent(BrowserAgent):
-    """Browser agent with performance optimizations."""
+    """Optimized browser agent for faster scraping."""
 
-    @classmethod
-    async def create_optimized(
-        cls,
-        model_config: ModelConfig,
-        agent_name: Optional[str] = None,
-        # ... other BrowserAgent.create_safe params
-        disable_images: bool = False,
-        disable_javascript: bool = False,
+    async def setup_fast_scraping(self, context = None):
+        """Configure browser for fast text scraping."""
+
+        # Block unnecessary resources
+        await self.browser_tool.route("**/*", lambda route:
+            route.abort() if route.request.resource_type in
+            ["image", "stylesheet", "font", "media"]
+            else route.continue_()
+        )
+
+        # Disable JavaScript if not needed
+        await self.browser_tool.context.set_javascript_enabled(False)
+
+        await self._log_progress(
+            context, LogLevel.INFO,
+            "Optimized browser for fast scraping"
+        )
+
+    async def parallel_scrape(
+        self,
+        urls: List[str],
+        extractor: Callable,
+        max_concurrent: int = 5,
+        context = None
     ):
-        launch_options = {"args": []}
-        if disable_images:
-            launch_options["args"].append("--blink-settings=imagesEnabled=false")
-        if disable_javascript: # Disabling JS can break many sites
-            launch_options["args"].append("--disable-javascript")
-            # Note: Playwright does not have a direct --disable-javascript arg.
-            # This would typically be handled by request interception or context options.
-            # For simplicity, we'll assume it's a conceptual argument.
-            # A more accurate way for JS: await context.set_java_script_enabled(False)
-            # This would require customizing BrowserTool's browser context creation.
+        """Scrape multiple URLs in parallel."""
 
-        # The BrowserAgent.create/create_safe methods pass **kwargs to initialize_browser_tool,
-        # which in turn passes them to BrowserTool.create.
-        # BrowserTool.create accepts 'playwright_browser_launch_options'.
-        agent = await cls.create_safe( # or cls.create
-            model_config=model_config,
-            agent_name=agent_name,
-            # ... other params ...
-            # Pass launch options through kwargs to BrowserTool
-            playwright_browser_launch_options=launch_options 
-        )
-        return agent
+        semaphore = asyncio.Semaphore(max_concurrent)
 
-    async def block_resources_by_type(self, resource_types: List[str], request_context: RequestContext):
-        """Block specific resource types (e.g., 'image', 'stylesheet', 'font', 'media')."""
-        await self.browser_tool.set_request_interception(enabled=True, resource_types_to_block=resource_types)
-        await self._log_progress(request_context, LogLevel.INFO, f"Blocking resource types: {resource_types}")
+        async def scrape_with_limit(url):
+            async with semaphore:
+                try:
+                    await self.browser_tool.navigate_to_url(url)
+                    return await extractor(self.browser_tool)
+                except Exception as e:
+                    await self._log_progress(
+                        context, LogLevel.ERROR,
+                        f"Failed to scrape {url}: {e}"
+                    )
+                    return None
 
-    async def fast_scrape_text(self, url: str, request_context: RequestContext) -> Optional[str]:
-        """Optimized scraping for text content by blocking unnecessary resources."""
-        await self.block_resources_by_type(resource_types=['image', 'media', 'font', 'stylesheet'], request_context=request_context)
-        
-        await self.browser_tool.navigate_to_url(url=url)
-        await self.browser_tool.wait_for_load_state(state="domcontentloaded")
-        
-        text_content = await self.browser_tool.evaluate_javascript_in_page(script="document.body.innerText")
-        
-        # Re-enable resource loading if needed for subsequent operations by this agent instance
-        await self.browser_tool.set_request_interception(enabled=False) 
-        return text_content
+        tasks = [scrape_with_limit(url) for url in urls]
+        results = await asyncio.gather(*tasks)
+
+        return [r for r in results if r is not None]
 ```
 
-## Testing Browser Automation
+## 📋 Best Practices
 
-Use `pytest` for testing your browser automation agents.
+### 1. **Explicit Waits**
 
 ```python
-import pytest
-import os # For path joining
-from src.agents.browser_agent import BrowserAgent
-from src.models.models import ModelConfig
-from src.agents.agents import RequestContext # Added
+# ✅ GOOD - Wait for specific conditions
+await browser_tool.wait_for_selector_to_be_visible("#content", timeout_ms=10000)
+await browser_tool.wait_for_load_state("networkidle")
 
-# Ensure a directory for test screenshots exists
-TEST_SCREENSHOT_DIR = "./tmp/test_screenshots"
-if not os.path.exists(TEST_SCREENSHOT_DIR):
-    os.makedirs(TEST_SCREENSHOT_DIR)
-
-@pytest.mark.asyncio
-class TestBrowserAgentFunctionality: # Renamed class to avoid conflict
-    @pytest.fixture
-    async def browser_agent(self):
-        agent = await BrowserAgent.create_safe(
-            agent_name="test_browser",
-            model_config=ModelConfig(type="api", provider="openai", name="gpt-4.1-mini"), # Use a fast model for tests
-            temp_dir=TEST_SCREENSHOT_DIR,
-            headless_browser=True
-        )
-        yield agent
-        # Cleanup: Close the browser after tests
-        if agent.browser_tool:
-            await agent.browser_tool.close_browser()
-
-    async def test_navigation(self, browser_agent: BrowserAgent):
-        """Test basic navigation."""
-        request_ctx = RequestContext(request_id="test_nav")
-        target_url = "https://example.com/" # Ensure trailing slash if server redirects
-        await browser_agent.browser_tool.navigate_to_url(url=target_url)
-        current_url = await browser_agent.browser_tool.get_current_page_url()
-        assert target_url in current_url # Check if current_url starts with target_url or matches
-
-    async def test_element_interaction(self, browser_agent: BrowserAgent):
-        """Test element interaction (example assumes a specific page structure)."""
-        request_ctx = RequestContext(request_id="test_interact")
-        # This test requires a page with the specified form elements.
-        # For a real test, you might use a local test HTML file.
-        # await browser_agent.browser_tool.navigate_to_url(url="file:///path/to/your/test_form.html")
-        # For now, let's assume example.com doesn't have these, so this would fail.
-        # This is more of a template.
-        # await browser_agent.browser_tool.fill_form_field(selector="input[name=\'test_input\']", value="test value")
-        # value = await browser_agent.browser_tool.get_element_attribute(selector="input[name=\'test_input\']", attribute_name="value")
-        # assert value == "test value"
-        await browser_agent.browser_tool.navigate_to_url(url="https://example.com/")
-        body_text = await browser_agent.browser_tool.get_text_content(selector="body")
-        assert "Example Domain" in body_text
-
+# ❌ BAD - Fixed delays
+await asyncio.sleep(5)  # Unreliable and slow
 ```
 
-## Best Practices
-
-1.  **Use Headless Mode**: Run in headless mode for CI/CD and performance, but test with headed mode during development.
-2.  **Explicit Waits**: Prefer explicit waits (`wait_for_selector_to_be_visible`, `wait_for_function_to_return_true`, etc.) over fixed delays (`asyncio.sleep`).
-3.  **Robust Selectors**: Choose selectors that are unique and less likely to change (e.g., IDs, `data-testid` attributes).
-4.  **Resource Cleanup**: Always close the browser (`await agent.browser_tool.close_browser()`) when done to free up resources.
-5.  **Error Handling**: Implement try-except blocks and retry logic for operations prone to flakiness (network issues, dynamic content loading).
-6.  **Respect `robots.txt`**: Adhere to website scraping policies.
-7.  **Rate Limiting**: Be mindful of request frequency; add delays if necessary to avoid overloading servers or getting blocked. The framework does not provide a built-in rate limiter for browser actions.
-8.  **Modular Design**: Use the Page Object Pattern (see below) or similar structures for maintainable automation code.
-9.  **Logging**: Utilize the agent's `_log_progress` method with appropriate `RequestContext` for better traceability.
-
-## Common Patterns
-
-### Page Object Model (POM)
-
-The Page Object Model is a design pattern that helps create maintainable and reusable automation scripts. Each page of the web application is represented by a class.
+### 2. **Robust Selectors**
 
 ```python
-class BasePage:
-    def __init__(self, browser_agent: BrowserAgent, request_context: RequestContext):
-        self.agent = browser_agent # The BrowserAgent instance
-        self.tool = browser_agent.browser_tool # Direct access to BrowserTool
-        self.request_context = request_context
+# ✅ GOOD - Specific, stable selectors
+await browser_tool.click_element("[data-testid='submit-button']")
+await browser_tool.click_element("#unique-id")
 
-    async def wait_for_page_load_indicator(self, selector: str, timeout_ms: int = 10000):
-        await self.tool.wait_for_selector_to_be_visible(selector=selector, timeout_ms=timeout_ms)
-        await self.agent._log_progress(self.request_context, LogLevel.INFO, f"Page indicator '{selector}' found.")
-
-
-class LoginPage(BasePage):
-    USERNAME_INPUT = "input#username"
-    PASSWORD_INPUT = "input#password"
-    LOGIN_BUTTON = "button#login"
-    PAGE_LOAD_INDICATOR = "form#login-form" # An element unique to the login page
-
-    async def load(self, login_url: str):
-        await self.tool.navigate_to_url(url=login_url)
-        await self.wait_for_page_load_indicator(selector=self.PAGE_LOAD_INDICATOR)
-
-    async def login(self, username: str, password: str):
-        await self.tool.fill_form_field(selector=self.USERNAME_INPUT, value=username)
-        await self.tool.fill_form_field(selector=self.PASSWORD_INPUT, value=password)
-        await self.tool.click_element(selector=self.LOGIN_BUTTON)
-        # Add wait for post-login page or success message
-
-# Usage:
-# async def perform_login(agent: BrowserAgent, request_ctx: RequestContext):
-#     login_page = LoginPage(browser_agent=agent, request_context=request_ctx)
-#     await login_page.load("https://example.com/login")
-#     await login_page.login("user", "pass")
+# ❌ BAD - Fragile selectors
+await browser_tool.click_element("div > span:nth-child(3)")
 ```
 
-## Next Steps
+### 3. **Resource Management**
 
-- Explore [Learning Agents](./learning-agents.md) - Agents that can learn and improve from interactions.
-- See [Examples](../use-cases/examples.md) - More examples of agent usage. <!-- Assuming examples.md exists -->
-- Learn about [Custom Agents](./custom-agents.md) - General guidelines for building specialized agents.
+```python
+# ✅ GOOD - Always cleanup
+browser_agent = await BrowserAgent.create_safe(...)
+try:
+    # Use agent
+    result = await browser_agent.run(task)
+finally:
+    await browser_agent.browser_tool.close_browser()
+
+# ❌ BAD - Leaving browsers open
+browser_agent = await BrowserAgent.create_safe(...)
+result = await browser_agent.run(task)
+# Browser left running!
+```
+
+### 4. **Error Context**
+
+```python
+# ✅ GOOD - Detailed error context
+try:
+    await browser_tool.click_element(selector)
+except Exception as e:
+    await self._log_progress(
+        context, LogLevel.ERROR,
+        f"Failed to click {selector} on {await browser_tool.get_current_page_url()}: {e}"
+    )
+    # Take screenshot for debugging
+    await browser_tool.take_screenshot_of_page("error_screenshot.png")
+
+# ❌ BAD - Generic error handling
+try:
+    await browser_tool.click_element(selector)
+except:
+    print("Click failed")
+```
+
+## 🚦 Next Steps
+
+<div class="grid cards" markdown="1">
+
+- :material-robot:{ .lg .middle } **[Agents](agents.md)**
+
+    ---
+
+    Learn about the agent system
+
+- :material-tools:{ .lg .middle } **[Tools](tools.md)**
+
+    ---
+
+    Explore available tools
+
+- :material-test-tube:{ .lg .middle } **[Testing Guide](../guides/testing.md)**
+
+    ---
+
+    Test browser automation
+
+- :material-api:{ .lg .middle } **[API Reference](../api/browser.md)**
+
+    ---
+
+    Complete browser API
+
+</div>
+
+---
+
+!!! success "Browser Automation Ready!"
+    You now understand browser automation in MARSYS. The BrowserAgent provides powerful web interaction capabilities for your multi-agent workflows.

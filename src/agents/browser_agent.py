@@ -6,17 +6,17 @@ import re
 import tempfile
 import uuid
 from pathlib import Path
-from typing import Any, Callable, Dict, List, Optional, Union
+from typing import Any, Callable, Dict, List, Optional
 from urllib.parse import urlparse
 
 from PIL import Image as PILImage
 from playwright.async_api import Browser, Page, async_playwright
 
 from src.environment.web_browser import BrowserTool
-from src.models.models import BaseAPIModel, BaseLLM, BaseVLM, ModelConfig
+from src.models.models import ModelConfig
 
-from .agents import BaseAgent, Agent
-from .memory import MemoryManager, Message
+from .agents import Agent
+from .memory import Message
 from .utils import LogLevel, RequestContext
 from .exceptions import (
     BrowserNotInitializedError,
@@ -29,7 +29,7 @@ from .exceptions import (
 logger = logging.getLogger(__name__)
 
 
-class InteractiveElementsAgent(BaseAgent):
+class InteractiveElementsAgent(Agent):
     """
     A specialized agent for analyzing interactive elements on web pages.
     
@@ -40,17 +40,19 @@ class InteractiveElementsAgent(BaseAgent):
 
     def __init__(
         self,
-        model: Union[BaseVLM, BaseLLM, BaseAPIModel],
+        model_config: ModelConfig,
         agent_name: Optional[str] = None,
         allowed_peers: Optional[List[str]] = None,
+        max_tokens: Optional[int] = 4096,
     ) -> None:
         """
         Initialize the InteractiveElementsAgent.
 
         Args:
-            model: The vision-capable model instance
+            model_config: Configuration for the vision-capable model
             agent_name: Optional name for registration
             allowed_peers: List of agent names this agent can invoke
+            max_tokens: Maximum tokens for model generation
         """
         description = """
 You are an expert UI analyst. Your task is to identify ALL currently accessible interactive elements, understanding modal interaction hierarchy.
@@ -156,22 +158,15 @@ Return ALL currently accessible interactive elements, understanding that both mo
         }
 
         super().__init__(
-            model=model,
+            model_config=model_config,
             description=description,
-            max_tokens=4096,  # Allow more tokens for detailed analysis
+            tools=None,  # InteractiveElementsAgent doesn't use tools
+            memory_type="conversation_history",
+            max_tokens=max_tokens,
             agent_name=agent_name,
             allowed_peers=allowed_peers,
             input_schema=input_schema,
             output_schema=output_schema,
-        )
-
-        # Initialize memory
-        self.memory = MemoryManager(
-            memory_type="conversation_history",
-            description=self.description,
-            model=self.model if hasattr(self.model, 'embedding') else None,
-            input_processor=self._input_message_processor(),
-            output_processor=self._output_message_processor(),
         )
 
     def _web_elements_response_processor(self, message_obj: Dict[str, Any]) -> Dict[str, Any]:
@@ -211,16 +206,16 @@ Return ALL currently accessible interactive elements, understanding that both mo
         self, prompt: Any, request_context: RequestContext, run_mode: str, **kwargs: Any
     ) -> Message:
         """
-        Core execution logic for the InteractiveElementsAgent.
+        PURE execution logic for the InteractiveElementsAgent.
         
         Analyzes screenshots to identify interactive elements using AI vision.
+        This method contains no side effects - only processes input and returns output.
         """
         # Extract and validate input
         prompt_content, passed_context = self._extract_prompt_and_context(prompt)
         
-        # Add any passed context to memory
-        for context_msg in passed_context:
-            self.memory.update_memory(message=context_msg)
+        # Note: Memory operations moved to run_step()
+        # Here we just process the prompt content
 
         if isinstance(prompt_content, str):
             try:
@@ -291,16 +286,33 @@ DETECTION REQUIREMENTS:
 Return a JSON array of objects with "box_2d" and "label" fields only.
             """
 
-            # Prepare messages for the model (InteractiveElementsAgent keeps only system prompt in memory)
-            messages = self.memory.to_llm_format()
+            # Prepare messages for the model
+            # In pure _run(), we construct messages directly from passed context
+            messages = []
             
-            # Add user request message temporarily (not to memory)
+            # Add system prompt
+            messages.append({
+                "role": "system",
+                "content": self.description
+            })
+            
+            # Add any passed context messages
+            for context_msg in passed_context:
+                messages.append(context_msg)
+            
+            # Add current user request message
             user_request_message = Message(
                 role="user",
-                content=json.dumps(request_data, indent=2),
+                content=self._safe_json_serialize(request_data),
                 name=request_context.caller_agent_name or "user"
             )
-            messages.append(user_request_message.to_llm_dict())
+            
+            # Convert user message to dict format
+            messages.append({
+                "role": user_request_message.role,
+                "content": user_request_message.content,
+                "name": user_request_message.name
+            })
             
             # Create a temporary message with the image and analysis prompt
             temp_message = Message(
@@ -309,8 +321,16 @@ Return a JSON array of objects with "box_2d" and "label" fields only.
                 images=[screenshot_path]
             )
             
-            # Convert to LLM format to get proper base64 encoding
-            vision_message = temp_message.to_llm_dict()
+            # Convert to LLM format with proper base64 encoding
+            # Use Message's built-in method to encode the image
+            encoded_image = temp_message._encode_image_to_base64(screenshot_path)
+            vision_message = {
+                "role": "user",
+                "content": [
+                    {"type": "text", "text": analysis_prompt},
+                    {"type": "image_url", "image_url": {"url": encoded_image}}
+                ]
+            }
             messages.append(vision_message)
 
             # Define the JSON schema for bounding box response (matches our BoundingBox model)
@@ -351,15 +371,17 @@ Return a JSON array of objects with "box_2d" and "label" fields only.
                 **api_model_kwargs,
             )
 
-            # Generate message ID for the response
-            new_message_id = str(uuid.uuid4())
+            # Create Message from HarmonizedResponse
+            assistant_message = Message.from_harmonized_response(
+                raw_model_output,
+                name=self.name
+            )
             
-            # Validate and normalize model response
-            validated_response = self._validate_and_normalize_model_response(raw_model_output)
+            # For InteractiveElementsAgent, we need to parse the content as JSON array
+            content = assistant_message.content
             
             # For InteractiveElementsAgent, we expect a JSON array of bounding boxes
             try:
-                content = validated_response.get("content", "")
                 if isinstance(content, str):
                     # Extract JSON from markdown if present
                     json_match = re.search(r'```json\s*(.*?)\s*```', content, re.DOTALL)
@@ -389,22 +411,13 @@ Return a JSON array of objects with "box_2d" and "label" fields only.
                     if not isinstance(bbox, dict) or "box_2d" not in bbox or "label" not in bbox:
                         raise ValueError("Each bounding box must have 'box_2d' and 'label' fields")
 
-                # Update the validated response with processed content
-                validated_response["content"] = bounding_boxes
-
-                # Return the message directly without adding to memory (InteractiveElementsAgent is stateless)
-                assistant_message = Message.from_response_dict(
-                    validated_response,
-                    default_id=new_message_id,
-                    default_role="assistant",
-                    default_name=self.name,
-                    processor=self._input_message_processor()
-                )
+                # Update the message content with the parsed bounding boxes
+                assistant_message.content = bounding_boxes
 
                 return assistant_message
 
             except (json.JSONDecodeError, ValueError) as e:
-                error_msg = f"Failed to parse model response as JSON: {e}\nResponse: {validated_response.get('content', '')}"
+                error_msg = f"Failed to parse model response as JSON: {e}\nResponse: {content}"
                 return Message(
                     role="error",
                     content=error_msg,
@@ -413,13 +426,8 @@ Return a JSON array of objects with "box_2d" and "label" fields only.
                 )
 
         except Exception as e:
+            # In pure _run(), we don't log - just return error message
             error_msg = f"Error during vision analysis: {e}"
-            await self._log_progress(
-                request_context,
-                LogLevel.MINIMAL,
-                f"Vision analysis failed: {e}",
-                data={"error": str(e)}
-            )
             return Message(
                 role="error",
                 content=error_msg, 
@@ -427,26 +435,8 @@ Return a JSON array of objects with "box_2d" and "label" fields only.
                 message_id=str(uuid.uuid4())
             )
 
-    def _input_message_processor(self) -> Callable[[Dict[str, Any]], Dict[str, Any]]:
-        """
-        Creates a processor function for InteractiveElementsAgent.
-        This agent doesn't use agent_calls, so we use a simple passthrough.
-        """
-        def transform_from_llm(data: Dict[str, Any]) -> Dict[str, Any]:
-            return data.copy()
-        return transform_from_llm
-
-    def _output_message_processor(self) -> Callable[[Dict[str, Any]], Dict[str, Any]]:
-        """
-        Creates a processor function for InteractiveElementsAgent.
-        This agent doesn't use agent_calls, so we use a simple passthrough.
-        """
-        def transform_to_llm(msg_dict: Dict[str, Any]) -> Dict[str, Any]:
-            result = msg_dict.copy()
-            # Remove agent_calls if present (not part of OpenAI API)
-            result.pop("agent_calls", None)
-            return result
-        return transform_to_llm
+    # Note: InteractiveElementsAgent inherits message processors from Agent
+    # which handle standard agent_calls and tool_calls transformations
 
 
 
@@ -483,6 +473,8 @@ class BrowserAgent(Agent):
         output_schema: Optional[Any] = None,
         auto_screenshot: bool = False,
         timeout: int = 5000,
+        memory_retention: str = "session",
+        memory_storage_path: Optional[str] = None,
     ) -> None:
         """
         Initialize the BrowserAgent.
@@ -504,7 +496,18 @@ class BrowserAgent(Agent):
             output_schema: Optional output schema for the agent
             auto_screenshot: Whether to automatically take screenshots after state-changing operations
             timeout: Default timeout in milliseconds for browser operations (default: 5000)
+            memory_retention: Memory retention policy - "single_run", "session", or "persistent"
+            memory_storage_path: Path for persistent memory storage (if retention is "persistent")
         """
+        # Check for playwright-stealth support
+        try:
+            from playwright_stealth import stealth_async
+            self._stealth_available = True
+            logger.info("playwright-stealth detected - stealth mode will be enabled")
+        except ImportError:
+            self._stealth_available = False
+            logger.info("playwright-stealth not installed. Install with: pip install playwright-stealth")
+        
         # Set up temporary directory
         if tmp_dir:
             self.tmp_dir = Path(tmp_dir)
@@ -565,6 +568,8 @@ class BrowserAgent(Agent):
             allowed_peers=allowed_peers,
             input_schema=input_schema,
             output_schema=output_schema,
+            memory_retention=memory_retention,
+            memory_storage_path=memory_storage_path,
         )
 
         # Browser settings
@@ -576,51 +581,15 @@ class BrowserAgent(Agent):
         # Initialize vision analysis agent if vision model config is provided
         self.vision_agent: Optional[InteractiveElementsAgent] = None
         if vision_model_config:
-            # Create a temporary model first to create the vision agent
-            if vision_model_config.type == "api":
-                provider = vision_model_config.provider or "openai"  # Default to openai if no provider specified
-                temp_model = BaseAPIModel(
-                    model_name=vision_model_config.name,
-                    api_key=vision_model_config.api_key,
-                    base_url=vision_model_config.base_url,
-                    max_tokens=vision_model_config.max_tokens,
-                    temperature=vision_model_config.temperature,
-                    provider=provider,
-                    thinking_budget=vision_model_config.thinking_budget,
-                )
-            elif vision_model_config.type == "local":
-                if vision_model_config.model_class == "vlm":
-                    temp_model = BaseVLM(
-                        model_name=vision_model_config.name,
-                        max_tokens=vision_model_config.max_tokens,
-                        torch_dtype=vision_model_config.torch_dtype,
-                        device_map=vision_model_config.device_map,
-                    )
-                else:
-                    raise ValueError("Vision analysis requires a vision-capable model (VLM for local, or vision-enabled API model)")
-            else:
-                raise ValueError(f"Unsupported vision model type: {vision_model_config.type}")
-
-            # Create the vision agent
+            # Validate vision model is vision-capable
+            if vision_model_config.type == "local" and vision_model_config.model_class != "vlm":
+                raise ValueError("Vision analysis requires a vision-capable model (VLM for local, or vision-enabled API model)")
+            
+            # Create the vision agent with the model config
             self.vision_agent = InteractiveElementsAgent(
-                model=temp_model,
+                model_config=vision_model_config,
                 agent_name=f"{agent_name or 'BrowserAgent'}_VisionAnalyzer"
             )
-            
-            # Now replace the model with one that has the custom response processor (for API models only)
-            if vision_model_config.type == "api":
-                provider = vision_model_config.provider or "openai"  # Default to openai if no provider specified
-                vision_model_with_processor = BaseAPIModel(
-                    model_name=vision_model_config.name,
-                    api_key=vision_model_config.api_key,
-                    base_url=vision_model_config.base_url,
-                    max_tokens=vision_model_config.max_tokens,
-                    temperature=vision_model_config.temperature,
-                    provider=provider,
-                    thinking_budget=vision_model_config.thinking_budget,
-                    response_processor=self.vision_agent._web_elements_response_processor,
-                )
-                self.vision_agent.model = vision_model_with_processor
 
         # Store vision model config for potential future use
         self._vision_model_config = vision_model_config
@@ -663,6 +632,8 @@ class BrowserAgent(Agent):
         output_schema: Optional[Any] = None,
         auto_screenshot: bool = False,
         timeout: int = 5000,
+        memory_retention: str = "session",
+        memory_storage_path: Optional[str] = None,
     ) -> "BrowserAgent":
         """
         Safe factory method to create and initialize a BrowserAgent.
@@ -688,6 +659,8 @@ class BrowserAgent(Agent):
             output_schema=output_schema,
             auto_screenshot=auto_screenshot,
             timeout=timeout,
+            memory_retention=memory_retention,
+            memory_storage_path=memory_storage_path,
         )
 
         # Initialize browser using BrowserTool
@@ -713,6 +686,15 @@ class BrowserAgent(Agent):
                 screenshot_dir=str(self.screenshots_dir),
             )
 
+            # Apply stealth mode if available
+            if self._stealth_available:
+                try:
+                    from playwright_stealth import stealth_async
+                    await stealth_async(self.browser_tool.page)
+                    logger.info(f"Stealth mode enabled for {self.name}")
+                except Exception as e:
+                    logger.warning(f"Failed to apply stealth mode: {e}")
+            
             logger.info(
                 f"Browser initialized for {self.name} using BrowserTool (headless={self.headless}, timeout={self.timeout}ms)"
             )
@@ -828,9 +810,21 @@ class BrowserAgent(Agent):
                 await self.browser_tool.close()
             except Exception as e:
                 logger.warning(f"Error during browser cleanup: {e}")
-        
+
         self.browser_tool = None
         logger.info(f"Browser closed for {self.name}")
+
+    async def cleanup(self) -> None:
+        """
+        Clean up all resources including browser and model sessions.
+
+        This method is called by AgentPool and ensures complete cleanup.
+        """
+        # First close browser-specific resources
+        await self.close()
+
+        # Then call parent's cleanup to clean up model sessions
+        await super().cleanup()
 
     async def _take_auto_screenshot(self) -> Optional[str]:
         """
@@ -1325,16 +1319,12 @@ class BrowserAgent(Agent):
             elements = result.get('elements', [])
             
             if screenshot_path:
-                # Generate unique message ID for screenshot
-                screenshot_message_id = str(uuid.uuid4())
-                
                 # Add screenshot to memory as a user message
-                self.memory.update_memory(
+                screenshot_message_id = self.memory.add(
                     role="user",
                     content=f"Auto-screenshot with interactive elements after step {step_number} ({action_type}):",
                     name="auto_screenshot_system",  # Special name to identify auto-generated screenshots
-                    images=[screenshot_path],
-                    message_id=screenshot_message_id,
+                    images=[screenshot_path]
                 )
                 
                 # Track this message ID for future cleanup
@@ -1349,9 +1339,6 @@ class BrowserAgent(Agent):
             
             # Add interactive elements list to memory as a separate message
             if elements:
-                # Generate unique message ID for elements
-                elements_message_id = str(uuid.uuid4())
-                
                 # Format elements for AI agent
                 elements_content = (
                     f"Interactive elements detected after step {step_number} ({action_type}):\n\n"
@@ -1369,11 +1356,10 @@ class BrowserAgent(Agent):
                     elements_content += f"Element {number}: {label} (center: {center_x}, {center_y})\n"
                 
                 # Add elements to memory as a user message (once per step, not per element)
-                self.memory.update_memory(
+                elements_message_id = self.memory.add(
                     role="user",
                     content=elements_content,
-                    name="auto_elements_system",  # Special name to identify auto-generated elements
-                    message_id=elements_message_id,
+                    name="auto_elements_system"  # Special name to identify auto-generated elements
                 )
                 
                 # Track this message ID for future cleanup
@@ -1410,7 +1396,7 @@ class BrowserAgent(Agent):
                     await self._log_progress(
                         request_context,
                         LogLevel.DEBUG,
-                        f"Removed previous auto-screenshot message from memory",
+                        "Removed previous auto-screenshot message from memory",
                         data={"removed_message_id": self._last_auto_screenshot_message_id}
                     )
                 self._last_auto_screenshot_message_id = None
@@ -1422,7 +1408,7 @@ class BrowserAgent(Agent):
                     await self._log_progress(
                         request_context,
                         LogLevel.DEBUG,
-                        f"Removed previous auto-elements message from memory",
+                        "Removed previous auto-elements message from memory",
                         data={"removed_message_id": self._last_auto_elements_message_id}
                     )
                 self._last_auto_elements_message_id = None

@@ -1,564 +1,690 @@
-# Agent Communication
+# Communication
 
-## Communication Protocols
+The communication system in MARSYS enables agents to coordinate, collaborate, and interact with users through structured messaging and event-driven patterns.
 
-### Handshake Protocol
+## 🎯 Overview
 
-Establish communication between agents:
+MARSYS communication provides:
+
+- **User Interaction**: Human-in-the-loop capabilities with multiple channels
+- **Agent Coordination**: Inter-agent messaging and task delegation
+- **Event System**: Pub/sub for decoupled communication
+- **Status Updates**: Real-time progress and status reporting
+- **Error Routing**: Intelligent error handling and recovery
+
+## 🏗️ Architecture
+
+```mermaid
+graph TB
+    subgraph "Communication Layer"
+        CM[CommunicationManager<br/>Central Hub]
+        UNH[UserNodeHandler<br/>User Interaction]
+        SM[StatusManager<br/>Status Updates]
+        EB[EventBus<br/>Event System]
+    end
+
+    subgraph "Channels"
+        TC[TerminalChannel<br/>CLI Interface]
+        ETC[EnhancedTerminal<br/>Rich Terminal]
+        PC[PrefixedCLI<br/>Agent Prefixes]
+        WC[WebChannel<br/>Web Interface]
+    end
+
+    subgraph "Message Flow"
+        User[User] --> UNH
+        UNH --> Agent[Agents]
+        Agent --> Agent2[Other Agents]
+        Agent --> SM
+        SM --> User
+    end
+
+    CM --> TC
+    CM --> ETC
+    CM --> PC
+    CM --> WC
+
+    UNH --> CM
+    SM --> CM
+    EB --> CM
+
+    style CM fill:#4fc3f7
+    style UNH fill:#29b6f6
+    style EB fill:#e1f5fe
+```
+
+## 📦 Core Components
+
+### CommunicationManager
+
+Central hub for all communication:
 
 ```python
-from src.agents.agents import Agent
-from src.models.message import Message
-from src.agents.utils import RequestContext
-import logging
+from src.coordination.communication import CommunicationManager
+from src.coordination.config import CommunicationConfig
 
-class HandshakeProtocol:
-    async def initiate_handshake(
+# Configure communication
+comm_config = CommunicationConfig(
+    use_rich_formatting=True,
+    theme_name="modern",
+    prefix_width=20,
+    show_timestamps=True,
+    enable_history=True,
+    use_colors=True
+)
+
+# Initialize manager
+comm_manager = CommunicationManager(config=comm_config)
+
+# Register channels
+comm_manager.register_channel("terminal", TerminalChannel())
+comm_manager.register_channel("web", WebChannel())
+
+# Send messages
+await comm_manager.send_message(
+    channel="terminal",
+    message="Processing request...",
+    metadata={"agent": "Coordinator", "level": "info"}
+)
+
+# Receive input
+user_input = await comm_manager.receive_input(
+    channel="terminal",
+    prompt="Enter your choice: "
+)
+```
+
+### UserNodeHandler
+
+Manages User node execution in topology:
+
+```python
+from src.coordination.communication import UserNodeHandler
+
+class UserNodeHandler:
+    """Handles User node interactions in workflow."""
+
+    async def handle_user_node(
         self,
-        from_agent: Agent,
-        to_agent_name: str
-    ) -> bool:
-        """Establish communication with another agent."""
-        context = RequestContext(
-            request_id=f"handshake_{from_agent.name}_{to_agent_name}",
-            agent_name=from_agent.name,
-            logger=logging.getLogger(__name__)
-        )
-        
-        # Send handshake request
-        handshake_msg = Message(
-            role="assistant",
-            content="HANDSHAKE_REQUEST",
-            name=to_agent_name,
-            metadata={
-                "protocol": "handshake",
-                "version": "1.0",
-                "capabilities": from_agent.get_capabilities()
-            }
-        )
-        
-        response = await from_agent.invoke_agent(
-            to_agent_name,
-            handshake_msg.content,
+        branch: ExecutionBranch,
+        incoming_message: Any,
+        context: Dict[str, Any]
+    ) -> StepResult:
+        """Process User node interaction."""
+
+        # Format message for user
+        formatted = self._format_for_user(incoming_message)
+
+        # Get user response
+        user_response = await self._get_user_input(
+            prompt=formatted,
             context=context
         )
-        
-        # Validate handshake response
-        if response and hasattr(response, 'metadata'):
-            return response.metadata.get("status") == "accepted"
-        return False
+
+        # Process response
+        return StepResult(
+            success=True,
+            result=user_response,
+            metadata={"source": "user", "timestamp": datetime.now()}
+        )
+
+    async def _get_user_input(
+        self,
+        prompt: str,
+        context: Dict[str, Any]
+    ) -> str:
+        """Get input from user with proper formatting."""
+
+        # Show context if available
+        if context.get("show_context"):
+            await self._display_context(context)
+
+        # Get input based on mode
+        if self.mode == "sync":
+            return await self._sync_input(prompt)
+        elif self.mode == "async":
+            return await self._async_input(prompt)
 ```
 
-### Request-Reply Protocol
+### StatusManager
 
-Structured request-reply communication:
+Real-time status updates:
 
 ```python
-import asyncio
-import uuid
-import json
-import time
-from typing import Any, Dict, List, Optional
-from src.agents.agents import Agent
-from src.models.message import Message
-from src.agents.utils import RequestContext
+from src.coordination.communication import StatusManager
+from src.coordination.config import StatusConfig
 
-class RequestReplyProtocol:
+class StatusManager:
+    """Manages status updates and progress reporting."""
+
+    def __init__(self, config: StatusConfig):
+        self.config = config
+        self.aggregator = MessageAggregator(
+            window_ms=config.aggregation_window_ms
+        )
+
+    async def update_status(
+        self,
+        agent_name: str,
+        status: str,
+        progress: Optional[float] = None,
+        metadata: Optional[Dict] = None
+    ):
+        """Send status update."""
+
+        if not self.config.enabled:
+            return
+
+        # Create status message
+        message = StatusMessage(
+            agent=agent_name,
+            status=status,
+            progress=progress,
+            timestamp=datetime.now(),
+            metadata=metadata or {}
+        )
+
+        # Aggregate if configured
+        if self.config.aggregate_parallel:
+            self.aggregator.add(message)
+            if self.aggregator.should_flush():
+                await self._flush_aggregated()
+        else:
+            await self._send_immediate(message)
+
+    def format_status(self, message: StatusMessage) -> str:
+        """Format status message for display."""
+        if self.config.show_agent_prefixes:
+            prefix = f"[{message.agent:>{self.config.prefix_width}}]"
+        else:
+            prefix = ""
+
+        if message.progress is not None:
+            progress_bar = self._create_progress_bar(message.progress)
+            return f"{prefix} {message.status} {progress_bar}"
+        else:
+            return f"{prefix} {message.status}"
+```
+
+## 🎯 Communication Patterns
+
+### User Interaction Pattern
+
+Enable human-in-the-loop workflows:
+
+```python
+# Topology with User node
+topology = {
+    "nodes": ["User", "Assistant", "Reviewer"],
+    "edges": [
+        "User -> Assistant",     # User provides input
+        "Assistant -> Reviewer",  # Assistant processes
+        "Reviewer -> User"        # User reviews result
+    ]
+}
+
+# Execution with user interaction
+result = await Orchestra.run(
+    task="Help me write a report",
+    topology=topology,
+    execution_config=ExecutionConfig(
+        user_interaction="terminal",
+        user_first=True,  # Start with user
+        initial_user_msg="Welcome! What report would you like to write?"
+    )
+)
+```
+
+### Event-Driven Communication
+
+Decoupled pub/sub messaging:
+
+```python
+from src.coordination.communication import EventBus
+
+class EventBus:
+    """Publish/subscribe event system."""
+
     def __init__(self):
-        self.pending_requests = {}
-    
-    async def send_request(
-        self,
-        from_agent: Agent,
-        to_agent: str,
-        request_type: str,
-        payload: Any,
-        timeout: float = 30.0
-    ) -> Message:
-        """Send request and wait for reply."""
-        request_id = f"req_{uuid.uuid4().hex[:8]}"
-        
-        context = RequestContext(
-            request_id=request_id,
-            agent_name=from_agent.name,
-            logger=logging.getLogger(__name__)
-        )
-        
-        # Create request message
-        request_content = json.dumps({
-            "request_type": request_type,
-            "payload": payload,
-            "reply_to": from_agent.name
-        })
-        
-        # Track pending request
-        future = asyncio.Future()
-        self.pending_requests[request_id] = future
-        
-        # Send request
-        try:
-            response = await from_agent.invoke_agent(
-                to_agent, 
-                request_content,
-                context=context
-            )
-            
-            # For immediate responses, resolve the future
-            if request_id in self.pending_requests:
-                self.pending_requests[request_id].set_result(response)
-                del self.pending_requests[request_id]
-            
-            return response
-            
-        except asyncio.TimeoutError:
-            if request_id in self.pending_requests:
-                del self.pending_requests[request_id]
-            raise
-    
-    def handle_reply(self, message: Message):
-        """Process incoming reply."""
-        request_id = message.metadata.get("in_reply_to")
-        if request_id in self.pending_requests:
-            self.pending_requests[request_id].set_result(message)
-            del self.pending_requests[request_id]
-```
+        self.subscribers: Dict[str, List[Callable]] = {}
 
-## Communication Patterns Examples
+    def subscribe(self, event_type: str, handler: Callable):
+        """Subscribe to event type."""
+        if event_type not in self.subscribers:
+            self.subscribers[event_type] = []
+        self.subscribers[event_type].append(handler)
 
-### Map-Reduce Pattern
-
-Distribute work and aggregate results:
-
-```python
-from src.agents.agents import Agent
-from src.agents.utils import RequestContext
-import asyncio
-import json
-
-class MapReduceCoordinator(Agent):
-    def __init__(self, name: str, model_config: dict, **kwargs):
-        super().__init__(name=name, model_config=model_config, **kwargs)
-    
-    async def map_reduce(
-        self,
-        data: List[Any],
-        mapper_agents: List[str],
-        reducer_agent: str,
-        context: RequestContext
-    ) -> Any:
-        """Execute map-reduce pattern."""
-        # Map phase - distribute work
-        chunk_size = len(data) // len(mapper_agents)
-        map_tasks = []
-        
-        for i, mapper in enumerate(mapper_agents):
-            start = i * chunk_size
-            end = start + chunk_size if i < len(mapper_agents) - 1 else len(data)
-            chunk = data[start:end]
-            
-            task_context = RequestContext(
-                request_id=f"{context.request_id}_map_{i}",
-                agent_name=self.name,
-                logger=context.logger
-            )
-            
-            task = self.invoke_agent(
-                mapper,
-                f"Process this data chunk: {json.dumps(chunk)}",
-                context=task_context
-            )
-            map_tasks.append(task)
-        
-        # Gather map results
-        map_results = await asyncio.gather(*map_tasks, return_exceptions=True)
-        
-        # Filter out exceptions and get successful results
-        successful_results = [
-            r for r in map_results 
-            if not isinstance(r, Exception)
-        ]
-        
-        # Reduce phase - aggregate results
-        reduce_context = RequestContext(
-            request_id=f"{context.request_id}_reduce",
-            agent_name=self.name,
-            logger=context.logger
-        )
-        
-        reduce_result = await self.invoke_agent(
-            reducer_agent,
-            f"Aggregate these results: {json.dumps([r.content if hasattr(r, 'content') else str(r) for r in successful_results])}",
-            context=reduce_context
-        )
-        
-        return reduce_result
-```
-
-### Chain of Responsibility
-
-Pass requests through a chain of handlers:
-
-```python
-from src.agents.agents import Agent
-from src.models.message import Message
-from src.agents.utils import RequestContext
-from typing import Optional, List
-
-class ChainOfResponsibilityAgent(Agent):
-    def __init__(
-        self, 
-        name: str, 
-        model_config: dict,
-        next_handler: Optional[str] = None,
-        supported_types: List[str] = None,
-        **kwargs
-    ):
-        super().__init__(name=name, model_config=model_config, **kwargs)
-        self.next_handler = next_handler
-        self.supported_types = supported_types or []
-    
-    async def _process_request(self, message: Message, context: RequestContext) -> Message:
-        """Process request or pass to next handler."""
-        # Check if this agent can handle the request
-        if self.can_handle(message):
-            return await super()._process_request(message, context)
-        
-        # Pass to next handler
-        if self.next_handler:
-            return await self.invoke_agent(
-                self.next_handler,
-                message.content,
-                context=context
-            )
-        
-        # No handler found
-        return Message(
-            role="assistant",
-            content="No handler found for request",
-            metadata={"error": "no_handler", "agent": self.name}
-        )
-    
-    def can_handle(self, message: Message) -> bool:
-        """Check if agent can handle this request type."""
-        request_type = message.metadata.get("type") if message.metadata else None
-        return request_type in self.supported_types
-```
-
-### Observer Pattern
-
-Notify multiple agents of state changes:
-
-```python
-from src.agents.agents import Agent
-from src.agents.utils import RequestContext
-import asyncio
-from typing import Any, List
-
-class ObservableAgent(Agent):
-    def __init__(self, name: str, model_config: dict, **kwargs):
-        super().__init__(name=name, model_config=model_config, **kwargs)
-        self.observers: List[str] = []
-    
-    def attach_observer(self, observer_name: str):
-        """Add observer to notification list."""
-        if observer_name not in self.observers:
-            self.observers.append(observer_name)
-    
-    def detach_observer(self, observer_name: str):
-        """Remove observer from notification list."""
-        if observer_name in self.observers:
-            self.observers.remove(observer_name)
-    
-    async def notify_observers(self, event: str, data: Any, context: RequestContext):
-        """Notify all observers of state change."""
-        notifications = []
-        
-        for observer in self.observers:
-            notification_context = RequestContext(
-                request_id=f"{context.request_id}_notify_{observer}",
-                agent_name=self.name,
-                logger=context.logger
-            )
-            
-            notification = self.invoke_agent(
-                observer,
-                f"Event: {event}",
-                context=notification_context
-            )
-            notifications.append(notification)
-        
-        # Fire and forget - don't wait for responses
-        asyncio.gather(*notifications, return_exceptions=True)
-```
-
-## Error Handling in Communication
-
-### Retry with Circuit Breaker
-
-Implement circuit breaker pattern:
-
-```python
-import time
-from typing import Any
-from src.agents.agents import Agent
-from src.models.message import Message
-from src.agents.utils import RequestContext
-
-class CircuitBreaker:
-    def __init__(
-        self,
-        failure_threshold: int = 5,
-        recovery_timeout: float = 60.0
-    ):
-        self.failure_threshold = failure_threshold
-        self.recovery_timeout = recovery_timeout
-        self.failure_count = 0
-        self.last_failure_time = None
-        self.state = "closed"  # closed, open, half-open
-    
-    async def call(
-        self, 
-        agent: Agent, 
-        target: str, 
-        task: str,
-        context: RequestContext
-    ) -> Message:
-        """Execute call with circuit breaker protection."""
-        if self.state == "open":
-            if time.time() - self.last_failure_time > self.recovery_timeout:
-                self.state = "half-open"
-            else:
-                raise Exception("Circuit breaker is open")
-        
-        try:
-            result = await agent.invoke_agent(target, task, context=context)
-            
-            # Success - reset on half-open
-            if self.state == "half-open":
-                self.state = "closed"
-                self.failure_count = 0
-            
-            return result
-            
-        except Exception as e:
-            self.failure_count += 1
-            self.last_failure_time = time.time()
-            
-            if self.failure_count >= self.failure_threshold:
-                self.state = "open"
-            
-            raise
-```
-
-### Dead Letter Queue
-
-Handle failed messages:
-
-```python
-from datetime import datetime
-from typing import Optional, List, Dict
-from src.agents.agents import Agent
-from src.models.message import Message
-from src.agents.utils import RequestContext
-import asyncio
-
-class DeadLetterQueue:
-    def __init__(self):
-        self.failed_messages: List[Dict] = []
-    
-    async def process_with_dlq(
-        self,
-        agent: Agent,
-        message: Message,
-        context: RequestContext,
-        max_retries: int = 3
-    ) -> Optional[Message]:
-        """Process message with dead letter queue for failures."""
-        for attempt in range(max_retries):
-            try:
-                result = await agent._process_request(message, context)
-                return result
-            except Exception as e:
-                context.logger.warning(
-                    f"Attempt {attempt + 1} failed for agent {agent.name}: {e}"
-                )
-                
-                if attempt == max_retries - 1:
-                    # Add to dead letter queue
-                    self.failed_messages.append({
-                        "message": message,
-                        "error": str(e),
-                        "timestamp": datetime.now(),
-                        "attempts": max_retries,
-                        "agent": agent.name
-                    })
-                    return None
-                
-                # Exponential backoff
-                await asyncio.sleep(2 ** attempt)
-        
-        return None
-```
-
-## Performance Optimization
-
-### Message Batching
-
-Batch multiple messages for efficiency:
-
-```python
-from src.agents.agents import Agent
-from src.models.message import Message
-from src.agents.utils import RequestContext
-import asyncio
-from typing import List
-
-class BatchingAgent(Agent):
-    def __init__(
-        self, 
-        name: str, 
-        model_config: dict,
-        batch_size: int = 10, 
-        batch_timeout: float = 1.0, 
-        **kwargs
-    ):
-        super().__init__(name=name, model_config=model_config, **kwargs)
-        self.batch_size = batch_size
-        self.batch_timeout = batch_timeout
-        self.message_queue = asyncio.Queue()
-        self.batch_processor_task = None
-    
-    async def start_batch_processor(self):
-        """Start the batch processing loop."""
-        self.batch_processor_task = asyncio.create_task(
-            self._process_batches()
-        )
-    
-    async def _process_batches(self):
-        """Process messages in batches."""
-        while True:
-            batch = []
-            deadline = asyncio.get_event_loop().time() + self.batch_timeout
-            
-            while len(batch) < self.batch_size:
-                timeout = deadline - asyncio.get_event_loop().time()
-                if timeout <= 0:
-                    break
-                
+    async def publish(self, event_type: str, data: Any):
+        """Publish event to subscribers."""
+        if event_type in self.subscribers:
+            for handler in self.subscribers[event_type]:
                 try:
-                    message = await asyncio.wait_for(
-                        self.message_queue.get(),
-                        timeout=timeout
-                    )
-                    batch.append(message)
-                except asyncio.TimeoutError:
-                    break
-            
-            if batch:
-                await self._process_batch(batch)
-    
-    async def _process_batch(self, messages: List[Message]):
-        """Process a batch of messages."""
-        # Combine messages for efficient processing
-        combined_content = "\n".join([
-            f"[{i+1}] {msg.content}" 
-            for i, msg in enumerate(messages)
-        ])
-        
-        batch_message = Message(
-            role="user", 
-            content=f"Process these requests:\n{combined_content}"
-        )
-        
-        context = RequestContext(
-            request_id=f"batch_{len(messages)}",
-            agent_name=self.name,
-            logger=logging.getLogger(__name__)
-        )
-        
-        result = await self._process_request(batch_message, context)
-        
-        # Parse and distribute results
-        # Implementation depends on your specific batching logic
-        return result
+                    if asyncio.iscoroutinefunction(handler):
+                        await handler(data)
+                    else:
+                        handler(data)
+                except Exception as e:
+                    logger.error(f"Event handler error: {e}")
+
+# Usage
+event_bus = EventBus()
+
+# Subscribe to events
+event_bus.subscribe("agent.completed", handle_completion)
+event_bus.subscribe("error.occurred", handle_error)
+
+# Publish events
+await event_bus.publish("agent.completed", {
+    "agent": "DataAnalyzer",
+    "result": analysis_result
+})
 ```
 
-### Connection Pooling
+### Status Aggregation Pattern
 
-Manage agent connections efficiently:
+Aggregate parallel status updates:
 
 ```python
-from src.agents.registry import AgentRegistry
-from src.agents.agents import Agent
-from src.models.message import Message
-from src.agents.utils import RequestContext
-import asyncio
-from typing import Dict
+class MessageAggregator:
+    """Aggregate status messages for cleaner output."""
 
-class AgentConnectionPool:
-    def __init__(self, max_connections: int = 10):
-        self.max_connections = max_connections
-        self.connections: Dict[str, Agent] = {}
-        self.semaphore = asyncio.Semaphore(max_connections)
-    
-    async def get_connection(self, agent_name: str) -> Agent:
-        """Get or create connection to agent."""
-        async with self.semaphore:
-            if agent_name not in self.connections:
-                agent = AgentRegistry.get_agent(agent_name)
-                if not agent:
-                    raise ValueError(f"Agent {agent_name} not found")
-                self.connections[agent_name] = agent
-            
-            return self.connections[agent_name]
-    
-    async def invoke_with_pool(
-        self,
-        from_agent: Agent,
-        to_agent: str,
-        task: str,
-        context: RequestContext
-    ) -> Message:
-        """Invoke agent using connection pool."""
-        # Ensure target agent is available
-        target = await self.get_connection(to_agent)
-        return await from_agent.invoke_agent(to_agent, task, context=context)
+    def __init__(self, window_ms: int = 500):
+        self.window_ms = window_ms
+        self.messages: List[StatusMessage] = []
+        self.last_flush = time.time() * 1000
+
+    def add(self, message: StatusMessage):
+        """Add message to aggregation window."""
+        self.messages.append(message)
+
+    def should_flush(self) -> bool:
+        """Check if window expired."""
+        now = time.time() * 1000
+        return (now - self.last_flush) >= self.window_ms
+
+    def flush(self) -> List[StatusMessage]:
+        """Get and clear aggregated messages."""
+        messages = self.messages.copy()
+        self.messages.clear()
+        self.last_flush = time.time() * 1000
+        return messages
+
+# Usage in parallel execution
+aggregator = MessageAggregator(window_ms=500)
+
+# Multiple agents updating in parallel
+for agent in parallel_agents:
+    message = StatusMessage(agent=agent.name, status="Processing...")
+    aggregator.add(message)
+
+if aggregator.should_flush():
+    # Display all updates together
+    messages = aggregator.flush()
+    display_aggregated(messages)
 ```
 
-## Best Practices
+## 🔧 Communication Channels
 
-1. **Message Design**
-   - Keep messages self-contained
-   - Include necessary context in metadata
-   - Use structured formats (JSON) for complex data
-   - Always include proper RequestContext
+### TerminalChannel
 
-2. **Error Handling**
-   - Always handle communication failures
-   - Implement timeouts for all remote calls
-   - Use circuit breakers for unreliable connections
-   - Log errors with proper context
+Basic terminal I/O:
 
-3. **Performance**
-   - Batch messages when possible
-   - Use async operations throughout
-   - Monitor communication latency
-   - Use connection pooling for frequent communications
+```python
+class TerminalChannel(Channel):
+    """Basic terminal communication channel."""
 
-4. **Security**
-   - Validate message sources
-   - Sanitize message content
-   - Implement access controls
-   - Use proper authentication in RequestContext
+    async def send(self, message: str, **kwargs):
+        """Send message to terminal."""
+        print(message)
 
-5. **Monitoring**
-   - Log all inter-agent communications
-   - Track message flow and latency
-   - Monitor failed communications
-   - Use structured logging with RequestContext
+    async def receive(self, prompt: str = "", **kwargs) -> str:
+        """Receive input from terminal."""
+        return input(prompt)
 
-## Next Steps
+    def format_message(self, message: str, metadata: Dict) -> str:
+        """Format message for terminal display."""
+        if metadata.get("error"):
+            return f"ERROR: {message}"
+        elif metadata.get("warning"):
+            return f"WARNING: {message}"
+        else:
+            return message
+```
 
-- Explore [Topologies](topologies.md) - Organizational patterns
-- Learn about [Custom Agents](custom-agents.md) - Build specialized agents
-- See [Memory Patterns](memory-patterns.md) - Advanced memory strategies
+### EnhancedTerminalChannel
+
+Rich terminal with colors and formatting:
+
+```python
+from rich.console import Console
+from rich.prompt import Prompt
+from rich.progress import Progress
+
+class EnhancedTerminalChannel(Channel):
+    """Enhanced terminal with Rich formatting."""
+
+    def __init__(self):
+        self.console = Console()
+        self.progress = Progress()
+
+    async def send(self, message: str, **kwargs):
+        """Send formatted message."""
+        style = kwargs.get("style", "default")
+
+        if kwargs.get("is_error"):
+            self.console.print(f"[red]✗[/red] {message}")
+        elif kwargs.get("is_success"):
+            self.console.print(f"[green]✓[/green] {message}")
+        else:
+            self.console.print(message, style=style)
+
+    async def receive(self, prompt: str = "", **kwargs) -> str:
+        """Get input with enhanced prompt."""
+        choices = kwargs.get("choices")
+        if choices:
+            return Prompt.ask(prompt, choices=choices)
+        else:
+            return Prompt.ask(prompt)
+
+    def display_progress(self, task_id: str, total: int):
+        """Show progress bar."""
+        return self.progress.add_task(task_id, total=total)
+```
+
+### PrefixedCLIChannel
+
+Agent-prefixed output:
+
+```python
+class PrefixedCLIChannel(Channel):
+    """Terminal channel with agent prefixes."""
+
+    def __init__(self, prefix_width: int = 20):
+        self.prefix_width = prefix_width
+        self.colors = {
+            "Coordinator": "blue",
+            "Worker": "green",
+            "User": "yellow",
+            "Error": "red"
+        }
+
+    def format_with_prefix(
+        self,
+        agent_name: str,
+        message: str
+    ) -> str:
+        """Format message with agent prefix."""
+        # Create colored prefix
+        color = self.colors.get(agent_name, "white")
+        prefix = f"[{agent_name:>{self.prefix_width}}]"
+
+        if self.use_colors:
+            from colorama import Fore, Style
+            color_code = getattr(Fore, color.upper(), Fore.WHITE)
+            prefix = f"{color_code}{prefix}{Style.RESET_ALL}"
+
+        # Split multi-line messages
+        lines = message.split('\n')
+        formatted_lines = []
+
+        for i, line in enumerate(lines):
+            if i == 0:
+                formatted_lines.append(f"{prefix} {line}")
+            else:
+                # Indent continuation lines
+                indent = " " * (self.prefix_width + 3)
+                formatted_lines.append(f"{indent}{line}")
+
+        return '\n'.join(formatted_lines)
+```
+
+## 📋 Configuration
+
+### CommunicationConfig
+
+```python
+from src.coordination.config import CommunicationConfig
+
+config = CommunicationConfig(
+    # Formatting
+    use_rich_formatting=True,
+    theme_name="modern",  # modern, classic, minimal
+    prefix_width=20,
+    prefix_alignment="right",  # left, center, right
+
+    # Display
+    show_timestamps=True,
+    timestamp_format="%H:%M:%S",
+    use_colors=True,
+    color_depth="truecolor",  # truecolor, 256, 16, none
+
+    # History
+    enable_history=True,
+    history_size=1000,
+    persist_history=False,
+    history_file=".marsys_history",
+
+    # Input
+    enable_tab_completion=True,
+    input_timeout=None,  # Seconds or None
+
+    # Channels
+    channels=["terminal"],  # Active channels
+    default_channel="terminal",
+
+    # Error handling
+    fallback_on_error=True,
+    use_enhanced_terminal=True
+)
+```
+
+## 🎯 Advanced Patterns
+
+### Multi-Channel Broadcasting
+
+Send to multiple channels simultaneously:
+
+```python
+class MultiChannelManager:
+    """Broadcast to multiple channels."""
+
+    def __init__(self):
+        self.channels: Dict[str, Channel] = {}
+
+    def register(self, name: str, channel: Channel):
+        """Register communication channel."""
+        self.channels[name] = channel
+
+    async def broadcast(
+        self,
+        message: str,
+        channels: Optional[List[str]] = None,
+        **kwargs
+    ):
+        """Broadcast message to channels."""
+        target_channels = channels or list(self.channels.keys())
+
+        tasks = []
+        for channel_name in target_channels:
+            if channel_name in self.channels:
+                channel = self.channels[channel_name]
+                task = channel.send(message, **kwargs)
+                tasks.append(task)
+
+        await asyncio.gather(*tasks, return_exceptions=True)
+
+# Usage
+manager = MultiChannelManager()
+manager.register("terminal", TerminalChannel())
+manager.register("web", WebChannel())
+manager.register("log", LogChannel())
+
+# Broadcast to all
+await manager.broadcast("System starting...")
+
+# Broadcast to specific channels
+await manager.broadcast(
+    "Error occurred",
+    channels=["terminal", "log"],
+    is_error=True
+)
+```
+
+### Interactive Prompts
+
+Get structured input from users:
+
+```python
+class InteractivePrompt:
+    """Interactive user prompts."""
+
+    async def choice(
+        self,
+        question: str,
+        options: List[str],
+        default: Optional[str] = None
+    ) -> str:
+        """Present multiple choice."""
+        print(f"\n{question}")
+        for i, option in enumerate(options, 1):
+            print(f"  {i}. {option}")
+
+        while True:
+            response = input(f"Choice [1-{len(options)}]: ")
+            try:
+                index = int(response) - 1
+                if 0 <= index < len(options):
+                    return options[index]
+            except (ValueError, IndexError):
+                pass
+
+            print("Invalid choice. Please try again.")
+
+    async def confirm(
+        self,
+        question: str,
+        default: bool = False
+    ) -> bool:
+        """Get yes/no confirmation."""
+        default_str = "Y/n" if default else "y/N"
+        response = input(f"{question} [{default_str}]: ").lower()
+
+        if not response:
+            return default
+
+        return response in ['y', 'yes', 'true', '1']
+
+    async def multi_input(
+        self,
+        prompt: str,
+        min_items: int = 1,
+        max_items: Optional[int] = None
+    ) -> List[str]:
+        """Get multiple inputs."""
+        print(prompt)
+        print("Enter items (empty line to finish):")
+
+        items = []
+        while True:
+            item = input(f"  [{len(items) + 1}] ")
+            if not item:
+                if len(items) >= min_items:
+                    break
+                print(f"Need at least {min_items} items")
+            else:
+                items.append(item)
+                if max_items and len(items) >= max_items:
+                    break
+
+        return items
+```
+
+### Error Recovery Communication
+
+Route errors to User node for recovery:
+
+```python
+class ErrorRoutingHandler:
+    """Route errors to User for recovery."""
+
+    async def handle_error(
+        self,
+        error: Exception,
+        context: Dict[str, Any],
+        topology: Topology
+    ) -> Optional[str]:
+        """Route error to User node if available."""
+
+        # Check if User node exists in topology
+        if not topology.has_node("User"):
+            return None
+
+        # Format error for user
+        error_msg = self._format_error(error, context)
+
+        # Create error recovery message
+        recovery_prompt = f"""
+An error occurred during execution:
+
+{error_msg}
+
+How would you like to proceed?
+1. Retry the operation
+2. Skip and continue
+3. Provide alternative input
+4. Abort execution
+
+Your choice: """
+
+        # Get user decision
+        user_response = await self._get_user_input(recovery_prompt)
+
+        # Process decision
+        return self._process_recovery_decision(user_response, context)
+
+    def _format_error(self, error: Exception, context: Dict) -> str:
+        """Format error for user display."""
+        agent = context.get("agent", "Unknown")
+        operation = context.get("operation", "Unknown")
+
+        return f"""
+Agent: {agent}
+Operation: {operation}
+Error Type: {type(error).__name__}
+Details: {str(error)}
+"""
+```
+
+## 🚦 Next Steps
+
+<div class="grid cards" markdown="1">
+
+- :material-account-group:{ .lg .middle } **[User Node Guide](../docs/USER_NODE_GUIDE.md)**
+
+    ---
+
+    Complete guide to User node integration
+
+- :material-broadcast:{ .lg .middle } **[Event System](../api/events.md)**
+
+    ---
+
+    Event-driven communication patterns
+
+- :material-monitor:{ .lg .middle } **[Status Management](../api/status.md)**
+
+    ---
+
+    Status updates and progress tracking
+
+- :material-message:{ .lg .middle } **[Messages](messages.md)**
+
+    ---
+
+    Message types and patterns
+
+</div>
+
+---
+
+!!! success "Communication System Ready!"
+    You now understand the communication system in MARSYS. Effective communication enables seamless coordination between agents and intuitive user interaction.

@@ -1,244 +1,533 @@
-# Guides Overview
+# Guides
 
-Welcome to the MARSYS Guides section! This comprehensive collection of guides helps you master advanced topics, best practices, and production deployment of Multi-Agent Reasoning Systems.
+Comprehensive guides for building production-ready multi-agent systems with MARSYS.
 
-## 🎯 **What's in the Guides**
+## 🎯 Guide Categories
 
-Our guides are designed for developers who want to go beyond the basics and build robust, production-ready multi-agent systems.
+<div class="grid cards" markdown="1">
 
-### 🏗️ **Architecture & Design**
-Master the art of designing effective multi-agent systems:
+- :material-lightbulb:{ .lg .middle } **Best Practices**
 
-- **[Best Practices](best-practices.md)** - Proven patterns and approaches for building reliable systems
-- **[Design Patterns](patterns.md)** - Reusable architectural patterns for common scenarios  
-- **[System Architecture](architecture.md)** - Scalable architectures for enterprise deployments
-- **[Performance Optimization](performance.md)** - Techniques for maximizing speed and efficiency
+    ---
 
-### 🚀 **Production Deployment**
-Take your agents from development to production:
+    Proven patterns and approaches
 
-- **[Deployment Guide](deployment.md)** - Deploy and scale multi-agent systems
-- **[Monitoring & Observability](monitoring.md)** - Track performance and health
-- **[Security Best Practices](security.md)** - Secure your multi-agent deployments
-- **[Configuration Management](configuration.md)** - Manage settings across environments
+    - Agent design principles
+    - Error handling strategies
+    - Performance optimization
+    - Security considerations
 
-### 🔧 **Development Workflow**
-Improve your development and maintenance processes:
+    [View Best Practices →](#best-practices)
 
-- **[Testing Strategies](testing.md)** - Comprehensive testing for multi-agent systems
-- **[Debugging Guide](debugging.md)** - Troubleshoot common issues and complex problems
-- **[Code Organization](organization.md)** - Structure your codebase for maintainability
-- **[Version Management](versioning.md)** - Handle updates and backward compatibility
+- :material-rocket:{ .lg .middle } **Production Deployment**
 
-### 🌐 **Integration & Ecosystem**
-Connect MARSYS with other tools and services:
+    ---
 
-- **[Database Integration](database.md)** - Persistent storage and data management
-- **[API Integration](api-integration.md)** - Connect with external services and APIs
-- **[Cloud Services](cloud.md)** - Leverage cloud platforms and services
-- **[Microservices](microservices.md)** - Build distributed multi-agent architectures
+    Deploy and scale systems
 
-## 📚 **Featured Guides**
+    - Deployment strategies
+    - Monitoring & observability
+    - Configuration management
+    - Scaling techniques
 
-### 🏆 **Best Practices Guide**
-Essential practices for building reliable multi-agent systems:
+    [View Deployment →](#deployment)
 
-- **Agent Design Principles**
-  - Single responsibility and clear boundaries
-  - Robust error handling and recovery
-  - Efficient resource utilization
-  - Maintainable and testable code
+- :material-wrench:{ .lg .middle } **Development Workflow**
 
-- **System Architecture**
-  - Scalable agent topologies
-  - Communication patterns and protocols  
-  - State management and persistence
-  - Load balancing and distribution
+    ---
 
-- **Production Readiness**
-  - Comprehensive monitoring and alerting
-  - Security considerations and best practices
-  - Performance optimization techniques
-  - Disaster recovery and backup strategies
+    Efficient development processes
 
-### ⚡ **Performance Optimization**
-Maximize the efficiency of your multi-agent systems:
+    - Testing strategies
+    - Debugging techniques
+    - Code organization
+    - CI/CD pipelines
 
-- **Model Optimization**
-  - Choosing the right models for your use case
-  - Balancing cost, speed, and quality
-  - Local vs. API model trade-offs
-  - Caching and request optimization
+    [View Workflow →](#development-workflow)
 
-- **System Performance**
-  - Concurrent agent execution
-  - Resource pooling and sharing
-  - Memory management and optimization
-  - Network and I/O optimization
+- :material-puzzle:{ .lg .middle } **Integration Patterns**
 
-- **Scaling Strategies**
-  - Horizontal vs. vertical scaling
-  - Load distribution algorithms
-  - Auto-scaling policies
-  - Performance monitoring and tuning
+    ---
 
-### 🚀 **Deployment Guide**
-Deploy your multi-agent systems with confidence:
+    Connect with external systems
 
-- **Environment Setup**
-  - Development, staging, and production environments
-  - Configuration management and secrets
-  - Dependency management and versioning
-  - Infrastructure as code
+    - Database integration
+    - API connectivity
+    - Cloud services
+    - Microservices
 
-- **Deployment Patterns**
-  - Blue-green deployments
-  - Rolling updates and canary releases
-  - Multi-region deployments
-  - Disaster recovery setups
+    [View Integration →](#integration)
 
-- **Operations**
-  - Monitoring and health checks
-  - Log aggregation and analysis
-  - Automated testing and validation
-  - Incident response procedures
+</div>
 
-### 🔍 **Debugging & Troubleshooting**
-Diagnose and fix issues in complex multi-agent systems:
+## 📚 Best Practices
 
-- **Common Issues**
-  - Agent communication failures
-  - Memory leaks and resource exhaustion
-  - Model performance problems
-  - Configuration and setup issues
+### Agent Design Principles
 
-- **Debugging Techniques**
-  - Structured logging and tracing
-  - Performance profiling and analysis
-  - State inspection and debugging
-  - Isolation and reproduction strategies
+```python
+# ✅ GOOD: Single responsibility
+class DataAnalyzer(BaseAgent):
+    """Focused on data analysis only."""
+    async def _run(self, prompt, context, **kwargs):
+        # Only handles data analysis
+        return analyze_data(prompt)
 
-- **Tools and Techniques**
-  - Built-in debugging features
-  - External monitoring tools
-  - Performance profilers
-  - Log analysis and visualization
+# ❌ BAD: Multiple responsibilities
+class EverythingAgent(BaseAgent):
+    """Tries to do everything."""
+    async def _run(self, prompt, context, **kwargs):
+        # Analyzes, writes reports, sends emails...
+        # Too complex!
+```
 
-## 🎯 **Guide Categories**
+**Key Principles:**
+- **Single Responsibility**: Each agent has one clear purpose
+- **Pure Functions**: No side effects in `_run()` methods
+- **Clear Communication**: Well-defined response formats
+- **Error Recovery**: Graceful handling of failures
 
-### **Beginner Guides** 📚
-Perfect for developers new to production MARSYS:
-- Setting up development environments
-- Basic testing and validation
-- Simple deployment patterns
-- Essential monitoring setup
+[Full Best Practices Guide →](best-practices.md)
 
-### **Intermediate Guides** 🔧
-For developers building real-world systems:
-- Advanced architecture patterns
-- Performance optimization techniques
-- Integration with external systems
-- Comprehensive testing strategies
+### Memory Management
 
-### **Advanced Guides** 🚀
-For experienced developers and architects:
-- Complex distributed systems
-- Custom agent frameworks
-- Advanced performance tuning
-- Enterprise integration patterns
+```python
+# Efficient memory patterns
+class EfficientAgent(BaseAgent):
+    def __init__(self, model, **kwargs):
+        super().__init__(model, **kwargs)
+        # Limited memory with consolidation
+        self.episodic = EpisodicMemory(max_episodes=100)
+        self.working = WorkingMemory(capacity=7)
 
-### **Operations Guides** 🏭
-For DevOps and system administrators:
-- Production deployment and management
-- Monitoring and observability
-- Security and compliance
-- Disaster recovery and backup
+    async def _run(self, prompt, context, **kwargs):
+        # Use working memory for current task
+        self.working.add(prompt, priority=1.0)
 
-## 🛠️ **Practical Examples**
+        # Retrieve relevant past experiences
+        similar = self.episodic.retrieve_similar(prompt, limit=3)
 
-### **Small Team Setup** (2-5 developers)
-- Simple CI/CD pipeline
-- Basic monitoring and alerting
-- Shared development environment
-- Code review and quality gates
+        # Process with context
+        response = await self._process_with_memory(prompt, similar)
 
-### **Enterprise Deployment** (10+ developers)
-- Multi-environment setup (dev/staging/prod)
-- Advanced monitoring and observability
-- Security and compliance frameworks
-- Automated testing and deployment
+        return response
+```
 
-### **High-Scale Systems** (1000+ agents)
-- Distributed architecture patterns
-- Auto-scaling and load balancing
-- Advanced performance optimization
-- Comprehensive operational procedures
+### Error Handling
 
-## 🔗 **How to Use These Guides**
+```python
+# Robust error handling pattern
+async def execute_with_recovery(task, topology, max_retries=3):
+    """Execute with automatic recovery."""
+    for attempt in range(max_retries):
+        try:
+            result = await Orchestra.run(
+                task=task,
+                topology=topology,
+                execution_config=ExecutionConfig(
+                    auto_retry_on_error=True,
+                    error_routing_enabled=True
+                )
+            )
 
-### **Learning Path**
-1. **Start with Best Practices** - Understand fundamental principles
-2. **Review Architecture Patterns** - Learn proven design approaches
-3. **Practice with Testing** - Build reliable validation strategies
-4. **Deploy to Production** - Follow deployment and operations guides
-5. **Optimize and Scale** - Apply performance and scaling techniques
+            if result.success:
+                return result
 
-### **Reference Usage**
-- **Quick Reference** - Find specific solutions to common problems
-- **Deep Dive** - Comprehensive coverage of complex topics
-- **Troubleshooting** - Step-by-step problem resolution
-- **Examples** - Real-world implementation patterns
+        except RecoverableError as e:
+            if attempt < max_retries - 1:
+                await asyncio.sleep(2 ** attempt)  # Exponential backoff
+                continue
+            raise
+        except CriticalError:
+            # Don't retry critical errors
+            raise
 
-### **Team Adoption**
-- **Team Lead** - Architecture and design guidance
-- **Developers** - Implementation best practices and patterns
-- **DevOps** - Deployment and operations procedures
-- **QA** - Testing strategies and validation approaches
+    raise MaxRetriesExceeded()
+```
 
-## 📊 **Success Metrics**
+## 🚀 Deployment
 
-Track your multi-agent system's health and performance:
+### Deployment Strategies
 
-### **Technical Metrics**
-- Agent response times and throughput
-- System resource utilization
-- Error rates and recovery times
-- Model performance and costs
+#### 1. **Containerized Deployment**
 
-### **Business Metrics**
-- Task completion rates and accuracy
-- User satisfaction and adoption
-- Cost savings and efficiency gains
-- Time to market improvements
+```dockerfile
+# Dockerfile for MARSYS application
+FROM python:3.9-slim
 
-### **Operational Metrics**
-- System uptime and availability
-- Deployment frequency and success rate
-- Mean time to recovery (MTTR)
-- Developer productivity metrics
+WORKDIR /app
 
-## 🤝 **Community & Support**
+# Install dependencies
+COPY requirements.txt .
+RUN pip install --no-cache-dir -r requirements.txt
 
-### **Getting Help**
-- **[Discussion Forums](../contributing/overview.md)** - Ask questions and share experiences
-- **[Issue Tracker](../contributing/overview.md)** - Report bugs and request features
-- **[Best Practices Discussions](../contributing/overview.md)** - Share your learnings
-- **[Code Reviews](../contributing/overview.md)** - Get feedback on your implementations
+# Copy application
+COPY . .
 
-### **Contributing**
-- **[Share Your Guide](../contributing/overview.md)** - Contribute your own guides and patterns
-- **[Improve Existing Content](../contributing/overview.md)** - Help make guides better
-- **[Review Community Contributions](../contributing/overview.md)** - Help validate new content
-- **[Mentor Others](../contributing/overview.md)** - Share your expertise
+# Environment configuration
+ENV MARSYS_ENV=production
+ENV MARSYS_LOG_LEVEL=INFO
 
-## 🚀 **Ready to Dive Deeper?**
+# Health check
+HEALTHCHECK --interval=30s --timeout=3s --retries=3 \
+  CMD python -c "import marsys; marsys.health_check()"
 
-Choose your focus area:
+CMD ["python", "-m", "marsys.server"]
+```
 
-- **📈 [Performance](performance.md)** - Optimize for speed and efficiency
-- **🚀 [Deployment](deployment.md)** - Take your system to production
-- **🧪 [Testing](testing.md)** - Build robust validation strategies
-- **🔍 [Debugging](debugging.md)** - Master troubleshooting techniques
-- **🏗️ [Best Practices](best-practices.md)** - Learn proven patterns and approaches
+#### 2. **Kubernetes Deployment**
 
-Your journey to mastering production MARSYS systems starts here! 🎯 
+```yaml
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: marsys-agents
+spec:
+  replicas: 3
+  selector:
+    matchLabels:
+      app: marsys
+  template:
+    metadata:
+      labels:
+        app: marsys
+    spec:
+      containers:
+      - name: marsys
+        image: marsys:latest
+        resources:
+          requests:
+            memory: "1Gi"
+            cpu: "500m"
+          limits:
+            memory: "2Gi"
+            cpu: "1000m"
+        env:
+        - name: MARSYS_ENV
+          value: "production"
+        - name: API_KEY
+          valueFrom:
+            secretKeyRef:
+              name: marsys-secrets
+              key: api-key
+```
+
+[Full Deployment Guide →](deployment.md)
+
+### Monitoring & Observability
+
+```python
+# Monitoring setup
+from marsys.monitoring import MetricsCollector, HealthMonitor
+
+# Initialize monitoring
+metrics = MetricsCollector(
+    export_interval=60,  # Export every minute
+    backends=["prometheus", "cloudwatch"]
+)
+
+health = HealthMonitor(
+    check_interval=30,
+    alert_thresholds={
+        "error_rate": 0.05,  # Alert if > 5% errors
+        "latency_p99": 5.0,  # Alert if p99 > 5s
+        "memory_usage": 0.9  # Alert if > 90% memory
+    }
+)
+
+# Track metrics
+@metrics.track_execution
+async def monitored_execution(task, topology):
+    """Execute with monitoring."""
+    with metrics.timer("execution_time"):
+        result = await Orchestra.run(task, topology)
+
+    metrics.increment(
+        "executions",
+        tags={"success": result.success}
+    )
+
+    return result
+```
+
+## 🔧 Development Workflow
+
+### Testing Strategies
+
+```python
+# Comprehensive test suite
+import pytest
+from marsys.testing import AgentTestCase, MockModel
+
+class TestResearchAgent(AgentTestCase):
+    """Test research agent functionality."""
+
+    @pytest.fixture
+    def agent(self):
+        """Create test agent."""
+        return ResearchAgent(
+            model=MockModel(
+                responses=["Research result 1", "Research result 2"]
+            ),
+            agent_name="TestResearcher"
+        )
+
+    @pytest.mark.asyncio
+    async def test_research_execution(self, agent):
+        """Test research task execution."""
+        result = await agent.run("Research AI trends")
+
+        assert result.success
+        assert "Research result" in result.response
+
+    @pytest.mark.asyncio
+    async def test_parallel_research(self):
+        """Test parallel research coordination."""
+        topology = PatternConfig.hub_and_spoke(
+            hub="Coordinator",
+            spokes=["Researcher1", "Researcher2"],
+            parallel_spokes=True
+        )
+
+        result = await self.execute_test_workflow(
+            task="Research quantum computing",
+            topology=topology,
+            mock_responses=self.research_responses
+        )
+
+        assert result.total_steps >= 3  # Hub + 2 spokes
+        assert all(br.success for br in result.branch_results)
+```
+
+[Full Testing Guide →](testing.md)
+
+### Debugging Techniques
+
+```python
+# Debug configuration
+from marsys.debug import DebugConfig, Tracer
+
+debug_config = DebugConfig(
+    trace_execution=True,
+    log_messages=True,
+    capture_states=True,
+    breakpoint_on_error=True
+)
+
+# Enable tracing
+with Tracer(config=debug_config) as tracer:
+    result = await Orchestra.run(
+        task="Debug this task",
+        topology=topology,
+        execution_config=ExecutionConfig(
+            status=StatusConfig(
+                verbosity=2,  # Verbose output
+                show_agent_thoughts=True,
+                show_tool_calls=True
+            )
+        )
+    )
+
+    # Analyze trace
+    trace = tracer.get_trace()
+    print(f"Execution path: {trace.execution_path}")
+    print(f"Agent interactions: {trace.interactions}")
+    print(f"Errors: {trace.errors}")
+```
+
+## 🌐 Integration
+
+### Database Integration
+
+```python
+# PostgreSQL integration
+from marsys.storage import DatabaseBackend
+import asyncpg
+
+class PostgresBackend(DatabaseBackend):
+    """PostgreSQL storage backend."""
+
+    async def initialize(self):
+        """Initialize database connection."""
+        self.pool = await asyncpg.create_pool(
+            database="marsys",
+            user="marsys_user",
+            password=os.getenv("DB_PASSWORD"),
+            host="localhost",
+            port=5432,
+            min_size=10,
+            max_size=20
+        )
+
+    async def save_state(self, session_id: str, state: Dict):
+        """Save execution state."""
+        async with self.pool.acquire() as conn:
+            await conn.execute(
+                """
+                INSERT INTO execution_states (session_id, state, updated_at)
+                VALUES ($1, $2, NOW())
+                ON CONFLICT (session_id)
+                DO UPDATE SET state = $2, updated_at = NOW()
+                """,
+                session_id,
+                json.dumps(state)
+            )
+
+    async def load_state(self, session_id: str) -> Optional[Dict]:
+        """Load execution state."""
+        async with self.pool.acquire() as conn:
+            row = await conn.fetchrow(
+                "SELECT state FROM execution_states WHERE session_id = $1",
+                session_id
+            )
+            return json.loads(row["state"]) if row else None
+```
+
+### API Integration
+
+```python
+# REST API server
+from fastapi import FastAPI, BackgroundTasks
+from marsys.api import MarsysAPI
+
+app = FastAPI(title="MARSYS API")
+marsys_api = MarsysAPI()
+
+@app.post("/execute")
+async def execute_task(
+    task: str,
+    topology: Dict,
+    background_tasks: BackgroundTasks
+):
+    """Execute multi-agent task."""
+    # Start execution in background
+    task_id = marsys_api.create_task()
+    background_tasks.add_task(
+        marsys_api.execute_async,
+        task_id,
+        task,
+        topology
+    )
+
+    return {"task_id": task_id, "status": "started"}
+
+@app.get("/status/{task_id}")
+async def get_status(task_id: str):
+    """Get task execution status."""
+    return marsys_api.get_task_status(task_id)
+
+@app.get("/result/{task_id}")
+async def get_result(task_id: str):
+    """Get task execution result."""
+    return marsys_api.get_task_result(task_id)
+```
+
+## 📊 Performance Optimization
+
+### Optimization Techniques
+
+1. **Agent Pool Management**
+```python
+# Optimize with agent pools
+pool = AgentPool(
+    agent_class=Worker,
+    num_instances=10,  # Pre-create instances
+    warm_start=True,   # Keep instances warm
+    max_idle_time=300  # Recycle after 5 minutes idle
+)
+```
+
+2. **Caching Strategies**
+```python
+from marsys.cache import ResponseCache
+
+cache = ResponseCache(
+    ttl=3600,  # Cache for 1 hour
+    max_size=1000,
+    eviction_policy="lru"
+)
+
+@cache.cached(key_fn=lambda t, top: f"{t}:{hash(str(top))}")
+async def cached_execution(task, topology):
+    return await Orchestra.run(task, topology)
+```
+
+3. **Parallel Execution**
+```python
+# Maximize parallelism
+topology = PatternConfig.hub_and_spoke(
+    hub="Coordinator",
+    spokes=["Worker1", "Worker2", "Worker3", "Worker4"],
+    parallel_spokes=True  # Execute all spokes in parallel
+)
+
+config = ExecutionConfig(
+    allow_parallel=True,
+    max_parallel_branches=10,
+    convergence_timeout=60
+)
+```
+
+## 🔒 Security Best Practices
+
+### Security Checklist
+
+- [ ] **API Key Management**: Use environment variables or secret managers
+- [ ] **Input Validation**: Validate all user inputs
+- [ ] **Rate Limiting**: Implement rate limits for API calls
+- [ ] **Authentication**: Secure agent-to-agent communication
+- [ ] **Audit Logging**: Log all sensitive operations
+- [ ] **Data Encryption**: Encrypt sensitive data at rest and in transit
+- [ ] **Access Control**: Implement role-based access control
+- [ ] **Dependency Scanning**: Regular security audits of dependencies
+
+```python
+# Security configuration
+from marsys.security import SecurityConfig
+
+security = SecurityConfig(
+    encrypt_messages=True,
+    validate_inputs=True,
+    audit_logging=True,
+    rate_limit=100,  # Requests per minute
+    allowed_origins=["https://trusted-domain.com"],
+    api_key_rotation_days=30
+)
+```
+
+## 🚦 Next Steps
+
+<div class="grid cards" markdown="1">
+
+- :material-book:{ .lg .middle } **[API Reference](../api/overview.md)**
+
+    ---
+
+    Complete API documentation
+
+- :material-school:{ .lg .middle } **[Tutorials](../tutorials/overview.md)**
+
+    ---
+
+    Step-by-step learning
+
+- :material-lightbulb:{ .lg .middle } **[Use Cases](../use-cases/index.md)**
+
+    ---
+
+    Real-world examples
+
+- :material-help-circle:{ .lg .middle } **[Support](../support.md)**
+
+    ---
+
+    Get help and support
+
+</div>
+
+---
+
+!!! success "Production Ready!"
+    These guides provide everything you need to build, deploy, and maintain production-ready multi-agent systems with MARSYS.
+
+!!! tip "Start Small"
+    Begin with best practices and gradually implement more advanced patterns as your system grows. Focus on reliability and maintainability first, then optimize for performance.
