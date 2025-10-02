@@ -1,36 +1,103 @@
 # Messages
 
-Messages are the fundamental communication unit in the Multi-Agent Reasoning Systems (MARSYS) framework. They follow the OpenAI message format while extending it for multi-agent scenarios.
+Messages are the fundamental communication units that enable agents, models, and tools to exchange information in a structured format.
 
-## Message Structure
+## 🎯 Overview
 
-```python
-@dataclass
-class Message:
-    role: str                          # Role of the message sender
-    content: Optional[str]             # Main message content (can be None)
-    message_id: str                    # Unique identifier (auto-generated)
-    name: Optional[str]                # Agent/tool name
-    tool_calls: Optional[List[Dict]]   # Tool invocations
-    tool_call_id: Optional[str]        # For tool responses
-    agent_call: Optional[Dict]         # For agent invocations
+Messages in MARSYS:
+
+- **Follow OpenAI Format**: Compatible with standard LLM APIs
+- **Support Multi-Agent**: Extended for agent-to-agent communication
+- **Handle Tools**: Built-in support for function calling
+- **Track Context**: Maintain conversation history and metadata
+- **Enable Traceability**: Unique IDs for debugging and tracking
+
+## 🏗️ Architecture
+
+```mermaid
+graph TB
+    subgraph "Message Types"
+        SM[System Messages<br/>Instructions]
+        UM[User Messages<br/>Human Input]
+        AM[Assistant Messages<br/>AI Responses]
+        TM[Tool Messages<br/>Function Results]
+        ACM[Agent Call Messages<br/>Inter-agent]
+        ARM[Agent Response<br/>Agent Results]
+        EM[Error Messages<br/>Failures]
+    end
+
+    subgraph "Message Flow"
+        User[User] --> Agent1[Agent]
+        Agent1 --> Model[LLM/VLM]
+        Model --> Tools[Tools]
+        Tools --> Model
+        Agent1 --> Agent2[Other Agent]
+        Agent2 --> Agent1
+    end
+
+    subgraph "Message Components"
+        Role[Role]
+        Content[Content]
+        ID[Message ID]
+        Meta[Metadata]
+        TC[Tool Calls]
+        Images[Images]
+    end
+
+    style SM fill:#e1f5fe
+    style UM fill:#4fc3f7
+    style AM fill:#29b6f6
 ```
 
-## Message Roles
+## 📦 Message Structure
 
-The framework supports standard and extended roles:
+### Core Message Class
 
-| Role | Description | Example |
-|------|-------------|---------|
-| `system` | System instructions | Initial agent instructions |
-| `user` | User input | Human queries or commands |
-| `assistant` | AI response | Agent responses |
+```python
+from dataclasses import dataclass, field
+from typing import Optional, Union, Dict, List, Any
+from datetime import datetime
+import uuid
+
+@dataclass
+class Message:
+    # Core fields
+    role: str                                      # Message role/type
+    content: Optional[Union[str, Dict, List]]      # Main content
+    message_id: str = field(default_factory=lambda: str(uuid.uuid4()))
+
+    # Extended fields
+    name: Optional[str] = None                     # Tool/agent name
+    tool_calls: Optional[List[ToolCallMsg]] = None # Tool invocations
+    tool_call_id: Optional[str] = None            # For tool responses
+    agent_calls: Optional[List[AgentCallMsg]] = None  # Agent invocations
+
+    # Additional data
+    structured_data: Optional[Dict] = None         # Structured responses
+    images: Optional[List[str]] = None            # For vision models
+    metadata: Dict[str, Any] = field(default_factory=dict)
+    timestamp: datetime = field(default_factory=datetime.now)
+
+    # Methods
+    def to_llm_dict(self) -> Dict[str, Any]
+    def to_json(self) -> str
+    @classmethod
+    def from_llm_response(cls, response: Dict) -> 'Message'
+```
+
+### Message Roles
+
+| Role | Description | Usage |
+|------|-------------|-------|
+| `system` | System instructions | Initial agent configuration |
+| `user` | User input | Human queries, requests |
+| `assistant` | AI response | Model/agent responses |
 | `tool` | Tool result | Function execution results |
-| `error` | Error message | Exception or failure info |
 | `agent_call` | Agent invocation | One agent calling another |
 | `agent_response` | Agent reply | Response from invoked agent |
+| `error` | Error message | Failures and exceptions |
 
-## Creating Messages
+## 🎯 Creating Messages
 
 ### Basic Messages
 
@@ -40,230 +107,219 @@ from src.agents.memory import Message
 # User message
 user_msg = Message(
     role="user",
-    content="What's the weather like?"
-)
-
-# Assistant response
-assistant_msg = Message(
-    role="assistant",
-    content="I'll check the weather for you.",
-    name="weather_agent"
+    content="Analyze the quarterly sales data"
 )
 
 # System message
 system_msg = Message(
     role="system",
-    content="You are a helpful weather assistant."
+    content="You are a data analyst specializing in sales trends."
+)
+
+# Assistant response
+assistant_msg = Message(
+    role="assistant",
+    content="I'll analyze the quarterly sales data for you.",
+    name="DataAnalyst"
+)
+
+# Error message
+error_msg = Message(
+    role="error",
+    content="Failed to connect to database",
+    metadata={
+        "error_type": "ConnectionError",
+        "retry_count": 3
+    }
 )
 ```
 
 ### Tool Messages
 
 ```python
-# Assistant calling a tool
+# Tool call message
 tool_call_msg = Message(
     role="assistant",
-    content="",  # Can be empty for tool calls
-    tool_calls=[{
-        "id": "call_abc123",
-        "type": "function",
-        "function": {
-            "name": "get_weather",
-            "arguments": '{"location": "New York"}'
-        }
-    }]
+    content="",  # Can be empty when calling tools
+    tool_calls=[
+        ToolCallMsg(
+            id="call_abc123",
+            type="function",
+            function=FunctionCall(
+                name="analyze_data",
+                arguments='{"dataset": "sales_q4", "metrics": ["revenue", "growth"]}'
+            )
+        )
+    ]
 )
 
 # Tool response
 tool_response = Message(
     role="tool",
-    content='{"temperature": 72, "condition": "sunny"}',
-    name="get_weather",
+    content='{"revenue": 1500000, "growth": "15%", "trend": "positive"}',
+    name="analyze_data",
     tool_call_id="call_abc123"
 )
 ```
 
-### Agent Communication Messages
+### Multi-Agent Messages
 
 ```python
-# Agent A invoking Agent B
+# Agent A calling Agent B
 agent_call = Message(
     role="agent_call",
-    content="Research quantum computing basics",
-    name="researcher_agent",
-    agent_call={
-        "agent_name": "researcher_agent",
-        "request": "Research quantum computing basics"
-    }
+    content="Research the latest AI trends for 2025",
+    name="Researcher",
+    agent_calls=[
+        AgentCallMsg(
+            agent_name="Researcher",
+            request="Research the latest AI trends for 2025",
+            context={"depth": "detailed", "sources": 10}
+        )
+    ]
 )
 
 # Agent B's response
 agent_response = Message(
     role="agent_response",
-    content="Quantum computing uses quantum bits...",
-    name="researcher_agent"
+    content="Here are the top AI trends for 2025:\n1. Multimodal AI...",
+    name="Researcher",
+    structured_data={
+        "trends": [
+            {"name": "Multimodal AI", "impact": "high"},
+            {"name": "Edge AI", "impact": "medium"}
+        ],
+        "sources": ["arxiv.org", "nature.com"]
+    }
 )
 ```
 
-## Message Conversion
+### Multimodal Messages
+
+```python
+# Message with images (for vision models)
+vision_msg = Message(
+    role="user",
+    content="What objects are in these images?",
+    images=[
+        "base64_encoded_image_1",
+        "https://example.com/image.jpg",
+        "/path/to/local/image.png"
+    ]
+)
+
+# Mixed content message
+mixed_msg = Message(
+    role="user",
+    content=[
+        {"type": "text", "text": "Analyze this chart:"},
+        {"type": "image_url", "image_url": {"url": "data:image/png;base64,..."}}
+    ]
+)
+```
+
+## 🔄 Message Conversion
 
 ### To LLM Format
 
 ```python
 # Convert for OpenAI-compatible APIs
-llm_dict = message.to_llm_dict()
+message = Message(
+    role="assistant",
+    content="I found the information you requested.",
+    tool_calls=[...]
+)
 
-# Example output:
+llm_dict = message.to_llm_dict()
+# Result:
 {
     "role": "assistant",
-    "content": "I'll help you with that.",
-    "name": "helper_agent"
+    "content": "I found the information you requested.",
+    "tool_calls": [...]
 }
 
-# Tool calls are preserved
+# Special conversions
+agent_call_msg = Message(role="agent_call", content="Task", name="Agent2")
+llm_dict = agent_call_msg.to_llm_dict()
+# Converts to user message for LLM:
 {
-    "role": "assistant",
-    "content": "",
-    "tool_calls": [{
-        "id": "call_123",
-        "type": "function",
-        "function": {"name": "search", "arguments": "..."}
-    }]
+    "role": "user",
+    "content": "[Request from Agent1]: Task"
 }
 ```
 
 ### From LLM Response
 
 ```python
-# Convert LLM response to Message
+# Parse LLM response into Message
 llm_response = {
     "role": "assistant",
-    "content": "Here's what I found...",
-    "tool_calls": None
+    "content": "Here's the analysis:",
+    "tool_calls": [{
+        "id": "call_123",
+        "type": "function",
+        "function": {
+            "name": "create_chart",
+            "arguments": '{"data": [1,2,3]}'
+        }
+    }]
 }
 
-message = Message.from_response_dict(
-    llm_response,
-    processor=agent._input_message_processor()
-)
+message = Message.from_llm_response(llm_response)
+# Automatically parses tool calls, content, etc.
 ```
 
-## Message Processing
+## 🎯 Message Patterns
 
-### Input Processing
-
-Transform LLM responses to Messages:
+### Conversation Pattern
 
 ```python
-def process_llm_response(response_dict: Dict) -> Message:
-    """Process LLM response into Message object."""
-    if "tool_calls" in response_dict:
-        return Message(
-            role="assistant",
-            content=response_dict.get("content", ""),
-            tool_calls=response_dict["tool_calls"]
-        )
-    
-    return Message(
-        role="assistant",
-        content=response_dict["content"]
-    )
-```
-
-### Output Processing
-
-Transform Messages for LLM consumption:
-
-```python
-def process_for_llm(message: Message) -> Dict:
-    """Transform Message for LLM."""
-    # Convert agent_call to user message
-    if message.role == "agent_call":
-        return {
-            "role": "user",
-            "content": f"[Agent Call]: {message.content}"
-        }
-    
-    # Standard conversion
-    return message.to_llm_dict()
-```
-
-## Message Validation
-
-### Role Validation
-
-```python
-VALID_ROLES = {"system", "user", "assistant", "tool", "error", "agent_call", "agent_response"}
-
-def validate_message(message: Message) -> bool:
-    """Validate message format."""
-    if message.role not in VALID_ROLES:
-        return False
-    
-    if message.role == "tool" and not message.tool_call_id:
-        return False
-    
-    if message.role == "tool" and not message.name:
-        return False
-    
-    return True
-```
-
-### Content Validation
-
-```python
-def validate_tool_response(message: Message) -> bool:
-    """Validate tool response format."""
-    if message.role != "tool":
-        return False
-    
-    try:
-        # Tool responses should be valid JSON
-        import json
-        json.loads(message.content)
-        return True
-    except:
-        return False
-```
-
-## Message Patterns
-
-### Conversation Flow
-
-```python
-# Standard conversation pattern
-messages = [
-    Message(role="system", content="You are a helpful assistant"),
-    Message(role="user", content="What's 2+2?"),
-    Message(role="assistant", content="2+2 equals 4"),
-    Message(role="user", content="What about 3+3?"),
-    Message(role="assistant", content="3+3 equals 6")
+# Standard conversation flow
+conversation = [
+    Message(role="system", content="You are a helpful assistant."),
+    Message(role="user", content="What's the capital of France?"),
+    Message(role="assistant", content="The capital of France is Paris."),
+    Message(role="user", content="What about Germany?"),
+    Message(role="assistant", content="The capital of Germany is Berlin.")
 ]
+
+# Convert for LLM
+llm_messages = [msg.to_llm_dict() for msg in conversation]
 ```
 
 ### Tool Usage Pattern
 
 ```python
-# Tool invocation flow
-flow = [
-    Message(role="user", content="What's the weather in Paris?"),
+# Complete tool usage flow
+tool_flow = [
+    # 1. User request
+    Message(role="user", content="What's the weather in Tokyo?"),
+
+    # 2. Assistant decides to use tool
     Message(
         role="assistant",
-        content="I'll check the weather in Paris for you.",
-        tool_calls=[{
-            "id": "call_1",
-            "function": {"name": "get_weather", "arguments": '{"city": "Paris"}'}
-        }]
+        content="I'll check the weather in Tokyo for you.",
+        tool_calls=[ToolCallMsg(
+            id="call_weather_1",
+            function=FunctionCall(
+                name="get_weather",
+                arguments='{"city": "Tokyo", "units": "celsius"}'
+            )
+        )]
     ),
+
+    # 3. Tool returns result
     Message(
         role="tool",
+        content='{"temp": 22, "conditions": "sunny", "humidity": 65}',
         name="get_weather",
-        content='{"temp": 18, "conditions": "partly cloudy"}',
-        tool_call_id="call_1"
+        tool_call_id="call_weather_1"
     ),
+
+    # 4. Assistant incorporates result
     Message(
         role="assistant",
-        content="The weather in Paris is 18°C and partly cloudy."
+        content="The weather in Tokyo is currently 22°C and sunny with 65% humidity."
     )
 ]
 ```
@@ -271,72 +327,283 @@ flow = [
 ### Error Handling Pattern
 
 ```python
-# Error message pattern
-try:
-    result = await some_operation()
-except Exception as e:
-    error_msg = Message(
-        role="error",
-        content=str(e),
-        name=agent.name,
-        metadata={
-            "error_type": type(e).__name__,
-            "timestamp": datetime.now().isoformat()
-        }
-    )
-    return error_msg
+def handle_with_error_message(func):
+    """Decorator to convert exceptions to Messages."""
+    async def wrapper(*args, **kwargs):
+        try:
+            return await func(*args, **kwargs)
+        except Exception as e:
+            return Message(
+                role="error",
+                content=str(e),
+                metadata={
+                    "error_type": type(e).__name__,
+                    "traceback": traceback.format_exc(),
+                    "function": func.__name__,
+                    "timestamp": datetime.now().isoformat()
+                }
+            )
+    return wrapper
+
+@handle_with_error_message
+async def risky_operation():
+    # Operation that might fail
+    pass
 ```
 
-## Best Practices
-
-1. **Immutability**: Never modify messages after creation
-2. **Unique IDs**: Always preserve message_id when forwarding
-3. **Role Consistency**: Use appropriate roles for each message type
-4. **Tool Naming**: Sanitize tool names (remove "functions." prefix)
-5. **Error Messages**: Return errors as Message objects, not exceptions
-6. **Metadata**: Use metadata for additional context, not core data
-
-## Advanced Usage
-
-### Message Chaining
+### Multi-Agent Communication Pattern
 
 ```python
-class MessageChain:
-    """Track related messages."""
-    def __init__(self, initial_message: Message):
-        self.chain_id = initial_message.message_id
-        self.messages = [initial_message]
-    
-    def add_response(self, message: Message):
-        message.metadata = message.metadata or {}
-        message.metadata["chain_id"] = self.chain_id
-        self.messages.append(message)
-    
-    def get_chain(self) -> List[Message]:
-        return self.messages.copy()
+# Agent coordination flow
+coordination_flow = [
+    # 1. Coordinator assigns task
+    Message(
+        role="agent_call",
+        content="Analyze market data for Q4",
+        name="DataAnalyst",
+        agent_calls=[AgentCallMsg(
+            agent_name="DataAnalyst",
+            request="Analyze market data for Q4",
+            context={"priority": "high"}
+        )]
+    ),
+
+    # 2. DataAnalyst processes
+    Message(
+        role="agent_response",
+        content="Analysis complete. Key findings:",
+        name="DataAnalyst",
+        structured_data={
+            "revenue": 2500000,
+            "growth": "18%",
+            "top_products": ["A", "B", "C"]
+        }
+    ),
+
+    # 3. Coordinator requests visualization
+    Message(
+        role="agent_call",
+        content="Create charts for this data",
+        name="Visualizer",
+        structured_data={"data": {...}}
+    ),
+
+    # 4. Visualizer responds
+    Message(
+        role="agent_response",
+        content="Charts created successfully",
+        name="Visualizer",
+        images=["chart1.png", "chart2.png"]
+    )
+]
+```
+
+## 📋 Best Practices
+
+### 1. **Preserve Message IDs**
+
+```python
+# ✅ GOOD - Maintain IDs for tracking
+original_msg = Message(role="user", content="Hello")
+print(f"Tracking ID: {original_msg.message_id}")
+
+# When forwarding or referencing
+response = Message(
+    role="assistant",
+    content="Hello! How can I help?",
+    metadata={"in_reply_to": original_msg.message_id}
+)
+
+# ❌ BAD - Creating new ID for same message
+forwarded = Message(
+    role=original_msg.role,
+    content=original_msg.content
+    # Lost original message_id!
+)
+```
+
+### 2. **Use Appropriate Roles**
+
+```python
+# ✅ GOOD - Correct role usage
+tool_result = Message(
+    role="tool",  # Correct role for tool results
+    content=json.dumps(result),
+    name="calculator",
+    tool_call_id="call_123"
+)
+
+# ❌ BAD - Wrong role
+tool_result = Message(
+    role="assistant",  # Wrong! Tools aren't assistants
+    content=str(result)
+)
+```
+
+### 3. **Structure Tool Responses**
+
+```python
+# ✅ GOOD - Structured tool response
+tool_response = Message(
+    role="tool",
+    content=json.dumps({
+        "success": True,
+        "result": calculation_result,
+        "metadata": {"precision": "high", "method": "numpy"}
+    }),
+    name="advanced_calculator",
+    tool_call_id=call_id
+)
+
+# ❌ BAD - Unstructured response
+tool_response = Message(
+    role="tool",
+    content=f"The answer is {result}"  # Not JSON!
+)
+```
+
+### 4. **Handle Errors Gracefully**
+
+```python
+# ✅ GOOD - Error as message
+try:
+    result = await process_data()
+except DataError as e:
+    return Message(
+        role="error",
+        content=f"Data processing failed: {e}",
+        metadata={
+            "error_code": "DATA_001",
+            "recoverable": True,
+            "suggestion": "Check data format"
+        }
+    )
+
+# ❌ BAD - Raw exception
+try:
+    result = await process_data()
+except DataError as e:
+    raise  # Don't propagate raw exceptions
+```
+
+## 🎯 Advanced Patterns
+
+### Message Validation
+
+```python
+from typing import Set
+from pydantic import BaseModel, validator
+
+class ValidatedMessage(BaseModel):
+    role: str
+    content: Optional[str] = None
+    tool_calls: Optional[List[Dict]] = None
+
+    @validator('role')
+    def validate_role(cls, v):
+        valid_roles = {'system', 'user', 'assistant', 'tool', 'error'}
+        if v not in valid_roles:
+            raise ValueError(f"Invalid role: {v}")
+        return v
+
+    @validator('tool_calls')
+    def validate_tool_calls(cls, v):
+        if v:
+            for call in v:
+                if 'id' not in call or 'function' not in call:
+                    raise ValueError("Invalid tool call format")
+        return v
 ```
 
 ### Message Filtering
 
 ```python
-def filter_messages(messages: List[Message], **criteria) -> List[Message]:
-    """Filter messages by criteria."""
-    filtered = messages
-    
-    if "role" in criteria:
-        filtered = [m for m in filtered if m.role == criteria["role"]]
-    
-    if "name" in criteria:
-        filtered = [m for m in filtered if m.name == criteria["name"]]
-    
-    if "after" in criteria:
-        filtered = [m for m in filtered if m.timestamp > criteria["after"]]
-    
-    return filtered
+class MessageFilter:
+    @staticmethod
+    def by_role(messages: List[Message], role: str) -> List[Message]:
+        """Filter messages by role."""
+        return [m for m in messages if m.role == role]
+
+    @staticmethod
+    def by_agent(messages: List[Message], agent_name: str) -> List[Message]:
+        """Filter messages by agent name."""
+        return [m for m in messages if m.name == agent_name]
+
+    @staticmethod
+    def recent(messages: List[Message], minutes: int = 5) -> List[Message]:
+        """Get messages from last N minutes."""
+        cutoff = datetime.now() - timedelta(minutes=minutes)
+        return [m for m in messages if m.timestamp > cutoff]
+
+    @staticmethod
+    def with_tools(messages: List[Message]) -> List[Message]:
+        """Get messages with tool calls."""
+        return [m for m in messages if m.tool_calls]
 ```
 
-## Next Steps
+### Message Chaining
 
-- Learn about [Memory](memory.md) - How messages are stored
-- Understand [Tools](tools.md) - Tool message patterns
-- Explore [Agent Communication](communication.md) - Multi-agent messaging
+```python
+class MessageChain:
+    """Track related messages in a conversation chain."""
+
+    def __init__(self, initial: Message):
+        self.chain_id = str(uuid.uuid4())
+        self.messages: List[Message] = [initial]
+        initial.metadata["chain_id"] = self.chain_id
+
+    def add(self, message: Message) -> None:
+        """Add message to chain."""
+        message.metadata["chain_id"] = self.chain_id
+        message.metadata["chain_position"] = len(self.messages)
+        self.messages.append(message)
+
+    def get_context(self, max_messages: int = 10) -> List[Message]:
+        """Get recent context from chain."""
+        return self.messages[-max_messages:]
+
+    def summarize(self) -> Dict[str, Any]:
+        """Get chain summary."""
+        return {
+            "chain_id": self.chain_id,
+            "message_count": len(self.messages),
+            "roles": list(set(m.role for m in self.messages)),
+            "has_errors": any(m.role == "error" for m in self.messages),
+            "tool_calls": sum(1 for m in self.messages if m.tool_calls)
+        }
+```
+
+## 🚦 Next Steps
+
+<div class="grid cards" markdown="1">
+
+- :material-memory:{ .lg .middle } **[Memory](memory.md)**
+
+    ---
+
+    How messages are stored and managed
+
+- :material-robot:{ .lg .middle } **[Agents](agents.md)**
+
+    ---
+
+    How agents create and process messages
+
+- :material-chat:{ .lg .middle } **[Communication](communication.md)**
+
+    ---
+
+    Multi-agent message patterns
+
+- :material-api:{ .lg .middle } **[Message API Reference](../api/messages.md)**
+
+    ---
+
+    Complete API documentation
+
+</div>
+
+---
+
+!!! success "Message System Ready!"
+    You now understand the message system in MARSYS. Messages are the lingua franca that enables all components to communicate effectively.

@@ -1,188 +1,698 @@
 # Configuration
 
-Learn how to configure the Multi-Agent Reasoning Systems (MARSYS) Framework.
+Master MARSYS configuration to fine-tune execution behavior, timeouts, status management, and more.
 
-## Environment Variables
+## 🎯 Overview
 
-Create a `.env` file in your project root. The framework's `ModelConfig` will automatically attempt to load API keys from these environment variables if not provided directly in the configuration.
+MARSYS provides comprehensive configuration at multiple levels:
 
-```env
+- **Model Configuration**: Provider settings, API keys, parameters
+- **Agent Configuration**: Tools, memory, response formats
+- **Execution Configuration**: Timeouts, retries, convergence behavior
+- **Status Configuration**: Verbosity, output formatting, channels
+- **Communication Configuration**: User interaction, rich formatting
+
+## 🔑 Environment Variables
+
+### Basic Setup
+
+Create a `.env` file in your project root:
+
+```bash
 # .env
 
-# API Keys (ensure these match the expected variables by ModelConfig)
-OPENAI_API_KEY="your-openai-key"
-ANTHROPIC_API_KEY="your-anthropic-key" # For Anthropic models
-GOOGLE_API_KEY="your-google-key"     # For Google models
-GROQ_API_KEY="your-groq-key"         # For Groq models
-# OPENROUTER_API_KEY="your-openrouter-key" # For OpenRouter models (if used)
-# HUGGINGFACE_TOKEN="your-hf-token" # Optional: May be used by Hugging Face libraries for private models
+# API Keys (at least one required)
+OPENAI_API_KEY="sk-..."
+ANTHROPIC_API_KEY="sk-ant-..."
+GOOGLE_API_KEY="AIza..."
+GROQ_API_KEY="gsk_..."
 
-# Logging Configuration
-# This can be used by your application or specific logging setups.
-# The framework's core logging level for RequestContext can also be set programmatically.
-LOG_LEVEL="SUMMARY" # Example: MINIMAL, SUMMARY, DETAILED, DEBUG
+# Optional Configuration
+HEADLESS=true              # Browser automation mode
+LOG_LEVEL=INFO            # Logging verbosity
+MAX_RETRIES=3             # API retry attempts
+TIMEOUT=300               # Default timeout in seconds
 ```
 
-## Model Configuration (`ModelConfig`)
+### Advanced Environment Variables
 
-The `src.models.models.ModelConfig` class is used to define settings for language models, whether they are API-based or local.
+```bash
+# Model-specific settings
+OPENAI_ORG_ID="org-..."
+OPENAI_BASE_URL="https://api.openai.com/v1"
+ANTHROPIC_VERSION="2023-06-01"
+
+# Browser automation
+PLAYWRIGHT_BROWSERS_PATH="/path/to/browsers"
+PLAYWRIGHT_TIMEOUT=30000
+
+# System resources
+MAX_WORKERS=4
+MEMORY_LIMIT_MB=2048
+DISK_CACHE_PATH="/tmp/marsys_cache"
+
+# Monitoring
+ENABLE_TELEMETRY=false
+METRICS_PORT=9090
+TRACE_LEVEL=ERROR
+```
+
+## 🤖 Model Configuration
+
+### ModelConfig Class
+
+The core configuration class for all models:
 
 ```python
-from src.models.models import ModelConfig
+from src.models import ModelConfig
 
-# --- API Model Configurations ---
-
-# OpenAI Configuration
-# ModelConfig will try to get OPENAI_API_KEY from environment if api_key is not set.
-# base_url is automatically determined from 'provider' if not set.
-openai_config = ModelConfig(
-    type="api",
-    provider="openai",
-    name="gpt-4-turbo", # Or any other valid OpenAI model
-    temperature=0.7,
-    max_tokens=2000
-    # api_key="sk-...", # Optionally provide directly
-)
-
-# Anthropic Configuration
-anthropic_config = ModelConfig(
-    type="api",
-    provider="anthropic",
-    name="claude-3-opus-20240229", # Or other Anthropic model
-    temperature=0.5
-    # api_key="sk-ant-...", # Optionally provide directly
-)
-
-# Google Configuration
-google_config = ModelConfig(
-    type="api",
-    provider="google",
-    name="gemini-pro", # Or other Google model
-    # api_key="...", # Optionally provide directly
-)
-
-# Groq Configuration
-groq_config = ModelConfig(
-    type="api",
-    provider="groq",
-    name="llama3-8b-8192", # Or other Groq model
-    # api_key="gsk_...", # Optionally provide directly
-)
-
-
-# --- Local Model Configuration ---
-# For models loaded using Hugging Face Transformers library
-
-# Example for a local LLM
-local_llm_config = ModelConfig(
-    type="local",
-    model_class="llm", # Required for local models: "llm" or "vlm"
-    name="mistralai/Mistral-7B-Instruct-v0.2", # Hugging Face model identifier
-    torch_dtype="auto",  # Or "bfloat16", "float16" for optimization
-    device_map="auto",   # For model distribution across devices
-    # quantization_config={"load_in_8bit": True} # Optional: example quantization
-)
-
-# Example for a local VLM (Vision Language Model)
-local_vlm_config = ModelConfig(
-    type="local",
-    model_class="vlm", # Required for local models
-    name="Salesforce/blip-image-captioning-large", # Example VLM identifier
-    torch_dtype="auto",
-    device_map="auto"
+config = ModelConfig(
+    type="api",                    # "api" or "local"
+    provider="openai",             # Provider name
+    name="gpt-4",                  # Model name
+    api_key=None,                  # Auto-loads from env
+    base_url=None,                 # Custom endpoint
+    parameters={                   # Model parameters
+        "temperature": 0.7,
+        "max_tokens": 2000,
+        "top_p": 0.9,
+        "frequency_penalty": 0.5,
+        "presence_penalty": 0.5
+    }
 )
 ```
-**Note:** `ModelConfig` performs validation, including checking for required API keys for API-type models (by looking at environment variables based on the provider) and ensuring `model_class` is specified for local models.
 
-## Agent Configuration
+### Provider-Specific Configurations
 
-When creating an agent, you pass a `ModelConfig` instance to it.
+=== "OpenAI"
+    ```python
+    config = ModelConfig(
+        type="api",
+        provider="openai",
+        name="gpt-4-turbo-preview",
+        api_key=os.getenv("OPENAI_API_KEY"),
+        parameters={
+            "temperature": 0.7,
+            "max_tokens": 4096,
+            "top_p": 1.0,
+            "frequency_penalty": 0,
+            "presence_penalty": 0,
+            "response_format": {"type": "json_object"},  # JSON mode
+            "seed": 42,  # Deterministic output
+            "tools": [...],  # Function calling
+            "tool_choice": "auto"
+        }
+    )
+    ```
+
+=== "Anthropic"
+    ```python
+    config = ModelConfig(
+        type="api",
+        provider="anthropic",
+        name="claude-3-opus-20240229",
+        api_key=os.getenv("ANTHROPIC_API_KEY"),
+        parameters={
+            "temperature": 0.5,
+            "max_tokens": 4096,
+            "top_p": 0.9,
+            "top_k": 0,
+            "stop_sequences": ["Human:", "Assistant:"],
+            "metadata": {
+                "user_id": "user123"
+            }
+        }
+    )
+    ```
+
+=== "Google"
+    ```python
+    config = ModelConfig(
+        type="api",
+        provider="google",
+        name="gemini-1.5-pro",
+        api_key=os.getenv("GOOGLE_API_KEY"),
+        parameters={
+            "temperature": 0.9,
+            "max_output_tokens": 2048,
+            "top_p": 0.95,
+            "top_k": 40,
+            "candidate_count": 1,
+            "stop_sequences": [],
+            "safety_settings": [
+                {
+                    "category": "HARM_CATEGORY_DANGEROUS",
+                    "threshold": "BLOCK_MEDIUM_AND_ABOVE"
+                }
+            ]
+        }
+    )
+    ```
+
+=== "Local Models"
+    ```python
+    # Ollama
+    config = ModelConfig(
+        type="local",
+        provider="ollama",
+        name="llama2:13b",
+        base_url="http://localhost:11434",
+        parameters={
+            "temperature": 0.8,
+            "num_predict": 2048,
+            "top_k": 40,
+            "top_p": 0.9,
+            "repeat_penalty": 1.1
+        }
+    )
+
+    # Hugging Face
+    config = ModelConfig(
+        type="local",
+        provider="huggingface",
+        name="meta-llama/Llama-2-7b-chat-hf",
+        parameters={
+            "temperature": 0.7,
+            "max_new_tokens": 512,
+            "do_sample": True,
+            "device_map": "auto",
+            "load_in_8bit": True
+        }
+    )
+    ```
+
+## ⚙️ Execution Configuration
+
+### ExecutionConfig
+
+Fine-tune how Orchestra executes workflows:
 
 ```python
-from src.agents.agents import Agent # Assuming Agent class is in src.agents.agents
-# from src.models.models import ModelConfig # Already imported above
+from src.coordination.config import ExecutionConfig, StatusConfig, VerbosityLevel
 
-# Example: Create an agent with the OpenAI configuration from above
-my_openai_agent = Agent(
-    model=openai_config, # Pass the ModelConfig object
-    description="An assistant that uses OpenAI's GPT-4 Turbo.",
-    agent_name="OpenAIAssistant", # Optional: specify a name
-    max_tokens=1500,  # Optional: Override default max_tokens from ModelConfig for this agent
-    allowed_peers=["ResearcherAgent", "DataAnalyzerAgent"] # Optional: List of agents this one can invoke
-)
+config = ExecutionConfig(
+    # Timeout settings (seconds)
+    convergence_timeout=300.0,         # Max wait for parallel branches
+    branch_timeout=600.0,              # Max time per branch
+    agent_acquisition_timeout=240.0,   # Max wait to acquire from pool
+    step_timeout=300.0,                # Max time per step
+    tool_execution_timeout=60.0,       # Max time for tool calls
+    user_interaction_timeout=300.0,    # Max wait for user input
 
-# Example: Create an agent with a local model configuration
-my_local_agent = Agent(
-    model=local_llm_config, # Pass the ModelConfig for the local LLM
-    description="An assistant that uses a local Mistral model.",
-    agent_name="LocalMistralAssistant"
+    # Convergence behavior
+    dynamic_convergence_enabled=True,  # Auto-detect convergence points
+    parent_completes_on_spawn=True,    # Parent waits for children
+    auto_detect_convergence=True,      # Automatic convergence detection
+
+    # Retry and steering
+    steering_mode="auto",              # "auto", "always", "never"
+    max_retries=3,                     # Retry attempts per step
+    retry_delay=1.0,                   # Delay between retries
+    exponential_backoff=True,          # Exponential retry delay
+
+    # Status and output
+    status=StatusConfig.from_verbosity(VerbosityLevel.NORMAL),
+
+    # User interaction
+    user_interaction="terminal",       # "terminal", "none", "async"
+    user_first=False,                  # Show initial message to user
+    initial_user_msg=None,            # Custom initial message
 )
 ```
 
-<!--
-## Memory Configuration (Placeholder - Verify Agent Constructor)
+### Timeout Configuration
 
-The following shows how memory *might* be configured if the Agent class supports a `memory_type` parameter.
-Please verify the `Agent` class constructor and available memory types.
+Different timeout levels for different scenarios:
 
 ```python
-# Default conversation memory
-# agent_with_default_memory = Agent(
-#     name="assistant_default_mem",
-#     model=openai_config, # Use a defined ModelConfig
-#     description="Assistant with default memory.",
-#     memory_type="conversation_history"  # Example: Default memory type
-# )
+# Quick tasks - tight timeouts
+quick_config = ExecutionConfig(
+    step_timeout=30.0,
+    convergence_timeout=60.0,
+    branch_timeout=120.0
+)
 
-# Knowledge graph memory (if implemented and supported by the Agent class)
-# agent_with_kg_memory = Agent(
-#     name="kg_agent_example",
-#     model=openai_config, # Use a defined ModelConfig
-#     description="Assistant with knowledge graph memory.",
-#     memory_type="kg"  # Example: Use knowledge graph
-# )
+# Long-running research - relaxed timeouts
+research_config = ExecutionConfig(
+    step_timeout=300.0,
+    convergence_timeout=600.0,
+    branch_timeout=1800.0,
+    user_interaction_timeout=600.0
+)
+
+# Real-time systems - strict timeouts
+realtime_config = ExecutionConfig(
+    step_timeout=10.0,
+    convergence_timeout=30.0,
+    branch_timeout=60.0,
+    steering_mode="never"  # No retries for speed
+)
 ```
--->
 
-## Logging Configuration
+## 📊 Status Configuration
 
-The framework uses a `RequestContext` object that carries logging information, including the `log_level`. You can set a default log level or override it per request. Log levels are defined in `src.agents.utils.LogLevel`.
+### StatusConfig
+
+Control output verbosity and formatting:
+
+```python
+from src.coordination.config import StatusConfig, VerbosityLevel
+
+# Quick setup with verbosity levels
+status = StatusConfig.from_verbosity(VerbosityLevel.QUIET)    # Minimal output
+status = StatusConfig.from_verbosity(VerbosityLevel.NORMAL)   # Standard output
+status = StatusConfig.from_verbosity(VerbosityLevel.VERBOSE)  # Detailed output
+
+# Detailed configuration
+status = StatusConfig(
+    enabled=True,
+    verbosity=VerbosityLevel.NORMAL,
+
+    # Output control
+    cli_output=True,                  # Show CLI output
+    cli_colors=True,                  # Use colors
+    show_thoughts=False,              # Show agent thoughts
+    show_tool_calls=True,             # Show tool invocations
+    show_timings=True,                # Show execution times
+
+    # Aggregation
+    aggregation_window_ms=500,        # Group updates within window
+    aggregate_parallel=True,          # Aggregate parallel branches
+
+    # Display formatting
+    show_agent_prefixes=True,         # Show agent names
+    prefix_width=20,                  # Width for agent names
+    prefix_alignment="left",          # "left", "right", "center"
+
+    # Output channels
+    channels=["cli", "file"],         # Output destinations
+    file_path="execution.log",        # Log file path
+
+    # Progress indicators
+    show_progress_bar=True,           # Show progress
+    show_step_counter=True,           # Show step numbers
+    show_branch_indicators=True,      # Show branch status
+)
+```
+
+### Verbosity Levels Explained
+
+| Level | Description | Use Case |
+|-------|-------------|----------|
+| `QUIET` (0) | Minimal output, errors only | Production, CI/CD |
+| `NORMAL` (1) | Standard output with key events | Development |
+| `VERBOSE` (2) | Detailed output with all events | Debugging |
+
+## 💬 Communication Configuration
+
+### CommunicationConfig
+
+Configure user interaction and formatting:
+
+```python
+from src.coordination.config import CommunicationConfig
+
+comm_config = CommunicationConfig(
+    # Rich formatting
+    use_rich_formatting=True,          # Use rich terminal features
+    theme_name="modern",               # "modern", "classic", "minimal"
+
+    # Display settings
+    prefix_width=20,                  # Agent name column width
+    show_timestamps=True,             # Show message timestamps
+    timestamp_format="%H:%M:%S",      # Time format
+
+    # History
+    enable_history=True,              # Keep conversation history
+    history_size=1000,                # Max history entries
+
+    # Interactive features
+    enable_tab_completion=True,       # Tab completion for commands
+    use_colors=True,                  # Terminal colors
+    color_depth="truecolor",          # "truecolor", "256", "16", "none"
+
+    # Input handling
+    input_timeout=None,               # No timeout by default
+    multiline_input=True,             # Support multi-line input
+
+    # Terminal enhancement
+    use_enhanced_terminal=True,       # Use enhanced terminal features
+    fallback_on_error=True,          # Fallback to basic on error
+)
+```
+
+## 🔧 Error Handling Configuration
+
+### ErrorHandlingConfig
+
+Configure error recovery strategies:
+
+```python
+from src.coordination.config import ErrorHandlingConfig
+
+error_config = ErrorHandlingConfig(
+    # Classification and routing
+    use_error_classification=True,    # Classify error types
+    enable_error_routing=True,        # Route errors to User node
+    preserve_error_context=True,      # Keep error context
+
+    # Notifications
+    notify_on_critical_errors=True,   # Alert on critical errors
+    notification_channels=["cli", "log"],
+
+    # Retry behavior
+    auto_retry_on_rate_limits=True,   # Auto-retry rate limits
+    max_rate_limit_retries=3,
+    rate_limit_backoff=60,            # Seconds
+
+    # Pool-specific
+    pool_retry_attempts=2,            # Retries for pool acquisition
+    pool_retry_delay=5.0,             # Delay between pool retries
+
+    # Timeout handling
+    timeout_seconds=300.0,            # Global timeout
+    timeout_retry_enabled=False,      # Retry on timeout
+
+    # Provider-specific settings
+    provider_settings={
+        "openai": {
+            "max_retries": 3,
+            "base_retry_delay": 60,
+            "insufficient_quota_action": "raise",  # or "fallback"
+            "fallback_model": "gpt-3.5-turbo"
+        },
+        "anthropic": {
+            "max_retries": 2,
+            "base_retry_delay": 30,
+            "insufficient_quota_action": "fallback",
+            "fallback_model": "claude-3-haiku"
+        },
+        "google": {
+            "max_retries": 3,
+            "base_retry_delay": 45,
+            "insufficient_quota_action": "raise"
+        }
+    }
+)
+```
+
+## 🎛️ Complete Configuration Example
+
+Here's a comprehensive configuration for a production system:
 
 ```python
 import os
-from src.agents.utils import LogLevel, RequestContext # Assuming these are in src.agents.utils
+from src.coordination import Orchestra
+from src.coordination.config import (
+    ExecutionConfig,
+    StatusConfig,
+    CommunicationConfig,
+    ErrorHandlingConfig,
+    VerbosityLevel
+)
+from src.coordination.state import StateManager, FileStorageBackend
+from pathlib import Path
 
-# --- Setting Log Level via Environment Variable (Application-specific setup) ---
-# Your application can read this environment variable to set a global default log level.
-# os.environ['LOG_LEVEL'] = 'DEBUG' # Options: MINIMAL, SUMMARY, DETAILED, DEBUG
+# Create comprehensive configuration
+def create_production_config():
+    """Create production-ready configuration."""
 
-# --- Setting Log Level Programmatically in RequestContext ---
-# When you create a RequestContext, you can specify its log_level.
-# This is typically done when initiating a new task or operation.
+    # Execution configuration
+    exec_config = ExecutionConfig(
+        # Balanced timeouts
+        convergence_timeout=300.0,
+        branch_timeout=600.0,
+        step_timeout=120.0,
+        tool_execution_timeout=30.0,
+        user_interaction_timeout=300.0,
 
-# Example: Creating a new RequestContext for a task
-initial_task_context = RequestContext(
-    task_id="unique-task-identifier-123",
-    initial_prompt="Analyze the provided data.",
-    # progress_queue can be an asyncio.Queue() if using progress monitoring
-    log_level=LogLevel.DETAILED  # Set specific log level for this task
+        # Enable smart features
+        dynamic_convergence_enabled=True,
+        auto_detect_convergence=True,
+        steering_mode="auto",
+
+        # Retry with exponential backoff
+        max_retries=3,
+        retry_delay=2.0,
+        exponential_backoff=True,
+
+        # Status for production
+        status=StatusConfig(
+            enabled=True,
+            verbosity=VerbosityLevel.NORMAL,
+            cli_output=True,
+            cli_colors=True,
+            show_timings=True,
+            show_tool_calls=False,  # Reduce noise
+            show_thoughts=False,    # Reduce noise
+            aggregate_parallel=True,
+            channels=["cli", "file"],
+            file_path="logs/execution.log"
+        ),
+
+        # User interaction
+        user_interaction="terminal",
+        user_first=False
+    )
+
+    # Communication configuration
+    comm_config = CommunicationConfig(
+        use_rich_formatting=True,
+        theme_name="modern",
+        show_timestamps=True,
+        enable_history=True,
+        history_size=1000,
+        use_enhanced_terminal=True,
+        fallback_on_error=True
+    )
+
+    # Error handling
+    error_config = ErrorHandlingConfig(
+        use_error_classification=True,
+        enable_error_routing=True,
+        notify_on_critical_errors=True,
+        auto_retry_on_rate_limits=True,
+        max_rate_limit_retries=5,
+        rate_limit_backoff=60,
+        provider_settings={
+            "openai": {
+                "max_retries": 3,
+                "base_retry_delay": 60,
+                "insufficient_quota_action": "fallback",
+                "fallback_model": "gpt-3.5-turbo"
+            }
+        }
+    )
+
+    return exec_config, comm_config, error_config
+
+# Use configuration
+async def run_with_config():
+    exec_config, comm_config, error_config = create_production_config()
+
+    # State persistence
+    storage = FileStorageBackend(Path("./state"))
+    state_manager = StateManager(storage)
+
+    # Run with full configuration
+    result = await Orchestra.run(
+        task="Complex multi-agent task",
+        topology=topology,
+        execution_config=exec_config,
+        communication_config=comm_config,
+        error_config=error_config,
+        state_manager=state_manager,
+        max_steps=50
+    )
+
+    return result
+```
+
+## 🎯 Configuration Patterns
+
+### Pattern 1: Development Configuration
+```python
+# Maximum visibility for debugging
+dev_config = ExecutionConfig(
+    status=StatusConfig.from_verbosity(VerbosityLevel.VERBOSE),
+    steering_mode="always",  # Always retry
+    user_interaction="terminal"
+)
+```
+
+### Pattern 2: Production Configuration
+```python
+# Balanced for reliability
+prod_config = ExecutionConfig(
+    status=StatusConfig.from_verbosity(VerbosityLevel.QUIET),
+    steering_mode="auto",
+    max_retries=5,
+    exponential_backoff=True
+)
+```
+
+### Pattern 3: Real-time Configuration
+```python
+# Optimized for speed
+realtime_config = ExecutionConfig(
+    step_timeout=10.0,
+    convergence_timeout=30.0,
+    steering_mode="never",  # No retries
+    status=StatusConfig(enabled=False)  # No output overhead
+)
+```
+
+### Pattern 4: Long-running Configuration
+```python
+# For multi-hour workflows
+long_config = ExecutionConfig(
+    branch_timeout=3600.0,  # 1 hour
+    convergence_timeout=1800.0,  # 30 minutes
+    user_interaction_timeout=900.0,  # 15 minutes
+    dynamic_convergence_enabled=True
+)
+```
+
+## 📊 Monitoring Configuration
+
+### Metrics and Logging
+
+```python
+import logging
+
+# Configure logging
+logging.basicConfig(
+    level=logging.INFO,
+    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
+    handlers=[
+        logging.FileHandler('marsys.log'),
+        logging.StreamHandler()
+    ]
 )
 
-# Agents will use the log_level from the RequestContext passed to them.
-# await my_openai_agent.auto_run(
-#     initial_request="Tell me a joke.",
-#     request_context=initial_task_context
-# )
-
-# If no RequestContext is passed to an agent's auto_run, it might create one
-# with a default log level (e.g., LogLevel.SUMMARY).
-# await my_local_agent.auto_run(initial_request="What is the capital of France?")
-
+# Enable specific loggers
+logging.getLogger('marsys.orchestra').setLevel(logging.DEBUG)
+logging.getLogger('marsys.agents').setLevel(logging.INFO)
+logging.getLogger('marsys.models').setLevel(logging.WARNING)
 ```
-The `ProgressLogger` within the agent methods uses the `log_level` from the `RequestContext`.
 
-## Next Steps
+### Performance Monitoring
 
-- Explore agent concepts in more detail: `../concepts/agents.md`
-- Learn about using tools with agents: `../concepts/tools.md`
-- Review usage examples and tutorials: `../use-cases/index.md` and `../tutorials/index.md` (adjust paths if needed)
+```python
+from src.coordination.monitoring import MetricsCollector
+
+metrics = MetricsCollector(
+    enabled=True,
+    export_interval=60,  # Export every minute
+    exporters=["prometheus", "console"],
+    prometheus_port=9090
+)
+
+# Use with Orchestra
+result = await Orchestra.run(
+    task=task,
+    topology=topology,
+    metrics_collector=metrics
+)
+
+# Access metrics
+print(f"Total API calls: {metrics.get_metric('api_calls')}")
+print(f"Average latency: {metrics.get_metric('avg_latency')}ms")
+```
+
+## 🔒 Security Configuration
+
+### API Key Management
+
+```python
+from src.utils.security import SecureConfig
+
+# Secure configuration
+secure_config = SecureConfig(
+    # Encryption for sensitive data
+    encrypt_api_keys=True,
+    encryption_key=os.getenv("ENCRYPTION_KEY"),
+
+    # Key rotation
+    enable_key_rotation=True,
+    rotation_interval_days=30,
+
+    # Access control
+    restrict_agent_access=True,
+    allowed_agents=["Researcher", "Writer"],
+
+    # Audit logging
+    enable_audit_log=True,
+    audit_log_path="audit.log"
+)
+```
+
+## 🎮 Advanced Features
+
+### Dynamic Configuration
+
+Adjust configuration at runtime:
+
+```python
+from src.coordination import OrchestraInstance
+
+orchestra = OrchestraInstance(initial_config=config)
+
+# Adjust timeout for specific task
+orchestra.update_config({
+    "step_timeout": 60.0  # Reduce timeout
+})
+
+# Run with updated config
+result = await orchestra.execute(task, topology)
+```
+
+### Configuration Validation
+
+```python
+from src.coordination.config import validate_config
+
+# Validate configuration
+errors = validate_config(exec_config)
+if errors:
+    print(f"Configuration errors: {errors}")
+else:
+    print("Configuration valid!")
+```
+
+## 🚦 Next Steps
+
+With configuration mastered:
+
+<div class="grid cards" markdown="1">
+
+- :material-graph:{ .lg .middle } **[Learn Topologies](../concepts/advanced/topology/)**
+
+    ---
+
+    Design agent interaction patterns
+
+- :material-book-open:{ .lg .middle } **[Understand Concepts](../concepts/)**
+
+    ---
+
+    Explore framework architecture
+
+- :material-code-tags:{ .lg .middle } **[See Examples](../use-cases/)**
+
+    ---
+
+    Learn from real implementations
+
+- :material-api:{ .lg .middle } **[API Reference](../api/)**
+
+    ---
+
+    Detailed API documentation
+
+</div>
+
+---
+
+!!! success "Configuration Complete!"
+    You now understand MARSYS configuration! Explore [Core Concepts](../concepts/) to understand the framework architecture.

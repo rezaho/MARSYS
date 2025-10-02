@@ -29,6 +29,8 @@ theme:
     - navigation.sections
     - navigation.top
     - navigation.path    # Add this to show breadcrumbs
+    - navigation.tabs
+    - navigation.tabs.sticky
     - toc.follow
     - toc.integrate
     - search.suggest
@@ -37,6 +39,7 @@ theme:
     - content.tabs.link
     - content.code.annotation
     - content.code.copy
+    - content.tooltips
   icon:
     logo: material/robot
     repo: fontawesome/brands/github
@@ -78,19 +81,20 @@ markdown_extensions:
   - pymdownx.mark
   - pymdownx.tilde
   - pymdownx.smartsymbols
+  - pymdownx.emoji:
+      emoji_index: !!python/name:material.extensions.emoji.twemoji
+      emoji_generator: !!python/name:material.extensions.emoji.to_svg
   - tables
   - footnotes
   - pymdownx.tasklist:
       custom_checkbox: true
+  - def_list
 
 plugins:
   - search:
       separator: '[\s\-\.]+'
       lang:
         - en
-  - exclude:
-      glob:
-        - "_docs_legacy*/*"
   - mkdocstrings:
       handlers:
         python:
@@ -123,6 +127,10 @@ nav:
       - Messages: concepts/messages.md
       - Communication: concepts/communication.md
     - Advanced Topics:
+      - Execution Flow: concepts/execution-flow.md
+      - Branching: concepts/branching.md
+      - Validation & Routing: concepts/validation-routing.md
+      - State Management: concepts/state-management.md
       - Error Handling: concepts/error-handling.md
       - Browser Automation: concepts/browser-automation.md
       - Learning Agents: concepts/learning-agents.md
@@ -132,8 +140,22 @@ nav:
     
   - API Reference:
     - Overview: api/overview.md
-    - Models: api/models.md
-    - Agent Class: api/agent-class.md
+    - Core APIs:
+      - Orchestra: api/orchestra.md
+      - Agent Class: api/agent-class.md
+      - Models: api/models.md
+    - Coordination:
+      - Topology: api/topology.md
+      - Execution: api/execution.md
+      - Configuration: api/configuration.md
+      - Validation: api/validation.md
+      - Rules: api/rules.md
+    - Data Management:
+      - State: api/state.md
+      - Memory: api/memory.md
+    - Interaction:
+      - Communication: api/communication.md
+      - Tools: api/tools.md
 
   - Tutorials:
     - tutorials/overview.md

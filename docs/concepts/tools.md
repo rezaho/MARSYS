@@ -1,545 +1,710 @@
 # Tools
 
-Tools extend agent capabilities by providing access to external functions, APIs, and services. The framework uses OpenAI-compatible function calling for seamless tool integration.
+Tools extend agent capabilities by providing access to external functions, APIs, and services, enabling agents to interact with the real world.
 
-## What are Tools?
+## 🎯 Overview
 
-Tools are Python functions that agents can call to:
-- Perform calculations
-- Access external APIs
-- Interact with databases
-- Control browser automation
-- Execute system commands
-- And much more
+Tools in MARSYS are Python functions that agents can invoke to:
 
-## Creating Tools
+- **Access External Services**: Web search, APIs, databases
+- **Perform Calculations**: Mathematical operations, data analysis
+- **Control Systems**: Browser automation, file operations
+- **Process Data**: Text extraction, format conversion
+- **Interact with Environment**: System commands, hardware control
+
+The framework uses **OpenAI-compatible function calling** for seamless tool integration.
+
+## 🏗️ Architecture
+
+```mermaid
+graph TB
+    subgraph "Tool System"
+        TS[Tool Schema<br/>Auto-generated]
+        TE[Tool Executor<br/>Safe Execution]
+        TR[Tool Registry<br/>Global/Local]
+    end
+
+    subgraph "Tool Types"
+        BT[Built-in Tools<br/>Standard Library]
+        CT[Custom Tools<br/>User Defined]
+        AT[Async Tools<br/>Non-blocking]
+        ST[Stateful Tools<br/>Persistent State]
+    end
+
+    subgraph "Flow"
+        A[Agent] --> LLM[Language Model]
+        LLM --> TC[Tool Call Decision]
+        TC --> TE
+        TE --> T[Tool Function]
+        T --> R[Result]
+        R --> A
+    end
+
+    TS --> LLM
+    TR --> TE
+    BT --> TR
+    CT --> TR
+
+    style TS fill:#4fc3f7
+    style TE fill:#29b6f6
+    style TR fill:#e1f5fe
+```
+
+## 📦 Creating Tools
 
 ### Basic Tool Definition
 
-```python
-def get_weather(location: str, unit: str = "celsius") -> str:
-    """
-    Get current weather for a location.
-    
-    Args:
-        location: City name or coordinates
-        unit: Temperature unit (celsius or fahrenheit)
-    
-    Returns:
-        Weather information as a string
-    """
-    # Implementation here
-    return f"Weather in {location}: 22°{unit[0].upper()}, sunny"
-```
-
-Key requirements:
+Every tool needs:
 1. **Type hints** on all parameters
-2. **Docstring** with description
+2. **Comprehensive docstring** with Args and Returns
 3. **Return type** annotation
 4. **Descriptive** parameter names
 
-### Tool Registration
+```python
+def search_database(
+    query: str,
+    database: str = "products",
+    limit: int = 10,
+    filters: Optional[Dict[str, Any]] = None
+) -> List[Dict[str, Any]]:
+    """
+    Search database for matching records.
+
+    Args:
+        query: Search query string
+        database: Database to search (products, users, orders)
+        limit: Maximum number of results to return
+        filters: Additional filters as key-value pairs
+
+    Returns:
+        List of matching records with all fields
+
+    Raises:
+        ConnectionError: If database is unavailable
+        ValueError: If query is invalid
+    """
+    # Implementation
+    results = perform_search(query, database, limit, filters)
+    return results
+```
+
+### Automatic Schema Generation
+
+The framework automatically generates OpenAI-compatible schemas:
+
+```python
+from src.environment.utils import generate_openai_tool_schema
+
+# Automatic schema generation from function
+schema = generate_openai_tool_schema(search_database)
+
+# Generated schema:
+{
+    "type": "function",
+    "function": {
+        "name": "search_database",
+        "description": "Search database for matching records.",
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "query": {
+                    "type": "string",
+                    "description": "Search query string"
+                },
+                "database": {
+                    "type": "string",
+                    "description": "Database to search (products, users, orders)",
+                    "default": "products"
+                },
+                "limit": {
+                    "type": "integer",
+                    "description": "Maximum number of results to return",
+                    "default": 10
+                },
+                "filters": {
+                    "type": "object",
+                    "description": "Additional filters as key-value pairs"
+                }
+            },
+            "required": ["query"]
+        }
+    }
+}
+```
+
+## 🔧 Tool Registration
+
+### Agent-Specific Tools
+
+```python
+from src.agents import Agent
+from src.models import ModelConfig
+
+agent = Agent(
+    model_config=ModelConfig(
+        type="api",
+        name="gpt-4",
+        provider="openai"
+    ),
+    agent_name="DataAnalyst",
+    description="Expert data analyst with database access",
+    tools=[search_database, analyze_data, export_results]  # List of functions
+    # OR
+    tools={  # Dict with custom names
+        "db_search": search_database,
+        "analyze": analyze_data,
+        "export": export_results
+    }
+)
+```
+
+### Global Tool Registry
 
 ```python
 from src.environment.tools import AVAILABLE_TOOLS
 
 # Register globally
-AVAILABLE_TOOLS["get_weather"] = get_weather
+AVAILABLE_TOOLS["search_database"] = search_database
+AVAILABLE_TOOLS["analyze_data"] = analyze_data
 
-# Or provide to specific agent
-from src.agents.agents import Agent
-from src.models.models import ModelConfig
-
-agent = Agent(
-    agent_name="weather_bot",
-    model_config=ModelConfig(
-        type="api",
-        provider="openai",
-        name="gpt-4.1-mini
-    ),
-    description="A weather assistant agent",
-    tools={"get_weather": get_weather}
-)
-```
-
-## Tool Schemas
-
-The framework automatically generates OpenAI-compatible schemas:
-
-```python
-# Generated schema example
-{
-    "type": "function",
-    "function": {
-        "name": "get_weather",
-        "description": "Get current weather for a location.",
-        "parameters": {
-            "type": "object",
-            "properties": {
-                "location": {
-                    "type": "string",
-                    "description": "City name or coordinates"
-                },
-                "unit": {
-                    "type": "string",
-                    "description": "Temperature unit (celsius or fahrenheit)",
-                    "default": "celsius"
-                }
-            },
-            "required": ["location"]
-        }
-    }
+# Discover tools by category
+WEB_TOOLS = {
+    "search_web": search_web_func,
+    "fetch_url": fetch_url_func,
+    "scrape_page": scrape_page_func
 }
+
+DATA_TOOLS = {
+    "analyze_csv": analyze_csv_func,
+    "process_json": process_json_func,
+    "transform_data": transform_data_func
+}
+
+# Combine categories
+AVAILABLE_TOOLS.update(WEB_TOOLS)
+AVAILABLE_TOOLS.update(DATA_TOOLS)
 ```
 
-## Built-in Tools
-
-The framework includes several built-in tools:
-
-### Web Search Tools
-
-```python
-async def web_search(
-    query: str,
-    max_results: int = 5,
-    search_engine: Literal["google", "bing", "duckduckgo"] = "google",
-) -> List[Dict[str, str]]:
-    """Search the web for information using various search engines.
-
-    Args:
-        query: The search query string
-        max_results: Maximum number of results to return
-        search_engine: Which search engine to use
-
-    Returns:
-        List of search results, each containing title, url, and snippet
-    """
-    # Implementation uses existing Google search tools
-```
-
-### Mathematical Calculation Tool
-
-```python
-def calculate_math(
-    expression: str, precision: int = 2, return_steps: bool = False
-) -> Dict[str, Any]:
-    """Safely evaluate mathematical expressions.
-
-    Args:
-        expression: Mathematical expression to evaluate
-        precision: Decimal places for rounding
-        return_steps: Whether to return calculation steps
-
-    Returns:
-        Dictionary containing result and optionally steps
-    """
-    # Safe evaluation with allowed operations only
-```
-
-### URL Content Fetching
-
-```python
-async def fetch_url_content(
-    url: str, timeout: int = 30, include_metadata: bool = True
-) -> Dict[str, Any]:
-    """Fetch and extract content from a URL.
-
-    Args:
-        url: The URL to fetch
-        timeout: Request timeout in seconds
-        include_metadata: Whether to include metadata like title, description
-
-    Returns:
-        Dictionary containing content and optionally metadata
-    """
-    # Async implementation with aiohttp
-```
-
-### File Operations
-
-```python
-async def file_operations(
-    operation: Literal["read", "write", "list", "info"],
-    path: str,
-    content: Optional[str] = None,
-    encoding: str = "utf-8",
-) -> Dict[str, Any]:
-    """Perform file system operations.
-
-    Args:
-        operation: Type of operation to perform
-        path: File or directory path
-        content: Content for write operations
-        encoding: File encoding
-
-    Returns:
-        Operation result with status and data
-    """
-    # Security-restricted to safe workspace directory
-```
-
-## Tool Execution Flow
-
-```mermaid
-sequenceDiagram
-    participant User
-    participant Agent
-    participant LLM
-    participant Tool
-    
-    User->>Agent: Task requiring tool
-    Agent->>LLM: Request with tool schema
-    LLM->>Agent: Tool call request
-    Agent->>Tool: Execute function
-    Tool->>Agent: Return result
-    Agent->>LLM: Provide tool result
-    LLM->>Agent: Final response
-    Agent->>User: Completed task
-```
-
-## Advanced Tool Patterns
+## 🎯 Tool Patterns
 
 ### Async Tools
 
+For non-blocking operations:
+
 ```python
-async def fetch_data(url: str, timeout: int = 30) -> Dict[str, Any]:
+import aiohttp
+import asyncio
+
+async def fetch_api_data(
+    endpoint: str,
+    params: Optional[Dict[str, str]] = None,
+    timeout: int = 30
+) -> Dict[str, Any]:
     """
-    Fetch data from a URL asynchronously.
-    
+    Fetch data from API endpoint asynchronously.
+
     Args:
-        url: URL to fetch
+        endpoint: API endpoint URL
+        params: Query parameters
         timeout: Request timeout in seconds
-    
+
     Returns:
-        Dictionary containing response data and metadata
+        API response data
     """
-    import aiohttp
-    
     try:
         async with aiohttp.ClientSession() as session:
-            async with session.get(url, timeout=timeout) as response:
-                content = await response.text()
+            async with session.get(
+                endpoint,
+                params=params,
+                timeout=aiohttp.ClientTimeout(total=timeout)
+            ) as response:
+                data = await response.json()
                 return {
-                    "url": url,
-                    "status_code": response.status,
-                    "content": content,
-                    "content_type": response.content_type
+                    "status": response.status,
+                    "data": data,
+                    "headers": dict(response.headers)
                 }
+    except asyncio.TimeoutError:
+        return {"error": "Request timed out", "timeout": timeout}
     except Exception as e:
-        return {"error": f"Failed to fetch URL: {str(e)}"}
+        return {"error": str(e)}
 ```
 
 ### Stateful Tools
 
+Tools that maintain state across calls:
+
 ```python
-class DatabaseTool:
+class DatabaseConnection:
     def __init__(self, connection_string: str):
-        self.conn = self._connect(connection_string)
-    
-    async def query_database(self, query: str) -> Dict[str, Any]:
+        self.connection = self._connect(connection_string)
+        self.query_cache = {}
+
+    async def query(
+        self,
+        sql: str,
+        params: Optional[tuple] = None,
+        use_cache: bool = False
+    ) -> List[Dict]:
         """
-        Execute a database query.
-        
+        Execute SQL query with optional caching.
+
         Args:
-            query: SQL query to execute
-        
+            sql: SQL query string
+            params: Query parameters for prepared statement
+            use_cache: Whether to use cached results
+
         Returns:
-            Dictionary containing query results and metadata
+            Query results as list of dictionaries
         """
+        cache_key = f"{sql}:{params}"
+
+        if use_cache and cache_key in self.query_cache:
+            return self.query_cache[cache_key]
+
         try:
-            cursor = await self.conn.execute(query)
+            cursor = await self.connection.execute(sql, params or ())
             results = await cursor.fetchall()
-            return {
-                "query": query,
-                "results": results,
-                "row_count": len(results),
-                "status": "success"
-            }
+
+            if use_cache:
+                self.query_cache[cache_key] = results
+
+            return results
         except Exception as e:
-            return {"error": f"Database query failed: {str(e)}"}
-    
-    def get_tool(self):
-        return self.query_database
+            return [{"error": str(e)}]
+
+# Create instance and extract tool
+db = DatabaseConnection("postgresql://...")
+query_tool = db.query  # This method becomes the tool
 ```
 
 ### Composite Tools
 
+Tools that combine multiple operations:
+
 ```python
 async def research_topic(
     topic: str,
-    max_sources: int = 5,
-    include_academic: bool = True
+    depth: Literal["shallow", "medium", "deep"] = "medium",
+    include_sources: bool = True
 ) -> Dict[str, Any]:
     """
-    Research a topic from multiple sources.
-    
+    Comprehensive research on a topic from multiple sources.
+
     Args:
         topic: Topic to research
-        max_sources: Maximum number of sources to check
-        include_academic: Include academic sources
-    
+        depth: Research depth level
+        include_sources: Whether to include source URLs
+
     Returns:
-        Dictionary containing comprehensive research summary
+        Research summary with sources and key points
     """
-    results = []
-    
-    # Use actual framework tools
-    web_results = await web_search(topic, max_sources)
-    results.extend(web_results)
-    
-    # Additional processing would go here
-    if include_academic:
-        # Academic search implementation
-        pass
-    
-    return {
+    # Determine number of sources based on depth
+    source_count = {"shallow": 3, "medium": 5, "deep": 10}[depth]
+
+    # Phase 1: Web search
+    search_results = await search_web(topic, max_results=source_count)
+
+    # Phase 2: Fetch and analyze content
+    contents = []
+    for result in search_results:
+        content = await fetch_url_content(result["url"])
+        contents.append({
+            "url": result["url"],
+            "title": result["title"],
+            "content": content
+        })
+
+    # Phase 3: Synthesize information
+    key_points = extract_key_points(contents)
+    summary = create_summary(key_points)
+
+    response = {
         "topic": topic,
-        "sources": results,
-        "source_count": len(results),
-        "summary": f"Research completed for: {topic}"
+        "summary": summary,
+        "key_points": key_points,
+        "source_count": len(contents)
     }
+
+    if include_sources:
+        response["sources"] = [
+            {"title": c["title"], "url": c["url"]}
+            for c in contents
+        ]
+
+    return response
 ```
 
-## Tool Error Handling
+### Error-Handling Tools
+
+Robust tools with proper error handling:
 
 ```python
-def safe_tool_execution(tool_func):
-    """Decorator for safe tool execution."""
-    @functools.wraps(tool_func)
-    async def wrapper(*args, **kwargs):
-        try:
-            if asyncio.iscoroutinefunction(tool_func):
-                result = await tool_func(*args, **kwargs)
-            else:
-                result = await asyncio.to_thread(
-                    tool_func, *args, **kwargs
-                )
-            return result
-        except Exception as e:
-            return f"Tool error: {str(e)}"
-    
-    return wrapper
+from functools import wraps
+from typing import Callable
 
-@safe_tool_execution
-def risky_operation(param: str) -> str:
-    """A tool that might fail."""
-    # Implementation that could raise exceptions
-    pass
+def safe_tool(func: Callable) -> Callable:
+    """Decorator for safe tool execution."""
+
+    @wraps(func)
+    async def async_wrapper(*args, **kwargs):
+        try:
+            result = await func(*args, **kwargs)
+            return {"success": True, "result": result}
+        except ValueError as e:
+            return {"success": False, "error": f"Invalid input: {e}"}
+        except TimeoutError as e:
+            return {"success": False, "error": f"Operation timed out: {e}"}
+        except Exception as e:
+            return {"success": False, "error": f"Unexpected error: {e}"}
+
+    @wraps(func)
+    def sync_wrapper(*args, **kwargs):
+        try:
+            result = func(*args, **kwargs)
+            return {"success": True, "result": result}
+        except Exception as e:
+            return {"success": False, "error": str(e)}
+
+    if asyncio.iscoroutinefunction(func):
+        return async_wrapper
+    else:
+        return sync_wrapper
+
+# Usage
+@safe_tool
+async def risky_operation(param: str) -> str:
+    """Operation that might fail."""
+    if not param:
+        raise ValueError("Parameter cannot be empty")
+    # Risky operation here
+    return f"Processed: {param}"
 ```
 
-## Tool Guidelines
+## 🚀 Built-in Tools
+
+MARSYS includes a comprehensive tool library:
+
+### Web Tools
+
+```python
+async def search_web(
+    query: str,
+    max_results: int = 5,
+    search_engine: Literal["google", "bing", "duckduckgo"] = "google"
+) -> List[Dict[str, str]]:
+    """Search the web for information."""
+    # Returns: [{"title": "...", "url": "...", "snippet": "..."}]
+
+async def fetch_url_content(
+    url: str,
+    format: Literal["text", "markdown", "html"] = "text"
+) -> str:
+    """Fetch and extract content from URL."""
+    # Returns formatted content
+
+async def check_website_status(url: str) -> Dict[str, Any]:
+    """Check if website is accessible."""
+    # Returns: {"online": bool, "status_code": int, "response_time": float}
+```
+
+### Data Processing Tools
+
+```python
+def analyze_data(
+    data: List[float],
+    operations: List[Literal["mean", "median", "std", "min", "max"]]
+) -> Dict[str, float]:
+    """Perform statistical analysis on data."""
+    # Returns: {"mean": 5.2, "std": 1.3, ...}
+
+def transform_json(
+    json_data: Dict,
+    jq_filter: str
+) -> Any:
+    """Transform JSON using JQ-like syntax."""
+    # Returns transformed data
+
+def parse_csv(
+    csv_text: str,
+    delimiter: str = ",",
+    has_headers: bool = True
+) -> List[Dict[str, str]]:
+    """Parse CSV text into records."""
+    # Returns list of dictionaries
+```
+
+### File System Tools
+
+```python
+async def read_file(
+    path: str,
+    encoding: str = "utf-8",
+    lines: Optional[Tuple[int, int]] = None
+) -> str:
+    """Read file contents."""
+    # Returns file content
+
+async def write_file(
+    path: str,
+    content: str,
+    mode: Literal["write", "append"] = "write"
+) -> Dict[str, Any]:
+    """Write content to file."""
+    # Returns: {"success": bool, "bytes_written": int}
+
+async def list_directory(
+    path: str = ".",
+    pattern: Optional[str] = None
+) -> List[Dict[str, Any]]:
+    """List directory contents."""
+    # Returns: [{"name": "...", "type": "file|dir", "size": int}]
+```
+
+## 📋 Best Practices
 
 ### 1. **Clear Documentation**
+
 ```python
-def good_tool(param1: str, param2: int = 10) -> dict:
+# ✅ GOOD - Comprehensive documentation
+def process_invoice(
+    invoice_data: Dict[str, Any],
+    validation_level: Literal["basic", "strict"] = "basic",
+    currency: str = "USD"
+) -> Dict[str, Any]:
     """
-    Brief description of what the tool does.
-    
+    Process and validate invoice data.
+
     Args:
-        param1: Clear description of this parameter
-        param2: What this parameter controls (default: 10)
-    
+        invoice_data: Invoice information containing:
+            - invoice_number (str): Unique invoice identifier
+            - amount (float): Total amount
+            - items (list): Line items
+        validation_level: How strictly to validate
+        currency: Currency code for amount conversion
+
     Returns:
-        Description of return value structure
-    
+        Processed invoice with:
+            - status: "valid" or "invalid"
+            - processed_amount: Converted amount
+            - warnings: List of validation warnings
+
     Raises:
-        ValueError: When param1 is invalid
-        TimeoutError: When operation times out
+        ValueError: If invoice_data is malformed
+        KeyError: If required fields are missing
     """
+    # Implementation
+    pass
+
+# ❌ BAD - Poor documentation
+def process(data, level="basic"):
+    """Process data."""
     pass
 ```
 
 ### 2. **Input Validation**
+
 ```python
-def validated_tool(email: str, age: int) -> str:
-    """Send email with age verification."""
+# ✅ GOOD - Validates inputs
+def send_email(
+    to: str,
+    subject: str,
+    body: str,
+    cc: Optional[List[str]] = None
+) -> Dict[str, Any]:
+    """Send email with validation."""
     # Validate email format
-    if not re.match(r'^[\w\.-]+@[\w\.-]+\.\w+$', email):
-        raise ValueError("Invalid email format")
-    
-    # Validate age
-    if not 0 < age < 150:
-        raise ValueError("Invalid age")
-    
-    # Process...
+    email_pattern = r'^[\w\.-]+@[\w\.-]+\.\w+$'
+    if not re.match(email_pattern, to):
+        raise ValueError(f"Invalid email address: {to}")
+
+    # Validate CC addresses
+    if cc:
+        for addr in cc:
+            if not re.match(email_pattern, addr):
+                raise ValueError(f"Invalid CC address: {addr}")
+
+    # Validate content
+    if not subject.strip():
+        raise ValueError("Subject cannot be empty")
+
+    if len(body) > 100000:
+        raise ValueError("Body too large (max 100KB)")
+
+    # Send email
+    return {"sent": True, "message_id": "..."}
 ```
 
-### 3. **Return Consistency**
+### 3. **Consistent Returns**
+
 ```python
-def consistent_tool(query: str) -> str:
-    """Always return string, even for errors."""
+# ✅ GOOD - Always returns same structure
+def database_query(sql: str) -> Dict[str, Any]:
+    """Query database with consistent response."""
     try:
-        result = perform_operation(query)
-        return json.dumps({"success": True, "data": result})
-    except Exception as e:
-        return json.dumps({"success": False, "error": str(e)})
-```
-
-## Tool Organization
-
-### Tool Categories
-
-```python
-# src/environment/tools/__init__.py
-CALCULATION_TOOLS = {
-    "calculate": calculate,
-    "convert_units": convert_units,
-}
-
-WEB_TOOLS = {
-    "search_web": search_web,
-    "fetch_url": fetch_url,
-    "check_website": check_website,
-}
-
-FILE_TOOLS = {
-    "read_file": read_file,
-    "write_file": write_file,
-    "list_files": list_files,
-}
-
-# Combine all tools
-AVAILABLE_TOOLS = {
-    **CALCULATION_TOOLS,
-    **WEB_TOOLS,
-    **FILE_TOOLS,
-}
-```
-
-### Tool Discovery
-
-```python
-def discover_tools(category: str = None) -> Dict[str, callable]:
-    """Discover available tools by category."""
-    if category == "calculation":
-        return CALCULATION_TOOLS
-    elif category == "web":
-        return WEB_TOOLS
-    elif category == "file":
-        return FILE_TOOLS
-    else:
-        return AVAILABLE_TOOLS
-```
-
-## Performance Considerations
-
-1. **Async First**: Make tools async when possible
-2. **Timeouts**: Always set reasonable timeouts
-3. **Caching**: Cache expensive operations
-4. **Rate Limiting**: Implement for external APIs
-5. **Resource Management**: Clean up resources properly
-
-```python
-# Example with all considerations
-class OptimizedTool:
-    def __init__(self):
-        self.cache = {}
-        self.rate_limiter = RateLimiter(calls=10, period=60)
-    
-    async def fetch_with_cache(
-        self,
-        url: str,
-        cache_duration: int = 300
-    ) -> str:
-        """Fetch URL with caching and rate limiting."""
-        # Check cache
-        if url in self.cache:
-            cached_time, cached_data = self.cache[url]
-            if time.time() - cached_time < cache_duration:
-                return cached_data
-        
-        # Rate limit
-        await self.rate_limiter.acquire()
-        
-        # Fetch with timeout
-        try:
-            async with aiohttp.ClientSession() as session:
-                async with session.get(url, timeout=30) as response:
-                    data = await response.text()
-                    
-            # Cache result
-            self.cache[url] = (time.time(), data)
-            return data
-            
-        except asyncio.TimeoutError:
-            return "Request timed out"
-```
-
-## Next Steps
-
-- Explore [Models](models.md) - How agents use models
-- Learn about [Advanced Tool Patterns](../concepts/tools.md) - Complex tool scenarios
-- See [Browser Automation](../concepts/browser-automation.md) - Web interaction tools
-
-## Creating Custom Tools
-
-```python
-from typing import Dict, Any
-import asyncio
-
-async def my_custom_tool(param1: str, param2: int = 10) -> Dict[str, Any]:
-    """
-    Custom tool description that will appear in the schema.
-    
-    Args:
-        param1: Description of param1
-        param2: Description of param2 (default: 10)
-    
-    Returns:
-        Dict containing the result
-    """
-    # Tool implementation
-    await asyncio.sleep(0.1)  # Simulate async operation
-    return {
-        "result": f"Processed {param1} with value {param2}",
-        "status": "success"
-    }
-
-# Add to agent
-from src.agents import Agent
-from src.models.models import ModelConfig
-
-agent = Agent(
-    name="tool_user",
-    model_config=ModelConfig(
-        type="api",
-        provider="openai",
-        name="gpt-4.1-mini
-    ),
-    tools={"my_custom_tool": my_custom_tool}
-)
-```
-
-## Using Tools in Agents
-
-```python
-import asyncio
-from src.agents.agents import Agent
-from src.models.models import ModelConfig
-from src.environment.tools import AVAILABLE_TOOLS
-
-async def main():
-    # Create agent with multiple tools
-    agent = Agent(
-        agent_name="multi_tool_agent",
-        model_config=ModelConfig(
-            type="api",
-            provider="openai",
-            name="gpt-4.1-mini
-        ),
-        tools={
-            "calculate": AVAILABLE_TOOLS["calculate"],
-            "search_web": AVAILABLE_TOOLS["search_web"],
-            "my_custom_tool": my_custom_tool
+        results = execute_query(sql)
+        return {
+            "success": True,
+            "data": results,
+            "row_count": len(results),
+            "error": None
         }
-    )
-    
-    response = await agent.auto_run(
-        initial_request="Calculate 25 * 4, then search for information about the result",
-        max_steps=3
-    )
-    
-    print(response)
+    except Exception as e:
+        return {
+            "success": False,
+            "data": [],
+            "row_count": 0,
+            "error": str(e)
+        }
 
-asyncio.run(main())
+# ❌ BAD - Inconsistent returns
+def bad_query(sql: str):
+    try:
+        return execute_query(sql)  # Returns list
+    except Exception as e:
+        return str(e)  # Returns string
 ```
+
+### 4. **Resource Management**
+
+```python
+# ✅ GOOD - Proper resource cleanup
+async def process_large_file(
+    file_path: str,
+    chunk_size: int = 8192
+) -> Dict[str, Any]:
+    """Process large file with proper resource management."""
+    file_handle = None
+    try:
+        file_handle = await aiofiles.open(file_path, 'r')
+        total_lines = 0
+
+        async for chunk in file_handle:
+            # Process chunk
+            total_lines += chunk.count('\n')
+
+        return {"lines": total_lines, "status": "completed"}
+
+    except Exception as e:
+        return {"error": str(e), "status": "failed"}
+
+    finally:
+        if file_handle:
+            await file_handle.close()
+```
+
+## 🎯 Advanced Patterns
+
+### Rate-Limited Tools
+
+```python
+from asyncio import Semaphore
+from collections import defaultdict
+import time
+
+class RateLimiter:
+    def __init__(self, calls: int, period: float):
+        self.calls = calls
+        self.period = period
+        self.semaphore = Semaphore(calls)
+        self.call_times = []
+
+    async def acquire(self):
+        async with self.semaphore:
+            now = time.time()
+            # Remove old calls outside the period
+            self.call_times = [t for t in self.call_times if now - t < self.period]
+
+            if len(self.call_times) >= self.calls:
+                sleep_time = self.period - (now - self.call_times[0])
+                await asyncio.sleep(sleep_time)
+
+            self.call_times.append(time.time())
+
+# Rate-limited API tool
+rate_limiter = RateLimiter(calls=10, period=60)  # 10 calls per minute
+
+async def api_call(endpoint: str, params: Dict) -> Dict:
+    """Rate-limited API call."""
+    await rate_limiter.acquire()
+    # Make actual API call
+    response = await make_request(endpoint, params)
+    return response
+```
+
+### Cached Tools
+
+```python
+from functools import lru_cache
+import hashlib
+import json
+
+class CachedTool:
+    def __init__(self, ttl: int = 300):
+        self.cache = {}
+        self.ttl = ttl
+
+    def _cache_key(self, *args, **kwargs):
+        """Generate cache key from arguments."""
+        key_data = json.dumps({"args": args, "kwargs": kwargs}, sort_keys=True)
+        return hashlib.md5(key_data.encode()).hexdigest()
+
+    async def expensive_operation(
+        self,
+        param1: str,
+        param2: int,
+        use_cache: bool = True
+    ) -> Dict:
+        """Expensive operation with caching."""
+
+        cache_key = self._cache_key(param1, param2)
+
+        # Check cache
+        if use_cache and cache_key in self.cache:
+            cached_time, cached_result = self.cache[cache_key]
+            if time.time() - cached_time < self.ttl:
+                return {"result": cached_result, "cached": True}
+
+        # Perform expensive operation
+        result = await self._do_expensive_work(param1, param2)
+
+        # Cache result
+        self.cache[cache_key] = (time.time(), result)
+
+        return {"result": result, "cached": False}
+```
+
+## 🚦 Next Steps
+
+<div class="grid cards" markdown="1">
+
+- :material-robot:{ .lg .middle } **[Agents](agents.md)**
+
+    ---
+
+    How agents use tools
+
+- :material-brain:{ .lg .middle } **[Models](models.md)**
+
+    ---
+
+    Model configurations for tool calling
+
+- :material-web:{ .lg .middle } **[Browser Automation](browser-automation.md)**
+
+    ---
+
+    Web interaction tools
+
+- :material-api:{ .lg .middle } **[Tool API Reference](../api/tools.md)**
+
+    ---
+
+    Complete tool API documentation
+
+</div>
+
+---
+
+!!! success "Tool System Ready!"
+    You now understand how to create and use tools in MARSYS. Tools are the bridge between AI intelligence and real-world actions.

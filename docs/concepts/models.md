@@ -1,194 +1,292 @@
 # Models
 
-Models are the AI backends that power agent intelligence. The framework provides a unified abstraction layer for different model providers and types.
+Models are the AI backends that power agent intelligence, providing a unified interface for different providers and model types.
 
-## Model Architecture
+## 🎯 Overview
+
+MARSYS provides a flexible model abstraction layer that:
+
+- **Unifies Providers**: Single interface for OpenAI, Anthropic, Google, and more
+- **Supports Multiple Types**: LLMs, VLMs, custom APIs, and local models
+- **Handles Complexity**: Automatic retry, error handling, and response formatting
+- **Enables Tool Calling**: OpenAI-compatible function calling across providers
+- **Manages Configuration**: Centralized settings with environment variable support
+
+## 🏗️ Architecture
 
 ```mermaid
-graph TD
-    A[Agent] --> B[Model Abstraction]
-    B --> C[BaseLLM]
-    B --> D[BaseVLM]
-    B --> E[BaseAPIModel]
-    
-    C --> F[OpenAI]
-    C --> G[Anthropic]
-    C --> H[Google]
-    
-    D --> I[GPT-4o]
-    D --> J[Claude-3]
-    
-    E --> K[Custom APIs]
+graph TB
+    subgraph "Model Types"
+        LLM[Language Models<br/>Text Generation]
+        VLM[Vision-Language<br/>Multimodal]
+        API[API Models<br/>Custom Endpoints]
+        LOCAL[Local Models<br/>Self-hosted]
+    end
+
+    subgraph "Providers"
+        OAI[OpenAI<br/>GPT-4, GPT-3.5]
+        ANT[Anthropic<br/>Claude 3]
+        GOO[Google<br/>Gemini]
+        GRQ[Groq<br/>Fast Inference]
+        LOC[Local<br/>Llama, Mistral]
+    end
+
+    subgraph "Features"
+        TC[Tool Calling<br/>Function Execution]
+        JM[JSON Mode<br/>Structured Output]
+        RT[Auto Retry<br/>Error Recovery]
+        CV[Context<br/>Management]
+    end
+
+    Agent[Agent] --> MA[Model Abstraction]
+    MA --> LLM
+    MA --> VLM
+    MA --> API
+
+    LLM --> OAI
+    LLM --> ANT
+    LLM --> GOO
+    VLM --> OAI
+    API --> Custom[Custom APIs]
+
+    style MA fill:#4fc3f7
+    style LLM fill:#29b6f6
+    style VLM fill:#29b6f6
 ```
 
-## Model Types
-
-### Language Models (LLM)
-
-Standard text-based models:
-
-```python
-from src.models.models import ModelConfig
-
-# Create model config
-model_config = ModelConfig(
-    type="api",
-    provider="openai",
-    name="gpt-4.1-mini,
-    temperature=0.7,
-    max_tokens=2000
-)
-
-# Model is created internally by Agent
-```
-
-### Vision-Language Models (VLM)
-
-Models that can process both text and images:
-
-```python
-from src.models.models import ModelConfig
-from src.agents.memory import Message
-
-# Create vision model config
-vlm_config = ModelConfig(
-    type="api",
-    provider="openai",
-    name="gpt-4-vision-preview",
-    max_tokens=4096
-)
-
-# Include image in message
-messages = [
-    Message(
-        role="user",
-        content=[
-            {"type": "text", "text": "What's in this image?"},
-            {"type": "image_url", "image_url": {"url": image_data}}
-        ]
-    )
-]
-```
-
-### API Models
-
-Custom model endpoints:
-
-```python
-from src.models.models import BaseAPIModel
-
-class CustomModel(BaseAPIModel):
-    def run(
-        self,
-        messages: List[Dict[str, str]],
-        json_mode: bool = False,
-        max_tokens: Optional[int] = None,
-        temperature: Optional[float] = None,
-        **kwargs
-    ) -> Dict[str, Any]:
-        # Custom API implementation
-        response = self._call_api(messages)
-        return self._format_response(response)
-```
-
-## Model Configuration
+## 📦 Model Configuration
 
 ### ModelConfig
 
 Central configuration for all models:
 
 ```python
-from pydantic import BaseModel, Field
+from src.models import ModelConfig
 from typing import Literal, Optional, Dict, Any
 
 class ModelConfig(BaseModel):
-    type: Literal["local", "api"]                           # Required: model type
-    name: str                                               # Model identifier  
-    provider: Optional[str] = None                          # "openai", "anthropic", "google", "groq"
-    api_key: Optional[str] = None                          # Auto-loaded from env if None
-    base_url: Optional[str] = None                         # Auto-set from provider if None
-    max_tokens: int = 1024                                 # Default maximum tokens
-    temperature: float = 0.7                               # Sampling temperature (0.0-2.0)
-    
-    # Local model specific fields
-    model_class: Optional[Literal["llm", "vlm"]] = None   # Required for local models
-    torch_dtype: Optional[str] = "auto"                   # PyTorch dtype
-    device_map: Optional[str] = "auto"                    # Device mapping
-    quantization_config: Optional[Dict[str, Any]] = None  # Quantization settings
+    # Core settings
+    type: Literal["api", "local"]           # Model type
+    name: str                               # Model identifier
+    provider: Optional[str] = None          # openai, anthropic, google, groq
+
+    # API settings
+    api_key: Optional[str] = None           # Auto-loaded from env if None
+    base_url: Optional[str] = None          # Custom endpoint
+
+    # Generation parameters
+    max_tokens: int = 1024                  # Maximum output tokens
+    temperature: float = 0.7                # Sampling temperature (0.0-2.0)
+    top_p: float = 1.0                      # Nucleus sampling
+    frequency_penalty: float = 0.0          # Repetition penalty
+    presence_penalty: float = 0.0           # Topic penalty
+
+    # Local model settings
+    model_class: Optional[Literal["llm", "vlm"]] = None
+    model_path: Optional[str] = None        # Path to local model
+    device: str = "cuda"                    # cuda, cpu, mps
+    torch_dtype: str = "auto"               # float16, bfloat16, float32
+    quantization_config: Optional[Dict] = None
+
+    # Additional parameters
+    parameters: Dict[str, Any] = {}         # Provider-specific params
 ```
 
-### Provider-Specific Configs
+### Provider Configurations
 
 ```python
-# OpenAI
-openai_config = ModelConfig(
+# OpenAI GPT-4
+gpt4_config = ModelConfig(
     type="api",
     provider="openai",
-    name="gpt-4-turbo-preview",
+    name="gpt-4",
     temperature=0.7,
-    max_tokens=4096
+    max_tokens=2000,
+    # api_key loaded from OPENAI_API_KEY env var
 )
 
-# Anthropic
-anthropic_config = ModelConfig(
+# Anthropic Claude
+claude_config = ModelConfig(
     type="api",
     provider="anthropic",
     name="claude-3-opus-20240229",
     temperature=0.5,
-    max_tokens=4096
+    max_tokens=4000,
+    # api_key loaded from ANTHROPIC_API_KEY env var
 )
 
-# Google
-google_config = ModelConfig(
+# Google Gemini
+gemini_config = ModelConfig(
     type="api",
     provider="google",
     name="gemini-pro",
     temperature=0.8,
-    max_tokens=2048
+    max_tokens=2048,
+    # api_key loaded from GOOGLE_API_KEY env var
 )
 
-# Local model
+# Groq (Fast Inference)
+groq_config = ModelConfig(
+    type="api",
+    provider="groq",
+    name="mixtral-8x7b-32768",
+    temperature=0.7,
+    max_tokens=32768,
+    # api_key loaded from GROQ_API_KEY env var
+)
+
+# Local Model
 local_config = ModelConfig(
     type="local",
     model_class="llm",
-    name="mistralai/Mistral-7B-Instruct-v0.2",
+    name="meta-llama/Llama-2-7b-chat-hf",
+    model_path="/models/llama-2-7b",
+    device="cuda",
+    torch_dtype="float16",
     max_tokens=1024
 )
 ```
 
-## Model Features
+## 🎯 Model Types
+
+### Language Models (LLM)
+
+Standard text generation models:
+
+```python
+from src.agents import Agent
+from src.models import ModelConfig
+
+# Create agent with LLM
+agent = Agent(
+    model_config=ModelConfig(
+        type="api",
+        provider="openai",
+        name="gpt-4",
+        temperature=0.7
+    ),
+    agent_name="Assistant",
+    description="A helpful assistant"
+)
+
+# Agent uses model internally
+response = await agent.run("Explain quantum computing")
+```
+
+### Vision-Language Models (VLM)
+
+Multimodal models that process text and images:
+
+```python
+# Configure vision model
+vlm_config = ModelConfig(
+    type="api",
+    provider="openai",
+    name="gpt-4-vision-preview",
+    max_tokens=4096,
+    parameters={"detail": "high"}  # Image detail level
+)
+
+# Create vision-capable agent
+vision_agent = Agent(
+    model_config=vlm_config,
+    agent_name="ImageAnalyzer",
+    description="I analyze images and answer questions about them"
+)
+
+# Process image
+from src.agents.memory import Message
+
+message = Message(
+    role="user",
+    content="What's in this image?",
+    images=["base64_encoded_image_data"]  # Or URLs
+)
+
+response = await vision_agent.run(message)
+```
+
+### Custom API Models
+
+For proprietary or specialized endpoints:
+
+```python
+from src.models import BaseAPIModel
+from typing import List, Dict, Any, Optional
+
+class CustomAPIModel(BaseAPIModel):
+    def __init__(self, api_key: str, endpoint: str):
+        super().__init__(api_key=api_key, base_url=endpoint)
+        self.endpoint = endpoint
+
+    def run(
+        self,
+        messages: List[Dict[str, str]],
+        json_mode: bool = False,
+        max_tokens: Optional[int] = None,
+        temperature: Optional[float] = None,
+        tools: Optional[List[Dict]] = None,
+        **kwargs
+    ) -> Dict[str, Any]:
+        """Custom API implementation."""
+
+        # Prepare request
+        payload = {
+            "messages": messages,
+            "max_tokens": max_tokens or 1024,
+            "temperature": temperature or 0.7,
+            "response_format": {"type": "json"} if json_mode else None
+        }
+
+        # Make API call
+        response = self._make_request(payload)
+
+        # Format response to standard format
+        return {
+            "role": "assistant",
+            "content": response.get("text", ""),
+            "tool_calls": response.get("functions", [])
+        }
+
+# Use custom model
+custom_config = ModelConfig(
+    type="api",
+    name="custom-model-v1",
+    base_url="https://api.custom.ai/v1"
+)
+```
+
+## 🔧 Model Features
 
 ### Tool Calling
 
-Models support OpenAI-compatible function calling:
+Enable function execution across all providers:
 
 ```python
-# Tools are passed as schemas via agent.tools_schema
-tools_schema = [
-    {
-        "type": "function",
-        "function": {
-            "name": "get_weather",
-            "description": "Get weather information",
-            "parameters": {
-                "type": "object",
-                "properties": {
-                    "location": {"type": "string"}
-                },
-                "required": ["location"]
-            }
-        }
-    }
-]
+# Define tools
+def search_web(query: str) -> str:
+    """Search the web for information."""
+    return f"Results for: {query}"
 
-# BaseAPIModel.run() can receive tools via kwargs
-response = model.run(messages, tools=tools_schema)
+def calculate(expression: str) -> float:
+    """Evaluate mathematical expression."""
+    return eval(expression)  # Simplified example
 
-# Check for tool calls in response
-if isinstance(response, dict) and "tool_calls" in response:
-    for tool_call in response["tool_calls"]:
-        # Execute tool
-        result = execute_tool(tool_call)
+# Agent with tools
+agent = Agent(
+    model_config=gpt4_config,
+    agent_name="ToolUser",
+    tools=[search_web, calculate]
+)
+
+# Model automatically handles tool calls
+response = await agent.run(
+    "Search for 'quantum computing' and calculate 2^10"
+)
+# Agent will:
+# 1. Decide to call search_web("quantum computing")
+# 2. Decide to call calculate("2**10")
+# 3. Incorporate results in response
 ```
 
 ### JSON Mode
@@ -196,213 +294,315 @@ if isinstance(response, dict) and "tool_calls" in response:
 Force structured output:
 
 ```python
-response = model.run(
-    messages,
-    json_mode=True  # Note: parameter name is json_mode, not output_json
-)
-
-# Response will contain JSON content
-if isinstance(response, dict):
-    content = response.get("content")
-    data = json.loads(content) if content else {}
-```
-
-### Response Handling
-
-Models return structured responses:
-
-```python
-# For synchronous models (BaseAPIModel, BaseLLM, BaseVLM)
-response = model.run(messages)
-
-# BaseAPIModel returns dict with role, content, tool_calls
-if isinstance(response, dict):
-    role = response.get("role", "assistant")
-    content = response.get("content", "")
-    tool_calls = response.get("tool_calls", [])
-    
-# Local models (BaseLLM, BaseVLM) return string content
-elif isinstance(response, str):
-    content = response
-```
-
-## Model Selection
-
-### Choosing the Right Model
-
-| Use Case | Recommended Model | Reasoning |
-|----------|-------------------|-----------|
-| General conversation | GPT-4 | Best overall performance |
-| Code generation | Claude-3 | Strong coding abilities |
-| Quick responses | gpt-4.1-mini | Fast and cost-effective |
-| Image analysis | GPT-4o | Vision capabilities |
-| Long context | Claude-3 (100k) | Extended context window |
-
-### Performance Considerations
-
-```python
-from src.agents.agents import Agent
-from src.models.models import ModelConfig
-
-# Fast model for simple tasks
-fast_agent = Agent(
-    agent_name="fast_assistant",
+# Configure for JSON output
+agent = Agent(
     model_config=ModelConfig(
         type="api",
         provider="openai",
-        name="gpt-4.1-mini",
-        temperature=0.3
-    )
+        name="gpt-4",
+        parameters={"response_format": {"type": "json_object"}}
+    ),
+    agent_name="StructuredAgent",
+    system_prompt="""
+    Always respond in JSON format:
+    {
+        "analysis": "...",
+        "confidence": 0.0-1.0,
+        "recommendations": []
+    }
+    """
 )
 
-# Powerful model for complex tasks
-smart_agent = Agent(
-    agent_name="smart_assistant",
-    model_config=ModelConfig(
-        type="api",
-        provider="openai", 
-        name="gpt-4-turbo-preview",
-        temperature=0.7
-    )
+response = await agent.run("Analyze this business plan")
+# Response will be valid JSON
+```
+
+### Streaming Responses
+
+For real-time output (when supported):
+
+```python
+# Streaming configuration
+stream_config = ModelConfig(
+    type="api",
+    provider="openai",
+    name="gpt-4",
+    parameters={"stream": True}
+)
+
+# Note: Full streaming support coming soon
+# Currently, responses are collected and returned complete
+```
+
+## 📊 Model Selection Guide
+
+### By Use Case
+
+| Use Case | Recommended Model | Why |
+|----------|-------------------|-----|
+| **General Chat** | GPT-4 | Best overall understanding |
+| **Code Generation** | Claude 3 Opus | Superior coding ability |
+| **Fast Responses** | GPT-3.5-Turbo | Low latency, cost-effective |
+| **Long Context** | Claude 3 (100k) | Extended context window |
+| **Image Analysis** | GPT-4 Vision | Multimodal capabilities |
+| **Local/Private** | Llama 2, Mistral | Data privacy, no API costs |
+| **Bulk Processing** | Groq Mixtral | Fast inference at scale |
+
+### By Requirements
+
+```python
+# High accuracy, cost not a concern
+premium_config = ModelConfig(
+    type="api",
+    provider="openai",
+    name="gpt-4",
+    temperature=0.3,  # Lower for consistency
+    max_tokens=4000
+)
+
+# Balance of cost and performance
+balanced_config = ModelConfig(
+    type="api",
+    provider="openai",
+    name="gpt-3.5-turbo-16k",
+    temperature=0.5,
+    max_tokens=2000
+)
+
+# Maximum speed
+speed_config = ModelConfig(
+    type="api",
+    provider="groq",
+    name="mixtral-8x7b-32768",
+    temperature=0.7,
+    max_tokens=1000
+)
+
+# Data privacy
+private_config = ModelConfig(
+    type="local",
+    model_class="llm",
+    name="meta-llama/Llama-2-13b-chat-hf",
+    device="cuda",
+    torch_dtype="float16"
 )
 ```
 
-## Error Handling
+## 🛡️ Error Handling
 
-Models handle errors at the framework level:
+Models include comprehensive error handling:
 
 ```python
-from src.agents.memory import Message
-import requests
+from src.coordination.config import ErrorHandlingConfig
 
-try:
-    response = model.run(messages)
-except requests.exceptions.Timeout:
-    # Handle timeout (BaseAPIModel uses 180s timeout)
-    return Message(
-        role="error", 
-        content="Request timed out",
-        name="model_error"
-    )
-except requests.exceptions.RequestException as e:
-    # Handle API errors
-    return Message(
-        role="error",
-        content=f"API Error: {str(e)}",
-        name="model_error"  
-    )
+error_config = ErrorHandlingConfig(
+    # Automatic retry on rate limits
+    auto_retry_on_rate_limits=True,
+    max_rate_limit_retries=3,
+
+    # Provider-specific settings
+    provider_settings={
+        "openai": {
+            "max_retries": 3,
+            "base_retry_delay": 60,
+            "insufficient_quota_action": "fallback"
+        },
+        "anthropic": {
+            "max_retries": 2,
+            "base_retry_delay": 30,
+            "insufficient_quota_action": "raise"
+        }
+    }
+)
+
+# Error types handled:
+# - RateLimitError: Automatic backoff and retry
+# - AuthenticationError: Clear error message
+# - InvalidRequestError: Validation feedback
+# - TimeoutError: Configurable timeout (default 180s)
+# - NetworkError: Connection retry logic
 ```
 
-## Model Abstraction Benefits
+## 📋 Best Practices
 
-1. **Provider Independence**: Switch providers without changing agent code
-2. **Consistent Interface**: All models follow the same API
-3. **Automatic Retries**: Built-in retry logic for transient failures
-4. **Error Standardization**: Consistent error handling across providers
-5. **Configuration Management**: Centralized configuration
-
-## Advanced Usage
-
-### Custom Model Wrapper
+### 1. **Environment Variables**
 
 ```python
-from src.models.models import BaseLLM, ModelConfig
+# ✅ GOOD - Use environment variables
+import os
 
-class CustomLLM(BaseLLM):
-    def __init__(self, model_name: str, max_tokens: int = 1024, **kwargs):
-        super().__init__(model_name, max_tokens, **kwargs)
-        self.custom_client = self._init_custom_client()
-    
-    def run(
-        self,
-        messages: List[Dict[str, str]],
-        json_mode: bool = False,
-        max_tokens: Optional[int] = None
-    ) -> str:
-        # Convert messages to custom format
-        formatted_messages = self._format_messages(messages)
-        
-        # Make custom call
-        response = self.custom_client.generate(
-            messages=formatted_messages,
-            max_tokens=max_tokens or self._max_tokens
+os.environ["OPENAI_API_KEY"] = "sk-..."
+os.environ["ANTHROPIC_API_KEY"] = "sk-ant-..."
+
+config = ModelConfig(
+    type="api",
+    provider="openai",
+    name="gpt-4"
+    # api_key automatically loaded
+)
+
+# ❌ BAD - Hardcoded keys
+config = ModelConfig(
+    type="api",
+    provider="openai",
+    name="gpt-4",
+    api_key="sk-..."  # Don't hardcode!
+)
+```
+
+### 2. **Temperature Settings**
+
+```python
+# ✅ GOOD - Match temperature to task
+# Creative tasks
+creative_config = ModelConfig(
+    name="gpt-4",
+    temperature=0.8  # Higher for creativity
+)
+
+# Analytical tasks
+analytical_config = ModelConfig(
+    name="gpt-4",
+    temperature=0.2  # Lower for consistency
+)
+
+# ❌ BAD - Same temperature for all tasks
+config = ModelConfig(
+    name="gpt-4",
+    temperature=1.5  # Too high for most tasks
+)
+```
+
+### 3. **Token Management**
+
+```python
+# ✅ GOOD - Appropriate token limits
+config = ModelConfig(
+    name="gpt-4",
+    max_tokens=2000  # Reasonable for most responses
+)
+
+# Consider context window
+# GPT-4: 8k/32k tokens total
+# Claude 3: 200k tokens total
+# Plan accordingly:
+short_context = ModelConfig(name="gpt-3.5-turbo", max_tokens=1000)
+long_context = ModelConfig(name="claude-3-opus", max_tokens=4000)
+```
+
+### 4. **Fallback Models**
+
+```python
+class ModelWithFallback:
+    def __init__(self):
+        self.primary = ModelConfig(
+            type="api",
+            provider="openai",
+            name="gpt-4"
         )
-        
-        return response.text
+        self.fallback = ModelConfig(
+            type="api",
+            provider="openai",
+            name="gpt-3.5-turbo"
+        )
+
+    async def run(self, prompt):
+        try:
+            return await self.run_with_model(self.primary, prompt)
+        except Exception as e:
+            print(f"Primary failed: {e}, using fallback")
+            return await self.run_with_model(self.fallback, prompt)
 ```
+
+## 🎯 Advanced Patterns
 
 ### Model Pooling
 
 ```python
-from src.models.models import ModelConfig
-
 class ModelPool:
+    """Load balance across multiple models."""
+
     def __init__(self, configs: List[ModelConfig]):
-        from src.agents.agents import Agent
-        self.models = [
-            Agent(agent_name=f"pool_{i}", model_config=config)._create_model_from_config(config)
+        self.agents = [
+            Agent(model_config=config, agent_name=f"pool_{i}")
             for i, config in enumerate(configs)
         ]
         self.current = 0
-    
-    def run(self, messages: List[Dict[str, str]]) -> Dict[str, Any]:
-        """Round-robin through models."""
-        model = self.models[self.current]
-        self.current = (self.current + 1) % len(self.models)
-        
-        return model.run(messages)
+
+    async def run(self, prompt: str) -> str:
+        """Round-robin execution."""
+        agent = self.agents[self.current]
+        self.current = (self.current + 1) % len(self.agents)
+        return await agent.run(prompt)
+
+# Create pool
+pool = ModelPool([
+    ModelConfig(provider="openai", name="gpt-4"),
+    ModelConfig(provider="anthropic", name="claude-3-opus"),
+    ModelConfig(provider="google", name="gemini-pro")
+])
 ```
 
-### Model Caching
+### Response Caching
 
 ```python
-from functools import lru_cache
 import hashlib
-import json
+from functools import lru_cache
 
 class CachedModel:
-    def __init__(self, base_model, cache_size: int = 128):
-        self.base_model = base_model
+    def __init__(self, model_config: ModelConfig, cache_size: int = 100):
+        self.agent = Agent(model_config=model_config, agent_name="cached")
         self.cache = {}
-        self.max_cache_size = cache_size
-    
-    def run(self, messages: List[Dict[str, str]], **kwargs) -> Dict[str, Any]:
-        # Create cache key
-        cache_key = self._create_cache_key(messages, kwargs)
-        
-        # Check cache
-        if cache_key in self.cache:
-            return self.cache[cache_key]
-        
-        # Run model
-        response = self.base_model.run(messages, **kwargs)
-        
-        # Cache response (with size limit)
-        if len(self.cache) >= self.max_cache_size:
-            # Remove oldest entry
-            oldest_key = next(iter(self.cache))
-            del self.cache[oldest_key]
-            
-        self.cache[cache_key] = response
+
+    def _cache_key(self, prompt: str) -> str:
+        return hashlib.md5(prompt.encode()).hexdigest()
+
+    async def run(self, prompt: str) -> str:
+        key = self._cache_key(prompt)
+
+        if key in self.cache:
+            return self.cache[key]
+
+        response = await self.agent.run(prompt)
+
+        if len(self.cache) >= 100:  # Simple LRU
+            self.cache.pop(next(iter(self.cache)))
+
+        self.cache[key] = response
         return response
-    
-    def _create_cache_key(self, messages: List[Dict[str, str]], kwargs: Dict) -> str:
-        content = json.dumps(messages, sort_keys=True)
-        content += json.dumps(kwargs, sort_keys=True)
-        return hashlib.sha256(content.encode()).hexdigest()
 ```
 
-## Best Practices
+## 🚦 Next Steps
 
-1. **Choose Appropriate Models**: Use powerful models only when needed
-2. **Set Reasonable Limits**: Configure appropriate max_tokens for your use case
-3. **Handle API Errors**: Implement proper error handling for network issues
-4. **Monitor Costs**: Track token usage across models
-5. **Use Type Validation**: Let ModelConfig validate your configurations
-6. **Environment Variables**: Store API keys securely in environment variables
+<div class="grid cards" markdown="1">
 
-## Next Steps
+- :material-robot:{ .lg .middle } **[Agents](agents.md)**
 
-- Learn about [Registry](registry.md) - How agents discover and communicate
-- Explore [Tools](tools.md) - Extending model capabilities with tools
-- See [Agent Implementation](../api/index.md) - How agents use models
+    ---
+
+    How agents use models
+
+- :material-tools:{ .lg .middle } **[Tools](tools.md)**
+
+    ---
+
+    Extend model capabilities
+
+- :material-api:{ .lg .middle } **[Model API Reference](../api/models.md)**
+
+    ---
+
+    Complete API documentation
+
+- :material-cog:{ .lg .middle } **[Configuration](../getting-started/configuration.md)**
+
+    ---
+
+    Advanced configuration options
+
+</div>
+
+---
+
+!!! success "Model System Ready!"
+    You now understand how MARSYS abstracts different AI models. The unified interface makes it easy to switch providers and experiment with different models.

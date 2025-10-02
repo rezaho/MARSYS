@@ -1,176 +1,427 @@
-# Tutorials Overview
+# Tutorials
 
-Welcome to the MARSYS Tutorials! This section provides step-by-step guides to help you learn and master the Multi-Agent Reasoning Systems framework through practical examples.
+Step-by-step guides to master MARSYS through practical examples and real-world projects.
 
 ## 🎯 Learning Path
 
-Our tutorials are organized in a progressive learning path, from basic concepts to advanced multi-agent systems:
+Progressive tutorials from beginner to advanced:
 
-### 🌱 **Beginner Tutorials**
-Perfect if you're new to MARSYS or multi-agent systems:
+<div class="grid cards" markdown="1">
 
-- **[Basic Agent Setup](basic-usage.md)** - Create your first agent and understand the fundamentals
-- **[Working with Models](../getting-started/configuration.md)** - Configure and use different language models
-- **[Memory and Context](../concepts/memory.md)** - Learn how agents store and recall information
-- **[Using Tools](../concepts/tools.md)** - Integrate external functions and capabilities
+- :material-play-circle:{ .lg .middle } **Getting Started**
 
-### 🚀 **Intermediate Tutorials**
-Ready to build more sophisticated systems:
+    ---
 
-- **[Multi-Agent Communication](multi-agent.md)** - Create agents that work together
-- **[Browser Automation](browser-automation.md)** - Build agents that can interact with web pages
-- **[Error Handling and Robustness](../concepts/error-handling.md)** - Make your agents production-ready
-- **[Schema Validation](../concepts/schema_validation.md)** - Ensure type safety and data validation
+    New to MARSYS? Start here!
 
-### 🎓 **Advanced Tutorials**
-Master complex multi-agent architectures:
+    1. [Installation & Setup](../getting-started/installation.md)
+    2. [Your First Agent](../getting-started/first-agent.md)
+    3. [Basic Usage](basic-usage.md)
 
-- **[Learning Agents](learning-agents.md)** - Create agents that can learn and adapt
-- **[Custom Agent Types](../concepts/custom-agents.md)** - Build specialized agents for your domain
-- **[Production Deployment](../guides/deployment.md)** - Deploy and scale multi-agent systems
-- **[Performance Optimization](../guides/performance.md)** - Optimize for speed and efficiency
+- :material-rocket-launch:{ .lg .middle } **Core Concepts**
 
-## 🛠️ **Hands-On Projects**
+    ---
 
-Learn by building real-world applications:
+    Build your foundation
 
-### 📊 **Research Assistant System**
-Build a multi-agent system that can:
-- Search the web for information
-- Analyze and summarize findings  
-- Generate comprehensive reports
-- Fact-check and validate sources
+    1. [Agent Communication](../concepts/communication.md)
+    2. [Memory Management](../concepts/memory.md)
+    3. [Tool Integration](../concepts/tools.md)
+    4. [Error Handling](../concepts/error-handling.md)
 
-**Skills learned**: Web scraping, information synthesis, multi-agent coordination
+- :material-layers:{ .lg .middle } **Multi-Agent Systems**
 
-### 🌐 **Web Automation Suite**
-Create agents that can:
-- Navigate complex websites
-- Fill forms and submit data
-- Extract structured information
-- Handle dynamic content and JavaScript
+    ---
 
-**Skills learned**: Browser automation, element detection, state management
+    Coordinate multiple agents
 
-### 📝 **Content Generation Pipeline**
-Develop a system that:
-- Researches topics automatically
-- Generates outlines and drafts
-- Fact-checks and improves content
-- Formats and publishes results
+    1. [Topology Patterns](../concepts/advanced/topology.md)
+    2. [Orchestra Coordination](../api/orchestra.md)
+    3. [State Management](../concepts/state-management.md)
 
-**Skills learned**: Content workflows, quality control, automated publishing
+- :material-brain:{ .lg .middle } **Advanced Topics**
 
-### 🔍 **Data Analysis Agents**
-Build agents that can:
-- Process large datasets
-- Generate insights and visualizations  
-- Create detailed reports
-- Present findings clearly
+    ---
 
-**Skills learned**: Data processing, analysis automation, reporting
+    Master advanced features
 
-## 📋 **Tutorial Structure**
+    1. [Custom Agents](../concepts/custom-agents.md)
+    2. [Learning Agents](../concepts/learning-agents.md)
+    3. [Browser Automation](../concepts/browser-automation.md)
+    4. [Memory Patterns](../concepts/memory-patterns.md)
 
-Each tutorial follows a consistent structure to maximize learning:
+</div>
 
-### 1. **Objective & Prerequisites**
-- Clear learning goals
-- Required background knowledge
-- Estimated completion time
-- Required dependencies
+## 📚 Tutorial Tracks
 
-### 2. **Step-by-Step Implementation**
-- Detailed code examples with explanations
-- Common pitfalls and how to avoid them
-- Best practices and design patterns
-- Testing and validation steps
+### Track 1: Build a Research Assistant
 
-### 3. **Extensions & Variations**
-- Ways to customize and extend the example
-- Alternative approaches and trade-offs
-- Performance considerations
-- Production deployment tips
+**Goal**: Create a multi-agent system for comprehensive research
 
-### 4. **What's Next**
-- Related tutorials and concepts
-- Suggested improvements and enhancements
-- Links to relevant documentation
-- Community projects and examples
+#### Part 1: Basic Research Agent
+```python
+from src.coordination import Orchestra
+from src.agents import Agent
+from src.models import ModelConfig
 
-## 🎯 **Tutorial Categories**
+# Create research agent
+researcher = Agent(
+    model_config=ModelConfig(
+        type="api",
+        provider="openai",
+        name="gpt-4"
+    ),
+    agent_name="Researcher",
+    description="Research and analyze topics",
+    system_prompt="You are a thorough researcher..."
+)
 
-### **Quick Start** (15-30 minutes)
-Fast-track tutorials for specific features:
-- Setting up your first agent
-- Adding a new tool
-- Configuring memory
-- Basic error handling
+# Simple research task
+result = await Orchestra.run(
+    task="Research quantum computing applications",
+    topology={"nodes": ["Researcher"], "edges": []}
+)
+```
 
-### **Deep Dive** (1-2 hours)
-Comprehensive exploration of major features:
-- Multi-agent system design
-- Advanced memory patterns
-- Custom agent development
-- Performance optimization
+#### Part 2: Add Web Search
+```python
+def search_web(query: str) -> List[Dict]:
+    """Search the web for information."""
+    # Implementation here
+    return results
 
-### **Project-Based** (2-4 hours)
-Complete applications with real-world complexity:
-- Research automation system
-- Web scraping pipeline
-- Content generation workflow
-- Data analysis toolkit
+researcher_with_tools = Agent(
+    model_config=config,
+    agent_name="WebResearcher",
+    tools={"search_web": search_web}
+)
+```
 
-### **Integration** (30 minutes - 1 hour)
-Connecting MARSYS with other tools and services:
-- Database integration
-- API integrations
-- Cloud deployment
-- Monitoring and logging
+#### Part 3: Multi-Agent Research Team
+```python
+from src.coordination.topology.patterns import PatternConfig
 
-## 💡 **Learning Tips**
+# Create research team
+data_collector = Agent(agent_name="DataCollector", ...)
+analyzer = Agent(agent_name="Analyzer", ...)
+writer = Agent(agent_name="Writer", ...)
 
-### **Hands-On Approach**
-- Code along with every example
-- Experiment with variations
-- Break things and fix them
-- Build your own projects
+# Hub-and-spoke pattern
+topology = PatternConfig.hub_and_spoke(
+    hub="Coordinator",
+    spokes=["DataCollector", "Analyzer", "Writer"],
+    parallel_spokes=True
+)
 
-### **Community Engagement**
-- Share your projects and get feedback
-- Ask questions in discussions
-- Contribute improvements
-- Help other learners
+result = await Orchestra.run(
+    task="Comprehensive research on AI trends",
+    topology=topology
+)
+```
 
-### **Progressive Learning**
-- Master basics before moving to advanced topics
-- Practice concepts in different contexts
-- Review and reinforce learning regularly
-- Apply knowledge to real problems
+### Track 2: Build a Customer Service Bot
 
-## 🔗 **Related Resources**
+**Goal**: Create an intelligent customer service system
 
-### **Documentation**
-- **[Core Concepts](../concepts/overview.md)** - Understand the fundamentals
-- **[API Reference](../api/overview.md)** - Detailed technical documentation
-- **[Getting Started](../getting-started/index.md)** - Quick setup and first steps
+#### Part 1: Basic Support Agent
+```python
+support_agent = Agent(
+    agent_name="SupportAgent",
+    description="Customer support specialist",
+    system_prompt="""You are a helpful customer support agent.
+    - Be polite and professional
+    - Ask clarifying questions
+    - Provide accurate information
+    - Escalate when needed"""
+)
+```
 
-### **Examples & Use Cases**
-- **[Use Cases](../use-cases/overview.md)** - Real-world applications and examples
-- **[Best Practices](../guides/best-practices.md)** - Proven patterns and approaches
-- **[Common Patterns](../guides/patterns.md)** - Reusable design patterns
+#### Part 2: Add Knowledge Base
+```python
+from src.concepts.memory_patterns import SemanticMemory
 
-### **Community & Support**
-- **[Contributing](../contributing/overview.md)** - How to contribute to MARSYS
-- **[Troubleshooting](../guides/debugging.md)** - Common issues and solutions
-- **[Performance Guide](../guides/performance.md)** - Optimization techniques
+class KnowledgeBaseAgent(BaseAgent):
+    def __init__(self, model, **kwargs):
+        super().__init__(model, **kwargs)
+        self.knowledge = SemanticMemory()
 
-## 🚀 **Ready to Start?**
+        # Load knowledge base
+        self.load_faqs()
+        self.load_documentation()
 
-1. **New to MARSYS?** Begin with [Basic Agent Setup](basic-usage.md)
-2. **Have some experience?** Jump to [Multi-Agent Systems](multi-agent.md)
-3. **Want to automate the web?** Try [Browser Automation](browser-automation.md)
-4. **Building learning systems?** Explore [Learning Agents](learning-agents.md)
-5. **Looking for specific examples?** Check [Use Cases](../use-cases/overview.md)
+    async def _run(self, prompt, context, **kwargs):
+        # Search knowledge base
+        relevant_info = self.knowledge.query_facts(prompt)
 
-Choose your path and start building amazing multi-agent systems! 🎉 
+        # Enhanced prompt with context
+        enhanced = f"{prompt}\n\nRelevant info: {relevant_info}"
+
+        # Generate response
+        response = await self.model.run(enhanced)
+        return response
+```
+
+#### Part 3: Escalation System
+```python
+topology = {
+    "nodes": ["User", "L1Support", "L2Support", "Manager"],
+    "edges": [
+        "User -> L1Support",
+        "L1Support -> User",
+        "L1Support -> L2Support",  # Escalation
+        "L2Support -> User",
+        "L2Support -> Manager",    # Further escalation
+        "Manager -> User"
+    ]
+}
+
+# Agents can escalate complex issues
+l1_response = {
+    "next_action": "invoke_agent",
+    "action_input": {
+        "agent_name": "L2Support",
+        "request": "Complex technical issue needs expertise"
+    }
+}
+```
+
+### Track 3: Build a Data Analysis Pipeline
+
+**Goal**: Create an automated data analysis system
+
+#### Part 1: Data Processor
+```python
+class DataProcessor(BaseAgent):
+    async def _run(self, prompt, context, **kwargs):
+        # Extract data request
+        data_request = self.parse_request(prompt)
+
+        # Process data
+        if data_request["type"] == "csv":
+            data = self.process_csv(data_request["path"])
+        elif data_request["type"] == "json":
+            data = self.process_json(data_request["path"])
+
+        return Message(
+            role="assistant",
+            content="Data processed successfully",
+            structured_data=data
+        )
+```
+
+#### Part 2: Analysis Pipeline
+```python
+topology = PatternConfig.pipeline(
+    stages=[
+        {"name": "ingestion", "agents": ["DataIngester"]},
+        {"name": "cleaning", "agents": ["DataCleaner"]},
+        {"name": "analysis", "agents": ["StatAnalyzer", "MLAnalyzer"]},
+        {"name": "visualization", "agents": ["Visualizer"]},
+        {"name": "reporting", "agents": ["ReportWriter"]}
+    ],
+    parallel_within_stage=True
+)
+```
+
+#### Part 3: Real-time Monitoring
+```python
+from src.coordination.state import StateManager
+
+# Enable state persistence
+state_manager = StateManager(storage)
+
+# Run with monitoring
+result = await Orchestra.run(
+    task="Analyze Q4 sales data",
+    topology=topology,
+    state_manager=state_manager,
+    execution_config=ExecutionConfig(
+        status=StatusConfig(
+            enabled=True,
+            verbosity=2,
+            show_agent_thoughts=True
+        )
+    )
+)
+```
+
+## 🎓 Best Practices Examples
+
+### Error Handling Pattern
+```python
+class RobustAgent(BaseAgent):
+    async def _run(self, prompt, context, **kwargs):
+        try:
+            result = await self.process(prompt)
+            return Message(
+                role="assistant",
+                content=result
+            )
+        except ValidationError as e:
+            # Recoverable error
+            return Message(
+                role="error",
+                content=f"Validation issue: {e}",
+                metadata={"recoverable": True}
+            )
+        except APIError as e:
+            # Route to user for help
+            return Message(
+                role="error",
+                content="API error - need user intervention",
+                metadata={"route_to_user": True}
+            )
+```
+
+### Memory Management Pattern
+```python
+class MemoryAgent(BaseAgent):
+    def __init__(self, model, **kwargs):
+        super().__init__(model, **kwargs)
+        self.episodic = EpisodicMemory(max_episodes=100)
+        self.working = WorkingMemory(capacity=7)
+
+    async def _run(self, prompt, context, **kwargs):
+        # Start new episode
+        episode_id = self.episodic.start_episode(prompt)
+
+        # Use working memory
+        self.working.add(prompt, priority=1.0)
+
+        # Process with memory context
+        relevant_memories = self.episodic.retrieve_similar(prompt)
+        enhanced_prompt = self.enhance_with_memory(prompt, relevant_memories)
+
+        response = await self.model.run(enhanced_prompt)
+
+        # End episode (in actual implementation)
+        self.episodic.end_episode(episode_id, "success")
+
+        return response
+```
+
+### Parallel Processing Pattern
+```python
+from src.agents import AgentPool
+
+# Create pool for parallel processing
+pool = AgentPool(
+    agent_class=DataAnalyzer,
+    num_instances=5,
+    model_config=config,
+    agent_name="AnalyzerPool"
+)
+
+# Coordinator distributes work
+coordinator_response = {
+    "next_action": "parallel_invoke",
+    "agents": ["AnalyzerPool"] * 5,
+    "agent_requests": {
+        "AnalyzerPool_0": "Analyze dataset A",
+        "AnalyzerPool_1": "Analyze dataset B",
+        "AnalyzerPool_2": "Analyze dataset C",
+        "AnalyzerPool_3": "Analyze dataset D",
+        "AnalyzerPool_4": "Analyze dataset E"
+    }
+}
+```
+
+## 🚀 Quick Start Projects
+
+### 1. **Question Answering System**
+```python
+# 10 minutes to build
+qa_agent = Agent(
+    agent_name="QABot",
+    system_prompt="Answer questions accurately and concisely."
+)
+
+result = await Orchestra.run(
+    task="What is the capital of France?",
+    topology={"nodes": ["QABot"], "edges": []}
+)
+```
+
+### 2. **Document Summarizer**
+```python
+# 20 minutes to build
+summarizer = Agent(
+    agent_name="Summarizer",
+    system_prompt="""Summarize documents:
+    - Extract key points
+    - Maintain accuracy
+    - Be concise"""
+)
+
+result = await Orchestra.run(
+    task=f"Summarize this document: {document_text}",
+    topology={"nodes": ["Summarizer"], "edges": []}
+)
+```
+
+### 3. **Code Assistant**
+```python
+# 30 minutes to build
+code_helper = Agent(
+    agent_name="CodeAssistant",
+    system_prompt="""You are a coding assistant.
+    - Explain code clearly
+    - Suggest improvements
+    - Fix bugs
+    - Write clean code"""
+)
+
+result = await Orchestra.run(
+    task="Fix this Python function: ...",
+    topology={"nodes": ["CodeAssistant"], "edges": []}
+)
+```
+
+## 📖 Tutorial Resources
+
+### Example Code
+All tutorial code is available in the [examples/](https://github.com/yourusername/marsys/tree/main/examples) directory.
+
+### Interactive Notebooks
+Jupyter notebooks for hands-on learning are in [tutorials/notebooks/](https://github.com/yourusername/marsys/tree/main/tutorials/notebooks).
+
+### Video Tutorials
+Video walkthroughs available on our [YouTube channel](https://youtube.com/@marsys).
+
+## 🎯 Next Steps
+
+<div class="grid cards" markdown="1">
+
+- :material-file-document:{ .lg .middle } **[API Reference](../api/overview.md)**
+
+    ---
+
+    Complete API documentation
+
+- :material-lightbulb:{ .lg .middle } **[Use Cases](../use-cases/index.md)**
+
+    ---
+
+    Real-world applications
+
+- :material-tools:{ .lg .middle } **[Contributing](../contributing/index.md)**
+
+    ---
+
+    Join the community
+
+- :material-help-circle:{ .lg .middle } **[Support](../support.md)**
+
+    ---
+
+    Get help and support
+
+</div>
+
+---
+
+!!! tip "Pro Tip"
+    Start with the Quick Start Projects to get a feel for MARSYS, then progress through the tutorial tracks to build complete systems. Each track is designed to be completed in 2-4 hours.
+
+!!! success "Ready to Build!"
+    You now have everything you need to start building with MARSYS. Pick a tutorial track that matches your interests and start creating!
