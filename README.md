@@ -62,78 +62,127 @@ We're excited to announce the first beta release of MARSYS with major new featur
 
 ### Installation
 
-MARSYS offers flexible installation options based on your needs:
+#### Recommended Setup with uv (10-100x faster than pip)
 
-#### Basic Installation (Recommended)
-Includes core framework, browser automation, UI, and tools - everything you need for most use cases:
+**Step 1: Create and activate a virtual environment**
+
+[uv](https://github.com/astral-sh/uv) is the recommended package manager for MARSYS. Install it first if you haven't:
 ```bash
-pip install marsys
-```
-
-This installs:
-- ✅ API-based models (OpenAI, Anthropic, Google, Groq)
-- ✅ Browser automation with BrowserAgent
-- ✅ Rich terminal UI and formatting
-- ✅ Web scraping and document tools
-- ✅ State persistence and checkpointing
-
-#### With Local Model Support
-For running local LLMs/VLMs with PyTorch and Transformers:
-```bash
-pip install marsys[local-models]
-```
-
-Additional features:
-- 🤖 Local model inference (Transformers, PEFT)
-- 🎓 Fine-tuning and reinforcement learning (TRL)
-- 📹 Vision model support (including Qwen-VL)
-
-#### For Production Inference
-High-performance inference with vLLM and Flash Attention:
-```bash
-pip install marsys[production]
-```
-
-#### For Development
-Complete installation with testing tools and documentation builders:
-```bash
-pip install marsys[dev]
-```
-
-#### Using uv (Faster)
-[uv](https://github.com/astral-sh/uv) is a blazing-fast Python package installer (10-100x faster than pip):
-```bash
-# Install uv first
+# Install uv (Unix/macOS)
 curl -LsSf https://astral.sh/uv/install.sh | sh
 
-# Install marsys with local models
+# Or on Windows (PowerShell)
+powershell -c "irm https://astral.sh/uv/install.ps1 | iex"
+```
+
+Create and activate your virtual environment:
+```bash
+# Create virtual environment with uv
+uv venv
+
+# Activate (Unix/macOS)
+source .venv/bin/activate
+
+# Activate (Windows)
+.venv\Scripts\activate
+
+# Or use uv run without explicit activation
+uv run python your_script.py
+```
+
+**Step 2: Install MARSYS**
+
+Basic installation (recommended for most users):
+```bash
+uv pip install marsys
+```
+
+With local model support (PyTorch, Transformers):
+```bash
 uv pip install marsys[local-models]
 ```
 
-#### From Source
+For production inference (vLLM, Flash Attention):
+```bash
+uv pip install marsys[production]
+```
+
+For development:
+```bash
+uv pip install marsys[dev]
+```
+
+#### Alternative Installation Methods
+
+**Using pip (standard method)**
+```bash
+# Create virtual environment
+python -m venv .venv
+source .venv/bin/activate  # Unix/macOS
+# .venv\Scripts\activate  # Windows
+
+# Install
+pip install marsys
+```
+
+**From source**
 ```bash
 git clone https://github.com/rezaho/MARSYS.git
 cd MARSYS
 pip install -e .[dev]
 ```
 
-### Post-Installation Setup
+### Required: API Key Configuration
 
-#### Playwright Browsers (for BrowserAgent)
-```bash
-playwright install
-```
+**⚠️ Before running any examples, configure your API keys:**
 
-#### API Keys (for API-based models)
-Set environment variables for your API provider:
+MARSYS requires API keys for model providers. Choose one of these methods:
+
+**Method 1: Environment variables (recommended for production)**
 ```bash
+# Unix/macOS/Linux
 export OPENAI_API_KEY="your-key-here"
 export ANTHROPIC_API_KEY="your-key-here"
 export GOOGLE_API_KEY="your-key-here"
 export OPENROUTER_API_KEY="your-key-here"
+
+# Windows (Command Prompt)
+set OPENAI_API_KEY=your-key-here
+
+# Windows (PowerShell)
+$env:OPENAI_API_KEY="your-key-here"
 ```
 
-Or use a `.env` file with `python-dotenv`.
+**Method 2: `.env` file (recommended for development)**
+```bash
+# Create .env file in your project root
+cat > .env << EOF
+OPENAI_API_KEY=your-key-here
+ANTHROPIC_API_KEY=your-key-here
+GOOGLE_API_KEY=your-key-here
+OPENROUTER_API_KEY=your-key-here
+EOF
+```
+
+MARSYS will automatically load `.env` files using `python-dotenv`.
+
+### Optional: Playwright Setup (Only for BrowserAgent)
+
+**⚠️ Only required if you plan to use BrowserAgent for web automation**
+
+After installing the `playwright` package, install browser binaries:
+```bash
+# Install Chromium (recommended)
+playwright install chromium
+
+# Or install all browsers
+playwright install
+
+# With system dependencies (Linux)
+playwright install --with-deps chromium
+```
+
+If you don't use BrowserAgent, you can skip this step entirely.
 
 ### Basic Usage
 
