@@ -1,0 +1,69 @@
+# MARSYS - Distribution File Manifest
+# This file specifies which non-Python files should be included in the distribution package
+
+# Core documentation files
+include README.md
+include LICENSE
+include CHANGELOG.md
+include CLAUDE.md
+include Multi-Agent_Patterns.md
+
+# Documentation directory
+recursive-include docs *.md *.png *.jpg *.jpeg *.gif *.svg *.yaml *.yml *.css *.js
+
+# Examples (excluding sensitive/temporary files)
+recursive-include examples *.py *.md *.yaml *.yml *.txt
+exclude examples/real_world/auth.json
+exclude examples/**/auth.json
+prune examples/real_world/sessions
+prune examples/**/sessions
+
+# Configuration files (if any)
+recursive-include config *.yaml *.yml *.json
+
+# Exclude build artifacts
+global-exclude __pycache__
+global-exclude *.py[cod]
+global-exclude *.so
+global-exclude *.dylib
+global-exclude .DS_Store
+global-exclude .git*
+global-exclude *.swp
+global-exclude *.swo
+global-exclude *~
+
+# Exclude caches and temporary files
+global-exclude .pytest_cache
+global-exclude .mypy_cache
+global-exclude .ruff_cache
+global-exclude .coverage
+global-exclude htmlcov
+global-exclude .tox
+
+# Exclude virtual environments
+prune .venv
+prune venv
+prune env
+
+# Exclude build directories
+prune dist
+prune build
+prune *.egg-info
+
+# Exclude IDE files
+prune .vscode
+prune .idea
+global-exclude *.code-workspace
+
+# Exclude notebook checkpoints
+global-exclude .ipynb_checkpoints
+
+# Exclude screenshots and test data
+exclude current_view.png
+exclude *.png
+exclude *.jpg
+
+# Include specific configuration files in root
+include pyproject.toml
+include setup.py
+include requirements.txt
