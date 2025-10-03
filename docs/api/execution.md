@@ -14,7 +14,7 @@ Manages the execution of different branch patterns in the workflow.
 
 **Import:**
 ```python
-from src.coordination.execution import BranchExecutor
+from marsys.coordination.execution import BranchExecutor
 ```
 
 **Constructor:**
@@ -75,7 +75,7 @@ Represents a branch of execution in the workflow.
 
 **Import:**
 ```python
-from src.coordination.branches.types import ExecutionBranch, BranchType, BranchStatus
+from marsys.coordination.branches.types import ExecutionBranch, BranchType, BranchStatus
 ```
 
 **Attributes:**
@@ -111,7 +111,7 @@ class BranchStatus(Enum):
 
 **Example:**
 ```python
-from src.coordination.branches.types import ExecutionBranch, BranchType
+from marsys.coordination.branches.types import ExecutionBranch, BranchType
 
 branch = ExecutionBranch(
     branch_id="main_001",
@@ -129,7 +129,7 @@ Executes individual steps within a branch.
 
 **Import:**
 ```python
-from src.coordination.execution import StepExecutor
+from marsys.coordination.execution import StepExecutor
 ```
 
 **Constructor:**
@@ -202,7 +202,7 @@ Handles runtime creation of parallel branches.
 
 **Import:**
 ```python
-from src.coordination.execution import DynamicBranchSpawner
+from marsys.coordination.execution import DynamicBranchSpawner
 ```
 
 **Constructor:**
@@ -268,7 +268,7 @@ Result of branch execution.
 
 **Import:**
 ```python
-from src.coordination.branches.types import BranchResult
+from marsys.coordination.branches.types import BranchResult
 ```
 
 **Attributes:**
@@ -301,7 +301,7 @@ Executes tool calls within agent steps.
 
 **Import:**
 ```python
-from src.coordination.execution import ToolExecutor
+from marsys.coordination.execution import ToolExecutor
 ```
 
 **Constructor:**

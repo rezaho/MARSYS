@@ -64,7 +64,7 @@ TRACE_LEVEL=ERROR
 The core configuration class for all models:
 
 ```python
-from src.models import ModelConfig
+from marsys.models import ModelConfig
 
 config = ModelConfig(
     type="api",                    # "api" or "local"
@@ -188,7 +188,7 @@ config = ModelConfig(
 Fine-tune how Orchestra executes workflows:
 
 ```python
-from src.coordination.config import ExecutionConfig, StatusConfig, VerbosityLevel
+from marsys.coordination.config import ExecutionConfig, StatusConfig, VerbosityLevel
 
 config = ExecutionConfig(
     # Timeout settings (seconds)
@@ -256,7 +256,7 @@ realtime_config = ExecutionConfig(
 Control output verbosity and formatting:
 
 ```python
-from src.coordination.config import StatusConfig, VerbosityLevel
+from marsys.coordination.config import StatusConfig, VerbosityLevel
 
 # Quick setup with verbosity levels
 status = StatusConfig.from_verbosity(VerbosityLevel.QUIET)    # Minimal output
@@ -310,7 +310,7 @@ status = StatusConfig(
 Configure user interaction and formatting:
 
 ```python
-from src.coordination.config import CommunicationConfig
+from marsys.coordination.config import CommunicationConfig
 
 comm_config = CommunicationConfig(
     # Rich formatting
@@ -348,7 +348,7 @@ comm_config = CommunicationConfig(
 Configure error recovery strategies:
 
 ```python
-from src.coordination.config import ErrorHandlingConfig
+from marsys.coordination.config import ErrorHandlingConfig
 
 error_config = ErrorHandlingConfig(
     # Classification and routing
@@ -402,15 +402,15 @@ Here's a comprehensive configuration for a production system:
 
 ```python
 import os
-from src.coordination import Orchestra
-from src.coordination.config import (
+from marsys.coordination import Orchestra
+from marsys.coordination.config import (
     ExecutionConfig,
     StatusConfig,
     CommunicationConfig,
     ErrorHandlingConfig,
     VerbosityLevel
 )
-from src.coordination.state import StateManager, FileStorageBackend
+from marsys.coordination.state import StateManager, FileStorageBackend
 from pathlib import Path
 
 # Create comprehensive configuration
@@ -579,7 +579,7 @@ logging.getLogger('marsys.models').setLevel(logging.WARNING)
 ### Performance Monitoring
 
 ```python
-from src.coordination.monitoring import MetricsCollector
+from marsys.coordination.monitoring import MetricsCollector
 
 metrics = MetricsCollector(
     enabled=True,
@@ -605,7 +605,7 @@ print(f"Average latency: {metrics.get_metric('avg_latency')}ms")
 ### API Key Management
 
 ```python
-from src.utils.security import SecureConfig
+from marsys.utils.security import SecureConfig
 
 # Secure configuration
 secure_config = SecureConfig(
@@ -634,7 +634,7 @@ secure_config = SecureConfig(
 Adjust configuration at runtime:
 
 ```python
-from src.coordination import OrchestraInstance
+from marsys.coordination import OrchestraInstance
 
 orchestra = OrchestraInstance(initial_config=config)
 
@@ -650,7 +650,7 @@ result = await orchestra.execute(task, topology)
 ### Configuration Validation
 
 ```python
-from src.coordination.config import validate_config
+from marsys.coordination.config import validate_config
 
 # Validate configuration
 errors = validate_config(exec_config)

@@ -51,8 +51,8 @@ graph TB
 The fundamental pattern for custom agents:
 
 ```python
-from src.agents import BaseAgent
-from src.agents.memory import Message
+from marsys.agents import BaseAgent
+from marsys.agents.memory import Message
 from typing import Dict, Any, Optional
 
 class CustomAgent(BaseAgent):

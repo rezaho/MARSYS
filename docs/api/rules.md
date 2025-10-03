@@ -14,7 +14,7 @@ Central engine for rule evaluation and enforcement.
 
 **Import:**
 ```python
-from src.coordination.rules import RulesEngine
+from marsys.coordination.rules import RulesEngine
 ```
 
 **Constructor:**
@@ -85,7 +85,7 @@ Abstract base class for all rules.
 
 **Import:**
 ```python
-from src.coordination.rules import Rule, RuleType, RulePriority
+from marsys.coordination.rules import Rule, RuleType, RulePriority
 ```
 
 **Constructor:**
@@ -150,7 +150,7 @@ Types of rules in the system.
 
 **Import:**
 ```python
-from src.coordination.rules import RuleType
+from marsys.coordination.rules import RuleType
 ```
 
 **Values:**
@@ -171,7 +171,7 @@ Rule execution priority levels.
 
 **Import:**
 ```python
-from src.coordination.rules import RulePriority
+from marsys.coordination.rules import RulePriority
 ```
 
 **Values:**
@@ -190,7 +190,7 @@ Context passed to rules for evaluation.
 
 **Import:**
 ```python
-from src.coordination.rules import RuleContext
+from marsys.coordination.rules import RuleContext
 ```
 
 **Attributes:**
@@ -231,7 +231,7 @@ Result of rule evaluation.
 
 **Import:**
 ```python
-from src.coordination.rules import RuleResult
+from marsys.coordination.rules import RuleResult
 ```
 
 **Attributes:**
@@ -267,7 +267,7 @@ from src.coordination.rules import RuleResult
 Enforces execution time limits.
 
 ```python
-from src.coordination.rules import TimeoutRule
+from marsys.coordination.rules import TimeoutRule
 
 rule = TimeoutRule(
     name="timeout_rule",
@@ -281,7 +281,7 @@ rule = TimeoutRule(
 Limits concurrent agent count.
 
 ```python
-from src.coordination.rules import MaxAgentsRule
+from marsys.coordination.rules import MaxAgentsRule
 
 rule = MaxAgentsRule(
     name="max_agents_rule",
@@ -295,7 +295,7 @@ rule = MaxAgentsRule(
 Limits total execution steps.
 
 ```python
-from src.coordination.rules import MaxStepsRule
+from marsys.coordination.rules import MaxStepsRule
 
 rule = MaxStepsRule(
     name="max_steps_rule",
@@ -309,7 +309,7 @@ rule = MaxStepsRule(
 Enforces memory usage limits.
 
 ```python
-from src.coordination.rules import MemoryLimitRule
+from marsys.coordination.rules import MemoryLimitRule
 
 rule = MemoryLimitRule(
     name="memory_limit_rule",
@@ -323,7 +323,7 @@ rule = MemoryLimitRule(
 Executes based on custom condition.
 
 ```python
-from src.coordination.rules import ConditionalRule
+from marsys.coordination.rules import ConditionalRule
 
 rule = ConditionalRule(
     name="conditional_rule",
@@ -339,7 +339,7 @@ rule = ConditionalRule(
 Per-agent timeout enforcement.
 
 ```python
-from src.coordination.rules import AgentTimeoutRule
+from marsys.coordination.rules import AgentTimeoutRule
 
 rule = AgentTimeoutRule(
     name="agent_timeout_rule",
@@ -357,7 +357,7 @@ rule = AgentTimeoutRule(
 Enforces execution patterns.
 
 ```python
-from src.coordination.rules import PatternRule, ExecutionPattern
+from marsys.coordination.rules import PatternRule, ExecutionPattern
 
 rule = PatternRule(
     name="pattern_rule",
@@ -373,7 +373,7 @@ rule = PatternRule(
 ### Creating Custom Rules
 
 ```python
-from src.coordination.rules import Rule, RuleResult, RuleContext
+from marsys.coordination.rules import Rule, RuleResult, RuleContext
 
 class BusinessHoursRule(Rule):
     """Only allow execution during business hours."""

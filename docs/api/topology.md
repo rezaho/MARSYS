@@ -14,7 +14,7 @@ Main topology container that holds nodes, edges, and rules.
 
 **Import:**
 ```python
-from src.coordination.topology import Topology
+from marsys.coordination.topology import Topology
 ```
 
 **Constructor:**
@@ -48,7 +48,7 @@ Topology(
 
 **Example:**
 ```python
-from src.coordination.topology import Topology, Node, Edge
+from marsys.coordination.topology import Topology, Node, Edge
 
 topology = Topology(
     nodes=[
@@ -73,7 +73,7 @@ Represents an agent or system component in the topology.
 
 **Import:**
 ```python
-from src.coordination.topology import Node, NodeType
+from marsys.coordination.topology import Node, NodeType
 ```
 
 **Constructor:**
@@ -107,7 +107,7 @@ class NodeType(Enum):
 
 **Example:**
 ```python
-from src.coordination.topology import Node, NodeType
+from marsys.coordination.topology import Node, NodeType
 
 # Create different node types
 user_node = Node("User", node_type=NodeType.USER)
@@ -127,7 +127,7 @@ Defines connections and communication paths between nodes.
 
 **Import:**
 ```python
-from src.coordination.topology import Edge, EdgeType, EdgePattern
+from marsys.coordination.topology import Edge, EdgeType, EdgePattern
 ```
 
 **Constructor:**
@@ -197,7 +197,7 @@ Pre-defined topology patterns for common use cases.
 
 **Import:**
 ```python
-from src.coordination.topology.patterns import PatternConfig
+from marsys.coordination.topology.patterns import PatternConfig
 ```
 
 **Static Methods:**
@@ -255,7 +255,7 @@ def hierarchical(
 
 **Example:**
 ```python
-from src.coordination.topology.patterns import PatternConfig
+from marsys.coordination.topology.patterns import PatternConfig
 
 # Hub and spoke pattern
 topology = PatternConfig.hub_and_spoke(
@@ -338,7 +338,7 @@ Internal graph representation for routing decisions.
 
 **Import:**
 ```python
-from src.coordination.topology.graph import TopologyGraph
+from marsys.coordination.topology.graph import TopologyGraph
 ```
 
 **Key Methods:**
@@ -358,7 +358,7 @@ Analyzes and validates topology structures.
 
 **Import:**
 ```python
-from src.coordination.topology.analyzer import TopologyAnalyzer
+from marsys.coordination.topology.analyzer import TopologyAnalyzer
 ```
 
 **Constructor:**
