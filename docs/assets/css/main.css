@@ -635,3 +635,27 @@ body::before {
 }
 
 /* 5️⃣  Remove previous rule that hid breadcrumbs row (tabs) *//* (.md-tabs { display:none!important; }) — ensure it no longer exists *//* ─── FINAL HEADER GRADIENT OVERRIDE ─────────────────────────────── *//* keeps the pastel blue-violet in light-mode and deep blue in dark-mode */:root .md-header {                 /* higher specificity overrides earlier duplicates */  background: linear-gradient(      135deg,      rgba(173, 197, 255, 0.70) 0%,      rgba(212, 206, 255, 0.70) 50%,      rgba(255, 255, 255, 0.70) 100%  ) !important;}[data-md-color-scheme="slate"] .md-header {  background: linear-gradient(      135deg,      rgba(40, 52, 104, 0.95) 0%,      rgba(71, 91, 208, 0.85) 50%,      rgba(40, 52, 104, 0.95) 100%  ) !important;}/* ─── Breadcrumbs / Tabs row (glass style) ────────────────────────── */.md-tabs {    /* use the generic glass background instead of an opaque gradient */    background: var(--glass-bg) !important;          /* light & transparent */    backdrop-filter: blur(var(--blur-amount));    -webkit-backdrop-filter: blur(var(--blur-amount));    border: 1px solid var(--glass-border);    border-top: none;                                /* seamless with header */    border-radius: 0;                                /* no rounding - clean rectangle */    margin: 0 1rem;                                  /* side margins match content */    height: 2.5rem;    display: flex !important;                        /* ensure it is visible */    align-items: center;}[data-md-color-scheme="slate"] .md-tabs {    background: rgba(40, 52, 104, 0.40) !important;  /* semi-transparent for dark mode */    backdrop-filter: blur(var(--blur-amount));    -webkit-backdrop-filter: blur(var(--blur-amount));    border: 1px solid rgba(255, 255, 255, 0.15);    border-top: none;}/* tab link colours remain */.md-tabs__link { color: var(--md-default-fg-color) !important; }.md-tabs__link--active { font-weight: 600; }[data-md_color_scheme="slate"] .md-tabs__link,[data-md_color_scheme="slate"] .md-tabs__link--active { color: #fff !important; }/* ────────────────────────────────────────────────────────────────── */
+
+/* ───────────────────── KEY FEATURES INLINE ICONS ───────────────────── */
+
+/* Improve spacing when icon and title are on the same line */
+.md-typeset .grid.cards > ul > li > p:first-child {
+    display: flex;
+    align-items: center;
+    margin-bottom: 0 !important;
+}
+
+.md-typeset .grid.cards > ul > li > p:first-child > .twemoji,
+.md-typeset .grid.cards > ul > li > p:first-child > svg {
+    flex-shrink: 0;
+    width: 2.5rem !important;
+    height: 2.5rem !important;
+    margin-right: -0.25rem !important;
+}
+
+/* Ensure the horizontal rule has proper spacing */
+.md-typeset .grid.cards > ul > li > hr {
+    margin: 1rem 0;
+}
+
+/* ────────────────────────────────────────────────────────────────── */
