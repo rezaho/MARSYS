@@ -59,8 +59,8 @@ class AgentPool:
         
         self.agent_class = agent_class
         self.num_instances = num_instances
-        self.base_name = kwargs.get('agent_name', agent_class.__name__)
-        
+        self.base_name = kwargs.get('name', agent_class.__name__)
+
         # Store original args/kwargs for potential instance recreation
         self._original_args = args
         self._original_kwargs = kwargs
@@ -93,8 +93,8 @@ class AgentPool:
             instance_kwargs = self._original_kwargs.copy()
             
             # Give each instance a unique name
-            if 'agent_name' in instance_kwargs:
-                instance_kwargs['agent_name'] = f"{self.base_name}_{i}"
+            if 'name' in instance_kwargs:
+                instance_kwargs['name'] = f"{self.base_name}_{i}"
             
             # Create the instance
             try:
@@ -172,8 +172,8 @@ class AgentPool:
             instance_kwargs = self._original_kwargs.copy()
             
             # Give each instance a unique name
-            if 'agent_name' in instance_kwargs:
-                instance_kwargs['agent_name'] = f"{self.base_name}_{i}"
+            if 'name' in instance_kwargs:
+                instance_kwargs['name'] = f"{self.base_name}_{i}"
             
             # Create task for async instance creation
             task = self._create_single_instance_async(i, instance_kwargs)

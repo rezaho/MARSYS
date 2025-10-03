@@ -207,7 +207,7 @@ class LearnableAgent(BaseLearnableAgent):
             kg_model = self.model
         self.memory = MemoryManager(
             memory_type="conversation_history",  # Default memory type
-            description=self.description,  # Pass agent's description for initial system message
+            description=self.instruction,  # Pass agent's instruction for initial system message
             model=None,  # kg_model is not needed since memory_type is "conversation_history"
             input_processor=self._input_message_processor(),
             output_processor=self._output_message_processor(),
@@ -356,11 +356,11 @@ class LearnableAgent(BaseLearnableAgent):
                 name=prompt_sender_name,
             )
         
-        # Get base description for this run mode
-        base_description_for_run = getattr(
+        # Get base instruction for this run mode
+        base_instruction_for_run = getattr(
             self,
-            f"description_{execution_mode}",
-            self.description,
+            f"instruction_{execution_mode}",
+            self.instruction,
         )
         
         # Determine JSON mode settings
@@ -372,7 +372,7 @@ class LearnableAgent(BaseLearnableAgent):
         
         # Construct system prompt
         operational_system_prompt = self._construct_full_system_prompt(
-            base_description=base_description_for_run,
+            base_description=base_instruction_for_run,
             json_mode_for_output=json_mode_for_guidelines,
         )
         
