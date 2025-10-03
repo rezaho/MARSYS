@@ -12,10 +12,79 @@ In this quickstart, you'll create:
 
 ## ⚡ Prerequisites
 
-Make sure you have:
-- MARSYS installed (`pip install marsys`)
-- At least one API key configured in `.env`
-- Python 3.12+ environment
+Before starting, complete these setup steps:
+
+### 1. Set Up Virtual Environment
+
+**Recommended: Use uv for faster installation**
+
+```bash
+# Install uv (if not already installed)
+curl -LsSf https://astral.sh/uv/install.sh | sh  # Unix/macOS
+# powershell -c "irm https://astral.sh/uv/install.ps1 | iex"  # Windows
+
+# Create and activate virtual environment
+uv venv
+source .venv/bin/activate  # Unix/macOS
+# .venv\Scripts\activate  # Windows
+```
+
+**Alternative: Use standard Python venv**
+
+```bash
+python -m venv .venv
+source .venv/bin/activate  # Unix/macOS
+# .venv\Scripts\activate  # Windows
+```
+
+### 2. Install MARSYS
+
+```bash
+# With uv (recommended)
+uv pip install marsys
+
+# Or with pip
+pip install marsys
+```
+
+### 3. Configure API Keys (Required)
+
+**⚠️ This is required before running any examples!**
+
+Create a `.env` file in your project directory:
+
+```bash
+# .env
+OPENAI_API_KEY="your-key-here"
+ANTHROPIC_API_KEY="your-key-here"
+GOOGLE_API_KEY="your-key-here"
+```
+
+Or set environment variables:
+
+```bash
+# Unix/macOS/Linux
+export OPENAI_API_KEY="your-key-here"
+
+# Windows (PowerShell)
+$env:OPENAI_API_KEY="your-key-here"
+```
+
+### 4. Install Playwright Browsers (Optional)
+
+**Only needed if using BrowserAgent examples**
+
+After installing MARSYS, run:
+
+```bash
+playwright install chromium
+```
+
+Skip this if you're not using BrowserAgent - all other features work without it.
+
+---
+
+✅ **Ready!** You now have Python 3.12+, MARSYS installed, and API keys configured.
 
 ## 🚀 Example 1: Your First Agent
 

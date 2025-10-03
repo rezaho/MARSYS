@@ -11,14 +11,44 @@ Get MARSYS up and running on your system in just a few minutes.
 
 ## 🚀 Quick Install
 
-### Option 1: Install from PyPI (Recommended)
+### Recommended Setup with uv (10-100x faster than pip)
 
-MARSYS offers flexible installation options based on your needs:
+[uv](https://github.com/astral-sh/uv) is the recommended package manager for MARSYS. It's significantly faster than pip and handles dependency resolution more reliably.
+
+**Step 1: Install uv**
+
+=== "Unix/macOS"
+    ```bash
+    curl -LsSf https://astral.sh/uv/install.sh | sh
+    ```
+
+=== "Windows (PowerShell)"
+    ```powershell
+    powershell -c "irm https://astral.sh/uv/install.ps1 | iex"
+    ```
+
+**Step 2: Create virtual environment**
+
+```bash
+# Create virtual environment
+uv venv
+
+# Activate (Unix/macOS)
+source .venv/bin/activate
+
+# Activate (Windows)
+.venv\Scripts\activate
+
+# Alternative: Use uv run without explicit activation
+uv run python your_script.py
+```
+
+**Step 3: Install MARSYS**
 
 === "Basic (Recommended)"
     Everything you need for most use cases:
     ```bash
-    pip install marsys
+    uv pip install marsys
     ```
 
     Includes: API models, browser automation, UI, tools, logging
@@ -26,7 +56,7 @@ MARSYS offers flexible installation options based on your needs:
 === "With Local Models"
     Add PyTorch and Transformers for local LLM/VLM support:
     ```bash
-    pip install marsys[local-models]
+    uv pip install marsys[local-models]
     ```
 
     Includes: Everything in Basic + PyTorch, Transformers, TRL, Datasets
@@ -34,7 +64,7 @@ MARSYS offers flexible installation options based on your needs:
 === "Production"
     High-performance inference with vLLM:
     ```bash
-    pip install marsys[production]
+    uv pip install marsys[production]
     ```
 
     Includes: vLLM, Flash Attention, Triton, Ninja
@@ -42,69 +72,93 @@ MARSYS offers flexible installation options based on your needs:
 === "Development"
     Complete setup for contributors:
     ```bash
-    pip install marsys[dev]
+    uv pip install marsys[dev]
     ```
 
     Includes: Everything + testing, linting, documentation tools
 
-### Option 2: Using uv (Faster)
+### Alternative Installation Methods
 
-[uv](https://github.com/astral-sh/uv) is 10-100x faster than pip:
+=== "Using pip"
+    Standard Python package manager:
+    ```bash
+    # Create virtual environment
+    python -m venv .venv
+    source .venv/bin/activate  # Unix/macOS
+    # .venv\Scripts\activate  # Windows
 
-```bash
-# Install uv first
-curl -LsSf https://astral.sh/uv/install.sh | sh
+    # Install MARSYS
+    pip install marsys
+    ```
 
-# Install marsys (same syntax as pip)
-uv pip install marsys[local-models]
-```
-
-### Option 3: Install from Source
-
-```bash
-# Clone the repository
-git clone https://github.com/rezaho/MARSYS.git
-cd MARSYS
-
-# Install in development mode
-pip install -e .[dev]
-```
+=== "From Source"
+    For development or latest changes:
+    ```bash
+    git clone https://github.com/rezaho/MARSYS.git
+    cd MARSYS
+    pip install -e .[dev]
+    ```
 
 ## 🔧 Detailed Installation
 
-### 1. Set Up Virtual Environment
+### 1. Set Up Virtual Environment (Recommended: uv)
 
 !!! tip "Best Practice"
-    Always use a virtual environment to avoid dependency conflicts
+    Always use a virtual environment to avoid dependency conflicts. We recommend **uv** for faster installation.
 
-=== "venv"
+=== "uv (Recommended)"
     ```bash
-    python -m venv marsys-env
-    source marsys-env/bin/activate  # On Windows: marsys-env\Scripts\activate
+    # Create virtual environment
+    uv venv
+
+    # Activate (Unix/macOS)
+    source .venv/bin/activate
+
+    # Activate (Windows)
+    .venv\Scripts\activate
+
+    # Or skip activation and use uv run
+    uv run python your_script.py
+    ```
+
+=== "venv (Standard)"
+    ```bash
+    python -m venv .venv
+    source .venv/bin/activate  # Unix/macOS
+    # .venv\Scripts\activate  # Windows
     ```
 
 === "conda"
     ```bash
-    conda create -n marsys python=3.11
+    conda create -n marsys python=3.12
     conda activate marsys
-    ```
-
-=== "uv"
-    ```bash
-    uv venv
-    source .venv/bin/activate  # On Windows: .venv\Scripts\activate
     ```
 
 ### 2. Choose Your Installation
 
 | Installation | Size | Time | Use Case |
 |-------------|------|------|----------|
-| `pip install marsys` | ~200 MB | 1-2 min | API models + browser + tools ✨ |
-| `pip install marsys[local-models]` | ~2-3 GB | 5-10 min | + Local LLMs/VLMs |
-| `pip install marsys[production]` | ~1 GB | 3-5 min | + High-performance inference |
-| `pip install marsys[dev]` | ~3+ GB | 10-15 min | + Testing & docs tools |
+| `marsys` | ~200 MB | 1-2 min | API models + browser + tools ✨ |
+| `marsys[local-models]` | ~2-3 GB | 5-10 min | + Local LLMs/VLMs |
+| `marsys[production]` | ~1 GB | 3-5 min | + High-performance inference |
+| `marsys[dev]` | ~3+ GB | 10-15 min | + Testing & docs tools |
 
-### 3. Configure API Keys
+Install with uv (recommended):
+```bash
+uv pip install marsys  # or marsys[local-models], etc.
+```
+
+Or with pip:
+```bash
+pip install marsys  # or marsys[local-models], etc.
+```
+
+### 3. Configure API Keys (Required)
+
+!!! warning "Required Step"
+    **You must configure API keys before running any examples.** MARSYS needs at least one API provider configured.
+
+**Method 1: `.env` file (Recommended for development)**
 
 Create a `.env` file in your project root:
 
@@ -114,29 +168,61 @@ Create a `.env` file in your project root:
 OPENAI_API_KEY="sk-..."           # OpenAI GPT models
 ANTHROPIC_API_KEY="sk-ant-..."    # Claude models
 GOOGLE_API_KEY="AIza..."          # Gemini models
+OPENROUTER_API_KEY="sk-or-..."    # OpenRouter (access to many models)
 
 # Optional: Additional configurations
 HEADLESS=true                      # Browser automation mode
 LOG_LEVEL=INFO                     # Logging verbosity
 ```
 
+MARSYS automatically loads `.env` files using `python-dotenv`.
+
+**Method 2: Environment variables (Recommended for production)**
+
+=== "Unix/macOS/Linux"
+    ```bash
+    export OPENAI_API_KEY="your-key-here"
+    export ANTHROPIC_API_KEY="your-key-here"
+    export GOOGLE_API_KEY="your-key-here"
+    export OPENROUTER_API_KEY="your-key-here"
+    ```
+
+=== "Windows (Command Prompt)"
+    ```cmd
+    set OPENAI_API_KEY=your-key-here
+    set ANTHROPIC_API_KEY=your-key-here
+    set GOOGLE_API_KEY=your-key-here
+    ```
+
+=== "Windows (PowerShell)"
+    ```powershell
+    $env:OPENAI_API_KEY="your-key-here"
+    $env:ANTHROPIC_API_KEY="your-key-here"
+    $env:GOOGLE_API_KEY="your-key-here"
+    ```
+
 !!! warning "Security"
     Never commit `.env` files to version control. Add `.env` to your `.gitignore` file.
 
 ### 4. Install Browser Automation (Optional)
 
-For web scraping and browser agents:
+!!! info "Only for BrowserAgent"
+    **This step is optional** and only required if you plan to use `BrowserAgent` for web automation and scraping.
+
+**Important**: After installing the `playwright` package (included in basic installation), you must separately install browser binaries:
 
 ```bash
-# Install Playwright browsers
+# Install Chromium (recommended - smallest download)
 playwright install chromium
 
-# Install all browsers (Chrome, Firefox, Safari)
+# Or install all browsers (Chrome, Firefox, WebKit)
 playwright install
 
-# Install system dependencies (Linux only)
-playwright install-deps
+# On Linux: Install system dependencies
+playwright install --with-deps chromium
 ```
+
+If you skip this step, BrowserAgent will fail with an error about missing browser binaries. All other MARSYS features will work normally.
 
 ## ✅ Verify Installation
 
