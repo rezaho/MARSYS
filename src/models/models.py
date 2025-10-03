@@ -39,7 +39,7 @@ try:
     from peft import LoraConfig, PeftModel, TaskType, get_peft_model
 except ImportError:
     logging.warning("PEFT library not found. PEFT features will be unavailable.")
-    LoraConfig, TaskType, get_peft_model, PeftModel = None, None
+    LoraConfig = TaskType = get_peft_model = PeftModel = None
 
 
 # --- Provider Adapter Pattern ---
