@@ -6,13 +6,13 @@ that supports PEFT (Parameter-Efficient Fine-Tuning) and other learning heads fo
 customizing model behavior through training.
 """
 
+from __future__ import annotations
+
 import json
 import re
 import uuid
 from abc import ABC
 from typing import Any, Callable, Dict, List, Optional, Union
-
-from src.models.models import BaseLLM, BaseVLM, PeftHead
 
 from .agents import BaseAgent
 from .memory import MemoryManager, Message
@@ -49,7 +49,7 @@ class BaseLearnableAgent(BaseAgent, ABC):
 
     def __init__(
         self,
-        model: Union[BaseVLM, BaseLLM],
+        model: Union["BaseVLM", "BaseLLM"],
         description: str,  # Renamed from system_prompt
         learning_head: Optional[str] = None,
         learning_head_config: Optional[Dict[str, Any]] = None,
@@ -83,6 +83,18 @@ class BaseLearnableAgent(BaseAgent, ABC):
         self._learning_head_name = learning_head
         self._learning_config = learning_head_config
         if learning_head == "peft":
+            # Lazy import for local models (requires marsys[local-models])
+            try:
+                from src.models.models import BaseLLM, BaseVLM, PeftHead
+            except ImportError as e:
+                raise ImportError(
+                    "Learnable agents require local model support. Install with:\n"
+                    "  pip install marsys[local-models]\n"
+                    "or:\n"
+                    "  uv pip install marsys[local-models]\n\n"
+                    f"Original error: {str(e)}"
+                ) from e
+
             if not learning_head_config:
                 raise ValueError(
                     "learning_head_config is required when learning_head is 'peft'"
@@ -163,7 +175,7 @@ class LearnableAgent(BaseLearnableAgent):
 
     def __init__(
         self,
-        model: Union[BaseVLM, BaseLLM],
+        model: Union["BaseVLM", "BaseLLM"],
         description: str,  # Renamed from system_prompt
         tools: Optional[Dict[str, Callable[..., Any]]] = None,
         # tools_schema: Optional[List[Dict[str, Any]]] = None, # Removed from signature
@@ -200,8 +212,14 @@ class LearnableAgent(BaseLearnableAgent):
             # tools_schema is not passed as BaseLearnableAgent's super call to BaseAgent handles it
             **kwargs,
         )
-        kg_model: Union[BaseVLM, BaseLLM]
-        if isinstance(self.model, PeftHead):
+        # Lazy import for PeftHead type checking (requires marsys[local-models])
+        try:
+            from src.models.models import PeftHead
+        except ImportError:
+            PeftHead = None  # If not installed, PeftHead won't be used
+
+        kg_model: Union["BaseVLM", "BaseLLM"]
+        if PeftHead and isinstance(self.model, PeftHead):
             kg_model = self.model.model
         else:
             kg_model = self.model

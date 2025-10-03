@@ -6,6 +6,8 @@ and logging utilities. Agents can be specialized for different tasks and leverag
 shared language models or dedicated API models.
 """
 
+from __future__ import annotations
+
 import asyncio
 import dataclasses
 import json
@@ -19,11 +21,10 @@ from typing import (
     Callable,
     Coroutine,
     Dict,
-    List,  # Added Coroutine
+    List,
     Optional,
     Set,
     Tuple,
-    Type,
     Union,
 )
 
@@ -33,7 +34,7 @@ from src.coordination.context_manager import ContextSelector
 
 # --- New Imports ---
 from src.environment.utils import generate_openai_tool_schema
-from src.models.models import BaseAPIModel, BaseLLM, BaseVLM, ModelConfig, PeftHead
+from src.models.models import BaseAPIModel, ModelConfig
 from src.utils.monitoring import default_progress_monitor
 
 from .memory import ConversationMemory, MemoryManager, Message, ToolCallMsg
@@ -86,7 +87,6 @@ from .exceptions import (
     AgentImplementationError,
     AgentLimitError,
     AgentPermissionError,
-    BrowserNotInitializedError,
     MessageContentError,
     MessageError,
     MessageFormatError,
@@ -148,7 +148,7 @@ class BaseAgent(ABC):
 
     def __init__(
         self,
-        model: Union[BaseVLM, BaseLLM, BaseAPIModel],
+        model: Union["BaseVLM", "BaseLLM", BaseAPIModel],
         goal: str,
         instruction: str,
         tools: Optional[Dict[str, Callable[..., Any]]] = None,
@@ -529,7 +529,7 @@ class BaseAgent(ABC):
 
         if self._compiled_input_schema:
             schema_desc = self._format_schema_for_prompt(self._compiled_input_schema)
-            instructions.append(f"\n--- INPUT SCHEMA REQUIREMENTS ---")
+            instructions.append("\n--- INPUT SCHEMA REQUIREMENTS ---")
             instructions.append(
                 f"When this agent is invoked by others, the request should conform to: {schema_desc}"
             )
@@ -537,7 +537,7 @@ class BaseAgent(ABC):
 
         if self._compiled_output_schema:
             schema_desc = self._format_schema_for_prompt(self._compiled_output_schema)
-            instructions.append(f"\n--- OUTPUT SCHEMA REQUIREMENTS ---")
+            instructions.append("\n--- OUTPUT SCHEMA REQUIREMENTS ---")
             instructions.append(
                 f"When providing final_response, ensure the 'response' field conforms to: {schema_desc}"
             )
@@ -588,7 +588,7 @@ class BaseAgent(ABC):
                                 # Check if this is the same message
                                 if hasattr(mem_msg, 'message_id') and msg.get('message_id') == mem_msg.message_id:
                                     mem_msg.tool_calls = None
-                                    self.logger.debug(f"Cleared orphaned tool_calls from message in memory")
+                                    self.logger.debug("Cleared orphaned tool_calls from message in memory")
                                     break
                     break
 
@@ -2388,7 +2388,7 @@ The user will provide their response, and you'll receive it to continue your tas
         from ..coordination import Orchestra
         from ..coordination.configs.auto_run import AutoRunConfig
         from ..coordination.config import StatusConfig
-        from ..utils.monitoring import default_progress_monitor
+        # from ..utils.monitoring import default_progress_monitor
         from .registry import AgentRegistry
         from .utils import LogLevel, RequestContext
 
@@ -3832,7 +3832,7 @@ class Agent(BaseAgent):
             max_tokens if max_tokens is not None else model_config.max_tokens
         )
 
-        model_instance: Union[BaseLLM, BaseVLM, BaseAPIModel] = (
+        model_instance: Union["BaseLLM", "BaseVLM", BaseAPIModel] = (
             self._create_model_from_config(model_config)  # Pass ModelConfig instance
         )
         super().__init__(
@@ -3876,7 +3876,7 @@ class Agent(BaseAgent):
 
     def _create_model_from_config(
         self, config: ModelConfig  # Changed type hint
-    ) -> Union[BaseLLM, BaseVLM, BaseAPIModel]:
+    ) -> Union["BaseLLM", "BaseVLM", BaseAPIModel]:
         """
         Factory method to create a model instance from a ModelConfig object.
 
@@ -3900,6 +3900,18 @@ class Agent(BaseAgent):
         extra_kwargs = config.dict(exclude_unset=True, exclude=known_keys)
 
         if model_type == "local":
+            # Lazy import for local models (requires marsys[local-models])
+            try:
+                from src.models.models import BaseLLM, BaseVLM
+            except ImportError as e:
+                raise ImportError(
+                    "Local model support requires additional dependencies. Install with:\n"
+                    "  pip install marsys[local-models]\n"
+                    "or:\n"
+                    "  uv pip install marsys[local-models]\n\n"
+                    f"Original error: {str(e)}"
+                ) from e
+
             model_class_type = config.model_class
             torch_dtype = config.torch_dtype
             device_map = config.device_map
