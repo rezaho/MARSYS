@@ -82,9 +82,8 @@ pip install -e .
 
 ### 2️⃣ Run Your First Multi-Agent System
 ```python
-from src.coordination import Orchestra
-from src.agents import Agent
-from src.models import ModelConfig
+from marsys.agents import Agent
+from marsys.models import ModelConfig
 
 # Create specialized agents
 model_config = ModelConfig(
@@ -93,31 +92,34 @@ model_config = ModelConfig(
     provider="openai"
 )
 
-researcher = Agent(
+coordinator = Agent(
     model_config=model_config,
-    agent_name="Researcher",
-    description="Expert at finding and analyzing information"
+    name="Coordinator",
+    goal="Coordinate the ideation process and synthesize final results",
+    instruction="Expert coordinator who manages collaboration between brainstorming and critique phases",
+    allowed_peers=["Brainstormer", "Critic"]  # Can invoke both agents
 )
 
-writer = Agent(
+brainstormer = Agent(
     model_config=model_config,
-    agent_name="Writer",
-    description="Skilled at creating clear, engaging content"
+    name="Brainstormer",
+    goal="Generate creative ideas and innovative solutions",
+    instruction="Creative thinker who produces diverse and imaginative concepts"
 )
 
-# Define agent connections
-topology = {
-    "nodes": ["Researcher", "Writer"],
-    "edges": ["Researcher -> Writer"]
-}
+critic = Agent(
+    model_config=model_config,
+    name="Critic",
+    goal="Evaluate ideas for feasibility and provide constructive feedback",
+    instruction="Analytical evaluator who assesses practicality and identifies improvements"
+)
 
 # Run the multi-agent system
-result = await Orchestra.run(
-    task="Research AI trends and write a summary",
-    topology=topology
+result = await coordinator.auto_run(
+    task="Generate and refine ideas for a sustainable transportation app"
 )
 
-print(result.final_response)
+print(result)
 ```
 
 ## Architecture Overview

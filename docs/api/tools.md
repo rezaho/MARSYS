@@ -14,7 +14,7 @@ Generates OpenAI-compatible tool schema from Python functions.
 
 **Import:**
 ```python
-from src.environment.utils import generate_openai_tool_schema
+from marsys.environment.utils import generate_openai_tool_schema
 ```
 
 **Signature:**
@@ -207,7 +207,7 @@ async def fetch_api_data(
 ### Adding Tools to Agent
 
 ```python
-from src.agents import Agent
+from marsys.agents import Agent
 
 # Define tools
 def search_tool(query: str) -> List[str]:
@@ -273,7 +273,7 @@ Executes tool calls within the coordination system.
 
 **Import:**
 ```python
-from src.coordination.execution import ToolExecutor
+from marsys.coordination.execution import ToolExecutor
 ```
 
 **Key Methods:**

@@ -55,7 +55,7 @@ graph TB
 The main interface for state management:
 
 ```python
-from src.coordination.state import StateManager, FileStorageBackend
+from marsys.coordination.state import StateManager, FileStorageBackend
 from pathlib import Path
 
 # Initialize with storage backend
@@ -75,7 +75,7 @@ state_manager = StateManager(
 Local file system storage:
 
 ```python
-from src.coordination.state import FileStorageBackend
+from marsys.coordination.state import FileStorageBackend
 
 storage = FileStorageBackend(
     base_path=Path("./state"),
@@ -90,7 +90,7 @@ storage = FileStorageBackend(
 Distributed Redis storage:
 
 ```python
-from src.coordination.state import RedisStorageBackend
+from marsys.coordination.state import RedisStorageBackend
 
 storage = RedisStorageBackend(
     host="localhost",
@@ -107,7 +107,7 @@ storage = RedisStorageBackend(
 SQL database storage:
 
 ```python
-from src.coordination.state import DatabaseStorageBackend
+from marsys.coordination.state import DatabaseStorageBackend
 
 storage = DatabaseStorageBackend(
     connection_string="postgresql://...",
@@ -121,8 +121,8 @@ storage = DatabaseStorageBackend(
 ### Enable State Management
 
 ```python
-from src.coordination import Orchestra
-from src.coordination.state import StateManager, FileStorageBackend
+from marsys.coordination import Orchestra
+from marsys.coordination.state import StateManager, FileStorageBackend
 
 # Create state manager
 state_manager = StateManager(
@@ -199,7 +199,7 @@ except Exception as e:
 Configure automatic checkpointing:
 
 ```python
-from src.coordination.state import CheckpointConfig
+from marsys.coordination.state import CheckpointConfig
 
 checkpoint_config = CheckpointConfig(
     auto_checkpoint=True,
@@ -463,7 +463,7 @@ async def interactive_workflow():
 ### StateManager Configuration
 
 ```python
-from src.coordination.state import StateManagerConfig
+from marsys.coordination.state import StateManagerConfig
 
 config = StateManagerConfig(
     # Auto-save settings

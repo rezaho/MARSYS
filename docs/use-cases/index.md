@@ -59,8 +59,8 @@ Real-world applications and practical examples of MARSYS in action.
 Multi-agent system for comprehensive research and analysis.
 
 ```python
-from src.coordination import Orchestra
-from src.coordination.topology.patterns import PatternConfig
+from marsys.coordination import Orchestra
+from marsys.coordination.topology.patterns import PatternConfig
 
 # Research team with specialized agents
 topology = PatternConfig.hub_and_spoke(
@@ -154,7 +154,7 @@ result = await Orchestra.run(
 Real-time market analysis and reporting.
 
 ```python
-from src.agents import Agent, AgentPool
+from marsys.agents import Agent, AgentPool
 
 # Create pool for parallel analysis
 analyst_pool = AgentPool(

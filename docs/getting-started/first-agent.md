@@ -19,8 +19,8 @@ The simplest way to create an agent:
 
 ```python
 import asyncio
-from src.agents import Agent
-from src.models import ModelConfig
+from marsys.agents import Agent
+from marsys.models import ModelConfig
 
 async def main():
     # Create an agent with OpenAI
@@ -30,12 +30,13 @@ async def main():
             name="gpt-4",
             provider="openai"
         ),
-        agent_name="Assistant",
-        description="A helpful AI assistant"
+        name="Assistant",
+        goal="Provide helpful assistance to users",
+        instruction="A helpful AI assistant that responds thoughtfully to user queries"
     )
 
     # Use with Orchestra
-    from src.coordination import Orchestra
+    from marsys.coordination import Orchestra
 
     result = await Orchestra.run(
         task="Explain quantum computing in simple terms",
@@ -58,9 +59,9 @@ agent = Agent(
         name="gpt-4",
         provider="openai"
     ),
-    agent_name="TechnicalWriter",
-    description="Technical documentation specialist",
-    system_prompt="""You are an expert technical writer who:
+    name="TechnicalWriter",
+    goal="Write clear, professional technical documentation",
+    instruction="""You are an expert technical writer who:
     - Writes clear, concise documentation
     - Uses examples to illustrate concepts
     - Follows best practices for technical writing
@@ -88,8 +89,9 @@ MARSYS supports multiple AI providers:
                 "max_tokens": 2000
             }
         ),
-        agent_name="GPTAgent",
-        description="OpenAI GPT-4 agent"
+        name="GPTAgent",
+        goal="Assist with general AI tasks using GPT-4",
+        instruction="An intelligent OpenAI GPT-4 agent for versatile assistance"
     )
     ```
 
@@ -106,8 +108,9 @@ MARSYS supports multiple AI providers:
                 "max_tokens": 4096
             }
         ),
-        agent_name="ClaudeAgent",
-        description="Anthropic Claude agent"
+        name="ClaudeAgent",
+        goal="Provide thoughtful assistance using Claude's capabilities",
+        instruction="An Anthropic Claude agent with strong reasoning abilities"
     )
     ```
 
@@ -124,8 +127,9 @@ MARSYS supports multiple AI providers:
                 "top_p": 0.95
             }
         ),
-        agent_name="GeminiAgent",
-        description="Google Gemini agent"
+        name="GeminiAgent",
+        goal="Leverage Google's Gemini model for AI assistance",
+        instruction="A Google Gemini agent for advanced language understanding"
     )
     ```
 
@@ -141,8 +145,9 @@ MARSYS supports multiple AI providers:
                 "temperature": 0.8
             }
         ),
-        agent_name="LocalAgent",
-        description="Local Llama 2 agent"
+        name="LocalAgent",
+        goal="Provide local AI assistance without external API dependencies",
+        instruction="A locally-running Llama 2 agent for privacy-conscious applications"
     )
     ```
 
@@ -153,7 +158,7 @@ MARSYS supports multiple AI providers:
 Give your agents access to pre-built tools:
 
 ```python
-from src.environment.tools import AVAILABLE_TOOLS
+from marsys.environment.tools import AVAILABLE_TOOLS
 
 # Agent with multiple tools
 agent = Agent(
@@ -162,8 +167,9 @@ agent = Agent(
         name="gpt-4",
         provider="openai"
     ),
-    agent_name="ToolMaster",
-    description="Agent with various tool capabilities",
+    name="ToolMaster",
+    goal="Execute various tools to assist with complex tasks",
+    instruction="Agent with various tool capabilities for calculations, time, and web search",
     tools={
         "calculate": AVAILABLE_TOOLS["calculate"],
         "get_time": AVAILABLE_TOOLS["get_time"],
@@ -221,8 +227,9 @@ agent = Agent(
         name="gpt-4",
         provider="openai"
     ),
-    agent_name="FinancialAnalyst",
-    description="Financial analysis expert",
+    name="FinancialAnalyst",
+    goal="Analyze financial data and provide investment insights",
+    instruction="Financial analysis expert with stock price and sentiment analysis capabilities",
     tools=[fetch_stock_price, analyze_sentiment]  # Auto-converts to schemas
 )
 ```
@@ -296,8 +303,9 @@ agent = Agent(
         name="gpt-4",
         provider="openai"
     ),
-    agent_name="NewsAnalyst",
-    description="News analysis and summarization expert",
+    name="NewsAnalyst",
+    goal="Analyze and summarize news articles for key insights",
+    instruction="News analysis and summarization expert with real-time news fetching capabilities",
     tools=[fetch_news]
 )
 ```
@@ -312,24 +320,27 @@ Control how agents remember conversations:
 # Session memory (default) - remembers within session
 agent = Agent(
     model_config=config,
-    agent_name="SessionAgent",
-    description="Agent with session memory",
+    name="SessionAgent",
+    goal="Maintain conversation context within a session",
+    instruction="Agent with session memory that remembers previous interactions",
     memory_retention="session"  # Default
 )
 
 # Single-run memory - forgets after each task
 agent = Agent(
     model_config=config,
-    agent_name="StatelessAgent",
-    description="Agent without memory",
+    name="StatelessAgent",
+    goal="Process each request independently without context",
+    instruction="Stateless agent that treats each interaction as completely new",
     memory_retention="single_run"
 )
 
 # Persistent memory - saves to disk
 agent = Agent(
     model_config=config,
-    agent_name="PersistentAgent",
-    description="Agent with persistent memory",
+    name="PersistentAgent",
+    goal="Maintain long-term memory across sessions",
+    instruction="Agent with persistent memory that saves conversation history to disk",
     memory_retention="persistent"
 )
 ```
@@ -345,7 +356,7 @@ for msg in messages:
     print(f"{msg.role}: {msg.content}")
 
 # Add custom message to memory
-from src.agents.memory import Message
+from marsys.agents.memory import Message
 
 agent.memory.add_message(Message(
     role="system",
@@ -367,8 +378,8 @@ agent.memory.load_from_file("conversation.json")
 Extend the base agent for custom behavior:
 
 ```python
-from src.agents import BaseAgent
-from src.agents.memory import Message
+from marsys.agents import BaseAgent
+from marsys.agents.memory import Message
 from typing import Dict, Any
 
 class CodeReviewAgent(BaseAgent):
@@ -377,7 +388,8 @@ class CodeReviewAgent(BaseAgent):
     def __init__(self, model_config, **kwargs):
         super().__init__(
             model=self._create_model(model_config),
-            description="Expert code reviewer",
+            goal="Review code for style, quality, and security issues",
+            instruction="Expert code reviewer focusing on best practices and security",
             **kwargs
         )
         self.review_standards = {
@@ -429,7 +441,8 @@ class StatefulAnalysisAgent(BaseAgent):
     def __init__(self, model_config, **kwargs):
         super().__init__(
             model=self._create_model(model_config),
-            description="Stateful analysis agent",
+            goal="Perform analysis while maintaining state across invocations",
+            instruction="Stateful analysis agent that remembers and builds upon previous analyses",
             **kwargs
         )
         self.analysis_history = []
@@ -480,7 +493,7 @@ class StatefulAnalysisAgent(BaseAgent):
 For web automation and scraping:
 
 ```python
-from src.agents import BrowserAgent
+from marsys.agents import BrowserAgent
 
 browser_agent = BrowserAgent(
     model_config=ModelConfig(
@@ -488,8 +501,9 @@ browser_agent = BrowserAgent(
         name="gpt-4-vision",  # Vision model for screenshots
         provider="openai"
     ),
-    agent_name="WebNavigator",
-    description="Web automation specialist",
+    name="WebNavigator",
+    goal="Navigate and extract information from websites",
+    instruction="Web automation specialist capable of browser control and content extraction",
     headless=False,  # Show browser window
     viewport_size=(1280, 720),
     timeout=30000  # 30 seconds timeout
@@ -512,7 +526,7 @@ result = await Orchestra.run(
 Agents that can be fine-tuned:
 
 ```python
-from src.agents import LearnableAgent
+from marsys.agents import LearnableAgent
 
 learnable_agent = LearnableAgent(
     model_config=ModelConfig(
@@ -520,8 +534,9 @@ learnable_agent = LearnableAgent(
         name="llama2-7b",
         provider="huggingface"
     ),
-    agent_name="AdaptiveAgent",
-    description="Agent that learns from interactions",
+    name="AdaptiveAgent",
+    goal="Learn and adapt from user interactions to improve over time",
+    instruction="Agent that learns from interactions and can be fine-tuned with examples",
     learning_config={
         "method": "lora",  # LoRA fine-tuning
         "learning_rate": 1e-4,
@@ -548,8 +563,9 @@ Enable agents to invoke each other:
 # Create researcher
 researcher = Agent(
     model_config=config,
-    agent_name="Researcher",
-    description="Research specialist"
+    name="Researcher",
+    goal="Conduct thorough research on various topics",
+    instruction="Research specialist with expertise in information gathering and analysis"
 )
 
 # Create writer that can call researcher

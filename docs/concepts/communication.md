@@ -59,8 +59,8 @@ graph TB
 Central hub for all communication:
 
 ```python
-from src.coordination.communication import CommunicationManager
-from src.coordination.config import CommunicationConfig
+from marsys.coordination.communication import CommunicationManager
+from marsys.coordination.config import CommunicationConfig
 
 # Configure communication
 comm_config = CommunicationConfig(
@@ -98,7 +98,7 @@ user_input = await comm_manager.receive_input(
 Manages User node execution in topology:
 
 ```python
-from src.coordination.communication import UserNodeHandler
+from marsys.coordination.communication import UserNodeHandler
 
 class UserNodeHandler:
     """Handles User node interactions in workflow."""
@@ -150,8 +150,8 @@ class UserNodeHandler:
 Real-time status updates:
 
 ```python
-from src.coordination.communication import StatusManager
-from src.coordination.config import StatusConfig
+from marsys.coordination.communication import StatusManager
+from marsys.coordination.config import StatusConfig
 
 class StatusManager:
     """Manages status updates and progress reporting."""
@@ -239,7 +239,7 @@ result = await Orchestra.run(
 Decoupled pub/sub messaging:
 
 ```python
-from src.coordination.communication import EventBus
+from marsys.coordination.communication import EventBus
 
 class EventBus:
     """Publish/subscribe event system."""
@@ -442,7 +442,7 @@ class PrefixedCLIChannel(Channel):
 ### CommunicationConfig
 
 ```python
-from src.coordination.config import CommunicationConfig
+from marsys.coordination.config import CommunicationConfig
 
 config = CommunicationConfig(
     # Formatting

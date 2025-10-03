@@ -60,8 +60,8 @@ graph TB
 The base class for all learning agents:
 
 ```python
-from src.agents import LearnableAgent
-from src.models import ModelConfig
+from marsys.agents import LearnableAgent
+from marsys.models import ModelConfig
 from typing import Dict, List, Optional, Any
 from datetime import datetime
 import json

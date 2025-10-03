@@ -102,7 +102,7 @@ class Message:
 ### Basic Messages
 
 ```python
-from src.agents.memory import Message
+from marsys.agents.memory import Message
 
 # User message
 user_msg = Message(

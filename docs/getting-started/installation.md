@@ -4,26 +4,70 @@ Get MARSYS up and running on your system in just a few minutes.
 
 ## 📋 Prerequisites
 
-- **Python 3.8+** (3.12 recommended)
+- **Python 3.12+** (required)
 - **pip** package manager
-- **Git** for cloning the repository
+- **Git** for cloning the repository (optional)
 - **API Keys** from at least one provider (OpenAI, Anthropic, Google)
 
 ## 🚀 Quick Install
 
 ### Option 1: Install from PyPI (Recommended)
+
+MARSYS offers flexible installation options based on your needs:
+
+=== "Basic (Recommended)"
+    Everything you need for most use cases:
+    ```bash
+    pip install marsys
+    ```
+
+    Includes: API models, browser automation, UI, tools, logging
+
+=== "With Local Models"
+    Add PyTorch and Transformers for local LLM/VLM support:
+    ```bash
+    pip install marsys[local-models]
+    ```
+
+    Includes: Everything in Basic + PyTorch, Transformers, TRL, Datasets
+
+=== "Production"
+    High-performance inference with vLLM:
+    ```bash
+    pip install marsys[production]
+    ```
+
+    Includes: vLLM, Flash Attention, Triton, Ninja
+
+=== "Development"
+    Complete setup for contributors:
+    ```bash
+    pip install marsys[dev]
+    ```
+
+    Includes: Everything + testing, linting, documentation tools
+
+### Option 2: Using uv (Faster)
+
+[uv](https://github.com/astral-sh/uv) is 10-100x faster than pip:
+
 ```bash
-pip install marsys
+# Install uv first
+curl -LsSf https://astral.sh/uv/install.sh | sh
+
+# Install marsys (same syntax as pip)
+uv pip install marsys[local-models]
 ```
 
-### Option 2: Install from Source
+### Option 3: Install from Source
+
 ```bash
 # Clone the repository
 git clone https://github.com/rezaho/MARSYS.git
 cd MARSYS
 
 # Install in development mode
-pip install -e .
+pip install -e .[dev]
 ```
 
 ## 🔧 Detailed Installation
@@ -41,28 +85,24 @@ pip install -e .
 
 === "conda"
     ```bash
-    conda create -n marsys python=3.12
+    conda create -n marsys python=3.11
     conda activate marsys
     ```
 
-=== "poetry"
+=== "uv"
     ```bash
-    poetry new marsys-project
-    cd marsys-project
-    poetry add marsys
+    uv venv
+    source .venv/bin/activate  # On Windows: .venv\Scripts\activate
     ```
 
-### 2. Install Core Dependencies
+### 2. Choose Your Installation
 
-```bash
-# Install MARSYS with all features
-pip install marsys[all]
-
-# Or install specific features
-pip install marsys[browser]  # Browser automation
-pip install marsys[local]    # Local model support
-pip install marsys[dev]      # Development tools
-```
+| Installation | Size | Time | Use Case |
+|-------------|------|------|----------|
+| `pip install marsys` | ~200 MB | 1-2 min | API models + browser + tools ✨ |
+| `pip install marsys[local-models]` | ~2-3 GB | 5-10 min | + Local LLMs/VLMs |
+| `pip install marsys[production]` | ~1 GB | 3-5 min | + High-performance inference |
+| `pip install marsys[dev]` | ~3+ GB | 10-15 min | + Testing & docs tools |
 
 ### 3. Configure API Keys
 
@@ -105,9 +145,8 @@ Run this quick test to verify everything is working:
 ```python
 # test_installation.py
 import asyncio
-from src.coordination import Orchestra
-from src.agents import Agent
-from src.models import ModelConfig
+from marsys import Orchestra, Agent
+from marsys.models import ModelConfig
 
 async def test():
     # Create a simple agent
@@ -291,9 +330,9 @@ marsys/
     ```
 
 ??? error "Async syntax error"
-    **Solution**: MARSYS requires Python 3.8+ for async support:
+    **Solution**: MARSYS requires Python 3.12+ for async support:
     ```bash
-    python --version  # Should be 3.8 or higher
+    python --version  # Should be 3.12 or higher
     ```
 
 ### Platform-Specific Issues

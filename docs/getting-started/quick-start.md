@@ -15,7 +15,7 @@ In this quickstart, you'll create:
 Make sure you have:
 - MARSYS installed (`pip install marsys`)
 - At least one API key configured in `.env`
-- Python 3.8+ environment
+- Python 3.12+ environment
 
 ## 🚀 Example 1: Your First Agent
 
@@ -23,7 +23,7 @@ Let's start with the simplest possible example:
 
 ```python
 import asyncio
-from src.coordination import Orchestra
+from marsys.coordination import Orchestra
 
 async def main():
     # One-line execution
@@ -50,8 +50,8 @@ Now let's have two agents work together using the simplest approach - `allowed_p
 
 ```python
 import asyncio
-from src.agents import Agent
-from src.models import ModelConfig
+from marsys.agents import Agent
+from marsys.models import ModelConfig
 
 async def main():
     # Create a single model configuration
@@ -99,9 +99,9 @@ Let's create a workflow with three agents working in sequence:
 
 ```python
 import asyncio
-from src.coordination import Orchestra
-from src.agents import Agent
-from src.models import ModelConfig
+from marsys.coordination import Orchestra
+from marsys.agents import Agent
+from marsys.models import ModelConfig
 
 async def main():
     # Use a single model configuration
@@ -156,10 +156,10 @@ Add user interaction to your workflows:
 
 ```python
 import asyncio
-from src.coordination import Orchestra
-from src.agents import Agent
-from src.models import ModelConfig
-from src.coordination.config import ExecutionConfig
+from marsys.coordination import Orchestra
+from marsys.agents import Agent
+from marsys.models import ModelConfig
+from marsys.coordination.config import ExecutionConfig
 
 async def main():
     # Use a single model configuration
@@ -216,9 +216,9 @@ Give your agents superpowers with tools:
 
 ```python
 import asyncio
-from src.coordination import Orchestra
-from src.agents import Agent
-from src.models import ModelConfig
+from marsys.coordination import Orchestra
+from marsys.agents import Agent
+from marsys.models import ModelConfig
 
 # Define a simple tool
 def calculate(expression: str) -> float:
@@ -281,9 +281,9 @@ Automate web interactions with browser agents:
 
 ```python
 import asyncio
-from src.coordination import Orchestra
-from src.agents import BrowserAgent
-from src.models import ModelConfig
+from marsys.coordination import Orchestra
+from marsys.agents import BrowserAgent
+from marsys.models import ModelConfig
 
 async def main():
     # Create browser automation agent
@@ -315,10 +315,10 @@ Process data through multiple stages:
 
 ```python
 import asyncio
-from src.coordination import Orchestra
-from src.coordination.topology.patterns import PatternConfig
-from src.agents import Agent
-from src.models import ModelConfig
+from marsys.coordination import Orchestra
+from marsys.coordination.topology.patterns import PatternConfig
+from marsys.agents import Agent
+from marsys.models import ModelConfig
 
 async def main():
     # Create pipeline agents
@@ -370,11 +370,11 @@ Here's a full example combining multiple concepts:
 ```python
 import asyncio
 import os
-from src.coordination import Orchestra
-from src.coordination.topology.patterns import PatternConfig
-from src.coordination.config import ExecutionConfig, StatusConfig
-from src.agents import Agent
-from src.models import ModelConfig
+from marsys.coordination import Orchestra
+from marsys.coordination.topology.patterns import PatternConfig
+from marsys.coordination.config import ExecutionConfig, StatusConfig
+from marsys.agents import Agent
+from marsys.models import ModelConfig
 
 # Tool for web search
 def search_web(query: str, max_results: int = 5) -> str:

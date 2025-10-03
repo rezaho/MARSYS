@@ -39,8 +39,8 @@ With MARSYS, you can create sophisticated multi-agent systems where AI agents co
 MARSYS provides multiple ways to orchestrate agents. Here's the simplest approach using `allowed_peers`:
 
 ```python
-from src.agents import Agent
-from src.models import ModelConfig
+from marsys.agents import Agent
+from marsys.models import ModelConfig
 
 # Create agents with same configuration
 model_config = ModelConfig(
@@ -202,9 +202,9 @@ Here's a complete example to get you started:
 
 ```python
 import asyncio
-from src.coordination import Orchestra
-from src.agents import Agent
-from src.models import ModelConfig
+from marsys.coordination import Orchestra
+from marsys.agents import Agent
+from marsys.models import ModelConfig
 
 # Create a single model configuration
 model_config = ModelConfig(

@@ -14,7 +14,7 @@ Central hub for all response parsing in the coordination system.
 
 **Import:**
 ```python
-from src.coordination.validation import ValidationProcessor
+from marsys.coordination.validation import ValidationProcessor
 ```
 
 **Constructor:**
@@ -71,7 +71,7 @@ Result of response validation.
 
 **Import:**
 ```python
-from src.coordination.validation import ValidationResult
+from marsys.coordination.validation import ValidationResult
 ```
 
 **Attributes:**
@@ -110,7 +110,7 @@ Enumeration of supported action types.
 
 **Import:**
 ```python
-from src.coordination.validation import ActionType
+from marsys.coordination.validation import ActionType
 ```
 
 **Values:**
@@ -133,7 +133,7 @@ Converts validation results into execution decisions.
 
 **Import:**
 ```python
-from src.coordination.routing import Router
+from marsys.coordination.routing import Router
 ```
 
 **Constructor:**
@@ -188,7 +188,7 @@ Decision about next execution steps.
 
 **Import:**
 ```python
-from src.coordination.routing import RoutingDecision
+from marsys.coordination.routing import RoutingDecision
 ```
 
 **Attributes:**
@@ -223,7 +223,7 @@ Context information for routing decisions.
 
 **Import:**
 ```python
-from src.coordination.routing import RoutingContext
+from marsys.coordination.routing import RoutingContext
 ```
 
 **Attributes:**
@@ -242,7 +242,7 @@ Individual step to execute.
 
 **Import:**
 ```python
-from src.coordination.routing import ExecutionStep, StepType
+from marsys.coordination.routing import ExecutionStep, StepType
 ```
 
 **Attributes:**
@@ -389,7 +389,7 @@ class TextResponseProcessor(ResponseProcessor):
 ### Custom Processor
 
 ```python
-from src.coordination.validation import ResponseProcessor
+from marsys.coordination.validation import ResponseProcessor
 
 class CustomFormatProcessor(ResponseProcessor):
     """Process custom response format."""

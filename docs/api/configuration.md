@@ -14,7 +14,7 @@ Main configuration for orchestration execution.
 
 **Import:**
 ```python
-from src.coordination.config import ExecutionConfig, StatusConfig, ErrorHandlingConfig
+from marsys.coordination.config import ExecutionConfig, StatusConfig, ErrorHandlingConfig
 ```
 
 **Constructor:**
@@ -104,7 +104,7 @@ Configuration for monitoring and output display.
 
 **Import:**
 ```python
-from src.coordination.config import StatusConfig, VerbosityLevel
+from marsys.coordination.config import StatusConfig, VerbosityLevel
 ```
 
 **Constructor:**
@@ -195,7 +195,7 @@ Configuration for user interaction and communication channels.
 
 **Import:**
 ```python
-from src.coordination.config import CommunicationConfig
+from marsys.coordination.config import CommunicationConfig
 ```
 
 **Constructor:**
@@ -277,7 +277,7 @@ Advanced error handling and recovery configuration.
 
 **Import:**
 ```python
-from src.coordination.config import ErrorHandlingConfig
+from marsys.coordination.config import ErrorHandlingConfig
 ```
 
 **Constructor:**

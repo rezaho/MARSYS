@@ -53,7 +53,7 @@ The foundation interface all agents must implement:
 
 ```python
 from abc import ABC, abstractmethod
-from src.agents.memory import Message
+from marsys.agents.memory import Message
 
 class BaseAgent(ABC):
     def __init__(
@@ -90,8 +90,8 @@ class BaseAgent(ABC):
 The standard agent with built-in capabilities:
 
 ```python
-from src.agents import Agent
-from src.models import ModelConfig
+from marsys.agents import Agent
+from marsys.models import ModelConfig
 
 agent = Agent(
     model_config=ModelConfig(
@@ -101,9 +101,9 @@ agent = Agent(
         api_key=os.getenv("OPENAI_API_KEY"),
         parameters={"temperature": 0.7}
     ),
-    agent_name="DataAnalyst",
-    description="Expert data analyst specializing in trends and insights",
-    system_prompt="You are a thorough data analyst...",
+    name="DataAnalyst",
+    goal="Analyze data and extract meaningful trends and insights",
+    instruction="You are a thorough data analyst...",
     tools=[analyze_data, create_chart],
     memory_retention="session"  # single_run, session, or persistent
 )
@@ -114,12 +114,13 @@ agent = Agent(
 Specialized for web automation tasks:
 
 ```python
-from src.agents import BrowserAgent
+from marsys.agents import BrowserAgent
 
 browser = BrowserAgent(
     model_config=config,
-    agent_name="WebResearcher",
-    description="Web research specialist with browser access",
+    name="WebResearcher",
+    goal="Research and extract information from web pages",
+    instruction="Web research specialist with browser access and automation capabilities",
     headless=True,
     viewport_size=(1920, 1080)
 )
@@ -135,11 +136,13 @@ content = await browser.extract_content()
 Supports fine-tuning with PEFT methods:
 
 ```python
-from src.agents import LearnableAgent
+from marsys.agents import LearnableAgent
 
 learnable = LearnableAgent(
     model_config=config,
-    agent_name="AdaptiveAssistant",
+    name="AdaptiveAssistant",
+    goal="Learn from interactions and adapt to user preferences",
+    instruction="Adaptive assistant that improves through fine-tuning",
     learning_config={
         "method": "lora",
         "rank": 8,
@@ -157,14 +160,16 @@ await learnable.learn_from_examples(training_data)
 For true parallel execution with isolated instances:
 
 ```python
-from src.agents.agent_pool import AgentPool
+from marsys.agents.agent_pool import AgentPool
 
 # Create pool of 3 browser agents
 pool = AgentPool(
     agent_class=BrowserAgent,
     num_instances=3,
     model_config=config,
-    agent_name="BrowserPool",
+    name="BrowserPool",
+    goal="Perform parallel web automation tasks",
+    instruction="Browser automation agents for concurrent web operations",
     headless=True
 )
 
@@ -192,8 +197,8 @@ async with pool.acquire(branch_id="branch_123") as agent:
 ### Basic Agent
 
 ```python
-from src.agents import Agent
-from src.models import ModelConfig
+from marsys.agents import Agent
+from marsys.models import ModelConfig
 
 # Simple agent
 assistant = Agent(
@@ -202,8 +207,9 @@ assistant = Agent(
         name="gpt-4",
         provider="openai"
     ),
-    agent_name="Assistant",
-    description="A helpful AI assistant"
+    name="Assistant",
+    goal="Provide helpful assistance to users",
+    instruction="A helpful AI assistant that responds thoughtfully to queries"
 )
 
 # Run the agent
@@ -246,7 +252,7 @@ def analyze_data(data: List[float], method: str = "mean") -> float:
 
 researcher = Agent(
     model_config=config,
-    agent_name="Researcher",
+    name="Researcher",
     description="Research specialist with web search and analysis capabilities",
     tools=[search_web, analyze_data]  # Auto-generates OpenAI-compatible schemas
 )
@@ -258,8 +264,8 @@ researcher = Agent(
 ### Custom Agent Class
 
 ```python
-from src.agents import BaseAgent
-from src.agents.memory import Message
+from marsys.agents import BaseAgent
+from marsys.agents.memory import Message
 
 class CustomAnalyzer(BaseAgent):
     def __init__(self, model, **kwargs):
@@ -382,7 +388,7 @@ For more details, see [Memory Documentation](memory.md).
 ### Model Configuration
 
 ```python
-from src.models import ModelConfig
+from marsys.models import ModelConfig
 
 # API Model (OpenAI, Anthropic, Google)
 api_config = ModelConfig(
@@ -426,7 +432,7 @@ vlm_config = ModelConfig(
 ```python
 agent = Agent(
     model_config=config,
-    agent_name="Expert",  # Unique identifier
+    name="Expert",  # Unique identifier
     description="Domain expert in...",  # Role definition
     system_prompt="Detailed instructions...",  # System message
     tools=[...],  # Available functions
@@ -542,17 +548,17 @@ results = await asyncio.gather(*[
 
 ```python
 # Specialized agents
-data_collector = Agent(config, agent_name="DataCollector",
+data_collector = Agent(config, name="DataCollector",
                        tools=[search_web, scrape_page])
-analyzer = Agent(config, agent_name="Analyzer",
+analyzer = Agent(config, name="Analyzer",
                 tools=[statistical_analysis, create_charts])
-writer = Agent(config, agent_name="Writer",
+writer = Agent(config, name="Writer",
               description="Technical writer...")
 
 # Coordinator orchestrates them
 coordinator = Agent(
     config,
-    agent_name="Coordinator",
+    name="Coordinator",
     description="""
     You coordinate research projects. Your workflow:
     1. Ask DataCollector to gather information
@@ -598,7 +604,7 @@ class AnalysisOutput(BaseModel):
 
 validator_agent = Agent(
     config,
-    agent_name="ValidatedAnalyzer",
+    name="ValidatedAnalyzer",
     input_schema=AnalysisInput,
     output_schema=AnalysisOutput
 )

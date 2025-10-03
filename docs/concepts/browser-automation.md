@@ -51,8 +51,8 @@ graph TB
 ### Creating a BrowserAgent
 
 ```python
-from src.agents import BrowserAgent
-from src.models import ModelConfig
+from marsys.agents import BrowserAgent
+from marsys.models import ModelConfig
 
 # Create browser agent
 browser_agent = await BrowserAgent.create_safe(
@@ -84,7 +84,7 @@ finally:
 ### Using AgentPool for Parallel Browsing
 
 ```python
-from src.agents import AgentPool
+from marsys.agents import AgentPool
 
 # Create pool of browser agents
 browser_pool = AgentPool(
