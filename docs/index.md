@@ -20,8 +20,8 @@ A beta Python framework for creating, orchestrating, and training multiple AI ag
 
 **MARSYS (Multi-Agent Reasoning Systems)** is a beta framework for building intelligent systems where multiple AI agents collaborate to solve complex problems. Unlike single-agent approaches, MARSYS enables:
 
-- **🔄 Dynamic Agent Orchestration**: Runtime parallel execution with automatic convergence
-- **🧠 Intelligent Routing**: Topology-driven agent communication and permission management
+- **🔄 Dynamic Agent Coordination**: Runtime parallel execution with automatic convergence
+- **🧠 Intelligent Routing**: Graph-based agent communication and permission management
 - **💾 State Persistence**: Pause, resume, and checkpoint long-running workflows
 - **🔌 Universal Model Support**: Works with OpenAI, Anthropic, Google, and local models
 - **🌐 Browser Automation**: Built-in web interaction capabilities with Playwright
@@ -37,46 +37,56 @@ A beta Python framework for creating, orchestrating, and training multiple AI ag
 
     Comprehensive error handling, automatic retries, detailed logging, and execution observability
 
-- :material-graph:{ .lg .middle } **Flexible Topologies**
+- :material-graph:{ .lg .middle } **Flexible Workflows**
 
     ---
 
-    8 pre-defined patterns: hub-and-spoke, pipeline, mesh, hierarchical, and more
+    Support for virtually any multi-agent pattern with runtime modification and dynamic branching
 
-- :material-scale-balance:{ .lg .middle } **True Parallelism**
-
-    ---
-
-    Agent pools with isolated execution contexts for genuine concurrent processing
-
-- :material-database:{ .lg .middle } **State Management**
+- :material-scale-balance:{ .lg .middle } **Concurrent Agents**
 
     ---
 
-    Built-in persistence with checkpointing, pause/resume, and session recovery
+    Run multiple agents concurrently with isolated instances and automatic resource management
 
-- :material-tools:{ .lg .middle } **Rich Tool System**
-
-    ---
-
-    Automatic schema generation, flexible tool integration, and browser automation
-
-- :material-account-group:{ .lg .middle } **User Interaction**
+- :material-database:{ .lg .middle } **Workflow Persistence**
 
     ---
 
-    Multiple communication channels with rich formatting and interactive dialogues
+    Save, pause, and resume long-running workflows with automatic checkpointing and recovery
+
+- :material-tools:{ .lg .middle } **Automatic Tool Integration**
+
+    ---
+
+    Convert any Python function to an agent tool with automatic schema generation from signatures
+
+- :material-account-group:{ .lg .middle } **Human-in-the-Loop**
+
+    ---
+
+    Integrate human feedback and decisions at any point in the workflow with rich interfaces
 
 </div>
 
-## Quick Example
+## Quick Start
 
+### 1️⃣ Install MARSYS
+```bash
+pip install marsys
+# or from source
+git clone https://github.com/rezaho/MARSYS.git
+cd MARSYS
+pip install -e .
+```
+
+### 2️⃣ Run Your First Multi-Agent System
 ```python
 from src.coordination import Orchestra
 from src.agents import Agent
 from src.models import ModelConfig
 
-# Create specialized agents with same model configuration
+# Create specialized agents
 model_config = ModelConfig(
     type="api",
     name="gpt-5",
@@ -95,7 +105,7 @@ writer = Agent(
     description="Skilled at creating clear, engaging content"
 )
 
-# Define workflow - Researcher analyzes, then Writer summarizes
+# Define agent connections
 topology = {
     "nodes": ["Researcher", "Writer"],
     "edges": ["Researcher -> Writer"]
@@ -113,94 +123,103 @@ print(result.final_response)
 ## Architecture Overview
 
 ```mermaid
-graph TB
-    subgraph "Orchestration Layer"
-        O[Orchestra] --> TC[Topology<br/>Controller]
-        O --> EC[Execution<br/>Coordinator]
-        O --> SM[State<br/>Manager]
+%%{init: {
+  'theme':'base',
+  'themeVariables': {
+    'primaryColor':'#fff',
+    'primaryBorderColor':'#808080',
+    'fontFamily': 'Inter, -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif',
+    'fontSize': '14px'
+  },
+  'flowchart': {
+    'subGraphTitleMargin': {'top': 20, 'bottom': 30}
+  }
+}}%%
+graph LR
+    subgraph OL["&nbsp;&nbsp;&nbsp;Orchestration Layer&nbsp;&nbsp;&nbsp;"]
+        direction TB
+        O[Orchestra]:::orchestrator
+        TC[Topology<br/>Controller]:::orchestrator
+        EC[Execution<br/>Coordinator]:::orchestrator
+        SM[State<br/>Manager]:::orchestrator
+
+        O --> TC
+        O --> EC
+        O --> SM
     end
 
-    subgraph "Execution Layer"
-        EC --> BE[Branch<br/>Executor]
-        BE --> SE[Step<br/>Executor]
-        BE --> DBS[Dynamic Branch<br/>Spawner]
+    subgraph EL["&nbsp;&nbsp;&nbsp;Execution Layer&nbsp;&nbsp;&nbsp;"]
+        direction TB
+        BE[Branch<br/>Executor]:::executor
+        SE[Step<br/>Executor]:::executor
+        DBS[Dynamic Branch<br/>Spawner]:::executor
+
+        BE --> SE
+        BE --> DBS
     end
 
-    subgraph "Agent Layer"
-        SE --> AP[Agent<br/>Pools]
-        SE --> AR[Agent<br/>Registry]
-        AP --> A1[Agent 1]
-        AP --> A2[Agent 2]
-        AP --> A3[Agent N]
+    subgraph AL["&nbsp;&nbsp;&nbsp;Agent Layer&nbsp;&nbsp;&nbsp;"]
+        direction TB
+        AP[Agent<br/>Pools]:::agent
+        AR[Agent<br/>Registry]:::agent
+        A1[Agent 1]:::agentInstance
+        A2[Agent 2]:::agentInstance
+        A3[Agent N]:::agentInstance
+
+        AP --> A1
+        AP --> A2
+        AP --> A3
     end
 
-    subgraph "Communication"
-        SE --> CM[Communication<br/>Manager]
-        CM --> USER[User<br/>Interface]
+    subgraph COM["&nbsp;&nbsp;&nbsp;Communication&nbsp;&nbsp;&nbsp;"]
+        direction TB
+        CM[Communication<br/>Manager]:::comm
+        USER[User<br/>Interface]:::comm
+
+        CM --> USER
     end
 
-    style O fill:#4A90E2,stroke:#2E5C8A,stroke-width:3px,color:#fff
-    style EC fill:#7B68EE,stroke:#5A4FCF,stroke-width:2px,color:#fff
-    style AP fill:#50C878,stroke:#3A9B5C,stroke-width:2px,color:#fff
+    %% Inter-subgraph connections
+    EC --> BE
+    SE --> AP
+    SE --> AR
+    SE --> CM
+
+    %% Node styling with soft colors and rounded corners
+    classDef orchestrator fill:#E3F2FD,stroke:#64B5F6,stroke-width:2px,color:#333,rx:5,ry:5
+    classDef executor fill:#E8F5E9,stroke:#81C784,stroke-width:2px,color:#333,rx:5,ry:5
+    classDef agent fill:#FFF3E0,stroke:#FFB74D,stroke-width:2px,color:#333,rx:5,ry:5
+    classDef agentInstance fill:#FFECB3,stroke:#FFA726,stroke-width:1.5px,color:#333,rx:5,ry:5
+    classDef comm fill:#FCE4EC,stroke:#F06292,stroke-width:2px,color:#333,rx:5,ry:5
+
+    %% Highlight key components with rounded corners
+    style O fill:#E3F2FD,stroke:#2196F3,stroke-width:3px,color:#333,rx:5,ry:5,font-weight:bold
+    style EC fill:#E8F5E9,stroke:#66BB6A,stroke-width:3px,color:#333,rx:5,ry:5,font-weight:bold
+    style AP fill:#FFF3E0,stroke:#FF9800,stroke-width:3px,color:#333,rx:5,ry:5,font-weight:bold
+
+    %% Subgraph container styling with bigger font - light gray with dashed borders and gray text
+    style OL fill:#FAFAFA,stroke:#808080,stroke-width:3px,stroke-dasharray:8 4,rx:10,ry:10,color:#666,font-size:16px,font-weight:bold
+    style EL fill:#FAFAFA,stroke:#808080,stroke-width:3px,stroke-dasharray:8 4,rx:10,ry:10,color:#666,font-size:16px,font-weight:bold
+    style AL fill:#FAFAFA,stroke:#808080,stroke-width:3px,stroke-dasharray:8 4,rx:10,ry:10,color:#666,font-size:16px,font-weight:bold
+    style COM fill:#FAFAFA,stroke:#808080,stroke-width:3px,stroke-dasharray:8 4,rx:10,ry:10,color:#666,font-size:16px,font-weight:bold
+
+    %% Arrow styling - gray color
+    linkStyle default stroke:#808080,stroke-width:2px,fill:none
 ```
 
-## Learn MARSYS
+## Documentation
 
-<div class="feature-grid" markdown="1">
+!!! tip "New to MARSYS?"
+    Start with our [Quick Start Guide](getting-started/quick-start/) to build your first multi-agent system in minutes!
 
-<div class="feature-card" markdown="1">
-
-### 🏁 [Getting Started](getting-started/)
-
-Installation, configuration, and your first multi-agent system
-
-- [Installation Guide](getting-started/installation/)
-- [Quick Start Tutorial](getting-started/quick-start/)
-- [Your First Agent](getting-started/first-agent/)
-- [Configuration Options](getting-started/configuration/)
-
-</div>
-
-<div class="feature-card" markdown="1">
-
-### 🧩 [Core Concepts](concepts/)
-
-Understand the framework's architecture and components
-
-- [Agents & Memory](concepts/agents/)
-- [Topology System](concepts/advanced/topology/)
-- [Execution Model](concepts/index/)
-- [Communication](concepts/communication/)
-
-</div>
-
-<div class="feature-card" markdown="1">
-
-### 💡 [Use Cases](use-cases/)
-
-Real-world applications and example implementations
-
-- Research Assistant Teams
-- Customer Support Systems
-- Data Pipeline Automation
-- Collaborative Development
-
-</div>
-
-<div class="feature-card" markdown="1">
-
-### 📖 [API Reference](api/)
-
-Complete documentation of classes and methods
-
-- [Orchestra API](api/overview/)
-- [Agent Classes](api/agent-class/)
-- [Model Configurations](api/models/)
-- [Topology Patterns](api/overview/#topology)
-
-</div>
-
-</div>
+| Section | Description | Best For |
+|---------|-------------|----------|
+| **[Getting Started](getting-started/)** | Installation, setup, first steps | New users |
+| **[Concepts](concepts/)** | Core ideas and architecture | Understanding the framework |
+| **[Tutorials](tutorials/)** | Step-by-step guides | Learning by doing |
+| **[API Reference](api/)** | Complete API documentation | Implementation details |
+| **[Use Cases](use-cases/)** | Real-world examples | Inspiration and patterns |
+| **[Contributing](contributing/)** | Development guide | Contributors |
 
 ## Why MARSYS?
 
@@ -218,63 +237,11 @@ Complete documentation of classes and methods
 
 ### **For Research**
 - 🧠 **Learning Capabilities**: PEFT fine-tuning support
-- 🔬 **Experimentation**: Multiple topology patterns to test
+- 🔬 **Experimentation**: Multiple workflow patterns to test
 - 📊 **Metrics**: Built-in performance tracking
 - 🔄 **Reproducible**: State persistence and checkpointing
 
-## Quick Start in 3 Steps
 
-### 1️⃣ Install MARSYS
-```bash
-pip install marsys
-# or from source
-git clone https://github.com/rezaho/MARSYS.git
-cd MARSYS
-pip install -e .
-```
-
-### 2️⃣ Create Your First Agent
-```python
-from src.agents import Agent
-from src.models import ModelConfig
-
-agent = Agent(
-    model_config=ModelConfig(
-        type="api",
-        name="gpt-4",
-        provider="openai"
-    ),
-    agent_name="Assistant",
-    description="A helpful AI assistant"
-)
-```
-
-### 3️⃣ Run a Multi-Agent Workflow
-```python
-from src.coordination import Orchestra
-
-result = await Orchestra.run(
-    task="Research and summarize AI trends",
-    topology={
-        "nodes": ["Researcher", "Writer"],
-        "edges": ["Researcher -> Writer"]
-    }
-)
-```
-
-## Documentation Structure
-
-!!! tip "New to MARSYS?"
-    Start with our [Quick Start Guide](getting-started/quick-start/) to build your first multi-agent system in minutes!
-
-| Section | Description | Best For |
-|---------|-------------|----------|
-| **[Getting Started](getting-started/)** | Installation, setup, first steps | New users |
-| **[Concepts](concepts/)** | Core ideas and architecture | Understanding the framework |
-| **[Tutorials](tutorials/)** | Step-by-step guides | Learning by doing |
-| **[API Reference](api/)** | Complete API documentation | Implementation details |
-| **[Use Cases](use-cases/)** | Real-world examples | Inspiration and patterns |
-| **[Contributing](contributing/)** | Development guide | Contributors |
 
 
 ## Community & Support
@@ -313,5 +280,5 @@ result = await Orchestra.run(
 ---
 
 <div style="text-align: center; color: var(--md-default-fg-color--light);">
-  <p>Built with ❤️ by the MARSYS Team | MIT License | v1.0.0</p>
+  <p>Built with ❤️ by the MARSYS Team | MIT License | v0.1-beta</p>
 </div>
