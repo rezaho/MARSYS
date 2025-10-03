@@ -81,7 +81,7 @@ async def create_agent_pool(
 async def create_browser_agent_pool(
     num_instances: int = 1,
     model_config: Optional[Any] = None,
-    agent_name: str = "browser_agent",
+    name: str = "browser_agent",
     headless: bool = True,
     register: bool = True,
     **kwargs
@@ -92,7 +92,7 @@ async def create_browser_agent_pool(
     Args:
         num_instances: Number of browser instances to create
         model_config: Model configuration for the agents
-        agent_name: Base name for the agent(s)
+        name: Base name for the agent(s)
         headless: Whether to run browsers in headless mode
         register: Whether to register with AgentRegistry
         **kwargs: Additional arguments for BrowserAgent
@@ -104,20 +104,23 @@ async def create_browser_agent_pool(
     
     if not model_config:
         raise ValueError("model_config is required for BrowserAgent")
-    
-    # Set default description if not provided
-    if 'description' not in kwargs:
-        kwargs['description'] = (
+
+    # Set default goal and instruction if not provided
+    if 'goal' not in kwargs:
+        kwargs['goal'] = "Extract information from web pages and perform browser automation tasks"
+
+    if 'instruction' not in kwargs:
+        kwargs['instruction'] = (
             "A browser automation agent capable of web navigation, "
             "element interaction, and information extraction."
         )
-    
+
     return await create_agent_pool(
         BrowserAgent,
         num_instances=num_instances,
         register=register,
         model_config=model_config,
-        agent_name=agent_name,
+        name=name,
         headless=headless,
         **kwargs
     )

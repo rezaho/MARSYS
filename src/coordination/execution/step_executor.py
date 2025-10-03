@@ -40,6 +40,7 @@ from ...agents.exceptions import (
     BranchExecutionError,
 
     # Agent errors
+    AgentConfigurationError,
     AgentPermissionError,
     AgentLimitError,
 
@@ -398,6 +399,30 @@ class StepExecutor:
                 logger.error(f"Timeout in {agent_name}: {str(e)}")
                 raise
 
+            except AgentConfigurationError as e:
+                # Configuration errors are terminal - route to user display
+                logger.error(f"Configuration error in {agent_name}: {str(e)}")
+
+                # If user node handler available, display terminal error
+                if self.user_node_handler:
+                    error_info = {
+                        'failed_agent': agent_name,
+                        'error_type': 'AgentConfigurationError',
+                        'error_code': e.error_code,
+                        'message': e.user_message,
+                        'details': e.developer_message,
+                        'suggestion': e.suggestion,
+                        'config_field': getattr(e, 'config_field', 'unknown')
+                    }
+                    branch = context.get('branch')
+                    if branch:
+                        return await self.user_node_handler._handle_terminal_error(
+                            branch, error_info, context
+                        )
+
+                # Otherwise just raise
+                raise
+
             except (TopologyError, RoutingError, AgentPermissionError) as e:
                 # Configuration errors are terminal
                 logger.error(f"Configuration error in {agent_name}: {str(e)}")
@@ -503,15 +528,25 @@ class StepExecutor:
         # Build complete system prompt components
         system_prompt_parts = []
 
-        # 1. Start with agent's description (cleaned of schema hints)
-        if not hasattr(agent, 'description'):
-            raise RuntimeError(
-                f"Agent '{agent_name}' does not have a description attribute. "
-                "All agents must have a description for proper system prompt generation."
+        # 1. Start with agent's instruction (cleaned of schema hints)
+        if not hasattr(agent, 'instruction'):
+            raise AgentConfigurationError(
+                f"Agent '{agent_name}' does not have an 'instruction' attribute. "
+                "All agents must have an instruction for proper system prompt generation.",
+                agent_name=agent_name,
+                config_field="instruction"
             )
 
-        cleaned_description = self._strip_schema_hints(agent.description)
-        system_prompt_parts.append(cleaned_description)
+        if not hasattr(agent, 'goal'):
+            raise AgentConfigurationError(
+                f"Agent '{agent_name}' does not have a 'goal' attribute. "
+                "All agents must have a goal describing what they accomplish.",
+                agent_name=agent_name,
+                config_field="goal"
+            )
+
+        cleaned_instruction = self._strip_schema_hints(agent.instruction)
+        system_prompt_parts.append(cleaned_instruction)
 
         # 2. Add environmental context
         environmental_context = self._get_environmental_context()
