@@ -15,12 +15,8 @@ from io import BytesIO
 from typing import Optional
 
 import requests
-import torch
-import torchvision
 from packaging import version
 from PIL import Image
-from torchvision import io, transforms
-from torchvision.transforms import InterpolationMode
 
 logger = logging.getLogger(__name__)
 
@@ -207,7 +203,7 @@ def smart_nframes(
 
 def _read_video_torchvision(
     ele: dict,
-) -> (torch.Tensor, float):
+) -> tuple["torch.Tensor", float]:
     """read video using torchvision.io.read_video
 
     Args:
@@ -254,7 +250,7 @@ def is_decord_available() -> bool:
 
 def _read_video_decord(
     ele: dict,
-) -> (torch.Tensor, float):
+) -> tuple["torch.Tensor", float]:
     """read video using decord.VideoReader
 
     Args:
@@ -310,7 +306,7 @@ def get_video_reader_backend() -> str:
 
 def fetch_video(
     ele: dict, image_factor: int = IMAGE_FACTOR, return_video_sample_fps: bool = False
-) -> torch.Tensor | list[Image.Image]:
+) -> "torch.Tensor" | list[Image.Image]:
     if isinstance(ele["video"], str):
         video_reader_backend = get_video_reader_backend()
         try:
@@ -407,9 +403,33 @@ def process_vision_info(
     return_video_kwargs: bool = False,
 ) -> tuple[
     list[Image.Image] | None,
-    list[torch.Tensor | list[Image.Image]] | None,
+    list["torch.Tensor" | list[Image.Image]] | None,
     Optional[dict],
 ]:
+    """Process vision information from conversations (requires PyTorch/torchvision)."""
+    # Lazy import for torch/torchvision (requires marsys[local-models])
+    try:
+        import torch
+        import torchvision
+        from torchvision import io, transforms
+        from torchvision.transforms import InterpolationMode
+
+        # Make these available at module level for helper functions
+        import sys
+        current_module = sys.modules[__name__]
+        current_module.torch = torch
+        current_module.torchvision = torchvision
+        current_module.io = io
+        current_module.transforms = transforms
+        current_module.InterpolationMode = InterpolationMode
+    except ImportError as e:
+        raise ImportError(
+            "Vision processing requires PyTorch and torchvision. Install with:\n"
+            "  pip install marsys[local-models]\n"
+            "or:\n"
+            "  uv pip install marsys[local-models]\n\n"
+            f"Original error: {str(e)}"
+        ) from e
 
     vision_infos = extract_vision_info(conversations)
     ## Read images or videos
