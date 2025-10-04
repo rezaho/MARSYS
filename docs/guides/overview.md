@@ -1,6 +1,6 @@
 # Guides
 
-Comprehensive guides for building production-ready multi-agent systems with MARSYS.
+Comprehensive guides for building multi-agent systems with MARSYS.
 
 ## 🎯 Guide Categories
 
@@ -526,8 +526,8 @@ security = SecurityConfig(
 
 ---
 
-!!! success "Production Ready!"
-    These guides provide everything you need to build, deploy, and maintain production-ready multi-agent systems with MARSYS.
+!!! success "Comprehensive Guides!"
+    These guides provide everything you need to build, deploy, and maintain multi-agent systems with MARSYS.
 
 !!! tip "Start Small"
     Begin with best practices and gradually implement more advanced patterns as your system grows. Focus on reliability and maintainability first, then optimize for performance.

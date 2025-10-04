@@ -44,9 +44,9 @@ The first public beta release of MARSYS - Multi-Agent Reasoning Systems framewor
 
 #### Developer Experience
 - **Comprehensive Documentation**: Full docs at marsys.io with tutorials and examples
-- **10 Real-World Examples**: Production-ready examples covering common patterns
+- **10 Real-World Examples**: Practical examples covering common patterns
 - **Type Safety**: Full type hints throughout the codebase
-- **Testing Suite**: 100% passing tests (11 core + 5 integration tests)
+- **Testing Suite**: Comprehensive test coverage (11 core + 5 integration tests)
 
 ### 📦 Package Structure
 
