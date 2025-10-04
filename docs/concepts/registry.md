@@ -53,9 +53,9 @@ graph TB
 ### AgentRegistry Class
 
 ```python
-from src.agents.registry import AgentRegistry
-from src.agents import Agent
-from src.models import ModelConfig
+from marsys.agents.registry import AgentRegistry
+from marsys.agents import Agent
+from marsys.models import ModelConfig
 
 # The registry is a singleton - no instantiation needed
 # It's automatically used by all agents

@@ -14,8 +14,8 @@ Central manager for user communication across different channels.
 
 **Import:**
 ```python
-from src.coordination.communication import CommunicationManager
-from src.coordination.config import CommunicationConfig
+from marsys.coordination.communication import CommunicationManager
+from marsys.coordination.config import CommunicationConfig
 ```
 
 **Constructor:**
@@ -105,7 +105,7 @@ Handles execution when control reaches a User node in topology.
 
 **Import:**
 ```python
-from src.coordination.communication import UserNodeHandler
+from marsys.coordination.communication import UserNodeHandler
 ```
 
 **Constructor:**
@@ -162,7 +162,7 @@ Base class for communication channels.
 
 **Import:**
 ```python
-from src.coordination.communication import CommunicationChannel
+from marsys.coordination.communication import CommunicationChannel
 ```
 
 **Abstract Methods:**
@@ -182,7 +182,7 @@ Basic terminal I/O channel.
 
 **Import:**
 ```python
-from src.coordination.communication.channels import TerminalChannel
+from marsys.coordination.communication.channels import TerminalChannel
 ```
 
 **Constructor:**
@@ -212,7 +212,7 @@ Rich terminal with advanced formatting.
 
 **Import:**
 ```python
-from src.coordination.communication.channels import EnhancedTerminalChannel
+from marsys.coordination.communication.channels import EnhancedTerminalChannel
 ```
 
 **Constructor:**
@@ -256,7 +256,7 @@ CLI channel with agent name prefixes.
 
 **Import:**
 ```python
-from src.coordination.communication.channels import PrefixedCLIChannel
+from marsys.coordination.communication.channels import PrefixedCLIChannel
 ```
 
 **Constructor:**
@@ -294,7 +294,7 @@ Enumeration of communication patterns.
 
 **Import:**
 ```python
-from src.coordination.communication import CommunicationMode
+from marsys.coordination.communication import CommunicationMode
 ```
 
 **Values:**
@@ -405,7 +405,7 @@ Event bus for communication events.
 
 **Import:**
 ```python
-from src.coordination.communication import EventBus
+from marsys.coordination.communication import EventBus
 ```
 
 **Methods:**
@@ -460,7 +460,7 @@ await bus.publish(
 ### Creating Custom Channel
 
 ```python
-from src.coordination.communication import CommunicationChannel
+from marsys.coordination.communication import CommunicationChannel
 
 class WebSocketChannel(CommunicationChannel):
     """WebSocket-based communication channel."""

@@ -1761,12 +1761,13 @@ def create_error_from_exception(
     Returns:
         Framework-specific error with original exception information
     """
-    context = kwargs.get("context", {})
+    # Pop context and message from kwargs to avoid duplicate parameters
+    context = kwargs.pop("context", {})
     context["original_exception_type"] = type(original_exception).__name__
     context["original_exception_message"] = str(original_exception)
-    
-    message = kwargs.get("message", f"Converted from {type(original_exception).__name__}: {str(original_exception)}")
-    
+
+    message = kwargs.pop("message", f"Converted from {type(original_exception).__name__}: {str(original_exception)}")
+
     return error_class(
         message=message,
         context=context,

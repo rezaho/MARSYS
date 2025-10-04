@@ -14,7 +14,7 @@ Main interface for state persistence and recovery.
 
 **Import:**
 ```python
-from src.coordination.state import StateManager, FileStorageBackend
+from marsys.coordination.state import StateManager, FileStorageBackend
 ```
 
 **Constructor:**
@@ -139,7 +139,7 @@ Snapshot of execution state at a point in time.
 
 **Import:**
 ```python
-from src.coordination.state import StateSnapshot
+from marsys.coordination.state import StateSnapshot
 ```
 
 **Attributes:**
@@ -197,7 +197,7 @@ Abstract base class for storage implementations.
 
 **Import:**
 ```python
-from src.coordination.state import StorageBackend
+from marsys.coordination.state import StorageBackend
 ```
 
 **Abstract Methods:**
@@ -218,7 +218,7 @@ File-based storage implementation.
 
 **Import:**
 ```python
-from src.coordination.state import FileStorageBackend
+from marsys.coordination.state import FileStorageBackend
 from pathlib import Path
 ```
 

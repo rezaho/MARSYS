@@ -6,6 +6,8 @@ and logging utilities. Agents can be specialized for different tasks and leverag
 shared language models or dedicated API models.
 """
 
+from __future__ import annotations
+
 import asyncio
 import dataclasses
 import json
@@ -19,11 +21,10 @@ from typing import (
     Callable,
     Coroutine,
     Dict,
-    List,  # Added Coroutine
+    List,
     Optional,
     Set,
     Tuple,
-    Type,
     Union,
 )
 
@@ -33,7 +34,7 @@ from src.coordination.context_manager import ContextSelector
 
 # --- New Imports ---
 from src.environment.utils import generate_openai_tool_schema
-from src.models.models import BaseAPIModel, BaseLLM, BaseVLM, ModelConfig, PeftHead
+from src.models.models import BaseAPIModel, ModelConfig
 from src.utils.monitoring import default_progress_monitor
 
 from .memory import ConversationMemory, MemoryManager, Message, ToolCallMsg
@@ -86,7 +87,6 @@ from .exceptions import (
     AgentImplementationError,
     AgentLimitError,
     AgentPermissionError,
-    BrowserNotInitializedError,
     MessageContentError,
     MessageError,
     MessageFormatError,
@@ -148,12 +148,13 @@ class BaseAgent(ABC):
 
     def __init__(
         self,
-        model: Union[BaseVLM, BaseLLM, BaseAPIModel],
-        description: str,
+        model: Union["BaseVLM", "BaseLLM", BaseAPIModel],
+        goal: str,
+        instruction: str,
         tools: Optional[Dict[str, Callable[..., Any]]] = None,
         # tools_schema: Optional[List[Dict[str, Any]]] = None, # Removed parameter
         max_tokens: Optional[int] = 512,
-        agent_name: Optional[str] = None,
+        name: Optional[str] = None,
         allowed_peers: Optional[List[str]] = None,
         is_convergence_point: Optional[bool] = None,  # NEW: Optional convergence flag
         input_schema: Optional[Any] = None,
@@ -166,10 +167,11 @@ class BaseAgent(ABC):
 
         Args:
             model: The language model instance.
-            description: The base description of the agent's role and purpose.
+            goal: A 1-2 sentence summary of what this agent accomplishes.
+            instruction: Detailed instructions on how the agent should behave and operate.
             tools: Dictionary mapping tool names to callable functions.
             max_tokens: Default maximum tokens for model generation.
-            agent_name: Optional specific name for registration.
+            name: Optional specific name for registration.
             allowed_peers: List of agent names this agent can call.
             is_convergence_point: Optional flag to mark this agent as a convergence point (for allowed_peers mode).
             input_schema: Optional schema for validating agent input.
@@ -186,13 +188,14 @@ class BaseAgent(ABC):
         #     raise ValueError("The tools are required if the tools schema is provided.")
 
         self.model = model
-        self.description = description
+        self.goal = goal
+        self.instruction = instruction
         self.tools = tools or {}  # Ensure self.tools is a dict
         self.tools_schema: List[Dict[str, Any]] = []  # Initialize as empty list
 
         # Initialize logger for the agent instance early
         self.logger = logging.getLogger(
-            f"Agent.{agent_name or self.__class__.__name__}"
+            f"Agent.{name or self.__class__.__name__}"
         )
 
         if self.tools:
@@ -225,22 +228,22 @@ class BaseAgent(ABC):
         # --- End Schema Handling ---
 
         # Validate agent name against reserved names
-        if agent_name:
+        if name:
             try:
                 from ..coordination.topology.core import RESERVED_NODE_NAMES
-                if agent_name.lower() in RESERVED_NODE_NAMES:
+                if name.lower() in RESERVED_NODE_NAMES:
                     raise AgentConfigurationError(
-                        f"Agent name '{agent_name}' is reserved and cannot be used. "
+                        f"Agent name '{name}' is reserved and cannot be used. "
                         f"Reserved names: {', '.join(sorted(RESERVED_NODE_NAMES))}",
-                        agent_name=agent_name,
-                        config_field="agent_name"
+                        agent_name=name,
+                        config_field="name"
                     )
             except ImportError:
                 # If coordination module not available, skip validation
                 pass
 
         self.name = AgentRegistry.register(
-            self, agent_name, prefix=self.__class__.__name__
+            self, name, prefix=self.__class__.__name__
         )
         # Initialize logger for the agent instance
         self.logger = logging.getLogger(f"Agent.{self.name}")
@@ -446,20 +449,30 @@ class BaseAgent(ABC):
         peer_schemas = self._get_peer_input_schemas()
 
         for peer_name in allowed_agents:  # Changed from self.allowed_peers
+            # Get the peer agent to access its goal
+            peer_agent = AgentRegistry.get(peer_name)
+            peer_goal = getattr(peer_agent, 'goal', None) if peer_agent else None
+
             # Get instance count information
             total_instances = AgentRegistry.get_instance_count(peer_name)
             available_instances = AgentRegistry.get_available_count(peer_name)
-            
-            # Format agent name with instance info
+
+            # Format agent name with goal and instance info
             if total_instances > 1:
                 # It's a pool - show instance availability
                 instance_info = f" (Pool: {available_instances}/{total_instances} instances available)"
-                prompt_lines.append(f"- `{peer_name}`{instance_info}")
+                if peer_goal:
+                    prompt_lines.append(f"- `{peer_name}`{instance_info} - Goal: {peer_goal}")
+                else:
+                    prompt_lines.append(f"- `{peer_name}`{instance_info}")
                 if available_instances < total_instances:
                     prompt_lines.append(f"  Note: Some instances are currently in use. You can invoke up to {available_instances} in parallel.")
             else:
                 # Single instance agent
-                prompt_lines.append(f"- `{peer_name}` (Single instance)")
+                if peer_goal:
+                    prompt_lines.append(f"- `{peer_name}` (Single instance) - Goal: {peer_goal}")
+                else:
+                    prompt_lines.append(f"- `{peer_name}` (Single instance)")
 
             # Add schema information if available
             if peer_name in peer_schemas and peer_schemas[peer_name]:
@@ -516,7 +529,7 @@ class BaseAgent(ABC):
 
         if self._compiled_input_schema:
             schema_desc = self._format_schema_for_prompt(self._compiled_input_schema)
-            instructions.append(f"\n--- INPUT SCHEMA REQUIREMENTS ---")
+            instructions.append("\n--- INPUT SCHEMA REQUIREMENTS ---")
             instructions.append(
                 f"When this agent is invoked by others, the request should conform to: {schema_desc}"
             )
@@ -524,7 +537,7 @@ class BaseAgent(ABC):
 
         if self._compiled_output_schema:
             schema_desc = self._format_schema_for_prompt(self._compiled_output_schema)
-            instructions.append(f"\n--- OUTPUT SCHEMA REQUIREMENTS ---")
+            instructions.append("\n--- OUTPUT SCHEMA REQUIREMENTS ---")
             instructions.append(
                 f"When providing final_response, ensure the 'response' field conforms to: {schema_desc}"
             )
@@ -575,7 +588,7 @@ class BaseAgent(ABC):
                                 # Check if this is the same message
                                 if hasattr(mem_msg, 'message_id') and msg.get('message_id') == mem_msg.message_id:
                                     mem_msg.tool_calls = None
-                                    self.logger.debug(f"Cleared orphaned tool_calls from message in memory")
+                                    self.logger.debug("Cleared orphaned tool_calls from message in memory")
                                     break
                     break
 
@@ -1600,11 +1613,11 @@ Example for `final_response`:
             # If we need to rebuild the system prompt
             if should_rebuild:
                 # Use default system prompt construction
-                # Get base description for this run mode
-                base_description = getattr(
+                # Get base instruction for this run mode
+                base_instruction = getattr(
                     self,
-                    f"description_{run_mode}",
-                    self.description,  # Use mode-specific or default description
+                    f"instruction_{run_mode}",
+                    self.instruction,  # Use mode-specific or default instruction
                 )
 
                 # Determine JSON mode settings
@@ -1612,7 +1625,7 @@ Example for `final_response`:
 
                 # Construct the system prompt normally
                 system_prompt = self._construct_full_system_prompt(
-                    base_description=base_description,
+                    base_description=base_instruction,
                     json_mode_for_output=json_mode_for_output,
                 )
 
@@ -2295,8 +2308,8 @@ Example for `final_response`:
             return
 
         # Check if instructions already exist
-        if "invoke_agent" not in self.description and "User" not in self.description:
-            self.description += """
+        if "invoke_agent" not in self.instruction and "User" not in self.instruction:
+            self.instruction += """
 
 When you need clarification or user input, you can invoke the User node:
 {
@@ -2375,7 +2388,7 @@ The user will provide their response, and you'll receive it to continue your tas
         from ..coordination import Orchestra
         from ..coordination.configs.auto_run import AutoRunConfig
         from ..coordination.config import StatusConfig
-        from ..utils.monitoring import default_progress_monitor
+        # from ..utils.monitoring import default_progress_monitor
         from .registry import AgentRegistry
         from .utils import LogLevel, RequestContext
 
@@ -3781,12 +3794,13 @@ class Agent(BaseAgent):
     def __init__(
         self,
         model_config: ModelConfig,
-        description: str,
+        goal: str,
+        instruction: str,
         tools: Optional[Dict[str, Callable[..., Any]]] = None,
         # tools_schema: Optional[List[Dict[str, Any]]] = None, # Removed from signature
         memory_type: Optional[str] = "conversation_history",
         max_tokens: Optional[int] = None,  # Explicit override; None ⇒ use ModelConfig
-        agent_name: Optional[str] = None,
+        name: Optional[str] = None,
         allowed_peers: Optional[List[str]] = None,
         input_schema: Optional[Any] = None,
         output_schema: Optional[Any] = None,
@@ -3798,11 +3812,12 @@ class Agent(BaseAgent):
 
         Args:
             model_config: Configuration for the language model.
-            description: The base description of the agent's role and purpose.
+            goal: A 1-2 sentence summary of what this agent accomplishes.
+            instruction: Detailed instructions on how the agent should behave and operate.
             tools: Optional dictionary of tools.
             memory_type: Type of memory module to use.
             max_tokens: Default maximum tokens for generation for this agent instance (overrides model_config default).
-            agent_name: Optional specific name for registration.
+            name: Optional specific name for registration.
             allowed_peers: List of agent names this agent can call.
             input_schema: Optional schema for validating agent input.
             output_schema: Optional schema for validating agent output.
@@ -3817,16 +3832,17 @@ class Agent(BaseAgent):
             max_tokens if max_tokens is not None else model_config.max_tokens
         )
 
-        model_instance: Union[BaseLLM, BaseVLM, BaseAPIModel] = (
+        model_instance: Union["BaseLLM", "BaseVLM", BaseAPIModel] = (
             self._create_model_from_config(model_config)  # Pass ModelConfig instance
         )
         super().__init__(
             model=model_instance,
-            description=description,  # Renamed
+            goal=goal,
+            instruction=instruction,
             tools=tools,
             # tools_schema=tools_schema, # Removed as BaseAgent.__init__ no longer takes it
             max_tokens=effective_max_tokens,  # Use the determined max_tokens
-            agent_name=agent_name,
+            name=name,
             allowed_peers=allowed_peers,  # Pass allowed_peers
             input_schema=input_schema,
             output_schema=output_schema,
@@ -3835,7 +3851,7 @@ class Agent(BaseAgent):
         )
         self.memory = MemoryManager(
             memory_type=memory_type or "conversation_history",
-            description=self.description,  # Pass agent's description for initial system message
+            description=self.instruction,  # Pass agent's instruction for initial system message
             model=self.model if memory_type == "kg" else None,
         )
         self._model_config = model_config  # Store the ModelConfig instance
@@ -3860,7 +3876,7 @@ class Agent(BaseAgent):
 
     def _create_model_from_config(
         self, config: ModelConfig  # Changed type hint
-    ) -> Union[BaseLLM, BaseVLM, BaseAPIModel]:
+    ) -> Union["BaseLLM", "BaseVLM", BaseAPIModel]:
         """
         Factory method to create a model instance from a ModelConfig object.
 
@@ -3884,6 +3900,18 @@ class Agent(BaseAgent):
         extra_kwargs = config.dict(exclude_unset=True, exclude=known_keys)
 
         if model_type == "local":
+            # Lazy import for local models (requires marsys[local-models])
+            try:
+                from src.models.models import BaseLLM, BaseVLM
+            except ImportError as e:
+                raise ImportError(
+                    "Local model support requires additional dependencies. Install with:\n"
+                    "  pip install marsys[local-models]\n"
+                    "or:\n"
+                    "  uv pip install marsys[local-models]\n\n"
+                    f"Original error: {str(e)}"
+                ) from e
+
             model_class_type = config.model_class
             torch_dtype = config.torch_dtype
             device_map = config.device_map

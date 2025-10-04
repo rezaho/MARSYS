@@ -15,7 +15,7 @@ The MARSYS API is organized into several key modules:
     High-level coordination API for multi-agent workflows
 
     ```python
-    from src.coordination import Orchestra
+    from marsys.coordination import Orchestra
     result = await Orchestra.run(task, topology)
     ```
 
@@ -26,7 +26,7 @@ The MARSYS API is organized into several key modules:
     Agent base classes and implementations
 
     ```python
-    from src.agents import Agent, BaseAgent
+    from marsys.agents import Agent, BaseAgent
     agent = Agent(model_config, agent_name="Helper")
     ```
 
@@ -37,7 +37,7 @@ The MARSYS API is organized into several key modules:
     Language model configurations and providers
 
     ```python
-    from src.models import ModelConfig
+    from marsys.models import ModelConfig
     config = ModelConfig(type="api", provider="openai")
     ```
 
@@ -48,8 +48,8 @@ The MARSYS API is organized into several key modules:
     Topology definition and pattern configurations
 
     ```python
-    from src.coordination.topology import Topology
-    from src.coordination.topology.patterns import PatternConfig
+    from marsys.coordination.topology import Topology
+    from marsys.coordination.topology.patterns import PatternConfig
     ```
 
 </div>
@@ -98,8 +98,8 @@ The MARSYS API is organized into several key modules:
 ### Creating Agents
 
 ```python
-from src.agents import Agent
-from src.models import ModelConfig
+from marsys.agents import Agent
+from marsys.models import ModelConfig
 
 # Basic agent
 agent = Agent(
@@ -120,7 +120,7 @@ agent = Agent(
 )
 
 # Browser agent
-from src.agents import BrowserAgent
+from marsys.agents import BrowserAgent
 
 browser = BrowserAgent(
     model_config=config,
@@ -132,8 +132,8 @@ browser = BrowserAgent(
 ### Defining Topologies
 
 ```python
-from src.coordination.topology import Topology
-from src.coordination.topology.patterns import PatternConfig
+from marsys.coordination.topology import Topology
+from marsys.coordination.topology.patterns import PatternConfig
 
 # Simple topology
 topology = {
@@ -159,7 +159,7 @@ topology = Topology(
 ### Running Workflows
 
 ```python
-from src.coordination import Orchestra
+from marsys.coordination import Orchestra
 
 # Simple execution
 result = await Orchestra.run(
@@ -168,7 +168,7 @@ result = await Orchestra.run(
 )
 
 # With configuration
-from src.coordination.config import ExecutionConfig
+from marsys.coordination.config import ExecutionConfig
 
 result = await Orchestra.run(
     task=task,
@@ -180,7 +180,7 @@ result = await Orchestra.run(
 )
 
 # With state management
-from src.coordination.state import StateManager
+from marsys.coordination.state import StateManager
 
 result = await Orchestra.run(
     task=task,
@@ -342,7 +342,7 @@ result = await Orchestra.run(
 ### Pattern: Stateful Workflow
 
 ```python
-from src.coordination.state import StateManager, FileStorageBackend
+from marsys.coordination.state import StateManager, FileStorageBackend
 
 # Initialize state management
 storage = FileStorageBackend("./state")

@@ -23,17 +23,6 @@ from pydantic import (  # root_validator, # Ensure root_validator is removed or 
     field_validator,
     model_validator,  # Keep model_validator
 )
-from transformers import (
-    AutoModelForCausalLM,
-    AutoModelForVision2Seq,
-    AutoProcessor,
-    AutoTokenizer,
-    BitsAndBytesConfig,
-    GenerationConfig,
-    pipeline,
-)
-
-from src.models.processors import process_vision_info
 
 # Import the new response models
 from src.models.response_models import (
@@ -50,7 +39,7 @@ try:
     from peft import LoraConfig, PeftModel, TaskType, get_peft_model
 except ImportError:
     logging.warning("PEFT library not found. PEFT features will be unavailable.")
-    LoraConfig, TaskType, get_peft_model, PeftModel = None, None
+    LoraConfig = TaskType = get_peft_model = PeftModel = None
 
 
 # --- Provider Adapter Pattern ---
@@ -1526,6 +1515,18 @@ class BaseLLM:
         torch_dtype: str = "auto",
         device_map: str = "auto",
     ) -> None:
+        # Lazy import for transformers (requires marsys[local-models])
+        try:
+            from transformers import AutoModelForCausalLM, AutoTokenizer
+        except ImportError as e:
+            raise ImportError(
+                "Local LLM support requires additional dependencies. Install with:\n"
+                "  pip install marsys[local-models]\n"
+                "or:\n"
+                "  uv pip install marsys[local-models]\n\n"
+                f"Original error: {str(e)}"
+            ) from e
+
         self.model = AutoModelForCausalLM.from_pretrained(
             model_name, torch_dtype=torch_dtype, device_map=device_map
         )
@@ -1600,6 +1601,18 @@ class BaseVLM:
         device_map: str = "auto",
         **kwargs,
     ):
+        # Lazy import for transformers (requires marsys[local-models])
+        try:
+            from transformers import AutoModelForVision2Seq, AutoProcessor, AutoTokenizer
+        except ImportError as e:
+            raise ImportError(
+                "Local VLM (Vision Language Model) support requires additional dependencies. Install with:\n"
+                "  pip install marsys[local-models]\n"
+                "or:\n"
+                "  uv pip install marsys[local-models]\n\n"
+                f"Original error: {str(e)}"
+            ) from e
+
         self.model = AutoModelForVision2Seq.from_pretrained(
             model_name, torch_dtype=torch_dtype, device_map=device_map, **kwargs
         )
@@ -1651,6 +1664,19 @@ class BaseVLM:
         #         for msg in flatten_messages
         #         if (isinstance(msg, dict) and msg.get("type") == "image")
         #     ]
+
+        # Lazy import for vision processing (requires marsys[local-models])
+        try:
+            from src.models.processors import process_vision_info
+        except ImportError as e:
+            raise ImportError(
+                "Vision processing requires PyTorch and torchvision. Install with:\n"
+                "  pip install marsys[local-models]\n"
+                "or:\n"
+                "  uv pip install marsys[local-models]\n\n"
+                f"Original error: {str(e)}"
+            ) from e
+
         images, videos = process_vision_info(messages)
         inputs = self.processor(
             text=text,

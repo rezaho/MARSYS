@@ -33,7 +33,7 @@ graph LR
     **The fundamental building blocks** - Autonomous entities that perceive, think, and act
 
     ```python
-    from src.agents import Agent
+    from marsys.agents import Agent
     agent = Agent(model_config, agent_name="Assistant")
     ```
 
@@ -55,7 +55,7 @@ graph LR
     **Communication protocol** - Standardized format for agent-to-agent and agent-to-model communication
 
     ```python
-    from src.agents.memory import Message
+    from marsys.agents.memory import Message
     msg = Message(role="assistant", content="Hello!")
     ```
 
@@ -76,7 +76,7 @@ graph LR
     **AI model integration** - Unified interface for various LLM providers
 
     ```python
-    from src.models import ModelConfig
+    from marsys.models import ModelConfig
     config = ModelConfig(type="api", provider="openai")
     ```
 
@@ -87,7 +87,7 @@ graph LR
     **Agent discovery** - Global registry for agent lookup and management
 
     ```python
-    from src.agents import AgentRegistry
+    from marsys.agents import AgentRegistry
     agent = AgentRegistry.get("AgentName")
     ```
 

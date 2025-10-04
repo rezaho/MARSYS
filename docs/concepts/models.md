@@ -61,7 +61,7 @@ graph TB
 Central configuration for all models:
 
 ```python
-from src.models import ModelConfig
+from marsys.models import ModelConfig
 from typing import Literal, Optional, Dict, Any
 
 class ModelConfig(BaseModel):
@@ -154,8 +154,8 @@ local_config = ModelConfig(
 Standard text generation models:
 
 ```python
-from src.agents import Agent
-from src.models import ModelConfig
+from marsys.agents import Agent
+from marsys.models import ModelConfig
 
 # Create agent with LLM
 agent = Agent(
@@ -195,7 +195,7 @@ vision_agent = Agent(
 )
 
 # Process image
-from src.agents.memory import Message
+from marsys.agents.memory import Message
 
 message = Message(
     role="user",
@@ -211,7 +211,7 @@ response = await vision_agent.run(message)
 For proprietary or specialized endpoints:
 
 ```python
-from src.models import BaseAPIModel
+from marsys.models import BaseAPIModel
 from typing import List, Dict, Any, Optional
 
 class CustomAPIModel(BaseAPIModel):
@@ -393,7 +393,7 @@ private_config = ModelConfig(
 Models include comprehensive error handling:
 
 ```python
-from src.coordination.config import ErrorHandlingConfig
+from marsys.coordination.config import ErrorHandlingConfig
 
 error_config = ErrorHandlingConfig(
     # Automatic retry on rate limits

@@ -95,7 +95,7 @@ class ModelConfig(BaseModel):
 ### Usage Examples
 
 ```python
-from src.models import ModelConfig
+from marsys.models import ModelConfig
 
 # OpenAI GPT-4
 gpt4_config = ModelConfig(
@@ -196,7 +196,7 @@ Execute the model with input messages.
 
 **Example:**
 ```python
-from src.models import BaseLLM
+from marsys.models import BaseLLM
 
 llm = BaseLLM(
     model_name="mistralai/Mistral-7B-Instruct-v0.1",
@@ -254,7 +254,7 @@ Execute VLM with text and optional images.
 
 **Example:**
 ```python
-from src.models import BaseVLM
+from marsys.models import BaseVLM
 
 vlm = BaseVLM(
     model_name="llava-hf/llava-1.5-7b-hf",
@@ -327,7 +327,7 @@ Execute API model.
 
 **Example:**
 ```python
-from src.models import BaseAPIModel
+from marsys.models import BaseAPIModel
 
 model = BaseAPIModel(
     provider="openai",
@@ -385,7 +385,7 @@ def create_model(config: ModelConfig) -> Union[BaseLLM, BaseVLM, BaseAPIModel]:
 
 **Example:**
 ```python
-from src.models import create_model, ModelConfig
+from marsys.models import create_model, ModelConfig
 
 # Create from config
 config = ModelConfig(
@@ -496,7 +496,7 @@ async for chunk in model.stream(
 ### Model Errors
 
 ```python
-from src.models.exceptions import (
+from marsys.models.exceptions import (
     ModelError,
     ModelAPIError,
     ModelTimeoutError,
@@ -555,7 +555,7 @@ print(f"Estimated cost: ${total_cost:.4f}")
 ```python
 # ✅ GOOD - Environment-based config
 import os
-from src.models import ModelConfig
+from marsys.models import ModelConfig
 
 config = ModelConfig(
     type="api",

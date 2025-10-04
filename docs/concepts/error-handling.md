@@ -54,7 +54,7 @@ graph TB
 All MARSYS exceptions inherit from `MarsysError`:
 
 ```python
-from src.coordination.exceptions import MarsysError
+from marsys.coordination.exceptions import MarsysError
 
 class MarsysError(Exception):
     """Base exception for all MARSYS errors."""
@@ -359,7 +359,7 @@ class CircuitBreaker:
 ### ErrorHandlingConfig
 
 ```python
-from src.coordination.config import ErrorHandlingConfig
+from marsys.coordination.config import ErrorHandlingConfig
 
 config = ErrorHandlingConfig(
     # Classification
