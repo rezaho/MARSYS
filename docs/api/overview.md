@@ -509,4 +509,4 @@ Dive deeper into specific APIs:
 ---
 
 !!! info "API Stability"
-    All documented APIs are stable and production-ready. We maintain backward compatibility for all public methods and classes.
+    All documented APIs are in beta. We aim to maintain backward compatibility for all public methods and classes in future releases.

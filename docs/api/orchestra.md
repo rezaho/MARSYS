@@ -569,4 +569,4 @@ print(f"Token usage: {metrics.get_metric('total_tokens')}")
 ---
 
 !!! info "API Stability"
-    The Orchestra API is stable and production-ready. Future versions will maintain backward compatibility for all documented methods.
+    The Orchestra API is in beta. Future versions will aim to maintain backward compatibility for all documented methods.
