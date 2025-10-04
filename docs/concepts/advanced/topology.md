@@ -60,8 +60,8 @@ MARSYS provides four different approaches to define how agents interact, from si
 Perfect for quick prototyping and simple agent interactions. The topology is automatically created from the `allowed_peers` configuration:
 
 ```python
-from src.agents import Agent
-from src.models import ModelConfig
+from marsys.agents import Agent
+from marsys.models import ModelConfig
 
 # Configure the model
 model_config = ModelConfig(
@@ -104,9 +104,9 @@ result = await researcher.auto_run(
 Define topology using simple string notation with Orchestra:
 
 ```python
-from src.coordination import Orchestra
-from src.agents import Agent
-from src.models import ModelConfig
+from marsys.coordination import Orchestra
+from marsys.agents import Agent
+from marsys.models import ModelConfig
 
 # Create the same agents
 model_config = ModelConfig(type="api", name="gpt-5", provider="openai")
@@ -147,11 +147,11 @@ result = await Orchestra.run(
 For production systems with full control and type safety:
 
 ```python
-from src.coordination import Orchestra
-from src.coordination.topology import Topology, Node, Edge, NodeType, EdgeType
-from src.coordination.rules import TimeoutRule, MaxStepsRule
-from src.agents import Agent
-from src.models import ModelConfig
+from marsys.coordination import Orchestra
+from marsys.coordination.topology import Topology, Node, Edge, NodeType, EdgeType
+from marsys.coordination.rules import TimeoutRule, MaxStepsRule
+from marsys.agents import Agent
+from marsys.models import ModelConfig
 
 # Create the same agents
 model_config = ModelConfig(type="api", name="gpt-5", provider="openai")
@@ -213,10 +213,10 @@ result = await Orchestra.run(
 Use battle-tested patterns for common multi-agent scenarios:
 
 ```python
-from src.coordination import Orchestra
-from src.coordination.topology.patterns import PatternConfig
-from src.agents import Agent
-from src.models import ModelConfig
+from marsys.coordination import Orchestra
+from marsys.coordination.topology.patterns import PatternConfig
+from marsys.agents import Agent
+from marsys.models import ModelConfig
 
 # Create the same agents
 model_config = ModelConfig(type="api", name="gpt-5", provider="openai")
@@ -436,7 +436,7 @@ config = ExecutionConfig(
 Special edge behaviors:
 
 ```python
-from src.coordination.topology import EdgePattern
+from marsys.coordination.topology import EdgePattern
 
 # Alternating conversation
 Edge(
@@ -471,7 +471,7 @@ Edge(
 Control execution behavior:
 
 ```python
-from src.coordination.rules import (
+from marsys.coordination.rules import (
     Rule, RuleType, RuleResult, RuleContext,
     TimeoutRule, MaxAgentsRule, MaxStepsRule,
     MemoryLimitRule, ConditionalRule
@@ -526,7 +526,7 @@ topology.add_rule(BusinessHoursRule())
 The framework provides powerful analysis tools:
 
 ```python
-from src.coordination.topology import TopologyAnalyzer
+from marsys.coordination.topology import TopologyAnalyzer
 
 analyzer = TopologyAnalyzer(topology)
 

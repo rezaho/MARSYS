@@ -293,7 +293,7 @@ Return a JSON array of objects with "box_2d" and "label" fields only.
             # Add system prompt
             messages.append({
                 "role": "system",
-                "content": self.description
+                "content": self.instruction
             })
             
             # Add any passed context messages
@@ -458,10 +458,11 @@ class BrowserAgent(Agent):
     def __init__(
         self,
         model_config: ModelConfig,
-        description: str,
+        goal: str,
+        instruction: str,
         tools: Optional[Dict[str, Callable[..., Any]]] = None,
         max_tokens: Optional[int] = None,
-        agent_name: Optional[str] = None,
+        name: Optional[str] = None,
         allowed_peers: Optional[List[str]] = None,
         headless: bool = True,
         viewport_width: int = 1440,
@@ -481,10 +482,11 @@ class BrowserAgent(Agent):
 
         Args:
             model_config: Configuration for the language model
-            description: Agent's role description
+            goal: A 1-2 sentence summary of what this agent accomplishes
+            instruction: Detailed instructions on how the agent should behave and operate
             tools: Optional dictionary of additional tools
             max_tokens: Maximum tokens for model generation (overrides model_config default if provided)
-            agent_name: Optional name for registration
+            name: Optional name for registration
             allowed_peers: List of agent names this agent can invoke
             headless: Whether to run browser in headless mode
             viewport_width: Browser viewport width
@@ -536,9 +538,9 @@ class BrowserAgent(Agent):
         if tools:
             browser_tools.update(tools)
 
-        # Enhance the user-provided description with browser-specific context
-        enhanced_description = (
-            f"{description}\n\n"
+        # Enhance the user-provided instruction with browser-specific context
+        enhanced_instruction = (
+            f"{instruction}\n\n"
             "You are a browser automation agent powered by Playwright. You have the following capabilities:\n"
             "- Web navigation and page interaction\n"
             "- Element selection and manipulation using CSS selectors\n"
@@ -561,10 +563,11 @@ class BrowserAgent(Agent):
 
         super().__init__(
             model_config=model_config,
-            description=enhanced_description,
+            goal=goal,
+            instruction=enhanced_instruction,
             tools=browser_tools,
             max_tokens=max_tokens,
-            agent_name=agent_name,
+            name=name,
             allowed_peers=allowed_peers,
             input_schema=input_schema,
             output_schema=output_schema,
@@ -617,10 +620,11 @@ class BrowserAgent(Agent):
     async def create_safe(
         cls,
         model_config: ModelConfig,
-        description: str,
+        goal: str,
+        instruction: str,
         tools: Optional[Dict[str, Callable[..., Any]]] = None,
         max_tokens: Optional[int] = None,
-        agent_name: Optional[str] = None,
+        name: Optional[str] = None,
         allowed_peers: Optional[List[str]] = None,
         headless: bool = True,
         viewport_width: int = 1440,
@@ -644,10 +648,11 @@ class BrowserAgent(Agent):
         # Create agent instance (Agent's __init__ will handle model creation)
         agent = cls(
             model_config=model_config,
-            description=description,
+            goal=goal,
+            instruction=instruction,
             tools=tools,
             max_tokens=max_tokens,
-            agent_name=agent_name,
+            name=name,
             allowed_peers=allowed_peers,
             headless=headless,
             viewport_width=viewport_width,

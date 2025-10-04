@@ -93,7 +93,7 @@ def search_database(
 The framework automatically generates OpenAI-compatible schemas:
 
 ```python
-from src.environment.utils import generate_openai_tool_schema
+from marsys.environment.utils import generate_openai_tool_schema
 
 # Automatic schema generation from function
 schema = generate_openai_tool_schema(search_database)
@@ -137,8 +137,8 @@ schema = generate_openai_tool_schema(search_database)
 ### Agent-Specific Tools
 
 ```python
-from src.agents import Agent
-from src.models import ModelConfig
+from marsys.agents import Agent
+from marsys.models import ModelConfig
 
 agent = Agent(
     model_config=ModelConfig(
@@ -161,7 +161,7 @@ agent = Agent(
 ### Global Tool Registry
 
 ```python
-from src.environment.tools import AVAILABLE_TOOLS
+from marsys.environment.tools import AVAILABLE_TOOLS
 
 # Register globally
 AVAILABLE_TOOLS["search_database"] = search_database

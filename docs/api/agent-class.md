@@ -11,8 +11,8 @@ Abstract base class that all agents must inherit from.
 ```python
 from abc import ABC, abstractmethod
 from typing import Optional, Dict, List, Any, Union, Callable
-from src.models.base import BaseModel
-from src.agents.memory import ConversationMemory, Message
+from marsys.models.base import BaseModel
+from marsys.agents.memory import ConversationMemory, Message
 
 class BaseAgent(ABC):
     """Abstract base class for all agents."""
@@ -20,10 +20,11 @@ class BaseAgent(ABC):
     def __init__(
         self,
         model: Union[BaseVLM, BaseLLM, BaseAPIModel],
-        description: str,
+        goal: str,
+        instruction: str,
         tools: Optional[Dict[str, Callable]] = None,
         max_tokens: int = 512,
-        agent_name: Optional[str] = None,
+        name: Optional[str] = None,
         allowed_peers: Optional[List[str]] = None,
         memory_retention: str = "session",
         input_schema: Optional[Any] = None,
@@ -34,10 +35,11 @@ class BaseAgent(ABC):
 
         Args:
             model: Language model instance
-            description: Agent role and capabilities description
+            goal: 1-2 sentence summary of what the agent accomplishes
+            instruction: Detailed instructions on how the agent should behave
             tools: Dictionary of tool functions
             max_tokens: Maximum response tokens
-            agent_name: Unique agent identifier
+            name: Unique agent identifier
             allowed_peers: List of agents this can invoke
             memory_retention: Memory policy (single_run, session, persistent)
             input_schema: Pydantic schema for input validation
@@ -105,8 +107,8 @@ Standard agent implementation with built-in capabilities.
 ### Class Definition
 
 ```python
-from src.agents import Agent
-from src.models import ModelConfig
+from marsys.agents import Agent
+from marsys.models import ModelConfig
 
 class Agent(BaseAgent):
     """Standard agent with full framework capabilities."""
@@ -218,8 +220,8 @@ async def invoke_agent(
 ### Usage Examples
 
 ```python
-from src.agents import Agent
-from src.models import ModelConfig
+from marsys.agents import Agent
+from marsys.models import ModelConfig
 
 # Basic agent
 assistant = Agent(
@@ -229,8 +231,9 @@ assistant = Agent(
         name="gpt-4",
         temperature=0.7
     ),
-    agent_name="assistant",
-    description="A helpful AI assistant"
+    name="assistant",
+    goal="Provide helpful assistance to users",
+    instruction="A helpful AI assistant that responds thoughtfully to queries"
 )
 
 # Agent with tools
@@ -240,8 +243,9 @@ def calculate(expression: str) -> float:
 
 calculator = Agent(
     model_config=config,
-    agent_name="calculator",
-    description="Mathematical calculation specialist",
+    name="calculator",
+    goal="Perform mathematical calculations accurately",
+    instruction="Mathematical calculation specialist who uses tools for precise computations",
     tools=[calculate],
     system_prompt="You are a precise calculator. Always use the calculate tool for math."
 )
@@ -249,8 +253,9 @@ calculator = Agent(
 # Multi-agent coordinator
 coordinator = Agent(
     model_config=config,
-    agent_name="coordinator",
-    description="I coordinate tasks between specialized agents",
+    name="coordinator",
+    goal="Coordinate tasks between specialized agents",
+    instruction="I coordinate tasks between specialized agents and synthesize results",
     allowed_peers=["researcher", "writer", "calculator"]
 )
 ```
@@ -262,8 +267,8 @@ Specialized agent for web automation and scraping.
 ### Class Definition
 
 ```python
-from src.agents import BrowserAgent
-from src.environment.browser_tool import BrowserTool
+from marsys.agents import BrowserAgent
+from marsys.environment.browser_tool import BrowserTool
 
 class BrowserAgent(Agent):
     """Agent with browser automation capabilities."""
@@ -312,7 +317,7 @@ async def create_safe(
     Example:
         browser = await BrowserAgent.create_safe(
             model_config=config,
-            agent_name="web_scraper",
+            name="web_scraper",
             headless_browser=True
         )
     """
@@ -353,7 +358,7 @@ await browser.browser_tool.close_browser()
 ```python
 browser_agent = await BrowserAgent.create_safe(
     model_config=config,
-    agent_name="scraper",
+    name="scraper",
     headless_browser=True
 )
 
@@ -375,7 +380,7 @@ Manages multiple agent instances for parallel execution.
 ### Class Definition
 
 ```python
-from src.agents import AgentPool
+from marsys.agents import AgentPool
 from typing import Type, Optional, Any
 import asyncio
 
@@ -452,14 +457,14 @@ def get_statistics(self) -> Dict[str, Any]:
 ### Usage Example
 
 ```python
-from src.agents import AgentPool, BrowserAgent
+from marsys.agents import AgentPool, BrowserAgent
 
 # Create pool of browser agents
 browser_pool = AgentPool(
     agent_class=BrowserAgent,
     num_instances=3,
     model_config=config,
-    agent_name="BrowserPool",
+    name="BrowserPool",
     headless_browser=True
 )
 
@@ -491,8 +496,8 @@ Create specialized agents by subclassing BaseAgent.
 ### Example Custom Agent
 
 ```python
-from src.agents import BaseAgent
-from src.agents.memory import Message
+from marsys.agents import BaseAgent
+from marsys.agents.memory import Message
 from typing import Dict, Any
 
 class AnalysisAgent(BaseAgent):
@@ -501,7 +506,8 @@ class AnalysisAgent(BaseAgent):
     def __init__(self, model, **kwargs):
         super().__init__(
             model=model,
-            description="Data analysis specialist",
+            goal="Analyze data and provide insights",
+            instruction="Data analysis specialist with multiple analysis methods",
             **kwargs
         )
         self.analysis_methods = ["statistical", "trend", "anomaly"]
@@ -602,7 +608,7 @@ agent = Agent(
 ## 🛡️ Error Handling
 
 ```python
-from src.agents.exceptions import (
+from marsys.agents.exceptions import (
     AgentError,
     AgentNotFoundError,
     AgentPermissionError,

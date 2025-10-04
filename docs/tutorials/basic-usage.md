@@ -16,9 +16,9 @@ Learn the fundamentals of MARSYS through hands-on examples.
 
 ```python
 import asyncio
-from src.agents import Agent
-from src.models import ModelConfig
-from src.coordination import Orchestra
+from marsys.agents import Agent
+from marsys.models import ModelConfig
+from marsys.coordination import Orchestra
 ```
 
 ### Step 2: Configure Your Model
@@ -59,9 +59,9 @@ ollama_config = ModelConfig(
 # Basic agent
 agent = Agent(
     model_config=openai_config,
-    agent_name="Assistant",
-    description="A helpful AI assistant",
-    system_prompt="""You are a helpful assistant.
+    name="Assistant",
+    goal="Provide helpful assistance to users",
+    instruction="""You are a helpful assistant.
     Be concise, accurate, and friendly."""
 )
 
@@ -73,8 +73,9 @@ def calculate(expression: str) -> float:
 
 agent_with_tools = Agent(
     model_config=openai_config,
-    agent_name="Calculator",
-    description="An agent that can perform calculations",
+    name="Calculator",
+    goal="Perform mathematical calculations for users",
+    instruction="An agent that can perform calculations using the calculate tool",
     tools={"calculate": calculate}
 )
 ```
@@ -147,9 +148,9 @@ def search_web(query: str, max_results: int = 5) -> list:
 # Create weather assistant
 weather_agent = Agent(
     model_config=openai_config,
-    agent_name="WeatherAssistant",
-    description="Provides weather information",
-    system_prompt="You help users with weather information.",
+    name="WeatherAssistant",
+    goal="Provide weather information and forecasts to users",
+    instruction="You help users with weather information using available tools.",
     tools={
         "get_weather": get_weather,
         "search_web": search_web
@@ -171,16 +172,16 @@ result = await Orchestra.run(
 # Create two agents
 analyst = Agent(
     model_config=openai_config,
-    agent_name="Analyst",
-    description="Data analysis expert",
-    system_prompt="You analyze data and provide insights."
+    name="Analyst",
+    goal="Analyze data and provide actionable insights",
+    instruction="You analyze data and provide insights based on patterns and trends."
 )
 
 reviewer = Agent(
     model_config=claude_config,
-    agent_name="Reviewer",
-    description="Reviews and critiques analyses",
-    system_prompt="You review analyses for accuracy and completeness."
+    name="Reviewer",
+    goal="Review analyses for accuracy and completeness",
+    instruction="You review analyses for accuracy, completeness, and logical consistency."
 )
 
 # Define conversation topology
@@ -202,31 +203,32 @@ result = await Orchestra.run(
 ### Research Team Example
 
 ```python
-from src.coordination.topology.patterns import PatternConfig
+from marsys.coordination.topology.patterns import PatternConfig
 
 # Create specialized agents
 coordinator = Agent(
-    agent_name="Coordinator",
-    description="Coordinates research tasks",
-    system_prompt="You coordinate research by delegating to specialists."
+    name="Coordinator",
+    goal="Coordinate research tasks among specialist agents",
+    instruction="You coordinate research by delegating to specialists and synthesizing results."
 )
 
 data_collector = Agent(
-    agent_name="DataCollector",
-    description="Gathers data from various sources",
+    name="DataCollector",
+    goal="Gather data from various sources",
+    instruction="You collect relevant data using web search and other tools.",
     tools={"search_web": search_web}
 )
 
 analyzer = Agent(
-    agent_name="Analyzer",
-    description="Analyzes collected data",
-    system_prompt="You provide deep analysis of data."
+    name="Analyzer",
+    goal="Analyze collected data and extract insights",
+    instruction="You provide deep analysis of data, identifying patterns and trends."
 )
 
 writer = Agent(
-    agent_name="Writer",
-    description="Writes comprehensive reports",
-    system_prompt="You write clear, well-structured reports."
+    name="Writer",
+    goal="Write comprehensive reports from analysis results",
+    instruction="You write clear, well-structured reports based on research findings."
 )
 
 # Hub-and-spoke topology
@@ -307,7 +309,9 @@ except Exception as e:
 # Session memory (default)
 agent_with_memory = Agent(
     model_config=config,
-    agent_name="MemoryAgent",
+    name="MemoryAgent",
+    goal="Maintain conversation context within a session",
+    instruction="You remember previous interactions and use context to provide coherent responses.",
     memory_retention="session"  # Keeps memory during session
 )
 
@@ -333,7 +337,7 @@ agent_with_memory.memory.clear()
 ### Execution Configuration
 
 ```python
-from src.coordination.config import ExecutionConfig, StatusConfig
+from marsys.coordination.config import ExecutionConfig, StatusConfig
 
 config = ExecutionConfig(
     # Timeouts
@@ -368,10 +372,10 @@ result = await Orchestra.run(
 
 ```python
 import asyncio
-from src.agents import Agent
-from src.models import ModelConfig
-from src.coordination import Orchestra
-from src.coordination.topology.patterns import PatternConfig
+from marsys.agents import Agent
+from marsys.models import ModelConfig
+from marsys.coordination import Orchestra
+from marsys.coordination.topology.patterns import PatternConfig
 
 async def create_support_system():
     # Configure model
@@ -385,9 +389,9 @@ async def create_support_system():
     # Create support agents
     greeter = Agent(
         model_config=config,
-        agent_name="Greeter",
-        description="Greets customers and understands their needs",
-        system_prompt="""You are a friendly customer service greeter.
+        name="Greeter",
+        goal="Welcome customers and route them to appropriate support",
+        instruction="""You are a friendly customer service greeter.
         - Welcome customers warmly
         - Understand their needs
         - Route to appropriate department"""
@@ -395,16 +399,16 @@ async def create_support_system():
 
     technical_support = Agent(
         model_config=config,
-        agent_name="TechnicalSupport",
-        description="Handles technical issues",
-        system_prompt="You are a technical support specialist."
+        name="TechnicalSupport",
+        goal="Resolve technical issues and provide solutions",
+        instruction="You are a technical support specialist who diagnoses and solves technical problems."
     )
 
     billing_support = Agent(
         model_config=config,
-        agent_name="BillingSupport",
-        description="Handles billing inquiries",
-        system_prompt="You are a billing specialist."
+        name="BillingSupport",
+        goal="Handle billing inquiries and payment issues",
+        instruction="You are a billing specialist who assists with payment and account questions."
     )
 
     # Define topology

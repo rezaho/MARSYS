@@ -60,9 +60,9 @@ Progressive tutorials from beginner to advanced:
 
 #### Part 1: Basic Research Agent
 ```python
-from src.coordination import Orchestra
-from src.agents import Agent
-from src.models import ModelConfig
+from marsys.coordination import Orchestra
+from marsys.agents import Agent
+from marsys.models import ModelConfig
 
 # Create research agent
 researcher = Agent(
@@ -99,7 +99,7 @@ researcher_with_tools = Agent(
 
 #### Part 3: Multi-Agent Research Team
 ```python
-from src.coordination.topology.patterns import PatternConfig
+from marsys.coordination.topology.patterns import PatternConfig
 
 # Create research team
 data_collector = Agent(agent_name="DataCollector", ...)
@@ -138,7 +138,7 @@ support_agent = Agent(
 
 #### Part 2: Add Knowledge Base
 ```python
-from src.concepts.memory_patterns import SemanticMemory
+from marsys.concepts.memory_patterns import SemanticMemory
 
 class KnowledgeBaseAgent(BaseAgent):
     def __init__(self, model, **kwargs):
@@ -225,7 +225,7 @@ topology = PatternConfig.pipeline(
 
 #### Part 3: Real-time Monitoring
 ```python
-from src.coordination.state import StateManager
+from marsys.coordination.state import StateManager
 
 # Enable state persistence
 state_manager = StateManager(storage)
@@ -302,7 +302,7 @@ class MemoryAgent(BaseAgent):
 
 ### Parallel Processing Pattern
 ```python
-from src.agents import AgentPool
+from marsys.agents import AgentPool
 
 # Create pool for parallel processing
 pool = AgentPool(

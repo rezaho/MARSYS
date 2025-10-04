@@ -14,7 +14,7 @@ Manages conversation history for an agent.
 
 **Import:**
 ```python
-from src.agents.memory import ConversationMemory
+from marsys.agents.memory import ConversationMemory
 ```
 
 **Constructor:**
@@ -105,7 +105,7 @@ Represents a single message in conversation.
 
 **Import:**
 ```python
-from src.agents.memory import Message
+from marsys.agents.memory import Message
 ```
 
 **Constructor:**
@@ -198,7 +198,7 @@ Manages memory for multiple agents in a session.
 
 **Import:**
 ```python
-from src.agents.memory import MemoryManager
+from marsys.agents.memory import MemoryManager
 ```
 
 **Constructor:**
@@ -275,7 +275,7 @@ Structured content for agent responses.
 
 **Import:**
 ```python
-from src.agents.memory import MessageContent
+from marsys.agents.memory import MessageContent
 ```
 
 **Constructor:**
@@ -322,7 +322,7 @@ Represents a tool call in a message.
 
 **Import:**
 ```python
-from src.agents.memory import ToolCallMsg
+from marsys.agents.memory import ToolCallMsg
 ```
 
 **Constructor:**
@@ -367,7 +367,7 @@ Represents an agent invocation call.
 
 **Import:**
 ```python
-from src.agents.memory import AgentCallMsg
+from marsys.agents.memory import AgentCallMsg
 ```
 
 **Constructor:**

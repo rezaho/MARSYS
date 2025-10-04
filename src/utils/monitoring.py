@@ -1,7 +1,7 @@
 import asyncio
 import json
 import logging
-import pandas as pd  # For timestamp formatting
+from datetime import datetime
 
 monitor_logger = logging.getLogger("ProgressMonitor")
 
@@ -18,7 +18,7 @@ async def default_progress_monitor(q: asyncio.Queue, logger: logging.Logger = No
             break
 
         log_message_parts = [
-            f"{pd.Timestamp(update.timestamp, unit='s')}",
+            f"{datetime.fromtimestamp(update.timestamp).strftime('%Y-%m-%d %H:%M:%S')}",
             f"LVL {update.level.value}",
             f"[{update.agent_name or 'System'}]",
             update.message,

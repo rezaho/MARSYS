@@ -81,7 +81,7 @@ class Message:
 Standard memory implementation:
 
 ```python
-from src.agents.memory import ConversationMemory
+from marsys.agents.memory import ConversationMemory
 
 class ConversationMemory:
     def __init__(self):
@@ -116,7 +116,7 @@ class ConversationMemory:
 Manages memory lifecycle and policies:
 
 ```python
-from src.agents.memory import MemoryManager
+from marsys.agents.memory import MemoryManager
 
 class MemoryManager:
     def __init__(

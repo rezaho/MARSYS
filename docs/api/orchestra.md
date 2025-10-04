@@ -9,8 +9,8 @@ Orchestra is the main entry point for executing multi-agent workflows in MARSYS.
 ## 📦 Import
 
 ```python
-from src.coordination import Orchestra
-from src.coordination.orchestra import OrchestraInstance, OrchestraResult
+from marsys.coordination import Orchestra
+from marsys.coordination.orchestra import OrchestraInstance, OrchestraResult
 ```
 
 ## 🚀 Quick Start
@@ -27,7 +27,7 @@ result = await Orchestra.run(
 ### With Configuration
 
 ```python
-from src.coordination.config import ExecutionConfig, StatusConfig
+from marsys.coordination.config import ExecutionConfig, StatusConfig
 
 result = await Orchestra.run(
     task="Complex research task",
@@ -454,7 +454,7 @@ result = await Orchestra.run(
 ### Execution Configuration
 
 ```python
-from src.coordination.config import ExecutionConfig, VerbosityLevel
+from marsys.coordination.config import ExecutionConfig, VerbosityLevel
 
 config = ExecutionConfig(
     # Timeouts
@@ -480,7 +480,7 @@ result = await Orchestra.run(
 ### State Management
 
 ```python
-from src.coordination.state import StateManager, FileStorageBackend
+from marsys.coordination.state import StateManager, FileStorageBackend
 
 state_manager = StateManager(
     storage=FileStorageBackend("./state"),
@@ -498,7 +498,7 @@ result = await Orchestra.run(
 ### Metrics Collection
 
 ```python
-from src.coordination.monitoring import MetricsCollector
+from marsys.coordination.monitoring import MetricsCollector
 
 metrics = MetricsCollector(
     enabled=True,
