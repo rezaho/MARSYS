@@ -914,18 +914,22 @@ class Orchestra:
             # Prefer the last main branch with response (likely the synthesized result)
             return main_branches_with_response[-1].final_response
         
-        # Otherwise, look for successful branches
-        successful_branches = [b for b in branches if b.success and b.final_response]
-        
+        # Otherwise, look for successful branches (exclude child branches)
+        successful_branches = [
+            b for b in branches
+            if b.success and b.final_response and not b.branch_id.startswith("child_")
+        ]
+
         if successful_branches:
             # Prefer branches with more steps (likely more complete)
             successful_branches.sort(key=lambda b: b.total_steps, reverse=True)
             return successful_branches[0].final_response
         
-        # If no successful branches with responses, return the last response
+        # If no successful branches with responses, return the last response (exclude child branches)
         if branches:
             for b in reversed(branches):
-                if b.final_response:
+                # Skip child branches even in fallback to prevent leaking parallel execution errors
+                if b.final_response and not b.branch_id.startswith("child_"):
                     return b.final_response
         
         return None
