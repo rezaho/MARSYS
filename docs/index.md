@@ -229,7 +229,7 @@ graph LR
 - 🎯 **Simple API**: Start with one line, scale to complex workflows
 - 🔧 **Extensible**: Custom agents, tools, and communication channels
 - 📝 **Well-Documented**: Comprehensive guides with real examples
-- 🧪 **Tested**: 100% test coverage with integration tests
+- 🧪 **Tested**: Comprehensive test suite with integration tests
 
 ### **For Teams**
 - 💼 **Robust Error Handling**: Recovery mechanisms, retries, and monitoring built-in

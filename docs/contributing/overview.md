@@ -2,6 +2,64 @@
 
 Welcome to the MARSYS contributor community! 🎉 We're excited that you're interested in helping make MARSYS better. This section provides everything you need to know about contributing to the Multi-Agent Reasoning Systems framework.
 
+## 📝 **Copyright & Contributor License Agreement (CLA)**
+
+### **Important: Please Read Before Contributing**
+
+**All contributors must sign our Contributor License Agreement (CLA) before their first contribution can be merged.**
+
+### **Why We Require a CLA**
+
+The CLA ensures MARSYS can maintain flexible licensing while remaining open-source:
+- Enables potential dual-licensing in the future
+- Protects the project's sustainability and long-term development
+- Maintains licensing flexibility for the project
+- Ensures contributors grant necessary rights for the project's use
+
+### **What the CLA Says**
+
+- ✅ **You retain ownership** of your contribution
+- ✅ **You grant us permission** to use it in the project
+- ✅ **You grant sublicensing rights** (enables future licensing flexibility)
+- ✅ **Rights can be transferred** if needed for the project
+- ✅ **You can still use your code** elsewhere under Apache 2.0
+
+### **How to Sign the CLA**
+
+**It's automatic!** When you open your first pull request:
+
+1. **CLA Assistant bot** will comment on your PR
+2. **Click the link** in the bot's comment
+3. **Review the CLA** (full text at [docs/CLA.md](../CLA.md))
+4. **Click "I Agree"**
+5. **Your PR is automatically unblocked**
+
+**You only sign once** – it covers all your future contributions to MARSYS.
+
+### **Copyright Ownership**
+
+**Important:** The Marsys Project copyright is held solely by the original author ([rezaho](https://github.com/rezaho)). By contributing, you:
+
+✅ **DO** receive credit in the [AUTHORS](../../AUTHORS) file
+✅ **DO** grant a license for your contribution under Apache 2.0
+✅ **DO** retain the right to use your contribution elsewhere
+
+❌ **DO NOT** acquire copyright ownership of Marsys
+❌ **DO NOT** gain the right to relicense the project
+
+For detailed information, see:
+- [Full CLA Text](../CLA.md)
+- [Copyright Details](../../COPYRIGHT)
+- [Contributing Guidelines](../../CONTRIBUTING.md)
+
+### **Questions About the CLA?**
+
+- Read the [Full CLA](../CLA.md) for complete details
+- Email: reza@marsys.io
+- Open a discussion on GitHub
+
+---
+
 ## 🤝 **Ways to Contribute**
 
 There are many ways to contribute to MARSYS, regardless of your experience level:
@@ -53,8 +111,8 @@ Follow our [Development Setup Guide](setup.md) to get your environment ready:
 
 ```bash
 # Clone the repository
-git clone https://github.com/your-org/marsys.git
-cd marsys
+git clone https://github.com/rezaho/MARSYS.git
+cd MARSYS
 
 # Set up development environment
 python -m venv venv
@@ -74,8 +132,8 @@ Familiarize yourself with the project structure:
 
 ### **3. Find Your First Contribution**
 Look for good first issues and areas where you can help:
-- Browse [good first issues](https://github.com/your-org/marsys/labels/good%20first%20issue)
-- Check [help wanted](https://github.com/your-org/marsys/labels/help%20wanted) issues
+- Browse [good first issues](https://github.com/rezaho/MARSYS/labels/good%20first%20issue)
+- Check [help wanted](https://github.com/rezaho/MARSYS/labels/help%20wanted) issues
 - Review our [roadmap](../project/roadmap.md) for upcoming features
 - Ask in discussions what needs help
 
@@ -224,10 +282,10 @@ We value our contributors and provide recognition:
 - **[Testing Guide](testing.md)** - Testing strategies and best practices
 
 ### **Community Resources**
-- **[Discussion Forums](https://github.com/your-org/marsys/discussions)** - Ask questions and share ideas
+- **[Discussion Forums](https://github.com/rezaho/MARSYS/discussions)** - Ask questions and share ideas
 - **[Contributor Chat](https://discord.gg/marsys)** - Real-time chat with other contributors
-- **[Issue Tracker](https://github.com/your-org/marsys/issues)** - Track bugs and feature requests
-- **[Project Board](https://github.com/your-org/marsys/projects)** - See what's being worked on
+- **[Issue Tracker](https://github.com/rezaho/MARSYS/issues)** - Track bugs and feature requests
+- **[Project Board](https://github.com/rezaho/MARSYS/projects)** - See what's being worked on
 
 ### **Learning Resources**
 - **[Tutorials](../tutorials/overview.md)** - Learn MARSYS through hands-on examples
@@ -260,10 +318,10 @@ We are committed to providing a welcoming and inclusive environment:
 
 Start your contribution journey:
 
-1. **🔍 [Browse Issues](https://github.com/your-org/marsys/issues)** - Find something to work on
+1. **🔍 [Browse Issues](https://github.com/rezaho/MARSYS/issues)** - Find something to work on
 2. **📖 [Read the Setup Guide](setup.md)** - Get your development environment ready
-3. **💬 [Join Discussions](https://github.com/your-org/marsys/discussions)** - Introduce yourself to the community
-4. **🎯 [Pick a Good First Issue](https://github.com/your-org/marsys/labels/good%20first%20issue)** - Start with something manageable
+3. **💬 [Join Discussions](https://github.com/rezaho/MARSYS/discussions)** - Introduce yourself to the community
+4. **🎯 [Pick a Good First Issue](https://github.com/rezaho/MARSYS/labels/good%20first%20issue)** - Start with something manageable
 5. **🔧 [Make Your First PR](guidelines.md)** - Submit your first contribution
 
 Welcome to the MARSYS community! We can't wait to see what you'll build. 🎉 

@@ -4,9 +4,10 @@
 
 ![MARSYS Logo](https://img.shields.io/badge/MARSYS-v0.1--beta-blue?style=for-the-badge)
 [![Python](https://img.shields.io/badge/python-3.12%2B-blue?style=for-the-badge)](https://www.python.org/)
-[![License](https://img.shields.io/badge/license-MIT-green?style=for-the-badge)](LICENSE)
+[![License](https://img.shields.io/badge/license-Apache%202.0-green?style=for-the-badge)](LICENSE)
+[![CLA assistant](https://cla-assistant.io/readme/badge/rezaho/MARSYS)](https://cla-assistant.io/rezaho/MARSYS)
 [![Documentation](https://img.shields.io/badge/docs-GitHub%20Pages-orange?style=for-the-badge)](https://marsys.io)
-[![Tests](https://img.shields.io/badge/tests-100%25%20passing-brightgreen?style=for-the-badge)](tests/)
+[![Tests](https://img.shields.io/badge/tests-passing-brightgreen?style=for-the-badge)](tests/)
 
 **A powerful framework for orchestrating collaborative AI agents with sophisticated reasoning, planning, and autonomous capabilities**
 
@@ -391,13 +392,30 @@ MARSYS excels in complex, multi-step workflows requiring coordination between sp
 
 We welcome contributions from the community! MARSYS is an open-source project that thrives on collaboration.
 
+### 📝 Contributor License Agreement (CLA)
+
+**Before your first contribution can be merged, you must sign our CLA.** This is a one-time, automated process:
+
+1. Open a pull request
+2. CLA Assistant bot will comment with a link
+3. Click the link and sign (takes 1 minute)
+4. Your PR will be automatically unblocked
+
+**Why a CLA?** The CLA ensures we can maintain flexible licensing while keeping MARSYS open-source:
+- Enables potential dual-licensing in the future
+- Protects the project's sustainability and long-term development
+- Maintains licensing flexibility for the project
+
+You retain ownership of your code and can use it elsewhere. Read the [full CLA details](docs/CLA.md) and [copyright information](COPYRIGHT).
+
 ### How to Contribute
 
-1. **Fork the repository** and create your branch from `main`
-2. **Make your changes** and ensure tests pass
-3. **Write/update tests** for your changes
-4. **Update documentation** as needed
-5. **Submit a pull request** with clear description
+1. **Sign the CLA** (automatic on first PR - see above)
+2. **Fork the repository** and create your branch from `main`
+3. **Make your changes** and ensure tests pass
+4. **Write/update tests** for your changes
+5. **Update documentation** as needed
+6. **Submit a pull request** with clear description
 
 ### Development Setup
 
@@ -459,7 +477,18 @@ If you use MARSYS in your research or projects, please cite:
 
 ## 🛡️ License
 
-MARSYS is released under the MIT License. See [LICENSE](LICENSE) for details.
+MARSYS is released under the **Apache License 2.0**. See [LICENSE](LICENSE) for full terms.
+
+### Copyright & Ownership
+
+Copyright © 2025 **Marsys Project**
+Original Author: [rezaho](https://github.com/rezaho) (reza@marsys.io)
+
+**Important:** The copyright is held solely by the original author. Contributors grant a license to their contributions but do not transfer copyright ownership. See [COPYRIGHT](COPYRIGHT) for details.
+
+### Contributing
+
+By contributing to MARSYS, you agree that your contributions will be licensed under the Apache License 2.0, subject to our [Contributor License Agreement](docs/CLA.md). See [CONTRIBUTING.md](CONTRIBUTING.md) for full contribution guidelines.
 
 ---
 

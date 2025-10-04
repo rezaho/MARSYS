@@ -5,21 +5,21 @@ Learn about the MARSYS framework project, roadmap, and community.
 ## 🎯 Mission & Vision
 
 ### Mission
-Democratize advanced multi-agent AI systems by providing a comprehensive, production-ready framework that enables developers to build, deploy, and scale collaborative AI agents with ease.
+Democratize advanced multi-agent AI systems by providing a comprehensive framework that enables developers to build, deploy, and scale collaborative AI agents with ease.
 
 ### Vision
 Become the leading open-source framework for building intelligent, collaborative multi-agent systems that enhance human productivity and solve complex real-world problems.
 
 ### Core Values
 - **🌟 Accessibility**: Multi-agent AI for developers of all skill levels
-- **🔒 Reliability**: Production-ready, robust solutions
+- **🔒 Reliability**: Reliable, robust solutions
 - **🎨 Flexibility**: Support diverse use cases and deployments
 - **🚀 Innovation**: Push boundaries of multi-agent systems
 - **🤝 Community**: Foster inclusive, vibrant community
 
 ## 📊 Project Status
 
-### Current Version: 1.0.0 (Production Ready)
+### Current Version: 0.1-beta
 
 <div class="grid cards" markdown="1">
 
@@ -33,7 +33,7 @@ Become the leading open-source framework for building intelligent, collaborative
     ✅ Browser automation capabilities
     ✅ Topology-driven coordination
     ✅ State persistence & checkpointing
-    ✅ Comprehensive testing framework
+    ✅ Testing framework
 
 - :material-progress-check:{ .lg .middle } **In Progress**
 
@@ -43,7 +43,6 @@ Become the leading open-source framework for building intelligent, collaborative
     🚧 Distributed execution
     🚧 Advanced monitoring dashboard
     🚧 Visual workflow designer
-    🚧 Enterprise features
 
 - :material-calendar-clock:{ .lg .middle } **Planned**
 
@@ -59,9 +58,8 @@ Become the leading open-source framework for building intelligent, collaborative
 
     ---
 
-    🏆 100% test coverage on core
-    🏆 10+ production deployments
-    🏆 Active community
+    🏆 Active development
+    🏆 Growing community
     🏆 Comprehensive documentation
     🏆 Multiple language models
 
@@ -69,33 +67,19 @@ Become the leading open-source framework for building intelligent, collaborative
 
 ## 🗺️ Roadmap
 
-### Q1 2025 - Performance & Scale
+### Q4 2025 - Performance & Scale
 - [ ] Performance optimization suite
 - [ ] Distributed agent execution
 - [ ] Advanced caching strategies
 - [ ] Resource pooling improvements
 - [ ] Benchmark suite
 
-### Q2 2025 - Developer Experience
+### Q1 2026 - Developer Experience
 - [ ] Visual workflow designer
 - [ ] Interactive debugging tools
 - [ ] Code generation assistant
 - [ ] Migration tools
 - [ ] Plugin system
-
-### Q3 2025 - Enterprise Features
-- [ ] Advanced security features
-- [ ] Compliance frameworks (SOC2, HIPAA)
-- [ ] Enterprise authentication (SSO/SAML)
-- [ ] Audit logging system
-- [ ] SLA monitoring
-
-### Q4 2025 - Ecosystem Growth
-- [ ] Cloud marketplace integrations
-- [ ] Pre-built agent templates
-- [ ] Industry-specific solutions
-- [ ] Partner integrations
-- [ ] Certification program
 
 ## 📈 Statistics
 
@@ -163,17 +147,7 @@ We welcome contributions from everyone! See our [Contributing Guide](../contribu
 
 ## 🌟 Success Stories
 
-### Research Institution
-> "MARSYS reduced our research analysis time by 80% while improving accuracy. The parallel agent execution is game-changing."
-> — *Research Director, Major University*
-
-### Tech Startup
-> "We built our entire customer service platform on MARSYS. It handles 10,000+ conversations daily with 95% satisfaction."
-> — *CTO, SaaS Company*
-
-### Enterprise
-> "The framework's flexibility allowed us to create custom agents for our specific industry needs. Outstanding architecture."
-> — *VP Engineering, Fortune 500*
+*Coming soon - Share your MARSYS success story with us!*
 
 ## 📜 License
 
@@ -229,7 +203,7 @@ See [LICENSE](https://github.com/yourusername/marsys/blob/main/LICENSE) for deta
 | Feature | MARSYS | LangChain | AutoGen | Custom |
 |---------|---------|-----------|----------|---------|
 | Multi-Agent | ✅ Native | ⚠️ Limited | ✅ Yes | ❌ DIY |
-| Production Ready | ✅ Yes | ⚠️ Partial | ⚠️ Beta | ❌ Varies |
+| Production Ready | ⚠️ Beta | ⚠️ Partial | ⚠️ Beta | ❌ Varies |
 | State Management | ✅ Built-in | ❌ External | ⚠️ Basic | ❌ DIY |
 | Browser Automation | ✅ Native | ❌ No | ❌ No | ❌ DIY |
 | Topology System | ✅ Advanced | ❌ No | ⚠️ Basic | ❌ DIY |
