@@ -28,6 +28,7 @@ from ..branches.types import (
     MaxStepsCompletion,
 )
 from ..topology.graph import TopologyGraph, ParallelGroup
+from ..topology.core import NodeType
 from ..validation.types import AgentInvocation
 
 if TYPE_CHECKING:
@@ -2083,7 +2084,12 @@ class DynamicBranchSpawner:
                     if node and hasattr(node, 'is_convergence_point') and node.is_convergence_point:
                         reachable.add(current)
                         logger.debug(f"  Agent '{agent}' can reach convergence point '{current}'")
-                
+
+                # Stop BFS at USER nodes
+                node = self.graph.nodes.get(current)
+                if (node and hasattr(node, 'node_type') and node.node_type == NodeType.USER) or current.lower() == "user":
+                    continue
+
                 # Continue exploring
                 for next_agent in self.graph.get_next_agents(current):
                     if next_agent not in visited:
