@@ -591,7 +591,7 @@ class BrowserAgent(Agent):
             # Create the vision agent with the model config
             self.vision_agent = InteractiveElementsAgent(
                 model_config=vision_model_config,
-                agent_name=f"{agent_name or 'BrowserAgent'}_VisionAnalyzer"
+                agent_name=f"{name or 'BrowserAgent'}_VisionAnalyzer"
             )
 
         # Store vision model config for potential future use

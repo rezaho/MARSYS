@@ -303,7 +303,9 @@ class Orchestra:
             topology: Definition of agent topology and rules
             agent_registry: Optional registry (uses global if not provided)
             context: Optional execution context
-            execution_config: Optional configuration for execution behavior
+            execution_config: Optional configuration for execution behavior.
+                If execution_config.user_interaction is set to "terminal", a
+                CommunicationManager will be automatically created for user interaction.
             max_steps: Maximum steps before timeout
             state_manager: Optional state manager for persistence
             verbosity: Simple verbosity level (0-2) for quick status setup
@@ -311,6 +313,12 @@ class Orchestra:
 
         Returns:
             OrchestraResult with execution details
+
+        Note:
+            User interaction is automatically enabled when execution_config.user_interaction
+            is set to "terminal". The system will create a CommunicationManager with
+            enhanced terminal output. For custom communication channels, instantiate
+            Orchestra directly with your own CommunicationManager.
         """
         if agent_registry is None:
             agent_registry = AgentRegistry
@@ -339,11 +347,47 @@ class Orchestra:
         context = context or {}
         context['execution_config'] = execution_config
 
-        # Create orchestra with execution_config
+        # Auto-create CommunicationManager based on user_interaction setting
+        # (similar to BaseAgent.auto_run() logic at agents.py:2547-2589)
+        comm_manager = None
+
+        if execution_config.user_interaction and execution_config.user_interaction != "none":
+            if execution_config.user_interaction == "terminal":
+                # Create terminal-based communication manager
+                from .communication import CommunicationManager
+                from .config import CommunicationConfig
+
+                comm_config = CommunicationConfig(
+                    use_enhanced_terminal=True,
+                    use_rich_formatting=True,
+                    theme_name="modern",
+                    prefix_width=20,
+                    show_timestamps=True
+                )
+
+                comm_manager = CommunicationManager(config=comm_config)
+
+                # Assign to session if context has session_id
+                if "session_id" in context:
+                    comm_manager.assign_channel_to_session(
+                        context["session_id"],
+                        "terminal"  # Use default terminal ID created by manager
+                    )
+
+                logger.info("Auto-created CommunicationManager for terminal user interaction")
+
+            elif execution_config.user_interaction == "web":
+                # Web mode placeholder for future implementation
+                logger.info("Web mode user interaction not yet implemented")
+            else:
+                logger.warning(f"Unknown user_interaction mode: {execution_config.user_interaction}")
+
+        # Create orchestra with execution_config and communication_manager
         orchestra = cls(
             agent_registry,
             rule_factory_config=None,
             state_manager=state_manager,
+            communication_manager=comm_manager,  # Pass auto-created or None
             execution_config=execution_config
         )
 
