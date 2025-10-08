@@ -587,14 +587,15 @@ class TopologyGraph:
     def can_reach(self, from_agent: str, to_agent: str, visited: Optional[Set[str]] = None) -> bool:
         """
         Check if there's a path from from_agent to to_agent in the topology.
-        
+        Stops at USER nodes which act as workflow phase boundaries.
+
         Args:
             from_agent: Starting agent
             to_agent: Target agent
             visited: Set of already visited nodes (for cycle detection)
         
         Returns:
-            True if a path exists
+            True if a path exists (without crossing USER node boundaries)
         """
         if visited is None:
             visited = set()
@@ -606,7 +607,13 @@ class TopologyGraph:
             return False  # Cycle detected
         
         visited.add(from_agent)
-        
+
+        # Stop at USER nodes (workflow boundaries)
+        from .core import NodeType
+        node = self.nodes.get(from_agent)
+        if (node and hasattr(node, 'node_type') and node.node_type == NodeType.USER) or from_agent.lower() == "user":
+            return False
+
         # Get all possible next agents from current position
         next_agents = self.get_next_agents(from_agent)
         
