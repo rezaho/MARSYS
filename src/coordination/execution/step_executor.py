@@ -548,6 +548,11 @@ class StepExecutor:
         cleaned_instruction = self._strip_schema_hints(agent.instruction)
         system_prompt_parts.append(cleaned_instruction)
 
+        # 1.5. Add brief JSON format reminder (prominent placement)
+        system_prompt_parts.append(
+            "**IMPORTANT**: Always respond with valid JSON in a ```json code block. Never use plain text responses."
+        )
+
         # 2. Add environmental context
         environmental_context = self._get_environmental_context()
         if environmental_context:
@@ -777,13 +782,8 @@ Example for `final_response`:
         
         prompt_lines = ["\n\n--- AVAILABLE TOOLS ---"]
         prompt_lines.append(
-            "When you need to use a tool, your response should include a `tool_calls` field. This field should be a list of JSON objects, where each object represents a tool call."
-        )
-        prompt_lines.append(
-            'Each tool call object must have an `id` (a unique identifier for the call), a `type` field set to "function", and a `function` field.'
-        )
-        prompt_lines.append(
-            "The `function` field must be an object with a `name` (the tool name) and `arguments` (a JSON string of the arguments)."
+            "When you need to use a tool, include a `tool_calls` field in your response. "
+            'Each tool call must have: `id` (unique identifier), `type` ("function"), and `function` (with `name` and `arguments` as JSON string).'
         )
 #         prompt_lines.append("Example of a tool call structure:")
 #         prompt_lines.append(
@@ -855,140 +855,126 @@ Example for `final_response`:
         
         prompt_lines = ["\n\n--- AVAILABLE PEER AGENTS ---"]
         prompt_lines.append(
-            "You can invoke other agents to assist you. If you choose this path, your JSON response (as described in the general response guidelines) "
-            'should set `next_action` to `"invoke_agent"`. The `action_input` field for this action must be an array containing agent invocation objects.'
+            'You can invoke other agents by setting `next_action` to `"invoke_agent"` with an array of invocation objects.'
+        )
+        prompt_lines.append(
+            "\n**Key Rule**: Only invoke multiple agents together if their tasks are independent. "
+            "If you need one agent's response before invoking another, do them in separate steps."
+        )
+        prompt_lines.append(
+            "\n**Invocation Format**: Each object must have `agent_name` (string) and `request` (string or object with task details)."
         )
         
-        prompt_lines.append("\n**CRITICAL DECISION PRINCIPLE:**")
+        prompt_lines.append("\n**INVOCATION EXAMPLES:**")
         prompt_lines.append(
-            "Before invoking any agent(s), ask yourself: 'Do I need the response from these agent(s) to complete my task or make my next decision?'"
-        )
-        prompt_lines.append(
-            "- If YES → Invoke those agents first, wait for their responses, then proceed with your next action"
-        )
-        prompt_lines.append(
-            "- If NO → You may invoke them alongside other agents or pass control directly"
-        )
-        
-        prompt_lines.append("\n**EXECUTION SEMANTICS:**")
-        prompt_lines.append(
-            "- **Multiple agents in array**: They execute in parallel. Depending on the system topology, "
-            "control may return to you with their responses OR flow directly to another designated agent."
-        )
-        prompt_lines.append(
-            "- **Single agent in array**: Standard invocation. Depending on the system topology, "
-            "you may receive its response OR it may continue the workflow to another agent."
-        )
-        prompt_lines.append(
-            "- **Key Rule**: NEVER invoke agents together if you need one's response before invoking another. "
-            "Invoke them in separate steps based on your information dependencies."
-        )
-        
-        prompt_lines.append("\n**REQUEST REQUIREMENTS:**")
-        prompt_lines.append(
-            "Each invocation object must contain:"
-        )
-        prompt_lines.append(
-            "- `agent_name`: (String) The name of the agent to invoke from the list below (must be an exact match)."
-        )
-        prompt_lines.append(
-            "- `request`: (String or Object) A clear description of what you need the agent to do. This should include:"
-        )
-        prompt_lines.append(
-            "  • **Task description**: What specific task or action the agent should perform"
-        )
-        prompt_lines.append(
-            "  • **Necessary context**: Any information the agent needs to complete the task"
-        )
-        prompt_lines.append(
-            "  • **Expected response** (only if you need results back): If the workflow will return control to you "
-            "and you need the agent's results to continue your work, specify what response format or data you expect. "
-            "If the agent is simply the next step in a chain and won't return to you, you don't need to specify this."
-        )
-        
-        prompt_lines.append("\n**EXAMPLES OF CORRECT INVOCATION PATTERNS:**")
-        prompt_lines.append("\n✅ CORRECT - When you need responses before proceeding:")
-        prompt_lines.append(
-            """```
-Step 1: Invoke data collection agents (need their data first)
+            """
+Single agent invocation:
+```json
 {
-  "thought": "I need to collect data from multiple sources before I can proceed",
+  "thought": "I need specific data for this task",
   "next_action": "invoke_agent",
   "action_input": [
-    {"agent_name": "DataAgent1", "request": {"query": "..."}},
-    {"agent_name": "DataAgent2", "request": {"query": "..."}}
+    {"agent_name": "DataAgent", "request": {"query": "..."}}
   ]
 }
+```
 
-Step 2: After receiving data, invoke processing agent
+Parallel invocation (independent tasks):
+```json
 {
-  "thought": "Now that I have the data from both agents, I can send it for processing",
+  "thought": "These tasks are independent and can run in parallel",
   "next_action": "invoke_agent",
   "action_input": [
-    {"agent_name": "ProcessingAgent", "request": {"data": "..."}}
-  ]
-}
-```"""
-        )
-        
-        prompt_lines.append("\n❌ INCORRECT - Invoking dependent agents together:")
-        prompt_lines.append(
-            """```
-{
-  "thought": "I'll invoke data collectors and processor together",
-  "next_action": "invoke_agent",
-  "action_input": [
-    {"agent_name": "DataAgent1", "request": {"query": "..."}},
-    {"agent_name": "DataAgent2", "request": {"query": "..."}},
-    {"agent_name": "ProcessingAgent", "request": {"data": "???"}}  // ERROR: What data? You don't have it yet!
-  ]
-}
-```"""
-        )
-        
-        prompt_lines.append("\n✅ CORRECT - When agents don't depend on each other:")
-        prompt_lines.append(
-            """```
-{
-  "thought": "These analysis tasks are independent and can run in parallel",
-  "next_action": "invoke_agent",
-  "action_input": [
-    {"agent_name": "AnalysisAgent1", "request": {"analyze": "dataset_A"}},
-    {"agent_name": "AnalysisAgent2", "request": {"analyze": "dataset_B"}},
-    {"agent_name": "AnalysisAgent3", "request": {"analyze": "dataset_C"}}
+    {"agent_name": "Agent1", "request": {"task": "..."}},
+    {"agent_name": "Agent2", "request": {"task": "..."}}
   ]
 }
 ```"""
         )
         
         prompt_lines.append("\nYou are allowed to invoke the following agents:")
-        
+
         for peer_name in allowed_agents:
+            # Get the peer agent to access its goal and schema
+            peer_agent = None
+            peer_goal = None
+            peer_schema = None
+
+            try:
+                peer_agent = AgentRegistry.get(peer_name)
+                peer_goal = getattr(peer_agent, 'goal', None) if peer_agent else None
+                # Get input schema if available
+                if peer_agent and hasattr(peer_agent, "_compiled_input_schema"):
+                    peer_schema = peer_agent._compiled_input_schema
+            except:
+                pass
+
+            # Start with a blank line for readability
+            prompt_lines.append("")
+
+            # Agent name
+            prompt_lines.append(f"Agent Name: `{peer_name}`")
+
+            # Goal (if available)
+            if peer_goal:
+                prompt_lines.append(f"  - Goal: {peer_goal}")
+
             # Get instance count information
             try:
                 total_instances = AgentRegistry.get_instance_count(peer_name)
                 available_instances = AgentRegistry.get_available_count(peer_name)
-                
-                # Format agent name with instance info
+
+                # Instance information
                 if total_instances > 1:
                     # It's a pool - show instance availability
-                    instance_info = f" (Pool: {available_instances}/{total_instances} instances available)"
-                    prompt_lines.append(f"- `{peer_name}`{instance_info}")
+                    prompt_lines.append(f"  - Instances: Pool with {available_instances}/{total_instances} available")
                     if available_instances < total_instances:
-                        prompt_lines.append(f"  Note: Some instances are currently in use. You can invoke up to {available_instances} in parallel.")
+                        prompt_lines.append(f"    Note: Some instances are in use. You can invoke up to {available_instances} in parallel.")
                 else:
                     # Single instance agent
-                    prompt_lines.append(f"- `{peer_name}` (Single instance)")
+                    prompt_lines.append(f"  - Instances: Single instance")
             except:
-                # If registry lookup fails, just list the agent name
-                prompt_lines.append(f"- `{peer_name}`")
-            
-            # Add simple format note
-            prompt_lines.append("  Expected input format: Any string or object")
+                # If registry lookup fails, don't show instance info
+                pass
+
+            # Schema/input format information
+            if peer_schema:
+                schema_info = self._format_schema_for_prompt(peer_schema)
+                prompt_lines.append(f"  - Input Format: {schema_info}")
+            else:
+                prompt_lines.append(f"  - Input Format: Any string or object")
         
         prompt_lines.append("--- END AVAILABLE PEER AGENTS ---")
         return "\n".join(prompt_lines)
-    
+
+    def _format_schema_for_prompt(self, schema: Dict[str, Any]) -> str:
+        """Format a JSON schema into a human-readable string for the prompt."""
+        if not schema:
+            return "Any string or object"
+
+        if schema.get("type") == "object":
+            properties = schema.get("properties", {})
+            required = schema.get("required", [])
+
+            if len(properties) == 1 and len(required) == 1:
+                # Single required field
+                field_name = required[0]
+                field_schema = properties.get(field_name, {})
+                field_type = field_schema.get("type", "any")
+                return f'Object with required "{field_name}" field ({field_type})'
+            elif properties:
+                # Multiple fields
+                field_descriptions = []
+                for field, field_schema in properties.items():
+                    field_type = field_schema.get("type", "any")
+                    is_required = field in required
+                    field_descriptions.append(
+                        f'"{field}" ({field_type}){"*" if is_required else ""}'
+                    )
+                return f"Object with fields: {', '.join(field_descriptions)} (* = required)"
+
+        return f"Data of type: {schema.get('type', 'any')}"
+
     def _get_context_instructions(self, agent: 'BaseAgent') -> str:
         """Generate instructions for handling passed context."""
         instructions = []
