@@ -54,6 +54,7 @@ class TopologyAnalyzer:
         self._add_edges(graph, topology_def)
         
         # NEW: Build edges from allowed_peers if no edges defined
+        is_auto_run_mode = False  # Track whether this is auto_run mode
         if not graph.edges:
             # Import here to avoid circular imports
             from ...agents.registry import AgentRegistry
@@ -68,7 +69,8 @@ class TopologyAnalyzer:
             
             if has_allowed_peers:
                 logger.info("Detected auto_run mode - building topology from allowed_peers")
-                
+                is_auto_run_mode = True  # Set flag for later use
+
                 # Step 1: Auto-discover and add all nodes from registry
                 self._build_nodes_from_registry(graph)
                 
@@ -93,19 +95,39 @@ class TopologyAnalyzer:
         self._process_rules(graph, topology_def)
         
         # 4. Handle entry/exit points and auto-inject User if needed
-        # Get metadata from topology
-        metadata = topology_def.metadata if hasattr(topology_def, 'metadata') else topology_def.get('metadata', {})
-        manual_entry = metadata.get("entry_point")
-        manual_exits = metadata.get("exit_points")
+        # Get metadata from topology (check both top-level and metadata sub-dict for backward compatibility)
+        if hasattr(topology_def, 'metadata'):
+            metadata = topology_def.metadata
+        else:
+            metadata = topology_def.get('metadata', {})
+
+        # Check BOTH top-level and metadata for entry/exit points (auto_run uses top-level)
+        manual_entry = topology_def.get("entry_point") if isinstance(topology_def, dict) else None
+        if manual_entry is None:
+            manual_entry = metadata.get("entry_point")
+
+        manual_exits = topology_def.get("exit_points") if isinstance(topology_def, dict) else None
+        if manual_exits is None:
+            manual_exits = metadata.get("exit_points")
+
         auto_inject_user = metadata.get("auto_inject_user", False)  # Default False for explicit control
 
         try:
             # Find entry point (with manual override)
             user_node, entry_agent = graph.find_entry_point_with_manual(manual_entry)
 
+            # ALWAYS find and store exit points (regardless of auto_inject_user)
+            # This ensures has_user_access() can find them later in step_executor
+            # Use strict=True for explicit topologies (Orchestra.run)
+            # Use strict=False for auto_run mode (soft fallback)
+            exit_agents = graph.find_exit_points_with_manual(
+                manual_exits,
+                strict=not is_auto_run_mode  # Strict for Orchestra.run, soft for auto_run
+            )
+            graph.metadata["exit_points"] = exit_agents
+
             if not user_node and auto_inject_user:
                 # No User node exists AND auto-injection is explicitly enabled
-                exit_agents = graph.find_exit_points_with_manual(manual_exits)
                 graph.auto_inject_user_node(entry_agent, exit_agents)
                 logger.info(f"Auto-injected User node (auto_inject_user=True)")
             elif not user_node and not auto_inject_user:
@@ -199,20 +221,24 @@ class TopologyAnalyzer:
         for agent_name in agents:
             agent = AgentRegistry.get(agent_name)
             if agent and hasattr(agent, '_allowed_peers_init') and agent._allowed_peers_init:
+                # Get bidirectional preference (default to False if not set)
+                is_bidirectional = getattr(agent, '_bidirectional_peers', False)
+
                 for peer in agent._allowed_peers_init:
                     # Check if peer exists in the graph (was discovered)
                     if peer in graph.nodes:  # Changed from 'if peer in agents'
-                        # Create bidirectional edge instead of reflexive
+                        # Use agent's bidirectional preference
                         graph.add_edge(TopologyEdge(
                             source=agent_name,
                             target=peer,
-                            bidirectional=True  # Now creates bidirectional edges
+                            bidirectional=is_bidirectional
                         ))
                         edges_created += 1
-                        logger.debug(f"Created bidirectional edge from allowed_peers: {agent_name} <-> {peer}")
-        
+                        edge_type = "bidirectional" if is_bidirectional else "unidirectional"
+                        logger.debug(f"Created {edge_type} edge from allowed_peers: {agent_name} {'<->' if is_bidirectional else '->'} {peer}")
+
         if edges_created > 0:
-            logger.info(f"Created {edges_created} bidirectional edges from allowed_peers")
+            logger.info(f"Created {edges_created} edges from allowed_peers")
     
     def _build_nodes_from_registry(self, graph: TopologyGraph) -> int:
         """

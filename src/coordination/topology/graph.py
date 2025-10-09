@@ -504,46 +504,107 @@ class TopologyGraph:
                     affected_nodes=candidates
                 )
     
-    def find_exit_points_with_manual(self, manual_exits: Optional[List[str]] = None) -> List[str]:
-        """Find exit points with manual override support."""
-        if manual_exits:
-            # Validate manual exits
-            for exit_point in manual_exits:
-                if exit_point not in self.nodes:
-                    raise TopologyError(
-                        f"Specified exit_point '{exit_point}' not in nodes",
-                        topology_issue="invalid_exit_point",
-                        affected_nodes=[exit_point]
-                    )
-            return manual_exits
-        
-        # Find nodes with no outgoing edges (excluding User nodes)
+    def find_exit_points_with_manual(
+        self,
+        manual_exits: Optional[List[str]] = None,
+        strict: bool = False
+    ) -> List[str]:
+        """Find exit points with conditional logic.
+
+        Args:
+            manual_exits: Optional list of manually specified exit points
+            strict: If True, validate manual_exits against auto-detected (for Orchestra.run)
+                    If False, use soft fallback logic (for auto_run)
+
+        Modes:
+            - Soft (strict=False, for auto_run):
+                1. Try auto-detect
+                2. If none, fallback to manual_exits
+            - Strict (strict=True, for Orchestra.run):
+                1. Auto-detect
+                2. If manual_exits provided:
+                   - Manual can be superset of auto-detected (OK)
+                   - Manual conflicts with auto-detected → ERROR
+                3. If no manual_exits, use auto-detected
+        """
+        # Auto-detect nodes with no outgoing edges
         from .core import NodeType
-        exit_points = []
+        auto_detected = []
         for node_name, node in self.nodes.items():
             if not node.outgoing_edges and node.node_type != NodeType.USER:
-                exit_points.append(node_name)
-        
-        if not exit_points:
-            # Check for conversation loops
-            conversation_nodes = []
-            for agent1, agent2 in self.conversation_loops:
-                if agent1 not in conversation_nodes:
-                    conversation_nodes.append(agent1)
-                if agent2 not in conversation_nodes:
-                    conversation_nodes.append(agent2)
-            
-            if conversation_nodes:
-                return conversation_nodes
+                auto_detected.append(node_name)
+
+        # STRICT MODE (Orchestra.run with explicit topology)
+        if strict:
+            if manual_exits:
+                # Manual exits can be superset of auto-detected
+                # But if there are auto-detected exits NOT in manual, that's an error
+                if auto_detected:
+                    # Check if all auto-detected are included in manual
+                    missing = set(auto_detected) - set(manual_exits)
+                    if missing:
+                        raise TopologyError(
+                            f"Auto-detected exit points {missing} not included in manually specified exit_points. "
+                            f"Manual exit_points can be a superset but must include all auto-detected exits.",
+                            topology_issue="exit_point_conflict",
+                            affected_nodes=list(missing)
+                        )
+                # Validate all manual exits exist
+                for exit_point in manual_exits:
+                    if exit_point not in self.nodes:
+                        raise TopologyError(
+                            f"Specified exit_point '{exit_point}' not in nodes",
+                            topology_issue="invalid_exit_point",
+                            affected_nodes=[exit_point]
+                        )
+                return manual_exits
+            elif auto_detected:
+                return auto_detected
             else:
+                # Check conversation loops
+                conversation_nodes = self._get_conversation_nodes()
+                if conversation_nodes:
+                    return conversation_nodes
                 raise TopologyError(
-                    "No exit points found. All nodes have outgoing edges. "
-                    "Please specify exit_points in topology.",
+                    "No exit points found. All nodes have outgoing edges.",
                     topology_issue="no_exit_points",
                     affected_nodes=list(self.nodes.keys())
                 )
-        
-        return exit_points
+
+        # SOFT MODE (auto_run)
+        else:
+            # Priority: auto-detected → manual fallback → conversation loops → error
+            if auto_detected:
+                return auto_detected
+            elif manual_exits:
+                # Validate manual exits exist
+                for exit_point in manual_exits:
+                    if exit_point not in self.nodes:
+                        raise TopologyError(
+                            f"Specified exit_point '{exit_point}' not in nodes",
+                            topology_issue="invalid_exit_point",
+                            affected_nodes=[exit_point]
+                        )
+                return manual_exits
+            else:
+                conversation_nodes = self._get_conversation_nodes()
+                if conversation_nodes:
+                    return conversation_nodes
+                raise TopologyError(
+                    "No exit points found. All nodes have outgoing edges.",
+                    topology_issue="no_exit_points",
+                    affected_nodes=list(self.nodes.keys())
+                )
+
+    def _get_conversation_nodes(self) -> List[str]:
+        """Helper to extract conversation loop nodes."""
+        conversation_nodes = []
+        for agent1, agent2 in self.conversation_loops:
+            if agent1 not in conversation_nodes:
+                conversation_nodes.append(agent1)
+            if agent2 not in conversation_nodes:
+                conversation_nodes.append(agent2)
+        return conversation_nodes
     
     def auto_inject_user_node(self, entry_agent: str, exit_agents: List[str]) -> None:
         """
