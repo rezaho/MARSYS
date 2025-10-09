@@ -152,7 +152,6 @@ class ParallelInvocationGroup:
     group_id: str
     parent_branch_id: str
     requesting_agent: str
-    target_agent: str
     total_branches: int
     branch_ids: List[str]
     completed_branches: Set[str] = field(default_factory=set)
@@ -1636,25 +1635,25 @@ class DynamicBranchSpawner:
             }
             
             logger.debug(f"Created branch {child_branch.id} for {target_agent}[{idx}] with request: {agent_request}")
-        
-        # Determine the target agent name (all should be the same for pooling)
-        agent_name_target = target_agents[0] if target_agents else None
-        
-        # Validate all target agents are the same (required for pooling)
-        if target_agents and not all(t == agent_name_target for t in target_agents):
-            logger.warning(f"Mixed target agents in parallel invocation: {set(target_agents)}. Using first: {agent_name_target}")
-        
-        if not agent_name_target:
-            logger.error("No target agent identified for parallel invocation")
+
+        # Validate we have target agents
+        if not target_agents:
+            logger.error("No target agents identified for parallel invocation")
             return []
-        
+
+        # Log mixed vs homogeneous targets for debugging
+        unique_targets = set(target_agents)
+        if len(unique_targets) > 1:
+            logger.info(f"Mixed-target parallel invocation: {unique_targets}")
+        else:
+            logger.info(f"Homogeneous parallel invocation: {list(unique_targets)[0]} × {len(target_agents)}")
+
         # PHASE 2: Create Parallel Invocation Group with pre-analyzed convergence info
         group_id = f"parallel_group_{uuid.uuid4().hex[:8]}"
         group = ParallelInvocationGroup(
             group_id=group_id,
             parent_branch_id=parent_branch_id,
             requesting_agent=agent_name,
-            target_agent=agent_name_target,
             total_branches=len(all_branches),
             branch_ids=[b.id for b in all_branches]
         )
@@ -1672,10 +1671,16 @@ class DynamicBranchSpawner:
                 f"sub_group={list(group.sub_group_convergences.keys())}"
             )
         else:
-            # Fallback to legacy convergence finding
-            group.shared_convergence_points = self._find_reachable_convergence_points(agent_name_target)
+            # Fallback to legacy convergence finding (union convergence points from all targets)
+            target_set = set(target_agents)
+            shared_conv, sub_conv = self._find_shared_and_subgroup_convergence_points(
+                from_agents=target_set,
+                exclude_agents=target_set
+            )
+            group.shared_convergence_points = shared_conv
+            group.sub_group_convergences = sub_conv
             group.parent_should_wait = True  # Default to waiting
-            logger.info(f"Using legacy convergence finding (fallback) - found: {group.shared_convergence_points}")
+            logger.info(f"Using legacy convergence finding (fallback) - found shared: {shared_conv}, sub-group: {list(sub_conv.keys())}")
         
         # Track branch-to-agent mapping for convergence tracking
         for branch in all_branches:
@@ -1696,13 +1701,16 @@ class DynamicBranchSpawner:
             # For pools, instances are named as f"{base_name}_{i}" where i is the index
             agent_names = []
             for idx, branch in enumerate(all_branches):
+                # Get actual agent name from each branch's topology
+                branch_agent_name = branch.topology.entry_agent
+
                 # Check if this is a pool by looking at the agent registry
-                if self.agent_registry and self.agent_registry.is_pool(agent_name_target):
+                if self.agent_registry and self.agent_registry.is_pool(branch_agent_name):
                     # Pool instances are named with index suffix
-                    agent_names.append(f"{agent_name_target}_{idx}")
+                    agent_names.append(f"{branch_agent_name}_{idx}")
                 else:
-                    # Single agent - use the name as-is
-                    agent_names.append(agent_name_target)
+                    # Single agent - use the actual branch agent name
+                    agent_names.append(branch_agent_name)
 
             await self.event_bus.emit(ParallelGroupEvent(
                 session_id=context.get("session_id", "unknown"),
@@ -1844,27 +1852,42 @@ class DynamicBranchSpawner:
         Each branch independently acquires, executes, and releases resources.
         """
         all_tasks = []
-        agent_name = group.target_agent
 
-        # Log pool status if applicable
-        if self.agent_registry and self.agent_registry.is_pool(agent_name):
-            pool = self.agent_registry.get_pool(agent_name)
-            if pool:
-                available = pool.get_available_count() if hasattr(pool, 'get_available_count') else 0
-                total = pool.num_instances if hasattr(pool, 'num_instances') else 0
+        # Better logging for mixed vs homogeneous targets
+        from collections import Counter
+        branch_agents = [b.topology.entry_agent for b in branches]
+        agent_counts = Counter(branch_agents)
+
+        if len(agent_counts) == 1:
+            # Homogeneous case (pool or single agent repeated)
+            agent_name = list(agent_counts.keys())[0]
+            if self.agent_registry and self.agent_registry.is_pool(agent_name):
+                pool = self.agent_registry.get_pool(agent_name)
+                if pool:
+                    available = pool.get_available_count() if hasattr(pool, 'get_available_count') else 0
+                    total = pool.num_instances if hasattr(pool, 'num_instances') else 0
+                    logger.info(
+                        f"Starting parallel execution of {len(branches)} branches "
+                        f"for pool '{agent_name}' ({available}/{total} instances available)"
+                    )
+            else:
                 logger.info(
                     f"Starting parallel execution of {len(branches)} branches "
-                    f"for pool '{agent_name}' ({available}/{total} instances available)"
+                    f"for agent '{agent_name}'"
                 )
         else:
+            # Mixed targets
             logger.info(
                 f"Starting parallel execution of {len(branches)} branches "
-                f"for agent '{agent_name}'"
+                f"for mixed agents: {dict(agent_counts)}"
             )
 
         # Create ALL tasks immediately - true parallel execution!
         for branch in branches:
             inv_data = branch_to_invocation[branch.id]
+
+            # Get agent name from THIS branch (not from group!)
+            agent_name = branch.topology.entry_agent
 
             # Track parent-child relationship
             self.child_parent_map[branch.id] = group.parent_branch_id
@@ -1876,7 +1899,7 @@ class DynamicBranchSpawner:
             # Create task using wrapper that handles acquire/execute/release
             task = asyncio.create_task(
                 self._acquire_execute_release_branch(
-                    agent_name=agent_name,
+                    agent_name=agent_name,  # Now per-branch, not from group!
                     branch=branch,
                     request=inv_data['request'],
                     context=context,

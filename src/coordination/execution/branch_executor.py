@@ -294,7 +294,27 @@ class BranchExecutor:
                     branch_memory=context.branch_memory,
                     metadata={"waiting": True, "waiting_for": step_result.child_branch_ids}
                 )
-            
+
+            # Check if branch should end after spawning (fire-and-forget pattern)
+            if getattr(step_result, "should_end_branch", False):
+                logger.info(
+                    f"Branch '{branch.name}' ending after '{current_agent}' "
+                    f"requested completion (action: {step_result.action_type})"
+                )
+                return BranchResult(
+                    branch_id=branch.id,
+                    success=True,
+                    final_response=step_result.response,
+                    total_steps=branch.state.current_step,
+                    execution_trace=execution_trace,
+                    branch_memory=context.branch_memory,
+                    metadata={
+                        "completion_reason": "explicit_end_after_parallel_invoke",
+                        "action_type": step_result.action_type,
+                        "last_agent": current_agent
+                    }
+                )
+
             # Check if this is a final response
             if step_result.action_type == "final_response" and not step_result.next_agent:
                 # Extract the actual content from parsed response if available
