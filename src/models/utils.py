@@ -2,6 +2,57 @@ import json
 from typing import Any, Dict, List
 
 
+def detect_model_family(model_name: str) -> str:
+    """
+    Detect the model family from the model name to determine which reasoning
+    parameters are supported.
+
+    Args:
+        model_name: Full model name (e.g., "openai/gpt-5", "google/gemini-2.5-flash")
+
+    Returns:
+        Model family identifier:
+        - "openai_reasoning": OpenAI o1/o3/GPT-5 series (support reasoning.effort)
+        - "grok": xAI Grok models (support reasoning.effort)
+        - "anthropic": Anthropic Claude (support reasoning.max_tokens)
+        - "google": Google Gemini (support reasoning.max_tokens)
+        - "alibaba": Alibaba Qwen (support reasoning.max_tokens)
+        - "other": Unknown/standard models
+
+    Examples:
+        >>> detect_model_family("openai/gpt-5")
+        'openai_reasoning'
+        >>> detect_model_family("google/gemini-2.5-flash")
+        'google'
+        >>> detect_model_family("anthropic/claude-3.5-sonnet")
+        'anthropic'
+    """
+    model_lower = model_name.lower()
+
+    # OpenAI reasoning models (support reasoning.effort)
+    # Pattern: gpt-5*, o1-*, o3-*, o1 (space), o3 (space)
+    if any(pattern in model_lower for pattern in ['gpt-5', 'o1-', 'o3-', 'o1 ', 'o3 ']):
+        return "openai_reasoning"
+
+    # Grok models (support reasoning.effort)
+    if 'grok' in model_lower:
+        return "grok"
+
+    # Anthropic models (support reasoning.max_tokens)
+    if 'claude' in model_lower or 'anthropic' in model_lower:
+        return "anthropic"
+
+    # Google models (support reasoning.max_tokens)
+    if 'gemini' in model_lower or 'google' in model_lower:
+        return "google"
+
+    # Alibaba Qwen models (support reasoning.max_tokens)
+    if 'qwen' in model_lower or 'alibaba' in model_lower:
+        return "alibaba"
+
+    return "other"
+
+
 def apply_tools_template(messages: List[Dict[str, Any]], tools: List[str | Dict]):
     if not isinstance(tools, list):
         raise ValueError("tools must be a list of strings or dictionaries")
