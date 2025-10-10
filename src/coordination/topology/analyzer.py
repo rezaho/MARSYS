@@ -125,6 +125,7 @@ class TopologyAnalyzer:
                 strict=not is_auto_run_mode  # Strict for Orchestra.run, soft for auto_run
             )
             graph.metadata["exit_points"] = exit_agents
+            logger.info(f"Exit points determined: {exit_agents} (mode: {'strict' if not is_auto_run_mode else 'soft'})")
 
             if not user_node and auto_inject_user:
                 # No User node exists AND auto-injection is explicitly enabled
