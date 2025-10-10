@@ -517,15 +517,17 @@ class TopologyGraph:
                     If False, use soft fallback logic (for auto_run)
 
         Modes:
-            - Soft (strict=False, for auto_run):
-                1. Try auto-detect
-                2. If none, fallback to manual_exits
             - Strict (strict=True, for Orchestra.run):
-                1. Auto-detect
-                2. If manual_exits provided:
-                   - Manual can be superset of auto-detected (OK)
-                   - Manual conflicts with auto-detected → ERROR
-                3. If no manual_exits, use auto-detected
+                1. If manual_exits provided, validate and use them
+                2. Else if auto-detected (nodes with no outgoing edges), use them
+                3. Else if User node exists, use agents with edges to User
+                4. Otherwise, raise error requiring explicit exit_points
+
+            - Soft (strict=False, for auto_run):
+                1. If auto-detected (nodes with no outgoing edges), use them
+                2. Else if manual_exits provided, use them
+                3. Else if User node exists, use agents with edges to User
+                4. Otherwise, raise error requiring explicit exit_points
         """
         # Auto-detect nodes with no outgoing edges
         from .core import NodeType
@@ -561,19 +563,26 @@ class TopologyGraph:
             elif auto_detected:
                 return auto_detected
             else:
-                # Check conversation loops
-                conversation_nodes = self._get_conversation_nodes()
-                if conversation_nodes:
-                    return conversation_nodes
+                # NEW: Check for agents with edges to User nodes
+                user_exists = any(node.node_type == NodeType.USER for node in self.nodes.values())
+                if user_exists:
+                    agents_with_user_edges = self.get_agents_with_user_access()
+                    if agents_with_user_edges:
+                        logger.debug(f"Using agents with User edges as exit points: {agents_with_user_edges}")
+                        return agents_with_user_edges
+
+                # No exit points found - raise error
                 raise TopologyError(
-                    "No exit points found. All nodes have outgoing edges.",
+                    "No exit points found. All nodes have outgoing edges and no agents connect to User. "
+                    "Please specify exit_points explicitly in your topology or ensure at least one agent "
+                    "has no outgoing edges or connects to a User node.",
                     topology_issue="no_exit_points",
                     affected_nodes=list(self.nodes.keys())
                 )
 
         # SOFT MODE (auto_run)
         else:
-            # Priority: auto-detected → manual fallback → conversation loops → error
+            # Priority: auto-detected → manual fallback → User edges → error
             if auto_detected:
                 return auto_detected
             elif manual_exits:
@@ -587,11 +596,19 @@ class TopologyGraph:
                         )
                 return manual_exits
             else:
-                conversation_nodes = self._get_conversation_nodes()
-                if conversation_nodes:
-                    return conversation_nodes
+                # NEW: Check for agents with edges to User nodes
+                user_exists = any(node.node_type == NodeType.USER for node in self.nodes.values())
+                if user_exists:
+                    agents_with_user_edges = self.get_agents_with_user_access()
+                    if agents_with_user_edges:
+                        logger.debug(f"Using agents with User edges as exit points: {agents_with_user_edges}")
+                        return agents_with_user_edges
+
+                # No exit points found - raise error
                 raise TopologyError(
-                    "No exit points found. All nodes have outgoing edges.",
+                    "No exit points found. All nodes have outgoing edges and no agents connect to User. "
+                    "Please specify exit_points explicitly in your topology or ensure at least one agent "
+                    "has no outgoing edges or connects to a User node.",
                     topology_issue="no_exit_points",
                     affected_nodes=list(self.nodes.keys())
                 )
