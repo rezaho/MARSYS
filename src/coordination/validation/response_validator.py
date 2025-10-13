@@ -36,6 +36,7 @@ class ActionType(Enum):
     WAIT_AND_AGGREGATE = "wait_and_aggregate"  # Wait for parallel results
     ERROR_RECOVERY = "error_recovery"      # Route to user for error recovery
     TERMINAL_ERROR = "terminal_error"      # Route to user for terminal error display
+    AUTO_RETRY = "auto_retry"              # Automatic retry without user intervention
 
 
 @dataclass
@@ -524,8 +525,18 @@ class ErrorMessageProcessor(ResponseProcessor):
             APIErrorClassification.INVALID_REQUEST.value
         ]
 
-        if classification in fixable_classifications:
-            action_type = "error_recovery"  # Route to user for fixing
+        # Auto-retry classifications (retry automatically before user intervention)
+        auto_retry_classifications = [
+            APIErrorClassification.TIMEOUT.value,
+            APIErrorClassification.NETWORK_ERROR.value,
+            APIErrorClassification.SERVICE_UNAVAILABLE.value
+        ]
+
+        if classification in auto_retry_classifications and is_retryable:
+            # Auto-retry these errors (BranchExecutor will handle retry logic)
+            action_type = "auto_retry"
+        elif classification in fixable_classifications:
+            action_type = "error_recovery"  # Route to user for fixing after retries exhausted
         elif classification in terminal_classifications:
             action_type = "terminal_error"  # Display and exit
         else:
