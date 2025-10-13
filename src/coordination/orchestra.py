@@ -535,14 +535,23 @@ class Orchestra:
                 rules_engine=self.rules_engine,
                 topology_graph=self.topology_graph
             )
-            # Get convergence timeout from execution config
+            # Get convergence timeout and policy from execution config
             convergence_timeout = execution_config.convergence_timeout if execution_config else 600.0
+
+            # Parse convergence policy
+            from .config import ConvergencePolicyConfig
+            convergence_policy = ConvergencePolicyConfig.from_value(
+                execution_config.convergence_policy if execution_config else 0.67
+            )
+            logger.info(f"Convergence policy: {convergence_policy.describe()}")
+
             self.branch_spawner = DynamicBranchSpawner(
                 topology_graph=self.topology_graph,
                 branch_executor=self.branch_executor,
                 event_bus=self.event_bus,
                 agent_registry=self.agent_registry,
-                convergence_timeout=convergence_timeout
+                convergence_timeout=convergence_timeout,
+                convergence_policy=convergence_policy
             )
             
             # Set circular reference - branch_executor needs branch_spawner
@@ -734,6 +743,13 @@ class Orchestra:
                     completed_branches.append(result)
                     all_tasks.remove(completed_task)
                     total_steps += result.total_steps
+
+                    # Check if this branch created a continuation branch at convergence
+                    if result.metadata and 'continuation_branch' in result.metadata:
+                        continuation_branch = result.metadata['continuation_branch']
+                        if continuation_branch and continuation_branch.id not in branch_states:
+                            branch_states[continuation_branch.id] = continuation_branch
+                            logger.info(f"Added continuation branch '{continuation_branch.id}' to Orchestra tracking")
                     
                     # Save state after branch completion
                     if self.state_manager:
@@ -782,21 +798,53 @@ class Orchestra:
                             # Check if this is a parent branch resumption
                             if isinstance(aggregated_context, AggregatedContext):  # NEW: Type check
                                 if aggregated_context.resume_parent:
-                                    # Resume the existing parent branch
+                                    # Resume the existing parent branch or execute continuation branch
                                     parent_branch_id = aggregated_context.parent_branch_id
 
-                                    # Find the parent branch in branch_states
+                                    # Find the branch in branch_states
                                     parent_branch = None
                                     for branch_id, branch in branch_states.items():
                                         if branch_id == parent_branch_id:
                                             parent_branch = branch
                                             break
 
+                                    # If not in branch_states, check branch_spawner (for continuation branches)]
+                                    if not parent_branch:
+                                        parent_branch = self.branch_spawner.branch_info.get(parent_branch_id)
+                                        if parent_branch:
+                                            # Add to branch_states for tracking
+                                            branch_states[parent_branch_id] = parent_branch
+
                                     if parent_branch:
-                                        # Check if parent is actually waiting
-                                        if parent_branch.state.status == BranchStatus.WAITING:
-                                            # Parent is waiting - resume it
-                                            # CHANGED: Direct access to responses field
+                                        if parent_branch.metadata.get("is_continuation"):
+                                            # Continuation branch - execute with aggregated results
+                                            logger.info(
+                                                f"Executing continuation branch '{parent_branch_id}' "
+                                                f"for agent '{parent_branch.topology.current_agent}' "
+                                                f"with {len(aggregated_context.responses)} results"
+                                            )
+
+                                            # The continuation branch starts at its convergence node
+                                            # It should execute that agent with the aggregated results
+                                            # Extract agent names from responses
+                                            from_agents = [r.get("agent_name") for r in aggregated_context.responses if isinstance(r, dict) and "agent_name" in r]
+
+                                            initial_request = {
+                                                "aggregated_results": aggregated_context.responses,
+                                                "from_agents": from_agents,
+                                                "convergence_point": parent_branch.metadata.get("convergence_node")
+                                            }
+
+                                            resume_task = asyncio.create_task(
+                                                self.branch_executor.execute_branch(
+                                                    parent_branch,
+                                                    initial_request,
+                                                    context
+                                                )
+                                            )
+                                            all_tasks.append(resume_task)
+                                        elif parent_branch.state.status == BranchStatus.WAITING:
+                                            # Regular parent branch resumption
                                             child_results = aggregated_context.responses
 
                                             logger.info(f"Resuming waiting parent branch '{parent_branch_id}'")
@@ -814,7 +862,7 @@ class Orchestra:
                                             # Parent already completed
                                             logger.warning(f"Parent branch '{parent_branch_id}' is not waiting - skipping resumption")
                                     else:
-                                        logger.error(f"Parent branch '{parent_branch_id}' not found")
+                                        logger.error(f"Parent branch '{parent_branch_id}' not found in branch_states or branch_spawner")
                                 else:
                                     # Legacy convergence (not parent resumption)
                                     # Create continuation branch from convergence point (topology-based)
@@ -847,10 +895,7 @@ class Orchestra:
                 except Exception as e:
                     logger.error(f"Error processing completed branch: {e}")
                     # Continue with other branches
-            
-            # Check for ready convergence points after branch completions
-            await self._check_and_execute_convergence_points(all_tasks, branch_states, context)
-            
+
             step_count += 1
         
         # Cancel any remaining tasks if we hit max steps
@@ -977,7 +1022,18 @@ class Orchestra:
                     return b.final_response
         
         return None
-    
+
+    def _has_ready_continuation_branches(self) -> bool:
+        """
+        Check if any continuation branches are ready to execute.
+        """
+        for branch_id, waiting_children in self.branch_spawner.waiting_branches.items():
+            branch = self.branch_spawner.branch_info.get(branch_id)
+            if branch and branch.metadata.get("is_continuation") and len(waiting_children) == 0:
+                logger.debug(f"Found ready continuation branch: {branch_id}")
+                return True
+        return False
+
     def _serialize_branch(self, branch: ExecutionBranch) -> Dict[str, Any]:
         """Serialize a branch for state persistence."""
         return {
@@ -1216,74 +1272,6 @@ class Orchestra:
         
         self._sessions[session_id] = session
         return session
-    
-    async def _check_and_execute_convergence_points(
-        self,
-        all_tasks: List[asyncio.Task],
-        branch_states: Dict[str, ExecutionBranch],
-        context: Dict[str, Any]
-    ) -> None:
-        """Check for ready convergence points and execute them."""
-        
-        # Check parallel groups for convergence
-        if hasattr(self.branch_spawner, 'parallel_groups'):
-            for group_id, group in list(self.branch_spawner.parallel_groups.items()):
-                if group.convergence_triggered:
-                    continue
-                
-                # Check shared convergence points
-                for conv_point in group.shared_convergence_points:
-                    if group.check_convergence_ready(conv_point) and conv_point not in group.convergence_branches_spawned:
-                        # Create and execute convergence branch
-                        convergence_branch = self.branch_spawner.create_convergence_branch(conv_point, group)
-                        task = asyncio.create_task(
-                            self.branch_executor.execute_branch(
-                                convergence_branch,
-                                convergence_branch.metadata['initial_request'],
-                                context
-                            )
-                        )
-                        all_tasks.append(task)
-                        branch_states[convergence_branch.id] = convergence_branch
-                        group.convergence_branches_spawned.add(conv_point)
-                        logger.info(f"Spawned convergence branch for '{conv_point}'")
-                
-                # Check sub-group convergences
-                for conv_point in group.sub_group_convergences:
-                    if group.check_convergence_ready(conv_point) and conv_point not in group.convergence_branches_spawned:
-                        # Create and execute convergence branch
-                        convergence_branch = self.branch_spawner.create_convergence_branch(conv_point, group)
-                        task = asyncio.create_task(
-                            self.branch_executor.execute_branch(
-                                convergence_branch,
-                                convergence_branch.metadata['initial_request'],
-                                context
-                            )
-                        )
-                        all_tasks.append(task)
-                        branch_states[convergence_branch.id] = convergence_branch
-                        group.convergence_branches_spawned.add(conv_point)
-                        logger.info(f"Spawned sub-group convergence branch for '{conv_point}'")
-    
-    def _create_convergence_branch(
-        self,
-        convergence_point: str,
-        convergence_context: Dict[str, Any]
-    ) -> ExecutionBranch:
-        """Create a branch for convergence point execution."""
-        return ExecutionBranch(
-            id=f"convergence_{convergence_point}_{uuid.uuid4().hex[:8]}",
-            name=f"Convergence: {convergence_point}",
-            type=BranchType.SIMPLE,
-            topology=BranchTopology(
-                agents=[convergence_point],
-                entry_agent=convergence_point,
-                allowed_transitions=dict(self.topology_graph.adjacency),
-                current_agent=convergence_point,
-                metadata=convergence_context
-            ),
-            state=BranchState(status=BranchStatus.PENDING)
-        )
     
     def _format_aggregated_request(self, aggregated_requests: List[Any]) -> Dict[str, Any]:
         """Format aggregated requests for convergence agent."""
