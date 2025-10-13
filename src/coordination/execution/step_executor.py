@@ -1131,14 +1131,35 @@ Detailed structure for the JSON object:
                 '     `{"tool_calls": [{"id": "call_123", "type": "function", '
                 '"function": {"name": "tool_name", "arguments": "{\\"param\\": \\"value\\"}"}}]}`'
             )
-        
-        # Always add final_response
-        available_actions.append("'final_response'")
-        action_descriptions.append(
-            '- If `next_action` is `"final_response"`:\n'
-            '     `{"content": "Your final answer..."}`'
-        )
-        
+
+        # CRITICAL: Only add final_response if agent has permission
+        # This must match the logic in _get_dynamic_format_instructions (lines 614-631)
+        can_return_final = False
+        current_agent = agent.name if hasattr(agent, 'name') else str(agent)
+
+        # Check if agent has user access in topology (the official way)
+        if topology_graph and topology_graph.has_user_access(current_agent):
+            can_return_final = True
+
+        # Also check if agent is an exit point (for auto_run scenarios)
+        if topology_graph and hasattr(topology_graph, 'exit_points') and current_agent in topology_graph.exit_points:
+            can_return_final = True
+
+        if can_return_final:
+            available_actions.append("'final_response'")
+            action_descriptions.append(
+                '- If `next_action` is `"final_response"`:\n'
+                '     `{"content": "Your final answer..."}`'
+            )
+
+        # Ensure agent has at least one available action
+        if not available_actions:
+            raise RuntimeError(
+                f"Agent '{current_agent}' has no available actions in steering prompt. "
+                f"The agent cannot invoke other agents, use tools, or return final response. "
+                f"This suggests a topology configuration error."
+            )
+
         actions_str = ", ".join(available_actions)
 
         # Use concise guidelines for steering to avoid duplication with system prompt
