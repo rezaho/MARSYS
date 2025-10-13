@@ -3,7 +3,7 @@ Configuration classes for the coordination system.
 """
 
 from dataclasses import dataclass, field
-from typing import Literal, Optional, List, Dict, Any
+from typing import Literal, Optional, List, Dict, Any, Union
 from enum import IntEnum
 
 
@@ -126,11 +126,112 @@ class CommunicationConfig:
 
 
 @dataclass
+class ConvergencePolicyConfig:
+    """
+    Policy for handling convergence timeout in parallel branch execution.
+
+    When a parallel group times out (exceeds convergence_timeout), this policy
+    determines whether to proceed with partial results or fail the workflow.
+
+    Attributes:
+        min_ratio: Minimum fraction of branches that must reach convergence (0.0-1.0)
+                   Example: 0.67 means at least 2/3 branches must converge
+        on_insufficient: Action when min_ratio not met
+                        - "proceed": Continue anyway (risky, may have incomplete data)
+                        - "fail": Raise WorkflowTimeoutError
+                        - "user": Ask user for confirmation (interactive mode only)
+        terminate_orphans: If True, cancel branches that didn't reach convergence
+                          Prevents wasted computation on orphaned work
+        log_level: Logging level for timeout events ("info", "warning", "error")
+    """
+
+    min_ratio: float = 0.67  # Require 2/3 of branches by default
+    on_insufficient: Literal["proceed", "fail", "user"] = "fail"
+    terminate_orphans: bool = True
+    log_level: Literal["info", "warning", "error"] = "warning"
+
+    @classmethod
+    def from_value(cls, value: Union[float, str, 'ConvergencePolicyConfig']) -> 'ConvergencePolicyConfig':
+        """
+        Create ConvergencePolicyConfig from flexible input.
+
+        Args:
+            value: Configuration value in one of three forms:
+                   - float (0.0-1.0): Minimum convergence ratio, fail if not met
+                   - str: Named policy ("strict", "majority", "fail", "user", "any")
+                   - ConvergencePolicyConfig: Return as-is
+
+        Returns:
+            ConvergencePolicyConfig object
+
+        Examples:
+            >>> ConvergencePolicyConfig.from_value(0.67)
+            ConvergencePolicyConfig(min_ratio=0.67, on_insufficient="fail", ...)
+
+            >>> ConvergencePolicyConfig.from_value("strict")
+            ConvergencePolicyConfig(min_ratio=1.0, on_insufficient="fail", ...)
+
+            >>> ConvergencePolicyConfig.from_value("user")
+            ConvergencePolicyConfig(min_ratio=0.67, on_insufficient="user", ...)
+        """
+        # Already a config object
+        if isinstance(value, cls):
+            return value
+
+        # Float: minimum ratio with fail on insufficient
+        if isinstance(value, (int, float)):
+            ratio = float(value)
+            if not 0.0 <= ratio <= 1.0:
+                raise ValueError(f"Convergence ratio must be between 0.0 and 1.0, got {ratio}")
+            return cls(
+                min_ratio=ratio,
+                on_insufficient="fail",
+                terminate_orphans=True
+            )
+
+        # String: named policy
+        if isinstance(value, str):
+            if value == "strict":
+                return cls(min_ratio=1.0, on_insufficient="fail", terminate_orphans=True)
+            elif value == "majority":
+                return cls(min_ratio=0.51, on_insufficient="fail", terminate_orphans=True)
+            elif value == "fail":
+                return cls(min_ratio=1.0, on_insufficient="fail", terminate_orphans=True)
+            elif value == "user":
+                return cls(min_ratio=0.67, on_insufficient="user", terminate_orphans=True)
+            elif value == "any":
+                return cls(min_ratio=0.0, on_insufficient="proceed", terminate_orphans=True)
+            else:
+                raise ValueError(
+                    f"Unknown convergence policy: '{value}'. "
+                    f"Valid options: 'strict', 'majority', 'fail', 'user', 'any', or float 0.0-1.0"
+                )
+
+        raise TypeError(f"Invalid convergence_policy type: {type(value)}")
+
+    def describe(self) -> str:
+        """Human-readable description of this policy."""
+        threshold = f"{self.min_ratio:.0%}"
+        action = {
+            "proceed": "continue anyway",
+            "fail": "fail workflow",
+            "user": "ask user"
+        }[self.on_insufficient]
+        termination = "terminate orphans" if self.terminate_orphans else "let orphans complete"
+
+        return (
+            f"Require {threshold} of branches at convergence. "
+            f"If insufficient: {action}. "
+            f"On timeout: {termination}."
+        )
+
+
+@dataclass
 class ExecutionConfig:
     """Configuration for multi-agent system execution."""
 
     # Steering configuration
-    steering_mode: Literal["auto", "always", "never"] = "auto"
+    steering_mode: Literal["auto", "always", "never"] = "never"
 
     # Convergence behavior
     dynamic_convergence_enabled: bool = True
@@ -139,10 +240,11 @@ class ExecutionConfig:
 
     # Timeouts (in seconds)
     convergence_timeout: float = 300.0  # Waiting for children branches to complete
+    convergence_policy: Union[float, str, ConvergencePolicyConfig] = 0.67  # What to do on timeout
     branch_timeout: float = 600.0  # Overall branch execution timeout
     agent_acquisition_timeout: float = 240.0  # Acquiring agent from pool
-    step_timeout: float = 300.0  # Individual step execution timeout
-    tool_execution_timeout: float = 60.0  # Tool call execution timeout
+    step_timeout: float = 600.0  # Individual step execution timeout (10 minutes)
+    tool_execution_timeout: float = 120.0  # Tool call execution timeout (2 minutes)
     user_interaction_timeout: float = 300.0  # Waiting for user input
 
     # Status configuration
@@ -201,7 +303,7 @@ class ErrorHandlingConfig:
     pool_retry_delay: float = 5.0
 
     # Timeout configuration
-    timeout_seconds: float = 300.0  # 5 minutes default
+    timeout_seconds: float = 600.0  # 10 minutes default
     timeout_retry_enabled: bool = False
 
     # Provider-specific settings
