@@ -126,12 +126,23 @@ source .venv/bin/activate  # Unix/macOS
 pip install marsys
 ```
 
-**From source**
+**From source (recommended for development)**
 ```bash
 git clone https://github.com/rezaho/MARSYS.git
 cd MARSYS
-pip install -e .[dev]
+
+# Basic installation (core framework with API model support)
+pip install -e .
+
+# Or with optional dependencies:
+pip install -e .[local-models]  # Add local model support (PyTorch, Transformers)
+pip install -e .[dev]           # Add development tools (testing, linting, docs)
 ```
+
+**Optional dependency groups:**
+- **`local-models`**: Install if you want to use local LLMs/VLMs (PyTorch, Transformers, PEFT, etc.)
+- **`production`**: Install for production inference with vLLM and Flash Attention
+- **`dev`**: Install for development (includes testing, linting, and documentation tools)
 
 ### Required: API Key Configuration
 
