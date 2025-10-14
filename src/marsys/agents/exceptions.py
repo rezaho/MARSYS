@@ -81,6 +81,11 @@ class AgentFrameworkError(Exception):
         self.developer_message = message
         self.suggestion = suggestion
     
+    @property
+    def message(self) -> str:
+        """Provide message property for backward compatibility and consistency."""
+        return self.developer_message
+
     def to_dict(self) -> Dict[str, Any]:
         """Convert error to dictionary for logging/serialization."""
         return {
@@ -94,7 +99,7 @@ class AgentFrameworkError(Exception):
             "context": self.context,
             "suggestion": self.suggestion,
         }
-    
+
     def __str__(self) -> str:
         """String representation with context."""
         parts = [f"[{self.error_code}]"]
@@ -672,11 +677,6 @@ class ModelAPIError(ModelError):
         ]
 
     @property
-    def message(self) -> str:
-        """Provide message property for backward compatibility."""
-        return self.developer_message
-
-    @property
     def suggested_action(self) -> str:
         """Provide suggested_action property for backward compatibility."""
         return self.suggestion if hasattr(self, 'suggestion') else None
@@ -818,6 +818,13 @@ class ModelAPIError(ModelError):
                     retry_after = 120  # xAI: 20 requests per 2 hours for free tier
                 elif status_code == 401:
                     classification = APIErrorClassification.AUTHENTICATION_FAILED.value
+
+        # SPECIAL CASE: Mark timeout and network errors as retryable
+        # These should attempt automatic retry before user intervention
+        if classification in [APIErrorClassification.TIMEOUT.value, APIErrorClassification.NETWORK_ERROR.value]:
+            is_retryable = True
+            if not retry_after:
+                retry_after = 3  # Wait 3 seconds before retry
 
         return cls(
             message=message,

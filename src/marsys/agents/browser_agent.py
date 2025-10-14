@@ -12,8 +12,8 @@ from urllib.parse import urlparse
 from PIL import Image as PILImage
 from playwright.async_api import Browser, Page, async_playwright
 
-from src.environment.web_browser import BrowserTool
-from src.models.models import ModelConfig
+from marsys.environment.web_browser import BrowserTool
+from marsys.models.models import ModelConfig
 
 from .agents import Agent
 from .memory import Message
@@ -591,7 +591,7 @@ class BrowserAgent(Agent):
             # Create the vision agent with the model config
             self.vision_agent = InteractiveElementsAgent(
                 model_config=vision_model_config,
-                agent_name=f"{agent_name or 'BrowserAgent'}_VisionAnalyzer"
+                agent_name=f"{name or 'BrowserAgent'}_VisionAnalyzer"
             )
 
         # Store vision model config for potential future use
@@ -790,7 +790,7 @@ class BrowserAgent(Agent):
         # Regenerate tools schema for the updated tools
         self.tools_schema = []
         if self.tools:
-            from src.environment.utils import generate_openai_tool_schema
+            from marsys.environment.utils import generate_openai_tool_schema
             for tool_name, tool_func in self.tools.items():
                 try:
                     schema = generate_openai_tool_schema(tool_func, tool_name)

@@ -135,7 +135,7 @@ class AgentPool:
         pool = cls.__new__(cls)
         pool.agent_class = agent_class
         pool.num_instances = num_instances
-        pool.base_name = kwargs.get('agent_name', agent_class.__name__)
+        pool.base_name = kwargs.get('name', agent_class.__name__)
         pool._original_args = args
         pool._original_kwargs = kwargs
         

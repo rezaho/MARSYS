@@ -26,7 +26,9 @@ if TYPE_CHECKING:
 from ..branches.types import (
     AgentDecidedCompletion,
     BranchResult,
+    BranchState,
     BranchStatus,
+    BranchTopology,
     BranchType,
     CompletionCondition,
     ConversationPattern,
@@ -294,7 +296,27 @@ class BranchExecutor:
                     branch_memory=context.branch_memory,
                     metadata={"waiting": True, "waiting_for": step_result.child_branch_ids}
                 )
-            
+
+            # Check if branch should end after spawning (fire-and-forget pattern)
+            if getattr(step_result, "should_end_branch", False):
+                logger.info(
+                    f"Branch '{branch.name}' ending after '{current_agent}' "
+                    f"requested completion (action: {step_result.action_type})"
+                )
+                return BranchResult(
+                    branch_id=branch.id,
+                    success=True,
+                    final_response=step_result.response,
+                    total_steps=branch.state.current_step,
+                    execution_trace=execution_trace,
+                    branch_memory=context.branch_memory,
+                    metadata={
+                        "completion_reason": "explicit_end_after_parallel_invoke",
+                        "action_type": step_result.action_type,
+                        "last_agent": current_agent
+                    }
+                )
+
             # Check if this is a final response
             if step_result.action_type == "final_response" and not step_result.next_agent:
                 # Extract the actual content from parsed response if available
@@ -324,14 +346,52 @@ class BranchExecutor:
                 branch.topology.allowed_transitions,
                 branch.id  # Pass branch ID for convergence checking
             )
-            
+
             if not next_agent:
                 # Check if stopped at convergence
                 convergence_target = getattr(step_result, 'convergence_target', None)
                 if convergence_target:
                     # Branch reached a convergence point
                     logger.info(f"Branch '{branch.id}' reached convergence point '{convergence_target}'")
-                    
+
+                    # Persist convergence state on branch and group
+                    branch.metadata['reached_convergence'] = True
+                    branch.metadata['convergence_point'] = convergence_target
+                    branch.metadata['convergence_timestamp'] = time.time()
+
+                    # Also record in the parallel group if it exists
+                    if self.branch_spawner and hasattr(self.branch_spawner, 'branch_to_group'):
+                        group_id = self.branch_spawner.branch_to_group.get(branch.id)
+                        if group_id:
+                            group = self.branch_spawner.parallel_groups.get(group_id)
+                            if group:
+                                # Record convergence with response for aggregation
+                                group.record_branch_convergence(
+                                    branch.id,
+                                    convergence_target,
+                                    {
+                                        'branch_id': branch.id,
+                                        'response': step_result.response,
+                                        'timestamp': time.time(),
+                                        'agent': current_agent
+                                    }
+                                )
+                                logger.info(
+                                    f"Recorded branch '{branch.id}' convergence at '{convergence_target}' in group '{group_id}' "
+                                    f"({len(group.convergence_aggregations.get(convergence_target, []))} total)"
+                                )
+
+                    # Include continuation branch in metadata if one was created
+                    result_metadata = {
+                        "reached_convergence": True,
+                        "convergence_point": convergence_target,
+                        "last_agent": current_agent,
+                        "hold_reason": getattr(step_result, 'hold_reason', None)
+                    }
+                    continuation_branch = getattr(step_result, 'continuation_branch', None)
+                    if continuation_branch:
+                        result_metadata['continuation_branch'] = continuation_branch
+
                     # The branch completes here - group handles aggregation
                     return BranchResult(
                         branch_id=branch.id,
@@ -340,12 +400,7 @@ class BranchExecutor:
                         total_steps=branch.state.current_step,
                         execution_trace=execution_trace,
                         branch_memory=context.branch_memory,
-                        metadata={
-                            "reached_convergence": True,
-                            "convergence_point": convergence_target,
-                            "last_agent": current_agent,
-                            "hold_reason": getattr(step_result, 'hold_reason', None)
-                        }
+                        metadata=result_metadata
                     )
                 
                 # No next agent - branch completes
@@ -815,6 +870,24 @@ class BranchExecutor:
                                 logger.debug(f"Transferring error details to StepResult metadata: {result.metadata['error_details']}")
                         result.next_agent = "User"  # Route to User node
 
+                    # Handle auto-retry for timeout/network errors
+                    elif validation.action_type == ActionType.AUTO_RETRY:
+                        # Extract error info and mark for retry
+                        parsed = validation.parsed_response or {}
+                        error_info = parsed.get('error_info', {})
+
+                        result.success = False
+                        result.requires_retry = True  # Trigger retry logic
+                        result.error = error_info.get('message', 'API error - retrying')
+                        if not result.metadata:
+                            result.metadata = {}
+                        result.metadata.update({
+                            'auto_retry': True,
+                            'error_classification': error_info.get('classification'),
+                            'retry_after': error_info.get('retry_after', 3)
+                        })
+                        logger.info(f"Auto-retry scheduled for {agent_name}: {error_info.get('classification')}")
+
                     # Handle parallel invocation
                     elif validation.action_type == ActionType.PARALLEL_INVOKE:
                         logger.info(f"Agent '{agent_name}' requested parallel invocation")
@@ -989,9 +1062,10 @@ class BranchExecutor:
         current_agent: str,
         next_agent: str,
         branch_id: str
-    ) -> Tuple[bool, Optional[str]]:
+    ) -> Tuple[bool, Optional[str], Optional['ExecutionBranch']]:
         """
         Determine if execution should hold at a convergence point.
+        Returns: (should_hold, reason, continuation_branch)
         
         Now checks for parallel invocation groups, not just active branches.
         Includes deadlock detection with timeout.
@@ -1000,12 +1074,12 @@ class BranchExecutor:
             (should_hold, reason)
         """
         if not self.topology_graph or not self.branch_spawner:
-            return False, None
-        
+            return False, None, None
+
         # Check if next agent is a convergence point
         node = self.topology_graph.get_node(next_agent)
         if not (node and hasattr(node, 'is_convergence_point') and node.is_convergence_point):
-            return False, None
+            return False, None, None
         
         # IMPORTANT: Check if this branch is part of a parallel invocation group
         if hasattr(self.branch_spawner, 'branch_to_group'):
@@ -1020,13 +1094,184 @@ class BranchExecutor:
                         # Use timeout from branch_spawner (default 600s = 10 minutes)
                         timeout = getattr(self.branch_spawner, 'group_timeout_seconds', 600)
                         if age_seconds > timeout:
-                            logger.error(
-                                f"DEADLOCK DETECTED: Group '{group_id}' timed out after {age_seconds:.1f}s. "
-                                f"Forcing convergence with {group.get_successful_count()} completed branches."
+                            # NEW: Check convergence policy
+                            policy = getattr(self.branch_spawner, 'convergence_policy', None)
+                            if policy is None:
+                                # Fallback to old behavior for backward compatibility
+                                from ...coordination.config import ConvergencePolicyConfig
+                                policy = ConvergencePolicyConfig.from_value(0.67)
+
+                            # Count how many branches reached THIS convergence point
+                            arrived_at_target = group.get_arrived_at_convergence(next_agent)
+                            arrived_count = len(arrived_at_target)
+                            total_count = len(group.branch_ids)
+                            arrival_ratio = arrived_count / total_count if total_count > 0 else 0.0
+
+                            # Check if minimum ratio met
+                            min_ratio = policy.min_ratio
+
+                            if arrival_ratio >= min_ratio:
+                                # Quorum met: allow partial convergence
+                                log_method = getattr(logger, policy.log_level, logger.warning)
+                                log_method(
+                                    f"⚠️  Group '{group_id}' convergence timeout after {age_seconds:.1f}s. "
+                                    f"Proceeding with PARTIAL convergence at '{next_agent}': "
+                                    f"{arrived_count}/{total_count} branches ready ({arrival_ratio:.0%} ≥ {min_ratio:.0%}). "
+                                    f"Missing branches will be excluded."
+                                )
+
+                                # Terminate orphaned branches if policy requires it
+                                if policy.terminate_orphans:
+                                    orphaned_branches = set(group.branch_ids) - arrived_at_target
+                                    if orphaned_branches:
+                                        await self._terminate_orphaned_branches(
+                                            group_id=group_id,
+                                            convergence_point=next_agent,
+                                            orphaned_branch_ids=orphaned_branches
+                                        )
+
+                                return False, f"Partial convergence: {arrived_count}/{total_count} arrivals", None
+
+                            else:
+                                # Quorum NOT met
+                                if policy.on_insufficient == "proceed":
+                                    # Risky: proceed anyway
+                                    logger.error(
+                                        f"❌ Group '{group_id}' convergence timeout after {age_seconds:.1f}s. "
+                                        f"Only {arrived_count}/{total_count} branches at '{next_agent}' "
+                                        f"({arrival_ratio:.0%} < {min_ratio:.0%}), but policy allows proceeding. "
+                                        f"⚠️  WARNING: Results may be incomplete!"
+                                    )
+
+                                    # Still terminate orphans
+                                    if policy.terminate_orphans:
+                                        orphaned_branches = set(group.branch_ids) - arrived_at_target
+                                        if orphaned_branches:
+                                            await self._terminate_orphaned_branches(
+                                                group_id=group_id,
+                                                convergence_point=next_agent,
+                                                orphaned_branch_ids=orphaned_branches
+                                            )
+
+                                    return False, f"Forced convergence: {arrived_count}/{total_count} arrivals (below threshold)", None
+
+                                elif policy.on_insufficient == "user":
+                                    # TODO: Ask user for confirmation (future enhancement)
+                                    # For now, fail
+                                    logger.error(
+                                        f"❌ Group '{group_id}' convergence timeout after {age_seconds:.1f}s. "
+                                        f"Only {arrived_count}/{total_count} branches at '{next_agent}' "
+                                        f"({arrival_ratio:.0%} < {min_ratio:.0%}). "
+                                        f"User confirmation not yet implemented - failing workflow."
+                                    )
+                                    from ...agents.exceptions import WorkflowTimeoutError
+                                    raise WorkflowTimeoutError(
+                                        f"Convergence quorum not met: {arrived_count}/{total_count} < {min_ratio:.0%}",
+                                        timeout_seconds=timeout,
+                                        context={
+                                            "group_id": group_id,
+                                            "convergence_point": next_agent,
+                                            "arrived_branches": list(arrived_at_target),
+                                            "total_branches": total_count,
+                                            "arrival_ratio": arrival_ratio,
+                                            "required_ratio": min_ratio
+                                        }
+                                    )
+
+                                else:  # "fail"
+                                    # Strict: fail workflow
+                                    logger.error(
+                                        f"❌ Group '{group_id}' convergence FAILED after {age_seconds:.1f}s. "
+                                        f"Only {arrived_count}/{total_count} branches at '{next_agent}' "
+                                        f"({arrival_ratio:.0%} < {min_ratio:.0%}). Workflow cannot proceed."
+                                    )
+                                    from ...agents.exceptions import WorkflowTimeoutError
+                                    raise WorkflowTimeoutError(
+                                        f"Convergence quorum not met: {arrived_count}/{total_count} < {min_ratio:.0%}",
+                                        timeout_seconds=timeout,
+                                        context={
+                                            "group_id": group_id,
+                                            "convergence_point": next_agent,
+                                            "arrived_branches": list(arrived_at_target),
+                                            "total_branches": total_count,
+                                            "arrival_ratio": arrival_ratio,
+                                            "required_ratio": min_ratio
+                                        }
+                                    )
+
+                    # Track continuation branch to return
+                    continuation_branch = None
+
+                    # Check if we need to create a continuation branch at this convergence point
+                    # This happens when the convergence point is different from the parent agent
+                    if next_agent != group.requesting_agent:
+                        # Check if continuation already exists for this convergence point
+                        if next_agent not in group.convergence_branches_spawned:
+                            # This is the first branch reaching a non-parent convergence point
+                            # Create a continuation branch that will wait for remaining children
+                            cont_branch_id = f"continuation_{next_agent}_{group.group_id[:8]}"
+
+                            # Continuation must wait for ALL branches in the group
+                            # At this point NO branches have completed yet (including current branch
+                            # which is still executing). All branches must complete before convergence.
+                            continuation_waiting_for = set(group.branch_ids)
+
+                            # Create the continuation branch with proper topology
+                            cont_branch = ExecutionBranch(
+                                id=cont_branch_id,
+                                name=f"Continuation: {next_agent}",
+                                type=BranchType.SIMPLE,
+                                topology=BranchTopology(
+                                    agents=[next_agent],
+                                    entry_agent=next_agent,
+                                    current_agent=next_agent,  # Critical: set for resumption
+                                    allowed_transitions=self.topology_graph.get_subgraph_from(next_agent) if self.topology_graph else {}
+                                ),
+                                state=BranchState(status=BranchStatus.WAITING, current_step=0),
+                                metadata={
+                                    "is_continuation": True,
+                                    "convergence_node": next_agent,
+                                    "group_id": group.group_id,
+                                    "parent_branch_id": group.parent_branch_id,
+                                    "requesting_agent": group.requesting_agent,
+                                    "is_convergence_branch": True
+                                }
                             )
-                            # Force convergence with partial results
-                            return False, "Deadlock timeout - proceeding with partial results"
-                    
+
+                            # Register the continuation branch in branch_spawner
+                            self.branch_spawner.branch_info[cont_branch_id] = cont_branch
+
+                            # Set up waiting mechanism (reuse existing infrastructure!)
+                            # The continuation waits for ALL children in the parallel group
+                            self.branch_spawner.waiting_branches[cont_branch_id] = continuation_waiting_for
+
+                            # Set up parent-child mapping for result aggregation
+                            self.branch_spawner.parent_child_map[cont_branch_id] = list(group.branch_ids)
+
+                            # Track that we created continuation for this convergence point
+                            group.convergence_branches_spawned.add(next_agent)
+
+                            # Store the continuation branch to return it
+                            continuation_branch = cont_branch
+
+                            logger.info(
+                                f"Created continuation branch '{cont_branch_id}' at convergence '{next_agent}' "
+                                f"(parent was '{group.requesting_agent}') waiting for {len(continuation_waiting_for)} children: "
+                                f"{continuation_waiting_for}"
+                            )
+
+                    # Persist convergence state on the branch before holding
+                    # This ensures the state survives retries and validation failures
+                    current_branch = self.branch_spawner.branch_info.get(branch_id)
+                    if current_branch:
+                        current_branch.metadata['reached_convergence'] = True
+                        current_branch.metadata['convergence_point'] = next_agent
+                        current_branch.metadata['convergence_timestamp'] = time.time()
+                        logger.debug(
+                            f"Persisted convergence state for branch '{branch_id}': "
+                            f"convergence_point='{next_agent}'"
+                        )
+
                     # This branch is part of a group heading to this convergence point
                     pending = group.get_pending_count()
                     if pending > 0:
@@ -1034,7 +1279,7 @@ class BranchExecutor:
                             f"Branch '{branch_id}' holding at convergence '{next_agent}' - "
                             f"waiting for {pending} more branches from group '{group_id}'"
                         )
-                        return True, f"Part of parallel group '{group_id}', {pending} branches pending"
+                        return True, f"Part of parallel group '{group_id}', {pending} branches pending", continuation_branch
         
         # Fallback: Check for other active branches (for non-group scenarios)
         active_branches = self.branch_spawner.active_branches
@@ -1046,41 +1291,41 @@ class BranchExecutor:
         if not other_branches:
             # No other active branches - can proceed
             logger.info(f"Branch '{branch_id}' is only active branch - proceeding to convergence point '{next_agent}'")
-            return False, None
-        
+            return False, None, None
+
         # Check if any other branch could reach this convergence point
         could_converge_here = []
-        
+
         for other_branch_id in other_branches:
             # Get current position of other branch
             other_branch_info = self.branch_spawner.branch_info.get(other_branch_id)
             if not other_branch_info:
                 continue
-            
+
             current_position = other_branch_info.topology.current_agent
             if not current_position:
                 continue
-            
+
             # Check if this branch could reach the convergence point
             if self.topology_graph.can_reach(current_position, next_agent):
                 could_converge_here.append(other_branch_id)
                 logger.debug(f"Branch '{other_branch_id}' at '{current_position}' could reach '{next_agent}'")
-        
+
         if not could_converge_here:
             # No other branches could reach this convergence point
             logger.info(f"No other branches can reach convergence point '{next_agent}' - proceeding")
-            return False, None
-        
+            return False, None, None
+
         # Should hold - other branches could converge here
         logger.info(f"Branch '{branch_id}' holding at convergence point '{next_agent}' - "
                    f"waiting for {len(could_converge_here)} other branches")
-        
+
         # Track which branches could arrive
         if hasattr(self.branch_spawner, 'convergence_tracker'):
             self.branch_spawner.convergence_tracker.potential_arrivals[next_agent] = \
                 set(could_converge_here + [branch_id])
-        
-        return True, f"Waiting for {len(could_converge_here)} branches: {could_converge_here}"
+
+        return True, f"Waiting for {len(could_converge_here)} branches: {could_converge_here}", None
     
     async def _determine_next_agent(
         self,
@@ -1133,26 +1378,123 @@ class BranchExecutor:
         
         # Check if we should hold for convergence (only if branch_id provided and next_agent determined)
         if next_agent and branch_id:
-            should_hold, reason = await self._should_hold_for_convergence(
+            should_hold, reason, continuation_branch = await self._should_hold_for_convergence(
                 current_agent, next_agent, branch_id
             )
-            
+
             if should_hold:
                 # Store convergence target and request data
                 step_result.convergence_target = next_agent
                 step_result.hold_reason = reason
-                
+
+                # Store continuation branch if one was created
+                if continuation_branch:
+                    step_result.continuation_branch = continuation_branch
+                    step_result.metadata['continuation_branch'] = continuation_branch
+
                 # Add to pending requests
                 if hasattr(self.branch_spawner, 'convergence_tracker'):
                     request_data = self._prepare_convergence_request(step_result)
                     self.branch_spawner.convergence_tracker.add_pending_request(
                         next_agent, branch_id, current_agent, request_data
                     )
-                
+
                 return None  # Stop branch execution
         
         return next_agent
-    
+
+    async def _terminate_orphaned_branches(
+        self,
+        group_id: str,
+        convergence_point: str,
+        orphaned_branch_ids: Set[str]
+    ) -> int:
+        """
+        Terminate branches that didn't reach convergence before timeout.
+
+        When a parallel group times out and proceeds with partial convergence,
+        this method cancels the remaining branches that didn't converge,
+        preventing wasted computation on work that won't be used.
+
+        Args:
+            group_id: Parallel group identifier
+            convergence_point: Expected convergence point name
+            orphaned_branch_ids: Set of branch IDs that didn't reach convergence
+
+        Returns:
+            Number of branches successfully terminated
+        """
+        terminated_count = 0
+
+        for branch_id in orphaned_branch_ids:
+            try:
+                # Check if branch has an active task
+                active_task = self.branch_spawner.active_branches.get(branch_id)
+
+                if active_task and not active_task.done():
+                    # Cancel the asyncio task
+                    active_task.cancel()
+                    logger.warning(
+                        f"🛑 Terminated orphaned branch '{branch_id}' "
+                        f"(didn't reach '{convergence_point}' before timeout)"
+                    )
+                    terminated_count += 1
+
+                    # Wait briefly for cancellation to propagate
+                    try:
+                        await asyncio.wait_for(active_task, timeout=1.0)
+                    except (asyncio.CancelledError, asyncio.TimeoutError):
+                        pass  # Expected
+
+                    # Remove from active branches
+                    self.branch_spawner.active_branches.pop(branch_id, None)
+
+                    # Mark branch as abandoned in branch info
+                    if branch_id in self.branch_spawner.branch_info:
+                        branch = self.branch_spawner.branch_info[branch_id]
+                        if branch.metadata is None:
+                            branch.metadata = {}
+                        branch.metadata["abandoned"] = True
+                        branch.metadata["abandonment_reason"] = "convergence_timeout"
+                        branch.metadata["expected_convergence"] = convergence_point
+
+                    # Try to release agent/pool resources
+                    if branch_id in self.branch_spawner.branch_info:
+                        branch = self.branch_spawner.branch_info[branch_id]
+                        agent_name = branch.metadata.get("current_agent") if branch.metadata else None
+
+                        if agent_name:
+                            # Check if agent is from a pool
+                            from ...agents.registry import AgentRegistry
+                            agent_or_pool = AgentRegistry.get_instance(agent_name)
+
+                            # If it's a pool, release the instance
+                            if agent_or_pool and hasattr(agent_or_pool, 'release'):
+                                try:
+                                    agent_or_pool.release(branch_id)
+                                    logger.debug(f"Released pool instance for terminated branch '{branch_id}'")
+                                except Exception as e:
+                                    logger.warning(f"Failed to release pool instance for '{branch_id}': {e}")
+
+                else:
+                    logger.debug(
+                        f"Branch '{branch_id}' already completed or not active, skipping termination"
+                    )
+
+            except Exception as e:
+                logger.error(
+                    f"Error terminating orphaned branch '{branch_id}': {e}",
+                    exc_info=True
+                )
+
+        if terminated_count > 0:
+            logger.info(
+                f"✂️  Terminated {terminated_count} orphaned branch(es) from group '{group_id}' "
+                f"that didn't reach convergence point '{convergence_point}'"
+            )
+
+        return terminated_count
+
     def _prepare_convergence_request(self, step_result: StepResult) -> Any:
         """Prepare request data for convergence point."""
         # Extract the actual content to send to convergence point
@@ -1502,56 +1844,6 @@ class BranchExecutor:
                 should_end_branch=True  # Branch completes
             )
     
-    async def _check_dynamic_convergence(
-        self,
-        branch_id: str,
-        current_agent: str,
-        next_agent: str,
-        step_result: Optional[StepResult] = None
-    ) -> bool:
-        """
-        Check if branch should hold at a convergence point.
-        
-        Returns True if branch should hold, False if it can proceed.
-        """
-        # Get parallel group for this branch
-        if not self.branch_spawner:
-            return False
-            
-        group_id = self.branch_spawner.branch_to_group.get(branch_id)
-        if not group_id:
-            return False  # Not part of a parallel group
-        
-        group = self.branch_spawner.parallel_groups.get(group_id)
-        if not group:
-            return False
-        
-        # Check if next_agent is a convergence point for this group
-        is_shared_conv = next_agent in group.shared_convergence_points
-        is_subgroup_conv = next_agent in group.sub_group_convergences
-        
-        if not (is_shared_conv or is_subgroup_conv):
-            return False  # Not a convergence point
-        
-        # Record this branch reaching convergence
-        branch_info = self.branch_spawner.branch_info.get(branch_id)
-        if branch_info and step_result:
-            result_data = {
-                'branch_id': branch_id,
-                'from_agent': current_agent,
-                'content': getattr(step_result, 'response', None)
-            }
-            group.record_branch_convergence(branch_id, next_agent, result_data)
-        
-        # Check if convergence point is ready
-        if group.check_convergence_ready(next_agent):
-            logger.info(f"All branches arrived at '{next_agent}' - ready for convergence")
-            return False  # This branch can complete
-        
-        # Need to wait for other branches
-        logger.info(f"Branch '{branch_id}' holding at convergence '{next_agent}'")
-        return True
-    
     async def resume_branch(
         self,
         branch_id: str,
@@ -1785,7 +2077,18 @@ class BranchExecutor:
                 if convergence_target:
                     # Branch reached a convergence point
                     logger.info(f"Branch '{branch.id}' reached convergence point '{convergence_target}'")
-                    
+
+                    # Include continuation branch in metadata if one was created
+                    result_metadata = {
+                        "reached_convergence": True,
+                        "convergence_point": convergence_target,
+                        "last_agent": current_agent,
+                        "hold_reason": getattr(step_result, 'hold_reason', None)
+                    }
+                    continuation_branch = getattr(step_result, 'continuation_branch', None)
+                    if continuation_branch:
+                        result_metadata['continuation_branch'] = continuation_branch
+
                     # The branch completes here - group handles aggregation
                     return BranchResult(
                         branch_id=branch.id,
@@ -1794,12 +2097,7 @@ class BranchExecutor:
                         total_steps=branch.state.current_step,
                         execution_trace=execution_trace,
                         branch_memory=context.branch_memory,
-                        metadata={
-                            "reached_convergence": True,
-                            "convergence_point": convergence_target,
-                            "last_agent": current_agent,
-                            "hold_reason": getattr(step_result, 'hold_reason', None)
-                        }
+                        metadata=result_metadata
                     )
                 
                 # No next agent - branch completes

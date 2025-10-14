@@ -138,8 +138,8 @@ import requests
 from pydantic import BaseModel
 
 # Local imports
-from src.agents.agents import Agent
-from src.models.models import ModelConfig
+from marsys.agents.agents import Agent
+from marsys.models.models import ModelConfig
 ```
 
 ### Method Ordering in Classes

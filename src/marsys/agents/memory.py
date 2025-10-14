@@ -11,12 +11,12 @@ from typing import Any, Callable, Dict, List, Optional, Union
 
 from pydantic import BaseModel
 
-from src.models.models import (
+from marsys.models.models import (
     BaseAPIModel,
     BaseLLM,  # Added ModelConfig
     BaseVLM,
 )
-from src.models.response_models import HarmonizedResponse
+from marsys.models.response_models import HarmonizedResponse
 
 # Import the new exception classes
 from .exceptions import (

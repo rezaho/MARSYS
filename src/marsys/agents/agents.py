@@ -30,12 +30,12 @@ from typing import (
 
 logger = logging.getLogger(__name__)
 
-from src.coordination.context_manager import ContextSelector
+from marsys.coordination.context_manager import ContextSelector
 
 # --- New Imports ---
-from src.environment.utils import generate_openai_tool_schema
-from src.models.models import BaseAPIModel, ModelConfig
-from src.utils.monitoring import default_progress_monitor
+from marsys.environment.utils import generate_openai_tool_schema
+from marsys.models.models import BaseAPIModel, ModelConfig
+from marsys.utils.monitoring import default_progress_monitor
 
 from .memory import ConversationMemory, MemoryManager, Message, ToolCallMsg
 from .registry import AgentRegistry
@@ -156,6 +156,7 @@ class BaseAgent(ABC):
         max_tokens: Optional[int] = 512,
         name: Optional[str] = None,
         allowed_peers: Optional[List[str]] = None,
+        bidirectional_peers: bool = False,  # NEW: Control edge directionality
         is_convergence_point: Optional[bool] = None,  # NEW: Optional convergence flag
         input_schema: Optional[Any] = None,
         output_schema: Optional[Any] = None,
@@ -173,6 +174,7 @@ class BaseAgent(ABC):
             max_tokens: Default maximum tokens for model generation.
             name: Optional specific name for registration.
             allowed_peers: List of agent names this agent can call.
+            bidirectional_peers: If True, creates bidirectional edges with allowed_peers. Default False (unidirectional).
             is_convergence_point: Optional flag to mark this agent as a convergence point (for allowed_peers mode).
             input_schema: Optional schema for validating agent input.
             output_schema: Optional schema for validating agent output.
@@ -210,8 +212,10 @@ class BaseAgent(ABC):
                     )
 
         self.max_tokens = max_tokens
-        # Store initial allowed_peers for backward compatibility  
+        # Store initial allowed_peers for backward compatibility
         self._allowed_peers_init = set(allowed_peers) if allowed_peers else set()
+        # Store bidirectional preference for edge creation
+        self._bidirectional_peers = bidirectional_peers  # NEW: Store edge directionality preference
         # Store convergence point flag if specified (None means use topology default)
         self._is_convergence_point = is_convergence_point  # NEW: Store convergence flag
         # Reference to topology graph (will be set by Orchestra)
@@ -1320,7 +1324,7 @@ Example for `final_response`:
             return
         
         # Import functions and schemas from context manager
-        from src.coordination.context_manager import (
+        from marsys.coordination.context_manager import (
             save_to_context,
             preview_saved_context,
             get_context_selection_tools
@@ -2344,7 +2348,7 @@ The user will provide their response, and you'll receive it to continue your tas
         parent_completes_on_spawn: Optional[bool] = None,
         dynamic_convergence_enabled: Optional[bool] = None,
         steering_mode: Optional[str] = None,  # "auto", "always", "never"
-        verbosity: Optional[int] = None,  # Verbosity level (0-2) for status updates
+        verbosity: Optional[int] = 1,  # Verbosity level (0-2) for status updates
         **kwargs  # Additional parameters (e.g., timeout configurations)
     ) -> Union[Dict[str, Any], str]:
         """
@@ -3802,6 +3806,7 @@ class Agent(BaseAgent):
         max_tokens: Optional[int] = None,  # Explicit override; None ⇒ use ModelConfig
         name: Optional[str] = None,
         allowed_peers: Optional[List[str]] = None,
+        bidirectional_peers: bool = False,  # NEW: Control edge directionality
         input_schema: Optional[Any] = None,
         output_schema: Optional[Any] = None,
         memory_retention: str = "session",  # New parameter
@@ -3819,6 +3824,7 @@ class Agent(BaseAgent):
             max_tokens: Default maximum tokens for generation for this agent instance (overrides model_config default).
             name: Optional specific name for registration.
             allowed_peers: List of agent names this agent can call.
+            bidirectional_peers: If True, creates bidirectional edges with allowed_peers. Default False (unidirectional).
             input_schema: Optional schema for validating agent input.
             output_schema: Optional schema for validating agent output.
             memory_retention: Memory retention policy - "single_run", "session", or "persistent"
@@ -3844,6 +3850,7 @@ class Agent(BaseAgent):
             max_tokens=effective_max_tokens,  # Use the determined max_tokens
             name=name,
             allowed_peers=allowed_peers,  # Pass allowed_peers
+            bidirectional_peers=bidirectional_peers,  # Pass bidirectional preference
             input_schema=input_schema,
             output_schema=output_schema,
             memory_retention=memory_retention,  # Pass memory retention
@@ -3902,7 +3909,7 @@ class Agent(BaseAgent):
         if model_type == "local":
             # Lazy import for local models (requires marsys[local-models])
             try:
-                from src.models.models import BaseLLM, BaseVLM
+                from marsys.models.models import BaseLLM, BaseVLM
             except ImportError as e:
                 raise ImportError(
                     "Local model support requires additional dependencies. Install with:\n"
