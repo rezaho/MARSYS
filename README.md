@@ -176,7 +176,19 @@ OPENROUTER_API_KEY=your-key-here
 EOF
 ```
 
-MARSYS will automatically load `.env` files using `python-dotenv`.
+**Note:** You need to manually load `.env` files in your scripts:
+```python
+from dotenv import load_dotenv
+load_dotenv()  # Load .env file before importing marsys
+
+# Now environment variables are available
+from marsys import Agent, ModelConfig
+```
+
+Install `python-dotenv` separately if needed:
+```bash
+pip install python-dotenv
+```
 
 ### Optional: Playwright Setup (Only for BrowserAgent)
 
