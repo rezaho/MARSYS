@@ -191,91 +191,65 @@ Here's a simple three-agent workflow:
 
 ```python
 import asyncio
-from marsys import Orchestra, Agent
+from marsys import Agent
 from marsys.models import ModelConfig
 
 async def main():
     # Use a single model configuration
+    # Note: Make sure OPENROUTER_API_KEY is set in your environment
+    # Get your key from: https://openrouter.ai
     model_config = ModelConfig(
         type="api",
-        name="gpt-4",
-        provider="openai"
+        name="google/gemini-2.5-pro",
+        provider="openrouter"
     )
 
-    # Create three specialized agents
+    # Create three specialized agents with allowed_peers
     data_collector = Agent(
         model_config=model_config,
-        agent_name="DataCollector",
-        description="Collects and gathers relevant data"
+        name="DataCollector",
+        goal="Collect and gather relevant market data",
+        instruction="""You are a data collection specialist.
+        Gather comprehensive market data from various sources.
+        Focus on factual information and recent trends.
+        After gathering data, pass it to the Analyzer.""",
+        allowed_peers=["User", "Analyzer"]  # Can invoke Analyzer
     )
 
     analyzer = Agent(
         model_config=model_config,
-        agent_name="Analyzer",
-        description="Analyzes collected data and finds patterns"
+        name="Analyzer",
+        goal="Analyze data and identify patterns",
+        instruction="""You are a data analysis expert.
+        Examine collected data for patterns and insights.
+        Provide evidence-based conclusions.
+        After analysis, send your findings to the Reporter.""",
+        allowed_peers=["Reporter"]  # Can invoke Reporter
     )
 
     reporter = Agent(
         model_config=model_config,
-        agent_name="Reporter",
-        description="Creates comprehensive reports from analysis"
+        name="Reporter",
+        goal="Create comprehensive reports from analysis",
+        instruction="""You are a report writer.
+        Synthesize analysis into clear, actionable reports.
+        Structure information logically with executive summaries.""",
+        allowed_peers=[]  # Final agent, no downstream peers
     )
 
-    # Define sequential workflow
-    topology = {
-        "nodes": ["DataCollector", "Analyzer", "Reporter"],
-        "edges": [
-            "DataCollector -> Analyzer",
-            "Analyzer -> Reporter"
-        ]
-    }
-
-    # Run the workflow
-    result = await Orchestra.run(
+    # Run using auto_run - topology is automatically created from allowed_peers
+    result = await data_collector.auto_run(
         task="Analyze market trends in the technology sector",
-        topology=topology
+        verbosity=2,
+        auto_inject_user=True,
+        max_steps=30
     )
 
-    print(result.final_response)
+    print(result)
 
 asyncio.run(main())
 ```
 
-### Advanced Example: Parallel Research Team
-
-```python
-from marsys import Orchestra, AgentPool, PatternConfig
-from marsys.config import ExecutionConfig, StatusConfig
-
-# Create agent pool for parallel execution
-research_pool = AgentPool(
-    agent_class=ResearchAgent,
-    num_instances=3,
-    model_config={"model": "gpt-4", "temperature": 0.7}
-)
-
-# Define complex topology
-topology = PatternConfig.hub_and_spoke(
-    hub="Coordinator",
-    spokes=["ResearchPool", "Analyzer", "Reporter"],
-    parallel_spokes=True
-)
-
-# Configure execution
-config = ExecutionConfig(
-    convergence_timeout=300,
-    status=StatusConfig.from_verbosity(2),  # Verbose output
-    steering_mode="auto"  # Automatic retry with guidance
-)
-
-# Execute with state persistence
-result = await Orchestra.run(
-    task="Analyze market trends across 5 industries",
-    topology=topology,
-    execution_config=config,
-    state_manager=StateManager(FileStorageBackend("./state"))
-)
-```
 
 [More examples →](examples/)
 
@@ -294,7 +268,7 @@ Comprehensive documentation is available at [https://marsys.io](https://marsys.i
 
 - **Core Concepts**
   - [Agents & Memory](https://marsys.io/concepts/agents)
-  - [Topology System](https://marsys.io/concepts/topology)
+  - [Topology System](https://marsys.io/api/topology)
   - [Execution Flow](https://marsys.io/concepts/execution-flow)
   - [Branching Model](https://marsys.io/concepts/branching)
 
@@ -335,7 +309,7 @@ graph TD
 - **State Manager**: Handles persistence and recovery
 - **Communication Manager**: Manages user interactions
 
-[Architecture documentation →](https://marsys.io/concepts/architecture)
+[Architecture documentation →](https://marsys.io/concepts/overview)
 
 ---
 
