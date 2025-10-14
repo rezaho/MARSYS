@@ -17,7 +17,7 @@ from PIL import ImageDraw, ImageFont
 from playwright.async_api import BrowserContext, Page, async_playwright
 
 # Import framework exceptions
-from src.agents.exceptions import (
+from marsys.agents.exceptions import (
     BrowserError,
     BrowserNotInitializedError,
     BrowserConnectionError,

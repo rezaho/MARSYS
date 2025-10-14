@@ -851,7 +851,7 @@ Example for `final_response`:
             return ""
         
         # Import here to avoid circular dependency
-        from src.agents.registry import AgentRegistry
+        from marsys.agents.registry import AgentRegistry
         
         prompt_lines = ["\n\n--- AVAILABLE PEER AGENTS ---"]
         prompt_lines.append(
@@ -1184,7 +1184,7 @@ Detailed structure for the JSON object:
         """
         try:
             # Try to import AgentRegistry to get schema
-            from src.agents.registry import AgentRegistry
+            from marsys.agents.registry import AgentRegistry
             
             # Try to get the agent from registry
             agent = AgentRegistry.get(agent_name)
@@ -1415,7 +1415,7 @@ Detailed structure for the JSON object:
                             # Update the agent's memory with merged tool_calls
                             if result.tool_calls and hasattr(agent, 'memory') and hasattr(agent.memory, 'memory'):
                                 # Convert any dict tool calls to ToolCallMsg objects
-                                from src.agents.memory import ToolCallMsg
+                                from marsys.agents.memory import ToolCallMsg
                                 normalized_tool_calls = []
                                 for tc in result.tool_calls:
                                     if isinstance(tc, dict):

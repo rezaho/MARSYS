@@ -25,14 +25,14 @@ from pydantic import (  # root_validator, # Ensure root_validator is removed or 
 )
 
 # Import the new response models
-from src.models.response_models import (
+from marsys.models.response_models import (
     ErrorResponse,
     HarmonizedResponse,
     ResponseMetadata,
     ToolCall,
     UsageInfo,
 )
-from src.models.utils import apply_tools_template
+from marsys.models.utils import apply_tools_template
 
 # PEFT imports if used later in the file
 try:
@@ -372,7 +372,7 @@ class OpenAIAdapter(APIProviderAdapter):
 
     def handle_api_error(self, error: Exception, response=None) -> ErrorResponse:
         """Enhanced error handling using ModelAPIError classification."""
-        from src.agents.exceptions import ModelAPIError
+        from marsys.agents.exceptions import ModelAPIError
 
         # Create classified API error
         api_error = ModelAPIError.from_provider_response(provider="openai", response=response, exception=error)
@@ -552,7 +552,7 @@ class OpenRouterAdapter(APIProviderAdapter):
 
         # Handle OpenRouter-specific reasoning configuration
         # Import model detection utility
-        from src.models.utils import detect_model_family
+        from marsys.models.utils import detect_model_family
 
         thinking_budget = kwargs.get("thinking_budget") or self.thinking_budget
         reasoning_effort = kwargs.get("reasoning_effort") or self.reasoning_effort
@@ -644,7 +644,7 @@ class OpenRouterAdapter(APIProviderAdapter):
 
     def handle_api_error(self, error: Exception, response=None) -> ErrorResponse:
         """Enhanced error handling using ModelAPIError classification."""
-        from src.agents.exceptions import ModelAPIError
+        from marsys.agents.exceptions import ModelAPIError
 
         # Create classified API error
         api_error = ModelAPIError.from_provider_response(provider="openrouter", response=response, exception=error)
@@ -667,7 +667,7 @@ class OpenRouterAdapter(APIProviderAdapter):
         """Extract JSON from content using robust parsing utilities."""
         import json
 
-        from src.utils.parsing import robust_json_loads
+        from marsys.utils.parsing import robust_json_loads
 
         if not content or not isinstance(content, str):
             return content
@@ -832,7 +832,7 @@ class AnthropicAdapter(APIProviderAdapter):
 
     def handle_api_error(self, error: Exception, response=None) -> ErrorResponse:
         """Enhanced error handling using ModelAPIError classification."""
-        from src.agents.exceptions import ModelAPIError
+        from marsys.agents.exceptions import ModelAPIError
 
         # Create classified API error
         api_error = ModelAPIError.from_provider_response(provider="anthropic", response=response, exception=error)
@@ -1232,7 +1232,7 @@ class GoogleAdapter(APIProviderAdapter):
 
     def handle_api_error(self, error: Exception, response=None) -> ErrorResponse:
         """Enhanced error handling using ModelAPIError classification."""
-        from src.agents.exceptions import ModelAPIError
+        from marsys.agents.exceptions import ModelAPIError
 
         # Create classified API error
         api_error = ModelAPIError.from_provider_response(provider="google", response=response, exception=error)
@@ -1756,7 +1756,7 @@ class BaseVLM:
 
         # Lazy import for vision processing (requires marsys[local-models])
         try:
-            from src.models.processors import process_vision_info
+            from marsys.models.processors import process_vision_info
         except ImportError as e:
             raise ImportError(
                 "Vision processing requires PyTorch and torchvision. Install with:\n"
@@ -1986,7 +1986,7 @@ class BaseAPIModel:
             HarmonizedResponse object with standardized format and metadata
         """
         # Import ModelAPIError at method level to ensure it's always in scope
-        from src.agents.exceptions import ModelAPIError
+        from marsys.agents.exceptions import ModelAPIError
 
         try:
             # Include instance thinking_budget if not provided in kwargs and instance has it
@@ -2019,7 +2019,7 @@ class BaseAPIModel:
             # Check if response is an ErrorResponse and convert to exception
             if isinstance(adapter_response, ErrorResponse):
                 # Create ModelAPIError with proper classification instead of generic ModelError
-                from src.agents.exceptions import ModelAPIError
+                from marsys.agents.exceptions import ModelAPIError
 
                 # Extract classification data if available
                 classification = None
@@ -2118,7 +2118,7 @@ class BaseAPIModel:
             # Check if response is an ErrorResponse
             if isinstance(adapter_response, ErrorResponse):
                 # Use ModelAPIError with classification instead of generic ModelError
-                from src.agents.exceptions import ModelAPIError
+                from marsys.agents.exceptions import ModelAPIError
 
                 # Extract classification data if available
                 classification = None

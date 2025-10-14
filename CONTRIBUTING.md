@@ -156,7 +156,7 @@ We welcome contributions in many forms:
 
 5. **Verify installation:**
    ```bash
-   python -c "from src.coordination import Orchestra; print('Success!')"
+   python -c "from marsys.coordination import Orchestra; print('Success!')"
    ```
 
 ---

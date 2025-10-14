@@ -30,12 +30,12 @@ from typing import (
 
 logger = logging.getLogger(__name__)
 
-from src.coordination.context_manager import ContextSelector
+from marsys.coordination.context_manager import ContextSelector
 
 # --- New Imports ---
-from src.environment.utils import generate_openai_tool_schema
-from src.models.models import BaseAPIModel, ModelConfig
-from src.utils.monitoring import default_progress_monitor
+from marsys.environment.utils import generate_openai_tool_schema
+from marsys.models.models import BaseAPIModel, ModelConfig
+from marsys.utils.monitoring import default_progress_monitor
 
 from .memory import ConversationMemory, MemoryManager, Message, ToolCallMsg
 from .registry import AgentRegistry
@@ -1324,7 +1324,7 @@ Example for `final_response`:
             return
         
         # Import functions and schemas from context manager
-        from src.coordination.context_manager import (
+        from marsys.coordination.context_manager import (
             save_to_context,
             preview_saved_context,
             get_context_selection_tools
@@ -3909,7 +3909,7 @@ class Agent(BaseAgent):
         if model_type == "local":
             # Lazy import for local models (requires marsys[local-models])
             try:
-                from src.models.models import BaseLLM, BaseVLM
+                from marsys.models.models import BaseLLM, BaseVLM
             except ImportError as e:
                 raise ImportError(
                     "Local model support requires additional dependencies. Install with:\n"
