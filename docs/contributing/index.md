@@ -369,7 +369,7 @@ Check our [issue tracker](https://github.com/yourusername/marsys/issues) for cur
 
 ## 📜 License
 
-By contributing, you agree that your contributions will be licensed under the same license as the project (MIT/Apache 2.0).
+By contributing, you agree that your contributions will be licensed under the same license as the project (Apache License 2.0).
 
 ## 🙏 Recognition
 
