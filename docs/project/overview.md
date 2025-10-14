@@ -151,11 +151,15 @@ We welcome contributions from everyone! See our [Contributing Guide](../contribu
 
 ## 📜 License
 
-MARSYS is dual-licensed:
-- **MIT License**: For open-source projects
-- **Commercial License**: For proprietary applications
+MARSYS is released under the **Apache License 2.0**.
 
-See [LICENSE](https://github.com/yourusername/marsys/blob/main/LICENSE) for details.
+This permissive license allows you to:
+- ✅ Use MARSYS for commercial purposes
+- ✅ Modify and distribute the code
+- ✅ Use MARSYS in proprietary applications
+- ✅ Patent use protection
+
+See [LICENSE](https://github.com/rezaho/MARSYS/blob/main/LICENSE) for full details.
 
 ## 🤝 Partnerships
 
