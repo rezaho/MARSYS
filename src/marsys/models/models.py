@@ -25,14 +25,14 @@ from pydantic import (  # root_validator, # Ensure root_validator is removed or 
 )
 
 # Import the new response models
-from src.models.response_models import (
+from marsys.models.response_models import (
     ErrorResponse,
     HarmonizedResponse,
     ResponseMetadata,
     ToolCall,
     UsageInfo,
 )
-from src.models.utils import apply_tools_template
+from marsys.models.utils import apply_tools_template
 
 # PEFT imports if used later in the file
 try:
@@ -372,7 +372,7 @@ class OpenAIAdapter(APIProviderAdapter):
 
     def handle_api_error(self, error: Exception, response=None) -> ErrorResponse:
         """Enhanced error handling using ModelAPIError classification."""
-        from src.agents.exceptions import ModelAPIError
+        from marsys.agents.exceptions import ModelAPIError
 
         # Create classified API error
         api_error = ModelAPIError.from_provider_response(provider="openai", response=response, exception=error)
@@ -551,19 +551,51 @@ class OpenRouterAdapter(APIProviderAdapter):
             payload["tools"] = kwargs["tools"]
 
         # Handle OpenRouter-specific reasoning configuration
+        # Import model detection utility
+        from marsys.models.utils import detect_model_family
+
         thinking_budget = kwargs.get("thinking_budget") or self.thinking_budget
         reasoning_effort = kwargs.get("reasoning_effort") or self.reasoning_effort
         exclude_reasoning = kwargs.get("exclude_reasoning", False)
 
         reasoning_config = {}
 
-        if reasoning_effort:
-            # Use effort-based reasoning (OpenAI-style)
-            if reasoning_effort.lower() in ["high", "medium", "low"]:
+        # Detect model family to determine which parameter to use
+        model_family = detect_model_family(self.model_name)
+
+        if model_family in ["openai_reasoning", "grok"]:
+            # These models ONLY support reasoning.effort parameter
+            # Use reasoning_effort (ignore thinking_budget)
+            if reasoning_effort and reasoning_effort.lower() in ["minimal", "low", "medium", "high"]:
                 reasoning_config["effort"] = reasoning_effort.lower()
-        elif thinking_budget is not None and thinking_budget >= 0:
-            # Use max_tokens-based reasoning (OpenRouter-specific)
-            reasoning_config["max_tokens"] = thinking_budget
+                import logging
+                logging.debug(
+                    f"[OpenRouter] Using reasoning.effort='{reasoning_effort.lower()}' for {self.model_name}"
+                )
+            else:
+                # Invalid or missing reasoning_effort - log warning but don't fail
+                import logging
+                logging.warning(
+                    f"[OpenRouter] Invalid or missing reasoning_effort for OpenAI model {self.model_name}. "
+                    f"Valid values: 'minimal', 'low', 'medium', 'high'. Using default from API."
+                )
+
+        elif model_family in ["anthropic", "google", "alibaba"]:
+            # These models support reasoning.max_tokens parameter
+            # Use thinking_budget (ignore reasoning_effort)
+            if thinking_budget is not None and thinking_budget >= 0:
+                reasoning_config["max_tokens"] = thinking_budget
+                import logging
+                logging.debug(
+                    f"[OpenRouter] Using reasoning.max_tokens={thinking_budget} for {self.model_name}"
+                )
+
+        else:
+            # Unknown model family - try both parameters in order of preference
+            if reasoning_effort and reasoning_effort.lower() in ["minimal", "low", "medium", "high"]:
+                reasoning_config["effort"] = reasoning_effort.lower()
+            elif thinking_budget is not None and thinking_budget >= 0:
+                reasoning_config["max_tokens"] = thinking_budget
 
         # Add exclude parameter if needed (defaults to False)
         if exclude_reasoning:
@@ -612,7 +644,7 @@ class OpenRouterAdapter(APIProviderAdapter):
 
     def handle_api_error(self, error: Exception, response=None) -> ErrorResponse:
         """Enhanced error handling using ModelAPIError classification."""
-        from src.agents.exceptions import ModelAPIError
+        from marsys.agents.exceptions import ModelAPIError
 
         # Create classified API error
         api_error = ModelAPIError.from_provider_response(provider="openrouter", response=response, exception=error)
@@ -635,7 +667,7 @@ class OpenRouterAdapter(APIProviderAdapter):
         """Extract JSON from content using robust parsing utilities."""
         import json
 
-        from src.utils.parsing import robust_json_loads
+        from marsys.utils.parsing import robust_json_loads
 
         if not content or not isinstance(content, str):
             return content
@@ -800,7 +832,7 @@ class AnthropicAdapter(APIProviderAdapter):
 
     def handle_api_error(self, error: Exception, response=None) -> ErrorResponse:
         """Enhanced error handling using ModelAPIError classification."""
-        from src.agents.exceptions import ModelAPIError
+        from marsys.agents.exceptions import ModelAPIError
 
         # Create classified API error
         api_error = ModelAPIError.from_provider_response(provider="anthropic", response=response, exception=error)
@@ -1200,7 +1232,7 @@ class GoogleAdapter(APIProviderAdapter):
 
     def handle_api_error(self, error: Exception, response=None) -> ErrorResponse:
         """Enhanced error handling using ModelAPIError classification."""
-        from src.agents.exceptions import ModelAPIError
+        from marsys.agents.exceptions import ModelAPIError
 
         # Create classified API error
         api_error = ModelAPIError.from_provider_response(provider="google", response=response, exception=error)
@@ -1381,18 +1413,33 @@ class ModelConfig(BaseModel):
     api_key: Optional[str] = Field(
         None, description="API authentication key (reads from env if None)"
     )
-    max_tokens: int = Field(1024, description="Default maximum tokens for generation")
+    max_tokens: int = Field(8192, description="Default maximum tokens for generation")
     temperature: float = Field(
         0.7, ge=0.0, le=2.0, description="Default sampling temperature"
     )
     thinking_budget: Optional[int] = Field(
-        2000,
+        1024,
         ge=0,
-        description="Token budget for thinking (Google Gemini and OpenRouter). Set to 0 to disable thinking.",
+        description=(
+            "Token budget for thinking/reasoning phase (absolute token count). "
+            "Used for: Gemini, Anthropic (Claude), Alibaba Qwen models. "
+            "Note: For OpenAI models (GPT-5, o1, o3), use 'reasoning_effort' instead - "
+            "this parameter is ignored for OpenAI models. "
+            "Set to 0 to disable thinking."
+        ),
     )
     reasoning_effort: Optional[str] = Field(
-        None,
-        description="OpenRouter reasoning effort: 'high', 'medium', or 'low'. Takes precedence over thinking_budget for OpenRouter.",
+        "low",
+        description=(
+            "Reasoning effort level for OpenAI models (GPT-5, o1, o3) and Grok. "
+            "Values: 'minimal', 'low' (default), 'medium', 'high'. "
+            "- 'minimal': Fastest, minimal reasoning (~0% thinking) "
+            "- 'low': Quick reasoning (~20% thinking) "
+            "- 'medium': Balanced reasoning (~50% thinking) "
+            "- 'high': Deep reasoning (~80% thinking) "
+            "Note: This parameter is ONLY used for OpenAI/Grok models. "
+            "For Gemini/Anthropic, use 'thinking_budget' instead."
+        ),
     )
 
     # Local model specific fields
@@ -1500,6 +1547,48 @@ class ModelConfig(BaseModel):
                 "'model_class' must be set to 'llm' or 'vlm' for type='local'"
             )
         return v
+
+    @model_validator(mode="after")
+    def _validate_thinking_config(self) -> "ModelConfig":
+        """
+        Validate thinking/reasoning configuration.
+
+        Ensures proper configuration of reasoning parameters and warns about
+        potentially problematic settings.
+        """
+        # Only validate for API models with reasoning support
+        if self.type == "api" and self.provider in ["openrouter", "openai", "google", "anthropic"]:
+
+            # Validate reasoning_effort values
+            if self.reasoning_effort is not None:
+                valid_efforts = ["minimal", "low", "medium", "high"]
+                if self.reasoning_effort.lower() not in valid_efforts:
+                    raise ValueError(
+                        f"Invalid reasoning_effort '{self.reasoning_effort}'. "
+                        f"Must be one of: {', '.join(valid_efforts)}"
+                    )
+
+            # Validate thinking_budget relative to max_tokens
+            if self.thinking_budget is not None and self.thinking_budget > 0:
+                # Check if thinking budget exceeds max_tokens
+                if self.thinking_budget >= self.max_tokens:
+                    warnings.warn(
+                        f"thinking_budget ({self.thinking_budget}) must be less than max_tokens ({self.max_tokens}). "
+                        f"Auto-adjusting thinking_budget to {int(self.max_tokens * 0.6)} (60% of max_tokens) "
+                        f"to ensure space for the actual response."
+                    )
+                    # Auto-adjust to 60% of max_tokens
+                    object.__setattr__(self, "thinking_budget", int(self.max_tokens * 0.6))
+
+                # Warn if thinking budget is very close to max_tokens (>80%)
+                elif self.thinking_budget > (self.max_tokens * 0.8):
+                    warnings.warn(
+                        f"thinking_budget ({self.thinking_budget}) is {int((self.thinking_budget/self.max_tokens)*100)}% "
+                        f"of max_tokens ({self.max_tokens}). This may result in truncated responses. "
+                        f"Consider: (1) Increasing max_tokens, or (2) Decreasing thinking_budget."
+                    )
+
+        return self
 
 
 # --- Model Implementations ---
@@ -1667,7 +1756,7 @@ class BaseVLM:
 
         # Lazy import for vision processing (requires marsys[local-models])
         try:
-            from src.models.processors import process_vision_info
+            from marsys.models.processors import process_vision_info
         except ImportError as e:
             raise ImportError(
                 "Vision processing requires PyTorch and torchvision. Install with:\n"
@@ -1802,6 +1891,7 @@ class BaseAPIModel:
         top_p: float = None,
         provider: str = "openai",  # New parameter to specify provider
         thinking_budget: Optional[int] = None,  # New parameter for thinking budget
+        reasoning_effort: Optional[str] = None,  # New parameter for reasoning effort
         response_processor: Optional[Callable[[Dict[str, Any]], Dict[str, Any]]] = None,
         **kwargs,
     ) -> None:
@@ -1816,15 +1906,15 @@ class BaseAPIModel:
             temperature: The default sampling temperature.
             top_p: The default top_p parameter.
             provider: The API provider ("openai", "anthropic", "google", "openrouter", "groq").
-            thinking_budget: Token budget for thinking (Google Gemini and OpenRouter). Set to 0 to disable.
+            thinking_budget: Token budget for thinking (Gemini, Anthropic, Alibaba Qwen). Set to 0 to disable.
+            reasoning_effort: Reasoning effort level ("minimal", "low", "medium", "high") for OpenAI models.
             response_processor: Optional callable to post-process model responses.
 
             **kwargs: Additional parameters passed to the adapter.
         """
         self._response_processor = response_processor
-        self.thinking_budget = (
-            thinking_budget  # Store thinking_budget as instance attribute
-        )
+        self.thinking_budget = thinking_budget  # Store thinking_budget as instance attribute
+        self.reasoning_effort = reasoning_effort  # Store reasoning_effort as instance attribute
 
         # Create appropriate adapter based on provider
         self.adapter = ProviderAdapterFactory.create_adapter(
@@ -1836,6 +1926,7 @@ class BaseAPIModel:
             temperature=temperature,
             top_p=top_p,
             thinking_budget=thinking_budget,
+            reasoning_effort=reasoning_effort,
             **kwargs,
         )
 
@@ -1895,7 +1986,7 @@ class BaseAPIModel:
             HarmonizedResponse object with standardized format and metadata
         """
         # Import ModelAPIError at method level to ensure it's always in scope
-        from src.agents.exceptions import ModelAPIError
+        from marsys.agents.exceptions import ModelAPIError
 
         try:
             # Include instance thinking_budget if not provided in kwargs and instance has it
@@ -1905,6 +1996,14 @@ class BaseAPIModel:
                 and self.thinking_budget is not None
             ):
                 kwargs["thinking_budget"] = self.thinking_budget
+
+            # Include instance reasoning_effort if not provided in kwargs and instance has it
+            if (
+                "reasoning_effort" not in kwargs
+                and hasattr(self, "reasoning_effort")
+                and self.reasoning_effort is not None
+            ):
+                kwargs["reasoning_effort"] = self.reasoning_effort
 
             # Call adapter which will use harmonization method
             adapter_response = self.adapter.run(
@@ -1920,7 +2019,7 @@ class BaseAPIModel:
             # Check if response is an ErrorResponse and convert to exception
             if isinstance(adapter_response, ErrorResponse):
                 # Create ModelAPIError with proper classification instead of generic ModelError
-                from src.agents.exceptions import ModelAPIError
+                from marsys.agents.exceptions import ModelAPIError
 
                 # Extract classification data if available
                 classification = None
@@ -1996,6 +2095,14 @@ class BaseAPIModel:
         ):
             kwargs["thinking_budget"] = self.thinking_budget
 
+        # Include instance reasoning_effort if not provided in kwargs and instance has it
+        if (
+            "reasoning_effort" not in kwargs
+            and hasattr(self, "reasoning_effort")
+            and self.reasoning_effort is not None
+        ):
+            kwargs["reasoning_effort"] = self.reasoning_effort
+
         if self.async_adapter:
             # Use native async adapter for best performance
             adapter_response = await self.async_adapter.arun(
@@ -2011,7 +2118,7 @@ class BaseAPIModel:
             # Check if response is an ErrorResponse
             if isinstance(adapter_response, ErrorResponse):
                 # Use ModelAPIError with classification instead of generic ModelError
-                from src.agents.exceptions import ModelAPIError
+                from marsys.agents.exceptions import ModelAPIError
 
                 # Extract classification data if available
                 classification = None

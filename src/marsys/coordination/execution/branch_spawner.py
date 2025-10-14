@@ -28,6 +28,7 @@ from ..branches.types import (
     MaxStepsCompletion,
 )
 from ..topology.graph import TopologyGraph, ParallelGroup
+from ..topology.core import NodeType
 from ..validation.types import AgentInvocation
 
 if TYPE_CHECKING:
@@ -35,6 +36,7 @@ if TYPE_CHECKING:
     from ...agents.agent_pool import AgentPool
     from .branch_executor import BranchExecutor
     from ..event_bus import EventBus
+    from ..config import ConvergencePolicyConfig
 
 logger = logging.getLogger(__name__)
 
@@ -151,7 +153,6 @@ class ParallelInvocationGroup:
     group_id: str
     parent_branch_id: str
     requesting_agent: str
-    target_agent: str
     total_branches: int
     branch_ids: List[str]
     completed_branches: Set[str] = field(default_factory=set)
@@ -160,8 +161,8 @@ class ParallelInvocationGroup:
     created_at: datetime = field(default_factory=datetime.now)
     convergence_triggered: bool = False
     convergence_lock: asyncio.Lock = field(default_factory=asyncio.Lock)
-    
-    # New fields for multi-convergence handling
+
+    # Multi-convergence handling
     shared_convergence_points: Set[str] = field(default_factory=set)
     sub_group_convergences: Dict[str, Set[str]] = field(default_factory=dict)
     convergence_tracking_active: Dict[str, bool] = field(default_factory=dict)
@@ -170,6 +171,9 @@ class ParallelInvocationGroup:
     convergence_aggregations: Dict[str, List[Dict]] = field(default_factory=dict)
     convergence_branches_spawned: Set[str] = field(default_factory=set)
     parent_should_wait: bool = True
+
+    # Parent invocation tracking (for callback vs fire-and-forget pattern detection)
+    parent_invoked_by_children: Set[str] = field(default_factory=set)
     
     def is_complete(self) -> bool:
         """Check if all branches in the group have completed or failed."""
@@ -180,8 +184,18 @@ class ParallelInvocationGroup:
         return self.total_branches - len(self.completed_branches) - len(self.failed_branches)
     
     def get_successful_count(self) -> int:
-        """Get number of successfully completed branches."""
-        return len(self.completed_branches)
+        """
+        Get number of branches that have successfully reached convergence.
+
+        This includes branches that are HOLDING at convergence points,
+        not just branches that have fully completed execution.
+
+        Returns:
+            Count of branches at convergence points
+        """
+        # Count branches that have reached ANY convergence point
+        # These are recorded in branch_convergence_map
+        return len(self.branch_convergence_map)
     
     def should_trigger_convergence(self, min_success_ratio: float = 0.5) -> bool:
         """Determine if convergence should trigger based on completion and success ratio."""
@@ -208,19 +222,39 @@ class ParallelInvocationGroup:
             expected_agents = self.sub_group_convergences[convergence_point]
             arrived_agents = {
                 self.branch_agent_map[bid]
-                for bid, cp in self.branch_convergence_map.items() 
+                for bid, cp in self.branch_convergence_map.items()
                 if cp == convergence_point and bid in self.branch_agent_map
             }
             return expected_agents == arrived_agents
         elif convergence_point in self.shared_convergence_points:
             # Shared: all branches must arrive
             branches_at_this_point = sum(
-                1 for cp in self.branch_convergence_map.values() 
+                1 for cp in self.branch_convergence_map.values()
                 if cp == convergence_point
             )
             return branches_at_this_point == self.total_branches
         return False
-    
+
+    def get_convergence_status(self, branch_id: str) -> Optional[str]:
+        """Get the convergence point a branch reached, if any."""
+        return self.branch_convergence_map.get(branch_id)
+
+    def get_arrived_at_convergence(self, convergence_point: str) -> Set[str]:
+        """
+        Get set of branch IDs that reached a specific convergence point.
+
+        Args:
+            convergence_point: Name of the convergence agent
+
+        Returns:
+            Set of branch IDs that have reached this convergence point
+        """
+        return {
+            branch_id
+            for branch_id, conv_point in self.branch_convergence_map.items()
+            if conv_point == convergence_point
+        }
+
     def get_convergence_groups(self) -> Dict[str, List[str]]:
         """Group branches by their convergence points."""
         from collections import defaultdict
@@ -256,63 +290,70 @@ class DynamicBranchSpawner:
         max_completed_agents: Optional[int] = None,
         max_completed_branches: Optional[int] = None,
         max_branch_results: Optional[int] = None,
-        convergence_timeout: float = 600.0  # Timeout for waiting at convergence points (10 minutes default)
+        convergence_timeout: float = 600.0,  # Timeout for waiting at convergence points (10 minutes default)
+        convergence_policy: Optional['ConvergencePolicyConfig'] = None  # Policy for handling timeout
     ):
         self.graph = topology_graph
         self.branch_executor = branch_executor
         self.event_bus = event_bus
         self.agent_registry = agent_registry
-        
+
         # Track agent/pool allocations uniformly
         self.agent_allocations: Dict[str, Dict[str, Any]] = {}  # branch_id -> {resource, instance}
         self.resource_lock = asyncio.Lock()  # Unified lock for resource management
-        
+
         # Memory management configuration
         self.max_completed_agents = max_completed_agents or self.DEFAULT_MAX_COMPLETED_AGENTS
         self.max_completed_branches = max_completed_branches or self.DEFAULT_MAX_COMPLETED_BRANCHES
         self.max_branch_results = max_branch_results or self.DEFAULT_MAX_BRANCH_RESULTS
-        
+
         # Track active branches and their tasks
         self.active_branches: Dict[str, asyncio.Task] = {}
         self.branch_info: Dict[str, ExecutionBranch] = {}
-        
+
         # Track completed agents and branches with bounded size
         self.completed_agents: Set[str] = set()
         self.completed_branches: Set[str] = set()
         self.branch_results: Dict[str, BranchResult] = {}
-        
+
         # Track which agents are in which branches
         self.agent_to_branches: Dict[str, Set[str]] = {}
-        
+
         # Track parent-child relationships for agent-initiated parallelism
         self.parent_child_map: Dict[str, List[str]] = {}  # parent_id -> [child_ids]
         self.child_parent_map: Dict[str, str] = {}  # child_id -> parent_id
         self.waiting_branches: Dict[str, Set[str]] = {}  # parent_id -> set of child_ids to wait for
-        
+
         # Dynamic instance tracking for convergence points
         self.convergence_points: Set[str] = set()  # Nodes marked as convergence
-        self.instance_tracking: Dict[str, Dict[str, List[str]]] = {}  
+        self.instance_tracking: Dict[str, Dict[str, List[str]]] = {}
         # convergence_node -> {incoming_agent -> [instance_ids]}
         # Example: {"synthesizer": {"summarizer": ["sum_1", "sum_2", "sum_3"]}}
-        
+
         self.instance_completions: Dict[str, BranchResult] = {}
         # instance_id -> result
-        
+
         self.convergence_executed: Set[str] = set()  # Prevent duplicate execution
-        
+
         # Cleanup tracking
         self._cleanup_counter = 0
         self._branch_completion_times: Dict[str, float] = {}  # Track when branches completed
-        
+
         # Initialize convergence tracker
         self.convergence_tracker = ConvergenceTracker()
-        
+
         # Parallel invocation groups tracking
         self.parallel_groups: Dict[str, ParallelInvocationGroup] = {}
         self.branch_to_group: Dict[str, str] = {}  # branch_id -> group_id
         self.completed_groups: Set[str] = set()  # For cleanup tracking
         self.group_timeout_seconds: float = convergence_timeout  # Use configured timeout
-        
+
+        # Store convergence policy
+        if convergence_policy is None:
+            from ..config import ConvergencePolicyConfig
+            convergence_policy = ConvergencePolicyConfig.from_value(0.67)
+        self.convergence_policy = convergence_policy
+
         # Identify convergence points from topology
         self._identify_convergence_points()
     
@@ -498,10 +539,85 @@ class DynamicBranchSpawner:
             List of new async tasks for spawned branches
         """
         logger.info(f"Handling completion of agent '{agent_name}' in branch '{current_branch_id}'")
-        
+
         # Record completion
         self.completed_agents.add(agent_name)
-        
+
+        # Remove completed branch from ALL waiting branches
+        # Only remove from continuation branches when branch reaches the RIGHT convergence point
+        # Use persisted convergence state, not BranchResult metadata
+        if current_branch_id:
+            removed_from = []
+            for waiting_branch_id in list(self.waiting_branches.keys()):
+                if current_branch_id in self.waiting_branches[waiting_branch_id]:
+                    # Check if the waiting branch is a continuation branch
+                    waiting_branch = self.branch_info.get(waiting_branch_id)
+                    is_continuation = waiting_branch and waiting_branch.metadata.get("is_continuation", False)
+
+                    # For continuation branches, only remove if branch reached the CORRECT convergence point
+                    if is_continuation:
+                        expected_convergence = waiting_branch.metadata.get("convergence_node")
+
+                        # CRITICAL: Check BRANCH metadata (persisted), not BranchResult metadata
+                        current_branch = self.branch_info.get(current_branch_id)
+                        if current_branch:
+                            # Check persisted convergence state on the branch
+                            branch_reached_convergence = current_branch.metadata.get("reached_convergence", False)
+                            branch_convergence_point = current_branch.metadata.get("convergence_point")
+
+                            # Also check with the parallel group as backup
+                            if not branch_convergence_point:
+                                group_id = self.branch_to_group.get(current_branch_id)
+                                if group_id:
+                                    group = self.parallel_groups.get(group_id)
+                                    if group:
+                                        branch_convergence_point = group.get_convergence_status(current_branch_id)
+                                        branch_reached_convergence = bool(branch_convergence_point)
+
+                            logger.debug(
+                                f"Checking removal for continuation '{waiting_branch_id}': "
+                                f"branch '{current_branch_id}' convergence='{branch_convergence_point}' "
+                                f"(expected '{expected_convergence}')"
+                            )
+
+                            # Only remove if branch reached the expected convergence point
+                            if branch_reached_convergence and branch_convergence_point == expected_convergence:
+                                self.waiting_branches[waiting_branch_id].discard(current_branch_id)
+                                removed_from.append(waiting_branch_id)
+                                logger.info(
+                                    f"✓ Branch '{current_branch_id}' reached convergence '{branch_convergence_point}' - "
+                                    f"removing from continuation branch '{waiting_branch_id}' "
+                                    f"({len(self.waiting_branches[waiting_branch_id])} remaining)"
+                                )
+
+                                # Check if continuation is now ready
+                                if len(self.waiting_branches[waiting_branch_id]) == 0:
+                                    logger.info(
+                                        f"🎯 Continuation branch '{waiting_branch_id}' is NOW READY - "
+                                        f"all children reached convergence '{expected_convergence}'"
+                                    )
+                            else:
+                                logger.debug(
+                                    f"Branch '{current_branch_id}' not at expected convergence '{expected_convergence}' "
+                                    f"(at '{branch_convergence_point}' with reached={branch_reached_convergence}) - "
+                                    f"NOT removing from continuation branch '{waiting_branch_id}'"
+                                )
+                        else:
+                            logger.warning(f"Current branch '{current_branch_id}' not found in branch_info!")
+                    else:
+                        # Regular (non-continuation) waiting branch - remove as normal
+                        self.waiting_branches[waiting_branch_id].discard(current_branch_id)
+                        removed_from.append(waiting_branch_id)
+                        logger.debug(
+                            f"Removed completed branch '{current_branch_id}' from waiting branch '{waiting_branch_id}' "
+                            f"({len(self.waiting_branches[waiting_branch_id])} remaining)"
+                        )
+
+            if removed_from:
+                logger.info(
+                    f"Child '{current_branch_id}' removed from {len(removed_from)} waiting branch(es): {removed_from}"
+                )
+
         # Get current branch info
         current_branch = self.branch_info.get(current_branch_id)
         
@@ -1030,25 +1146,70 @@ class DynamicBranchSpawner:
 
         # 3. Check for completed parent branches waiting for children
         completed_parents = []
+        parents_to_mark_complete = []  # Track parents that should complete, not resume
+
         for parent_id, waiting_children in list(self.waiting_branches.items()):
             logger.debug(f"Checking parent branch '{parent_id}' with {len(waiting_children)} waiting children")
             if not waiting_children:  # All children completed
-                # Get parent branch info to resume
+                # Get parent branch info
                 parent_branch = self.branch_info.get(parent_id)
                 if parent_branch:
                     logger.debug(f"Found parent branch '{parent_id}', current_agent: {parent_branch.topology.current_agent}")
                     if parent_branch.topology.current_agent:
-                        # Aggregate child results
+                        # Aggregate child results (this also populates parent_invoked_by_children)
                         aggregated_context = self._aggregate_child_results(parent_id)
 
-                        # CHANGED: Append dataclass directly, no extra dict wrapping!
-                        ready_agents.append((
-                            parent_branch.topology.current_agent,
-                            aggregated_context  # Just the dataclass, no wrapper!
-                        ))
-                        
-                        completed_parents.append(parent_id)
-                        logger.info(f"Parent branch '{parent_id}' ready to resume - all children completed")
+                        # Find the parallel group (works for both parent and continuation branches)
+                        group = None
+                        if parent_branch.metadata.get("is_continuation"):
+                            # Continuation branch - get group from metadata
+                            group_id = parent_branch.metadata.get("group_id")
+                            if group_id:
+                                group = self.parallel_groups.get(group_id)
+                                logger.debug(f"Found group '{group_id}' for continuation branch '{parent_id}'")
+                        else:
+                            # Regular parent branch - find by parent_branch_id
+                            for gid, g in self.parallel_groups.items():
+                                if g.parent_branch_id == parent_id:
+                                    group = g
+                                    break
+
+                        # Decide whether to resume or complete parent
+                        if parent_branch.metadata.get("is_continuation"):
+                            # Continuation branches ALWAYS execute when all children arrive
+                            # They ARE the convergence point agent that needs to run
+                            logger.info(
+                                f"Continuation branch '{parent_id}' ready to EXECUTE "
+                                f"convergence agent '{parent_branch.topology.current_agent}' "
+                                f"with {len(aggregated_context.responses)} child results"
+                            )
+                            aggregated_context.resume_parent = True  # Trigger execution
+                            ready_agents.append((
+                                parent_branch.topology.current_agent,
+                                aggregated_context
+                            ))
+                            completed_parents.append(parent_id)
+                        elif group and len(group.parent_invoked_by_children) > 0:
+                            # At least one child invoked parent back - RESUME parent
+                            logger.info(
+                                f"Parent branch '{parent_id}' will RESUME - "
+                                f"{len(group.parent_invoked_by_children)} children invoked it back: "
+                                f"{group.parent_invoked_by_children}"
+                            )
+                            aggregated_context.resume_parent = True
+                            ready_agents.append((
+                                parent_branch.topology.current_agent,
+                                aggregated_context
+                            ))
+                            completed_parents.append(parent_id)
+                        else:
+                            # No children invoked parent back - COMPLETE parent
+                            logger.info(
+                                f"Parent branch '{parent_id}' will COMPLETE - "
+                                f"no children invoked it back (fire-and-forget pattern)"
+                            )
+                            parents_to_mark_complete.append((parent_id, parent_branch))
+                            completed_parents.append(parent_id)
                     else:
                         logger.warning(f"Parent branch '{parent_id}' has no current_agent set")
                 else:
@@ -1057,6 +1218,34 @@ class DynamicBranchSpawner:
         # Clean up completed parent waiting states
         for parent_id in completed_parents:
             del self.waiting_branches[parent_id]
+
+        # Mark parents as completed (fire-and-forget pattern)
+        for parent_id, parent_branch in parents_to_mark_complete:
+            parent_branch.state.status = BranchStatus.COMPLETED
+            logger.info(f"Marked parent branch '{parent_id}' as COMPLETED (fire-and-forget)")
+
+            # Clear stale continuation state in BranchExecutor
+            if hasattr(self.branch_executor, 'branch_continuation'):
+                self.branch_executor.branch_continuation.pop(parent_id, None)
+            if hasattr(self.branch_executor, 'waiting_for_children'):
+                self.branch_executor.waiting_for_children.pop(parent_id, None)
+
+            # Emit completion event if event bus exists
+            if self.event_bus:
+                from ..status.events import BranchEvent
+                context = parent_branch.metadata.get("context", {}) if parent_branch and parent_branch.metadata else {}
+                await self.event_bus.emit(BranchEvent(
+                    session_id=context.get("session_id", "unknown"),
+                    branch_id=parent_id,
+                    branch_name=parent_branch.name,
+                    branch_type=parent_branch.type.value,
+                    status="completed",
+                    parent_branch_id=None,
+                    metadata={
+                        "completion_reason": "fire_and_forget_children_completed",
+                        "total_children": len(parent_branch.state._execution_trace[-1].child_branch_ids) if parent_branch.state._execution_trace else 0
+                    }
+                ))
         
         return ready_agents
     
@@ -1581,25 +1770,25 @@ class DynamicBranchSpawner:
             }
             
             logger.debug(f"Created branch {child_branch.id} for {target_agent}[{idx}] with request: {agent_request}")
-        
-        # Determine the target agent name (all should be the same for pooling)
-        agent_name_target = target_agents[0] if target_agents else None
-        
-        # Validate all target agents are the same (required for pooling)
-        if target_agents and not all(t == agent_name_target for t in target_agents):
-            logger.warning(f"Mixed target agents in parallel invocation: {set(target_agents)}. Using first: {agent_name_target}")
-        
-        if not agent_name_target:
-            logger.error("No target agent identified for parallel invocation")
+
+        # Validate we have target agents
+        if not target_agents:
+            logger.error("No target agents identified for parallel invocation")
             return []
-        
+
+        # Log mixed vs homogeneous targets for debugging
+        unique_targets = set(target_agents)
+        if len(unique_targets) > 1:
+            logger.info(f"Mixed-target parallel invocation: {unique_targets}")
+        else:
+            logger.info(f"Homogeneous parallel invocation: {list(unique_targets)[0]} × {len(target_agents)}")
+
         # PHASE 2: Create Parallel Invocation Group with pre-analyzed convergence info
         group_id = f"parallel_group_{uuid.uuid4().hex[:8]}"
         group = ParallelInvocationGroup(
             group_id=group_id,
             parent_branch_id=parent_branch_id,
             requesting_agent=agent_name,
-            target_agent=agent_name_target,
             total_branches=len(all_branches),
             branch_ids=[b.id for b in all_branches]
         )
@@ -1617,10 +1806,16 @@ class DynamicBranchSpawner:
                 f"sub_group={list(group.sub_group_convergences.keys())}"
             )
         else:
-            # Fallback to legacy convergence finding
-            group.shared_convergence_points = self._find_reachable_convergence_points(agent_name_target)
+            # Fallback to legacy convergence finding (union convergence points from all targets)
+            target_set = set(target_agents)
+            shared_conv, sub_conv = self._find_shared_and_subgroup_convergence_points(
+                from_agents=target_set,
+                exclude_agents=target_set
+            )
+            group.shared_convergence_points = shared_conv
+            group.sub_group_convergences = sub_conv
             group.parent_should_wait = True  # Default to waiting
-            logger.info(f"Using legacy convergence finding (fallback) - found: {group.shared_convergence_points}")
+            logger.info(f"Using legacy convergence finding (fallback) - found shared: {shared_conv}, sub-group: {list(sub_conv.keys())}")
         
         # Track branch-to-agent mapping for convergence tracking
         for branch in all_branches:
@@ -1641,13 +1836,16 @@ class DynamicBranchSpawner:
             # For pools, instances are named as f"{base_name}_{i}" where i is the index
             agent_names = []
             for idx, branch in enumerate(all_branches):
+                # Get actual agent name from each branch's topology
+                branch_agent_name = branch.topology.entry_agent
+
                 # Check if this is a pool by looking at the agent registry
-                if self.agent_registry and self.agent_registry.is_pool(agent_name_target):
+                if self.agent_registry and self.agent_registry.is_pool(branch_agent_name):
                     # Pool instances are named with index suffix
-                    agent_names.append(f"{agent_name_target}_{idx}")
+                    agent_names.append(f"{branch_agent_name}_{idx}")
                 else:
-                    # Single agent - use the name as-is
-                    agent_names.append(agent_name_target)
+                    # Single agent - use the actual branch agent name
+                    agent_names.append(branch_agent_name)
 
             await self.event_bus.emit(ParallelGroupEvent(
                 session_id=context.get("session_id", "unknown"),
@@ -1789,27 +1987,42 @@ class DynamicBranchSpawner:
         Each branch independently acquires, executes, and releases resources.
         """
         all_tasks = []
-        agent_name = group.target_agent
 
-        # Log pool status if applicable
-        if self.agent_registry and self.agent_registry.is_pool(agent_name):
-            pool = self.agent_registry.get_pool(agent_name)
-            if pool:
-                available = pool.get_available_count() if hasattr(pool, 'get_available_count') else 0
-                total = pool.num_instances if hasattr(pool, 'num_instances') else 0
+        # Better logging for mixed vs homogeneous targets
+        from collections import Counter
+        branch_agents = [b.topology.entry_agent for b in branches]
+        agent_counts = Counter(branch_agents)
+
+        if len(agent_counts) == 1:
+            # Homogeneous case (pool or single agent repeated)
+            agent_name = list(agent_counts.keys())[0]
+            if self.agent_registry and self.agent_registry.is_pool(agent_name):
+                pool = self.agent_registry.get_pool(agent_name)
+                if pool:
+                    available = pool.get_available_count() if hasattr(pool, 'get_available_count') else 0
+                    total = pool.num_instances if hasattr(pool, 'num_instances') else 0
+                    logger.info(
+                        f"Starting parallel execution of {len(branches)} branches "
+                        f"for pool '{agent_name}' ({available}/{total} instances available)"
+                    )
+            else:
                 logger.info(
                     f"Starting parallel execution of {len(branches)} branches "
-                    f"for pool '{agent_name}' ({available}/{total} instances available)"
+                    f"for agent '{agent_name}'"
                 )
         else:
+            # Mixed targets
             logger.info(
                 f"Starting parallel execution of {len(branches)} branches "
-                f"for agent '{agent_name}'"
+                f"for mixed agents: {dict(agent_counts)}"
             )
 
         # Create ALL tasks immediately - true parallel execution!
         for branch in branches:
             inv_data = branch_to_invocation[branch.id]
+
+            # Get agent name from THIS branch (not from group!)
+            agent_name = branch.topology.entry_agent
 
             # Track parent-child relationship
             self.child_parent_map[branch.id] = group.parent_branch_id
@@ -1821,7 +2034,7 @@ class DynamicBranchSpawner:
             # Create task using wrapper that handles acquire/execute/release
             task = asyncio.create_task(
                 self._acquire_execute_release_branch(
-                    agent_name=agent_name,
+                    agent_name=agent_name,  # Now per-branch, not from group!
                     branch=branch,
                     request=inv_data['request'],
                     context=context,
@@ -1860,15 +2073,42 @@ class DynamicBranchSpawner:
             result = await self.branch_executor.execute_branch(
                 branch, initial_request, enhanced_context
             )
-            
-            # Mark branch as completed in group
-            group.completed_branches.add(branch.id)
-            
-            # Store only essential data to avoid memory issues
+
+            # State-aware completion tracking
+            if branch.state.status == BranchStatus.COMPLETED:
+                group.completed_branches.add(branch.id)
+                logger.debug(
+                    f"Branch '{branch.id}' COMPLETED - added to group '{group.group_id}' completed_branches "
+                    f"(progress: {len(group.completed_branches)}/{group.total_branches})"
+                )
+
+            elif branch.state.status == BranchStatus.WAITING:
+                # Don't count WAITING branches as complete (will resume later)
+                logger.info(
+                    f"Branch '{branch.id}' entered WAITING state - NOT marking as completed. "
+                    f"Current progress: {len(group.completed_branches)}/{group.total_branches} completed"
+                )
+
+            elif branch.state.status == BranchStatus.FAILED:
+                group.failed_branches.add(branch.id)
+                logger.warning(
+                    f"Branch '{branch.id}' FAILED - added to failed_branches "
+                    f"(failed: {len(group.failed_branches)}, completed: {len(group.completed_branches)})"
+                )
+
+            else:
+                # Other terminal states (CANCELLED, etc.)
+                group.completed_branches.add(branch.id)
+                logger.debug(
+                    f"Branch '{branch.id}' reached terminal status '{branch.state.status}' - "
+                    f"added to completed_branches"
+                )
+
+            # Store essential data only
             if result and result.execution_trace:
                 last_step = result.execution_trace[-1]
-                
-                # Truncate large responses to prevent memory issues
+
+                # Truncate large responses
                 content = last_step.response
                 if isinstance(content, str) and len(content) > self.DEFAULT_MAX_RESULT_SIZE:
                     content = content[:self.DEFAULT_MAX_RESULT_SIZE] + "... [truncated]"
@@ -1879,13 +2119,30 @@ class DynamicBranchSpawner:
                     'content': content,
                     'agent': last_step.agent_name
                 }
-            
-            # Record completion
-            self.completed_branches.add(branch.id)
+
+            # Record results and global completion for terminal states only
             self.branch_results[branch.id] = result
-            
+            if branch.state.status in (BranchStatus.COMPLETED, BranchStatus.FAILED, BranchStatus.CANCELLED):
+                self.completed_branches.add(branch.id)
+
+            # Remove child from ALL waiting branches (parent + any continuations)
+            # This is critical: continuation branches also wait for these children
+            removed_from = []
+            for waiting_branch_id in list(self.waiting_branches.keys()):
+                if branch.id in self.waiting_branches[waiting_branch_id]:
+                    self.waiting_branches[waiting_branch_id].discard(branch.id)
+                    removed_from.append(waiting_branch_id)
+                    logger.debug(
+                        f"Removed child '{branch.id}' from waiting branch '{waiting_branch_id}' "
+                        f"({len(self.waiting_branches[waiting_branch_id])} remaining)"
+                    )
+
+            if removed_from:
+                logger.info(
+                    f"Child '{branch.id}' removed from {len(removed_from)} waiting branch(es): {removed_from}"
+                )
+
             # Check if this completes the group and triggers convergence
-            # Move check inside the method to prevent race conditions
             await self._trigger_group_convergence(group)
             
             # Periodically clean up completed groups
@@ -1903,12 +2160,28 @@ class DynamicBranchSpawner:
             logger.error(f"Error executing branch {branch.id}: {e}")
             # Mark branch as failed in group
             group.failed_branches.add(branch.id)
-            
+
+            # Remove failed child from ALL waiting branches (parent + any continuations)
+            # This is critical: continuation branches also wait for these children
+            removed_from = []
+            for waiting_branch_id in list(self.waiting_branches.keys()):
+                if branch.id in self.waiting_branches[waiting_branch_id]:
+                    self.waiting_branches[waiting_branch_id].discard(branch.id)
+                    removed_from.append(waiting_branch_id)
+                    logger.debug(
+                        f"Removed failed child '{branch.id}' from waiting branch '{waiting_branch_id}' "
+                        f"({len(self.waiting_branches[waiting_branch_id])} remaining)"
+                    )
+
+            if removed_from:
+                logger.info(
+                    f"Failed child '{branch.id}' removed from {len(removed_from)} waiting branch(es): {removed_from}"
+                )
+
             # Check if group should still trigger convergence with partial results
-            # Call the method which will check internally with proper locking
             if group.should_trigger_convergence(min_success_ratio=0.5):
                 await self._trigger_group_convergence(group)
-            
+
             raise
 
     async def _acquire_execute_release_branch(
@@ -2005,15 +2278,9 @@ class DynamicBranchSpawner:
             parent_branch.metadata['aggregated_child_results'] = aggregated_data
             parent_branch.metadata['child_group_id'] = group.group_id
             logger.info(f"Stored {len(aggregated_data)} aggregated results for parent branch '{parent_branch_id}'")
-            
-            # FIX 1: Clear waiting branches so parent can resume
-            if parent_branch_id in self.waiting_branches:
-                # Clear all children from this group
-                self.waiting_branches[parent_branch_id].clear()
-                logger.info(f"Cleared waiting branches for parent '{parent_branch_id}' - ready to resume")
-            
-            # FIX 2: Parent branch continues naturally - no forced jump to convergence
-            # The parent should resume at its original current_agent and flow naturally
+
+            # NOTE: waiting_branches cleanup moved to check_synchronization_points
+            # This ensures parent resumption/completion decision happens in one place
         
         # If there are convergence points, we DON'T execute them directly
         # The parent branch will flow to them naturally after resuming
@@ -2083,7 +2350,12 @@ class DynamicBranchSpawner:
                     if node and hasattr(node, 'is_convergence_point') and node.is_convergence_point:
                         reachable.add(current)
                         logger.debug(f"  Agent '{agent}' can reach convergence point '{current}'")
-                
+
+                # Stop BFS at USER nodes
+                node = self.graph.nodes.get(current)
+                if (node and hasattr(node, 'node_type') and node.node_type == NodeType.USER) or current.lower() == "user":
+                    continue
+
                 # Continue exploring
                 for next_agent in self.graph.get_next_agents(current):
                     if next_agent not in visited:
@@ -2383,19 +2655,76 @@ class DynamicBranchSpawner:
     def _aggregate_child_results(self, parent_branch_id: str) -> AggregatedContext:
         """
         Aggregate results from all child branches of a parent.
-        Returns standardized AggregatedContext dataclass.
+        Also tracks which children invoked the parent back.
 
         Args:
             parent_branch_id: ID of the parent branch
-            
+
         Returns:
             AggregatedContext with responses and last message requests
         """
+        # For continuation branches, use group's convergence aggregations
+        parent_branch = self.branch_info.get(parent_branch_id)
+        if parent_branch and parent_branch.metadata.get("is_continuation"):
+            # This is a continuation branch - get results from the parallel group
+            group_id = parent_branch.metadata.get("group_id")
+            convergence_node = parent_branch.metadata.get("convergence_node")
+
+            if group_id and convergence_node:
+                group = self.parallel_groups.get(group_id)
+                if group and convergence_node in group.convergence_aggregations:
+                    # Use the aggregated responses from the group
+                    aggregated_responses = group.convergence_aggregations[convergence_node]
+
+                    responses = []
+
+                    for item in aggregated_responses:
+                        branch_id = item['branch_id']
+                        response = item['response']
+
+                        # Find which agent this branch was for
+                        branch = self.branch_info.get(branch_id)
+                        agent_name = branch.topology.entry_agent if branch else "unknown"
+
+                        # Format as AggregatedContext expects
+                        responses.append({
+                            "agent_name": agent_name,
+                            "response": response
+                        })
+
+                    logger.info(
+                        f"Aggregated {len(responses)} results for continuation branch '{parent_branch_id}' "
+                        f"at convergence '{convergence_node}'"
+                    )
+
+                    return AggregatedContext(
+                        responses=responses,
+                        requests=[],  # No requests for continuation branches
+                        parent_branch_id=parent_branch_id,
+                        resume_parent=True,
+                        metadata={
+                            "convergence_node": convergence_node,
+                            "group_id": group_id,
+                            "aggregation_time": time.time()
+                        }
+                    )
+
+        # Regular parent branch aggregation (existing logic)
         child_branch_ids = self.parent_child_map.get(parent_branch_id, [])
-        
+
         # Collect actual responses from children
         agent_responses = []
         child_requests = []  # Last messages only
+
+        # Identify parent agent for callback detection
+        parent_agent = parent_branch.topology.current_agent if parent_branch else None
+
+        # Find the parallel group for this parent
+        group = None
+        for gid, g in self.parallel_groups.items():
+            if g.parent_branch_id == parent_branch_id:
+                group = g
+                break
 
         for child_id in child_branch_ids:
             if child_id in self.branch_results:
@@ -2418,7 +2747,36 @@ class DynamicBranchSpawner:
                             "request": last_message.get('content', '')
                         })
 
-        # Return standardized dataclass
+                # Detect if child invoked parent back (multiple patterns)
+                if group and branch and branch.state.status == BranchStatus.COMPLETED:
+                    parent_invoked = False
+
+                    # Pattern 1: Direct invocation (last_step.next_agent)
+                    if branch.state._execution_trace:
+                        last_step = branch.state._execution_trace[-1]
+                        if last_step.next_agent and parent_agent and last_step.next_agent == parent_agent:
+                            parent_invoked = True
+                            logger.debug(f"Child '{child_id}' invoked parent '{parent_agent}' directly")
+
+                    # Pattern 2: Convergence holding (metadata)
+                    if not parent_invoked and result.metadata:
+                        convergence_target = result.metadata.get('convergence_target')
+                        if convergence_target == parent_agent:
+                            parent_invoked = True
+                            logger.debug(f"Child '{child_id}' converged to parent '{parent_agent}'")
+
+                    # Pattern 3: Topology-based (child can reach parent)
+                    if not parent_invoked and self.graph and parent_agent:
+                        child_agent = branch.topology.entry_agent
+                        if self.graph.has_edge(child_agent, parent_agent):
+                            parent_invoked = True
+                            logger.debug(f"Child '{child_agent}' can reach parent '{parent_agent}' via topology")
+
+                    if parent_invoked:
+                        logger.info(f"Child branch '{child_id}' invoked parent '{parent_agent}' back")
+                        group.parent_invoked_by_children.add(child_id)
+
+        # Return standardized dataclass; let caller decide on resumption
         return AggregatedContext(
             responses=agent_responses,
             requests=child_requests,
@@ -2428,7 +2786,7 @@ class DynamicBranchSpawner:
                 "aggregation_time": time.time()
             },
             parent_branch_id=parent_branch_id,
-            resume_parent=True  # This is for parent-child aggregation
+            resume_parent=False  # Will be set by check_synchronization_points
         )
     
     def _should_run_cleanup(self) -> bool:

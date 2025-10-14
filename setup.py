@@ -144,7 +144,7 @@ setup(
         "Intended Audience :: Information Technology",
 
         # License
-        "License :: OSI Approved :: MIT License",
+        "License :: OSI Approved :: Apache Software License",
 
         # OS
         "Operating System :: OS Independent",
@@ -180,7 +180,7 @@ setup(
     ],
 
     # License
-    license="MIT",
+    license="Apache-2.0",
 
     # Package data
     include_package_data=True,

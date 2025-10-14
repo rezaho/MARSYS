@@ -166,7 +166,8 @@ nav:
     - Overview: use-cases/overview.md
 
   - Guides:
-    - guides/overview.md
+    - Overview: guides/overview.md
+    - Built-in Tools: guides/built-in-tools.md
 
   - Contributing:
     - contributing/index.md

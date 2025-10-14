@@ -138,7 +138,12 @@ class Router:
             )
         
         # Check topology permissions
-        if not self._validate_transition(current_agent, target_agent):
+        # EXCEPTION: Bypass validation for error recovery to User node
+        # User node must always be accessible for error handling regardless of topology
+        is_error_recovery = validation_result.action_type in [ActionType.ERROR_RECOVERY, ActionType.TERMINAL_ERROR]
+        if is_error_recovery and target_agent == "User":
+            logger.info(f"Bypassing topology validation for error recovery: {current_agent} -> User")
+        elif not self._validate_transition(current_agent, target_agent):
             logger.warning(f"Invalid transition: {current_agent} -> {target_agent}")
             return self._create_completion_decision(
                 f"Transition from {current_agent} to {target_agent} not allowed"
