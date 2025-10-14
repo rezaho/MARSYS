@@ -151,7 +151,7 @@ If you were using an unreleased development version:
 1. **Package Name Change**: Update imports from `src.*` to `marsys.*`
    ```python
    # Old
-   from src.coordination import Orchestra
+   from marsys.coordination import Orchestra
 
    # New
    from marsys.coordination import Orchestra

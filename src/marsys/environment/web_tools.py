@@ -9,7 +9,7 @@ from pathlib import Path
 from typing import Any, Dict, List, Optional
 
 # Import framework exceptions
-from src.agents.exceptions import ToolExecutionError
+from marsys.agents.exceptions import ToolExecutionError
 
 try:
     import pdfminer.high_level

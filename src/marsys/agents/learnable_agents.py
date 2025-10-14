@@ -85,7 +85,7 @@ class BaseLearnableAgent(BaseAgent, ABC):
         if learning_head == "peft":
             # Lazy import for local models (requires marsys[local-models])
             try:
-                from src.models.models import BaseLLM, BaseVLM, PeftHead
+                from marsys.models.models import BaseLLM, BaseVLM, PeftHead
             except ImportError as e:
                 raise ImportError(
                     "Learnable agents require local model support. Install with:\n"
@@ -214,7 +214,7 @@ class LearnableAgent(BaseLearnableAgent):
         )
         # Lazy import for PeftHead type checking (requires marsys[local-models])
         try:
-            from src.models.models import PeftHead
+            from marsys.models.models import PeftHead
         except ImportError:
             PeftHead = None  # If not installed, PeftHead won't be used
 
