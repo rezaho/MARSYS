@@ -282,5 +282,5 @@ graph LR
 ---
 
 <div style="text-align: center; color: var(--md-default-fg-color--light);">
-  <p>Built with ❤️ by the MARSYS Team | MIT License | v0.1-beta</p>
+  <p>Built with ❤️ by the MARSYS Team | Apache License 2.0 | v0.1-beta</p>
 </div>
