@@ -792,7 +792,8 @@ class BranchExecutor:
                         "conversation": conversation_context,
                         "tool_continuation": is_tool_continuation,
                         "branch": branch,  # CRITICAL: Pass branch for reflexive metadata
-                        "topology_graph": self.topology_graph  # CRITICAL: Pass topology for next agents
+                        "topology_graph": self.topology_graph,  # CRITICAL: Pass topology for next agents
+                        "metadata": context.metadata  # CRITICAL: Pass metadata for retry tracking
                     }
                 )
             else:
