@@ -123,59 +123,70 @@ def find_label_position_with_masking(
             invalid_params={"mask_shape": global_mask.shape, "expected_shape": (image_height, image_width)}
         )
     
-    # Create hollow rectangle mask around the bbox with padding
-    # This represents the search area for label placement
-    search_x1 = max(0, x1 - padding)
-    search_y1 = max(0, y1 - padding)
-    search_x2 = min(image_width, x2 + padding)
-    search_y2 = min(image_height, y2 + padding)
-    
-    # Create the hollow rectangle mask (1=valid for label, 0=invalid)
-    hollow_mask = np.ones((image_height, image_width), dtype=np.uint8)
-    
-    # Set the bbox area to 0 (invalid for label placement)
-    hollow_mask[y1:y2, x1:x2] = 0
-    
-    # Only consider the search area around the bbox
-    search_mask = np.zeros((image_height, image_width), dtype=np.uint8)
-    search_mask[search_y1:search_y2, search_x1:search_x2] = 1
-    
-    # Combine hollow mask with search area
-    hollow_mask = hollow_mask & search_mask
-    
-    # Intersect with global occupancy mask to find actually available areas
-    available_mask = global_mask & hollow_mask
-    
-    # Define search priority order: above, below, left, right of bbox
+    # Create mask for collision detection:
+    # - global_mask tracks occupied areas (bboxes and previously placed labels)
+    # - We only need to exclude the current bbox itself from label placement
+    # - No need for search_mask restriction - let labels be placed anywhere that's free
+
+    # Create a mask that excludes only the current bbox
+    bbox_exclusion_mask = np.ones((image_height, image_width), dtype=np.uint8)
+    bbox_exclusion_mask[y1:y2, x1:x2] = 0  # Exclude current bbox
+
+    # Combine with global occupancy mask
+    available_mask = global_mask & bbox_exclusion_mask
+
+    # Simple priority order:
+    # 1. Top-left (above bbox, left-aligned)
+    # 2. Left-center (left of bbox, vertically centered)
+    # 3. Bottom-left (below bbox, left-aligned)
+    # 4. Top-right (above bbox, right-aligned)
+    # 5. Right-center (right of bbox, vertically centered)
+    # 6. Bottom-right (below bbox, right-aligned)
+    # 7. Fallback: center-top or center-left
+
     search_positions = []
-    
-    # Above the bbox (label bottom should be at least label_margin pixels above bbox top)
-    above_y_end = max(0, y1 - text_height - label_margin)
-    if above_y_end >= search_y1:
-        for y in range(above_y_end, max(0, y1 - text_height - padding), -1):
-            for x in range(max(0, x1 - padding), min(image_width - text_width, x2 + padding)):
-                search_positions.append((x, y, 'above'))
-    
-    # Below the bbox (label top should be at least label_margin pixels below bbox bottom)
-    below_y_start = min(image_height - text_height, y2 + label_margin)
-    if below_y_start < search_y2 - text_height:
-        for y in range(below_y_start, min(image_height - text_height, search_y2)):
-            for x in range(max(0, x1 - padding), min(image_width - text_width, x2 + padding)):
-                search_positions.append((x, y, 'below'))
-    
-    # Left of the bbox (label right should be at least label_margin pixels left of bbox left)
-    left_x_end = max(0, x1 - text_width - label_margin)
-    if left_x_end >= search_x1:
-        for x in range(left_x_end, max(0, x1 - text_width - padding), -1):
-            for y in range(max(0, y1 - padding), min(image_height - text_height, y2 + padding)):
-                search_positions.append((x, y, 'left'))
-    
-    # Right of the bbox (label left should be at least label_margin pixels right of bbox right)
-    right_x_start = min(image_width - text_width, x2 + label_margin)
-    if right_x_start < search_x2 - text_width:
-        for x in range(right_x_start, min(image_width - text_width, search_x2)):
-            for y in range(max(0, y1 - padding), min(image_height - text_height, y2 + padding)):
-                search_positions.append((x, y, 'right'))
+
+    # Calculate vertical center for centered positions
+    y_center = (y1 + y2) // 2 - text_height // 2
+    y_center = max(0, min(y_center, image_height - text_height))
+
+    # 1. Top-left: above bbox, aligned with left edge
+    top_left_y = y1 - text_height - label_margin
+    if top_left_y >= 0:
+        search_positions.append((x1, top_left_y, 'top_left'))
+
+    # 2. Left-center: left of bbox, vertically centered
+    left_center_x = x1 - text_width - label_margin
+    if left_center_x >= 0:
+        search_positions.append((left_center_x, y_center, 'left_center'))
+
+    # 3. Bottom-left: below bbox, aligned with left edge
+    bottom_left_y = y2 + label_margin
+    if bottom_left_y + text_height <= image_height:
+        search_positions.append((x1, bottom_left_y, 'bottom_left'))
+
+    # 4. Top-right: above bbox, aligned with right edge
+    if top_left_y >= 0 and x2 - text_width >= 0:
+        search_positions.append((x2 - text_width, top_left_y, 'top_right'))
+
+    # 5. Right-center: right of bbox, vertically centered
+    right_center_x = x2 + label_margin
+    if right_center_x + text_width <= image_width:
+        search_positions.append((right_center_x, y_center, 'right_center'))
+
+    # 6. Bottom-right: below bbox, aligned with right edge
+    if bottom_left_y + text_height <= image_height and x2 - text_width >= 0:
+        search_positions.append((x2 - text_width, bottom_left_y, 'bottom_right'))
+
+    # 7. Center-top: above bbox, horizontally centered
+    x_center = (x1 + x2) // 2 - text_width // 2
+    x_center = max(0, min(x_center, image_width - text_width))
+    if top_left_y >= 0:
+        search_positions.append((x_center, top_left_y, 'center_top'))
+
+    # 8. Center-left: left of bbox, at top of bbox
+    if left_center_x >= 0:
+        search_positions.append((left_center_x, y1, 'center_left'))
     
     # Find the best position where the label rectangle fits entirely in available area
     best_position = None
@@ -194,19 +205,10 @@ def find_label_position_with_masking(
             best_position = (label_x, label_y)
             break
     
-    # Fallback: if no perfect position found, use a position near the bbox
+    # Fallback: if no perfect position found, use first search position that fits in bounds
     if best_position is None:
-        # Try simple fallback positions with proper spacing
-        fallback_positions = [
-            (x1, max(0, y1 - text_height - label_margin)),  # Above with margin
-            (x1, min(image_height - text_height, y2 + label_margin)),  # Below with margin
-            (max(0, x1 - text_width - label_margin), y1),  # Left with margin
-            (min(image_width - text_width, x2 + label_margin), y1),  # Right with margin
-            (x1, y1)  # Last resort: overlap with bbox
-        ]
-        
-        for fallback_x, fallback_y in fallback_positions:
-            if (0 <= fallback_x <= image_width - text_width and 
+        for fallback_x, fallback_y, direction in search_positions:
+            if (0 <= fallback_x <= image_width - text_width and
                 0 <= fallback_y <= image_height - text_height):
                 best_position = (fallback_x, fallback_y)
                 break
@@ -5183,7 +5185,12 @@ class BrowserTool:
         # Take a fresh screenshot for annotation
         screenshot_bytes = await self.page.screenshot()
         image = PILImage.open(io.BytesIO(screenshot_bytes))
-        draw = ImageDraw.Draw(image)
+        # Convert to RGBA for transparency support
+        if image.mode != 'RGBA':
+            image = image.convert('RGBA')
+        # Create a transparent overlay for labels
+        overlay = PILImage.new('RGBA', image.size, (0, 0, 0, 0))
+        draw = ImageDraw.Draw(overlay)
         image_width, image_height = image.size
         
         # Use the same font as highlight_interactive_elements
@@ -5216,42 +5223,66 @@ class BrowserTool:
             if x2 > x1 and y2 > y1:
                 global_mask[y1:y2, x1:x2] = 0
         
+        # 12 high-contrast colors optimized for visibility on both light and dark backgrounds
+        # Based on Paul Tol's color-blind safe schemes + additional vibrant colors
+        # All colors tested for high contrast and distinguishability
+        DISTINCT_COLORS = [
+            '#EE6677',  # Bright Red - high contrast
+            '#228833',  # Bright Green - high contrast
+            '#4477AA',  # Bright Blue - high contrast
+            '#CCBB44',  # Bright Yellow - high contrast
+            '#EE7733',  # Bright Orange - high contrast
+            '#AA3377',  # Bright Purple - high contrast
+            '#66CCEE',  # Bright Cyan - high contrast
+            '#CC3311',  # Vivid Red - high contrast
+            '#009988',  # Teal - high contrast
+            '#EE3377',  # Magenta - high contrast
+            '#0077BB',  # Deep Blue - high contrast
+            '#33BBEE',  # Sky Blue - high contrast
+        ]
+
+        # Create separate draw context for bboxes on base image
+        bbox_draw = ImageDraw.Draw(image)
+
         # Draw bounding boxes and labels using masking algorithm
         for i, element in enumerate(elements):
             bbox = element.get('bbox', [0, 0, 0, 0])
             if len(bbox) != 4:
                 continue
-                
+
             x1, y1, x2, y2 = bbox
-            
+
             # Ensure coordinates are valid
             if x2 <= x1 or y2 <= y1:
                 continue
-            
+
             # Convert to integers for drawing
             x, y, x2, y2 = int(x1), int(y1), int(x2), int(y2)
-            
+
             # Ensure coordinates are within image bounds
             x = max(0, min(x, image_width))
             y = max(0, min(y, image_height))
             x2 = max(x, min(x2, image_width))
             y2 = max(y, min(y2, image_height))
-            
+
             # Skip if bbox is invalid after bounds checking
             if x2 <= x or y2 <= y:
                 continue
-            
-            # Draw the bounding box in Imperial Red (#ED2939) - same as highlight_interactive_elements
-            draw.rectangle([(x, y), (x2, y2)], outline="#ED2939", width=2)
-            
+
+            # Rotate through colors based on element index
+            color = DISTINCT_COLORS[i % len(DISTINCT_COLORS)]
+
+            # Draw the bounding box with the assigned color on base image
+            bbox_draw.rectangle([(x, y), (x2, y2)], outline=color, width=2)
+
             # Use only the element number as label (simple and clean)
             label = f"{i+1}"
-            
+
             # Calculate text dimensions
             bbox_text = font.getbbox(label)
             text_width = bbox_text[2] - bbox_text[0]
             text_height = bbox_text[3] - bbox_text[1]
-            
+
             # Find optimal label position using masking algorithm
             try:
                 label_x, label_y, global_mask = find_label_position_with_masking(
@@ -5262,39 +5293,42 @@ class BrowserTool:
                     image_height=image_height,
                     global_mask=global_mask,
                     padding=10,
-                    label_margin=5
+                    label_margin=5  # Reduced to 5 for tighter spacing
                 )
-                
-                # Draw white background with alpha 200 for the label
+
+                # Draw semi-transparent white background on overlay (alpha 179 for 30% transparency)
                 bg_padding = 2
                 draw.rectangle([
                     label_x - bg_padding,
                     label_y - bg_padding,
                     label_x + text_width + bg_padding,
                     label_y + text_height + bg_padding
-                ], fill=(255, 255, 255, 200))
-                
-                # Draw the text in Imperial Red (#ED2939) - same color as the bounding box borders
-                draw.text((label_x, label_y), label, fill="#ED2939", font=font)
-                
+                ], fill=(255, 255, 255, 179))  # 30% transparency (reduced by 15% from previous)
+
+                # Draw the text in the same color as the bounding box
+                draw.text((label_x, label_y), label, fill=color, font=font)
+
             except Exception as e:
                 logging.warning(f"Error positioning label for element {i+1}: {e}")
                 # Fallback to simple positioning with proper spacing
                 fallback_x = max(0, min(x, image_width - text_width))
                 margin = 5  # Consistent margin for fallback
                 fallback_y = max(0, y - text_height - margin) if y - text_height - margin >= 0 else min(y2 + margin, image_height - text_height)
-            
-                # Draw white background with alpha 200 for the fallback label
+
+                # Draw semi-transparent white background on overlay
                 bg_padding = 2
                 draw.rectangle([
                     fallback_x - bg_padding,
                     fallback_y - bg_padding,
                     fallback_x + text_width + bg_padding,
                     fallback_y + text_height + bg_padding
-                ], fill=(255, 255, 255, 200))
-                
-                draw.text((fallback_x, fallback_y), label, fill="#ED2939", font=font)
-        
+                ], fill=(255, 255, 255, 179))  # 30% transparency (reduced by 15% from previous)
+
+                draw.text((fallback_x, fallback_y), label, fill=color, font=font)
+
+        # Composite the overlay onto the base image for transparency
+        image = PILImage.alpha_composite(image, overlay)
+
         # Save the annotated screenshot with custom or timestamp-based filename
         timestamp = int(time.time() * 1000)
         if filename:
