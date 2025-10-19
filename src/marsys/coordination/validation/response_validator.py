@@ -600,11 +600,12 @@ class ValidationProcessor:
         next_agents = self.topology_graph.get_next_agents(agent.name)
         if next_agents:
             allowed.append("invoke_agent")
-        
+
         # Check if agent has tools
+        # NOTE: We use "tool_calls" (not "call_tool") to match native model API terminology
         if hasattr(agent, 'tools') and agent.tools:
-            allowed.append("call_tool")
-        
+            allowed.append("tool_calls")
+
         # Check if agent can return final response
         # CHANGED: Only allow final_response for User access
         # REMOVED: is_child_branch check - child branches must flow to convergence points
@@ -634,26 +635,48 @@ class ValidationProcessor:
         4. Returns structured validation result
         """
         
-        # Handle empty responses
+        # Handle empty responses - provide dynamic action suggestions with examples
+        allowed_actions = self._get_allowed_actions(agent, branch)
+
+        # Build example structures for next_action options
+        examples = []
+        if "final_response" in allowed_actions:
+            examples.append('{"next_action": "final_response", "action_input": {"response": "Your final answer..."}}')
+        if "invoke_agent" in allowed_actions:
+            examples.append('{"next_action": "invoke_agent", "action_input": [{"agent_name": "agent_name", "request": "your request"}]}')
+        # NOTE: call_tool is NOT a next_action - tools are called via native tool_calls response
+
+        # Generate suggestion text
+        if len(examples) == 1:
+            format_hint = f"Use this structure: {examples[0]}"
+        elif len(examples) > 1:
+            format_hint = f"Use one of these structures: {' OR '.join(examples)}"
+        else:
+            format_hint = "Provide a valid response"
+
+        # Add tool calling guidance if tools are available
+        if "tool_calls" in allowed_actions:
+            format_hint += ". You can also call available tools using the native tool_calls response format"
+
         if raw_response is None:
             return ValidationResult(
                 is_valid=False,
                 error_message="Response is None",
-                retry_suggestion="Your response was empty. You must provide content for your next action."
+                retry_suggestion=f"Your response was empty. {format_hint}"
             )
-        
+
         if isinstance(raw_response, str) and not raw_response.strip():
             return ValidationResult(
                 is_valid=False,
                 error_message="Response is empty string",
-                retry_suggestion="Your response was an empty string. You need to provide actual content."
+                retry_suggestion=f"Your response was an empty string. {format_hint}"
             )
-        
+
         if isinstance(raw_response, dict) and not raw_response:
             return ValidationResult(
                 is_valid=False,
                 error_message="Response is empty dictionary",
-                retry_suggestion="Your response was an empty dictionary. You need to include the required fields."
+                retry_suggestion=f"Your response was an empty dictionary. {format_hint}"
             )
         
         # 1. Try each processor to parse response
@@ -668,29 +691,52 @@ class ValidationProcessor:
         if not parsed:
             # Try to detect if this looks like a successful response that couldn't be parsed
             response_str = str(raw_response)
-            
+            allowed_actions = self._get_allowed_actions(agent, branch)
+
             # Check if it looks like an agent trying to invoke another agent
             if "invoke_agent" in response_str and "summarizer_agent" in response_str:
                 logger.warning("Response appears to invoke an agent but couldn't be parsed - likely JSON escaping issue")
                 return ValidationResult(
                     is_valid=False,
                     error_message="JSON parsing failed - likely due to unescaped special characters in content",
-                    retry_suggestion="Your JSON had unescaped special characters. Please ensure all quotes, newlines, and special characters are properly escaped."
+                    retry_suggestion=f"Your JSON had unescaped special characters. Please ensure all quotes, newlines, and special characters are properly escaped. Valid actions: {', '.join(allowed_actions)}"
                 )
-            
+
             # Check if it's a tool response that needs processing
             elif "tool_calls" in response_str:
                 return ValidationResult(
                     is_valid=False,
                     error_message="Tool response detected but couldn't be parsed",
-                    retry_suggestion="Your tool response format was incorrect. Please ensure it follows proper JSON structure."
+                    retry_suggestion=f"Your tool response format was incorrect. Please ensure it follows proper JSON structure. Valid actions: {', '.join(allowed_actions)}"
                 )
             
-            # Generic fallback
+            # Generic fallback - provide dynamic format instructions based on allowed actions
+            # Note: allowed_actions already retrieved above (line 674)
+
+            # Build example structure based on allowed actions
+            examples = []
+            if "final_response" in allowed_actions:
+                examples.append('{"next_action": "final_response", "action_input": {"response": "Your final answer..."}}')
+            if "invoke_agent" in allowed_actions:
+                examples.append('{"next_action": "invoke_agent", "action_input": [{"agent_name": "agent_name", "request": "your request"}]}')
+            # NOTE: call_tool is NOT a next_action - tools are called via native tool_calls response
+
+            # Generate retry suggestion with all allowed options
+            if len(examples) == 1:
+                format_hint = f"Use this structure: {examples[0]}"
+            elif len(examples) > 1:
+                format_hint = f"Use one of these structures: {' OR '.join(examples)}"
+            else:
+                format_hint = "Provide a valid response"
+
+            # Add tool calling guidance if tools are available
+            if "tool_calls" in allowed_actions:
+                format_hint += ". You can also call available tools using the native tool_calls response format"
+
             return ValidationResult(
                 is_valid=False,
                 error_message="Could not parse response format - no processor could handle it",
-                retry_suggestion='Your response format was not recognized. Use this structure: {"next_action": "invoke_agent", "action_input": [{"agent_name": "agent_name", "request": "your request"}]}'
+                retry_suggestion=f'Your response format was not recognized. Allowed actions: {", ".join(allowed_actions)}. {format_hint}'
             )
         
         # 2. Determine action type
@@ -713,7 +759,8 @@ class ValidationProcessor:
             for action in allowed_actions:
                 if action == "invoke_agent":
                     valid_action_types.append(ActionType.INVOKE_AGENT.value)
-                elif action == "call_tool":
+                elif action == "tool_calls":
+                    # NOTE: allowed_actions uses "tool_calls" but ActionType is still CALL_TOOL
                     valid_action_types.append(ActionType.CALL_TOOL.value)
                 elif action == "final_response":
                     valid_action_types.append(ActionType.FINAL_RESPONSE.value)
