@@ -54,7 +54,9 @@ class InteractiveElementsAgent(Agent):
             allowed_peers: List of agent names this agent can invoke
             max_tokens: Maximum tokens for model generation
         """
-        description = """
+        goal = "Analyze webpage screenshots to identify all currently accessible interactive UI elements using vision AI"
+
+        instruction = """
 You are an expert UI analyst. Your task is to identify ALL currently accessible interactive elements, understanding modal interaction hierarchy.
 
 INTERACTION HIERARCHY UNDERSTANDING:
@@ -65,7 +67,7 @@ LAYER 1 - MODAL ELEMENTS (Primary Focus):
 - Cookie consent buttons, form controls, modal-specific links
 - These have the highest interaction priority
 
-LAYER 2 - PERSISTENT NAVIGATION (Secondary Focus):  
+LAYER 2 - PERSISTENT NAVIGATION (Secondary Focus):
 - Navigation elements that remain accessible even when modal is present
 - Language selectors, sign-in buttons, account menus, app switchers
 - Close/escape functionality, critical site navigation
@@ -82,7 +84,7 @@ DETECTION STRATEGY:
 
 2. **MODAL ELEMENT DETECTION**: Detect all interactive elements within the modal boundaries:
    - Primary action buttons (Accept, Save, Continue)
-   - Secondary actions (Reject, Cancel, Close) 
+   - Secondary actions (Reject, Cancel, Close)
    - Settings/configuration options (Manage, Customize)
    - Modal-specific links (Privacy Policy, Terms within modal)
    - Form controls within modal
@@ -111,7 +113,7 @@ SEMANTIC LABELING - Provide descriptive, context-aware labels:
 
 For Modal Elements:
 - "Cookie Consent Modal - Accept All Button"
-- "Cookie Consent Modal - Reject All Button"  
+- "Cookie Consent Modal - Reject All Button"
 - "Cookie Consent Modal - Manage Settings Button"
 - "Cookie Consent Modal - Privacy Policy Link"
 
@@ -159,11 +161,12 @@ Return ALL currently accessible interactive elements, understanding that both mo
 
         super().__init__(
             model_config=model_config,
-            description=description,
+            goal=goal,
+            instruction=instruction,
             tools=None,  # InteractiveElementsAgent doesn't use tools
             memory_type="conversation_history",
             max_tokens=max_tokens,
-            agent_name=agent_name,
+            name=agent_name,
             allowed_peers=allowed_peers,
             input_schema=input_schema,
             output_schema=output_schema,
@@ -362,8 +365,8 @@ Return a JSON array of objects with "box_2d" and "label" fields only.
             api_model_kwargs['response_schema'] = bounding_box_schema
             api_model_kwargs['json_mode'] = True
 
-            # Call the model
-            raw_model_output = self.model.run(
+            # Call the model asynchronously for better performance
+            raw_model_output = await self.model.arun(
                 messages=messages,
                 max_tokens=self.max_tokens,
                 temperature=0.1,
@@ -493,14 +496,34 @@ class BrowserAgent(Agent):
             viewport_height: Browser viewport height
             tmp_dir: Optional temporary directory for downloads and screenshots
             browser_channel: Optional browser channel (e.g., 'chrome', 'msedge')
-            vision_model_config: Optional separate model config for vision analysis
+            vision_model_config: Optional separate model config for vision analysis.
+                If auto_screenshot=True and this is not provided, the main model_config will be used.
+                Must be vision-capable (VLM for local models, or API models with vision support like gpt-4-vision, claude-3-opus).
             input_schema: Optional input schema for the agent
             output_schema: Optional output schema for the agent
-            auto_screenshot: Whether to automatically take screenshots after state-changing operations
+            auto_screenshot: Whether to automatically take screenshots with interactive element detection after each step.
+                Requires a vision-capable model. If vision_model_config is not provided, uses the main model_config.
+                For local models, model_class must be 'vlm'. For API models, must support vision (e.g., gpt-4-vision, claude-3-opus).
             timeout: Default timeout in milliseconds for browser operations (default: 5000)
             memory_retention: Memory retention policy - "single_run", "session", or "persistent"
             memory_storage_path: Path for persistent memory storage (if retention is "persistent")
         """
+        # Validate auto_screenshot configuration early (only for local models)
+        if auto_screenshot and not vision_model_config and model_config.type == "local":
+            # Will use main model_config for vision - validate it's vision-capable
+            if model_config.model_class != "vlm":
+                from ..agents.exceptions import AgentConfigurationError
+                raise AgentConfigurationError(
+                    "auto_screenshot=True with local model requires a vision-capable model (VLM). "
+                    "Either provide a vision_model_config with a VLM, "
+                    "or use a VLM as the main model_config (set model_class='vlm').",
+                    agent_name=name or "BrowserAgent",
+                    config_field="auto_screenshot",
+                    config_value=True,
+                    suggestion="Add vision_model_config parameter with a VLM, "
+                               "or set model_config.model_class='vlm' if using a local vision model."
+                )
+
         # Check for playwright-stealth support
         try:
             from playwright_stealth import stealth_async
@@ -581,21 +604,28 @@ class BrowserAgent(Agent):
         self.viewport_height = viewport_height
         self.browser_channel = browser_channel
 
-        # Initialize vision analysis agent if vision model config is provided
+        # Initialize vision analysis agent
+        # If vision_model_config not provided but auto_screenshot is True, use main model_config
         self.vision_agent: Optional[InteractiveElementsAgent] = None
-        if vision_model_config:
+        actual_vision_config = vision_model_config or (model_config if auto_screenshot else None)
+
+        if actual_vision_config:
             # Validate vision model is vision-capable
-            if vision_model_config.type == "local" and vision_model_config.model_class != "vlm":
-                raise ValueError("Vision analysis requires a vision-capable model (VLM for local, or vision-enabled API model)")
-            
+            if actual_vision_config.type == "local" and actual_vision_config.model_class != "vlm":
+                raise ValueError(
+                    "Vision analysis requires a vision-capable model (VLM for local, or vision-enabled API model). "
+                    "Either provide a vision_model_config with a VLM, or ensure your main model_config is vision-capable."
+                )
+
             # Create the vision agent with the model config
             self.vision_agent = InteractiveElementsAgent(
-                model_config=vision_model_config,
+                model_config=actual_vision_config,
                 agent_name=f"{name or 'BrowserAgent'}_VisionAnalyzer"
             )
+            logger.info(f"Vision agent initialized for {name or 'BrowserAgent'} using {'provided vision_model_config' if vision_model_config else 'main model_config'}")
 
         # Store vision model config for potential future use
-        self._vision_model_config = vision_model_config
+        self._vision_model_config = vision_model_config or (model_config if auto_screenshot else None)
         
         # Track last auto-generated message IDs for memory management
         self._last_auto_screenshot_message_id: Optional[str] = None
@@ -1067,7 +1097,13 @@ class BrowserAgent(Agent):
         # Step 2: Use AI prediction if requested
         if use_prediction:
             if not self.vision_agent:
-                raise Exception("Vision agent not configured. Cannot use prediction-based element detection.")
+                from ..agents.exceptions import VisionAgentNotConfiguredError
+                raise VisionAgentNotConfiguredError(
+                    "Vision agent not configured. Cannot use prediction-based element detection.",
+                    agent_name=self.name,
+                    operation="highlight_interactive_elements with use_prediction=True",
+                    auto_screenshot=self.auto_screenshot
+                )
             
             predicted_elements = await self.predict_interactive_elements()
             # Mark elements as predicted for overlap resolution
@@ -1287,114 +1323,117 @@ class BrowserAgent(Agent):
             return 0.0
 
     # All other browser methods have been moved to BrowserTool and are available via the tools dict
-    
+
     # Keep only the methods that are unique to BrowserAgent and need vision agent access
-    async def _post_step_hook(
-        self, 
+    async def _pre_step_hook(
+        self,
         step_number: int,
-        action_type: str,
         request_context: RequestContext,
         **kwargs: Any
     ) -> None:
         """
-        Post-step hook for BrowserAgent that handles highlighting interactive elements after each step.
-        
-        This method is called after each auto_run step completes and uses highlight_interactive_elements
-        to capture and annotate the current page state with numbered interactive elements.
-        It also manages memory by removing the previous auto-generated screenshot and elements messages
-        to prevent context explosion.
+        Pre-step hook for BrowserAgent that captures page state BEFORE the next LLM call.
+
+        This method is called AFTER tool execution completes but BEFORE the next LLM call.
+        This ensures screenshots and interactive elements are added to memory AFTER tool
+        responses, maintaining correct message ordering for the API.
+
+        The hook:
+        1. Captures the current page state with interactive elements
+        2. Adds screenshot as a user message to memory
+        3. Adds interactive elements list to memory
+        4. Manages memory by removing previous auto-generated messages (optional)
+
+        This ensures proper message ordering:
+        [assistant with tool_calls, tool response, screenshot, elements, next LLM call]
         """
         if not self.auto_screenshot:
             return
-            
+
         try:
-            # Remove previous auto-generated messages to prevent memory explosion
-            await self._remove_previous_auto_messages(request_context)
-            
-            # Use highlight_interactive_elements instead of simple screenshot
+            # COMMENTED OUT: Keep all screenshots instead of sliding window
+            # Enable sliding window to keep only last screenshot in context
+            # This prevents memory explosion while maintaining current state visibility
+            # await self._remove_previous_auto_messages(request_context)
+
+            # Use highlight_interactive_elements to capture current page state
+            # Note: Set use_prediction=False to skip VLM and use only DOM-based detection for speed
             result = await self.highlight_interactive_elements(
                 visible_only=True,
-                use_prediction=True,
-                use_rule_based=True,
-                screenshot_filename=f"auto_step_{step_number}_{action_type}",
+                use_prediction=False,  # Skip VLM for faster detection (DOM-only)
+                use_rule_based=True,   # Use BrowserTool's DOM-based detection
+                screenshot_filename=f"auto_step_{step_number}",
                 filter_keys=["label", "number", "center"]  # Only include AI-relevant keys
             )
-            
+
             screenshot_path = result.get('screenshot_path')
             elements = result.get('elements', [])
-            
+
             if screenshot_path:
-                # Add screenshot to memory as a user message
+                # Build compact element description to embed WITH the screenshot
+                # This prevents the model from mimicking element list format
+                if elements:
+                    # Compact format: [num] label (x,y) - one line per element
+                    element_lines = []
+                    for element in elements:
+                        label = element.get('label', 'Unknown')
+                        number = element.get('number', '?')
+                        center = element.get('center', [0, 0])
+                        center_x = int(round(center[0]))
+                        center_y = int(round(center[1]))
+                        element_lines.append(f"[{number}] {label} ({center_x},{center_y})")
+
+                    # Create concise, directive text that emphasizes this is FOR the model, not BY the model
+                    elements_text = " | ".join(element_lines)
+                    screenshot_content = (
+                        f"[VISUAL CONTEXT] Page screenshot with {len(elements)} clickable elements detected. "
+                        f"Use element numbers for interaction: {elements_text}. "
+                        f"IMPORTANT: These elements are FOR your reference to interact with the page. "
+                        f"Do NOT output element lists in your response - just use the numbers when clicking."
+                    )
+                else:
+                    screenshot_content = "[VISUAL CONTEXT] Current page screenshot (no interactive elements detected)."
+
+                # Add screenshot with embedded element description as a SINGLE multimodal message
+                # This uses the Message class which will automatically format it correctly
                 screenshot_message_id = self.memory.add(
                     role="user",
-                    content=f"Auto-screenshot with interactive elements after step {step_number} ({action_type}):",
-                    name="auto_screenshot_system",  # Special name to identify auto-generated screenshots
+                    content=screenshot_content,
+                    name="auto_screenshot_system",
                     images=[screenshot_path]
                 )
-                
+
                 # Track this message ID for future cleanup
                 self._last_auto_screenshot_message_id = screenshot_message_id
-                
+
                 await self._log_progress(
                     request_context,
                     LogLevel.DEBUG,
-                    f"Auto-screenshot with interactive elements taken and added to memory after step {step_number}",
-                    data={"screenshot_path": screenshot_path, "action_type": action_type, "message_id": screenshot_message_id, "elements_count": len(elements)}
-                )
-            
-            # Add interactive elements list to memory as a separate message
-            if elements:
-                # Format elements for AI agent
-                elements_content = (
-                    f"Interactive elements detected after step {step_number} ({action_type}):\n\n"
-                    f"These are the interactive elements you can choose to interact with. "
-                    f"Each element has a number and center coordinates (x,y) for precise interaction:\n\n"
-                )
-                
-                for element in elements:
-                    label = element.get('label', 'Unknown')
-                    number = element.get('number', '?')
-                    center = element.get('center', [0, 0])
-                    # Ensure center coordinates are integers
-                    center_x = int(round(center[0]))
-                    center_y = int(round(center[1]))
-                    elements_content += f"Element {number}: {label} (center: {center_x}, {center_y})\n"
-                
-                # Add elements to memory as a user message (once per step, not per element)
-                elements_message_id = self.memory.add(
-                    role="user",
-                    content=elements_content,
-                    name="auto_elements_system"  # Special name to identify auto-generated elements
-                )
-                
-                # Track this message ID for future cleanup
-                self._last_auto_elements_message_id = elements_message_id
-                
-                await self._log_progress(
-                    request_context,
-                    LogLevel.DEBUG,
-                    f"Auto-detected interactive elements added to memory after step {step_number}",
-                    data={"elements_count": len(elements), "action_type": action_type, "message_id": elements_message_id}
+                    f"Auto-screenshot with embedded elements captured before step {step_number + 1}",
+                    data={"screenshot_path": screenshot_path, "message_id": screenshot_message_id, "elements_count": len(elements)}
                 )
 
         except Exception as e:
-            # Don't fail the entire step if highlight_interactive_elements fails
+            # Don't fail the entire step if screenshot capture fails
             await self._log_progress(
                 request_context,
                 LogLevel.MINIMAL,
-                f"Auto-capture with interactive elements failed after step {step_number}: {e}",
-                data={"action_type": action_type, "error": str(e)}
+                f"Auto-capture failed before step {step_number + 1}: {e}",
+                data={"error": str(e)}
             )
 
     async def _remove_previous_auto_messages(self, request_context: RequestContext) -> None:
         """
-        Remove the previous auto-generated screenshot and elements messages from memory
-        to prevent context explosion.
+        Remove the previous auto-generated screenshot message from memory
+        to prevent context explosion (sliding window behavior).
+
+        Note: Elements are now embedded in the screenshot message, so we only
+        need to track and remove one message ID.
         """
         try:
             messages_removed = 0
-            
-            # Remove previous auto-screenshot message
+
+            # Remove previous auto-screenshot message (which includes embedded elements)
             if self._last_auto_screenshot_message_id:
                 if self.memory.remove_by_id(self._last_auto_screenshot_message_id):
                     messages_removed += 1
@@ -1405,15 +1444,16 @@ class BrowserAgent(Agent):
                         data={"removed_message_id": self._last_auto_screenshot_message_id}
                     )
                 self._last_auto_screenshot_message_id = None
-            
-            # Remove previous auto-elements message
-            if self._last_auto_elements_message_id:
+
+            # Legacy cleanup: Remove old separate elements message if it exists
+            # This can be removed in future versions once all instances are updated
+            if hasattr(self, '_last_auto_elements_message_id') and self._last_auto_elements_message_id:
                 if self.memory.remove_by_id(self._last_auto_elements_message_id):
                     messages_removed += 1
                     await self._log_progress(
                         request_context,
                         LogLevel.DEBUG,
-                        "Removed previous auto-elements message from memory",
+                        "Removed legacy auto-elements message from memory",
                         data={"removed_message_id": self._last_auto_elements_message_id}
                     )
                 self._last_auto_elements_message_id = None

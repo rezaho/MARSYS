@@ -211,6 +211,7 @@ class RealToolExecutor:
                         "tool_call_id": tool_id,
                         "tool_name": tool_name,
                         "result": result,
+                        "images": [],  # Context tools don't return images
                         "_origin": tool_call.get('_origin', 'response') if isinstance(tool_call, dict) else 'response'
                     })
                     continue
@@ -218,18 +219,19 @@ class RealToolExecutor:
                 elif base_tool_name == "preview_saved_context":
                     # Import the implementation function
                     from ...coordination.context_manager import execute_preview_saved_context
-                    
+
                     # Call with agent injected as first parameter
                     result = await self._execute_single_tool(
                         lambda **kwargs: execute_preview_saved_context(agent, **kwargs),
                         tool_args,
                         tool_name
                     )
-                    
+
                     results.append({
                         "tool_call_id": tool_id,
                         "tool_name": tool_name,
                         "result": result,
+                        "images": [],  # Context tools don't return images
                         "_origin": tool_call.get('_origin', 'response') if isinstance(tool_call, dict) else 'response'
                     })
                     continue
@@ -248,7 +250,16 @@ class RealToolExecutor:
                 if tool_func:
                     logger.debug(f"Found tool {tool_name} from {tool_source}")
                     # Execute the tool
-                    result = await self._execute_single_tool(tool_func, tool_args, tool_name)
+                    raw_result = await self._execute_single_tool(tool_func, tool_args, tool_name)
+
+                    # NEW: Extract images from tool result if present
+                    if isinstance(raw_result, dict):
+                        images = raw_result.get('images', [])
+                        result_text = raw_result.get('result', raw_result)
+                    else:
+                        # Legacy format: plain string/value
+                        images = []
+                        result_text = raw_result
 
                     # Emit tool complete event
                     if self.event_bus:
@@ -263,11 +274,13 @@ class RealToolExecutor:
                             status="completed",
                             duration=time.time() - start_time if start_time else None
                         ))
+
+                    result = result_text
                 else:
                     # Create helpful error message with fuzzy matching
                     all_tools = list(self.tool_registry.keys()) + list(agent_tools.keys())
                     similar_tools = find_similar_tool_names(tool_name, all_tools)
-                    
+
                     if similar_tools:
                         error_msg = f"Tool '{tool_name}' not found. Did you mean: {similar_tools[0]}?"
                         suggestion = f"Available tools: {', '.join(all_tools[:10])}"
@@ -278,15 +291,17 @@ class RealToolExecutor:
                         suggestion = f"Available tools: {', '.join(all_tools[:10])}"
                         if len(all_tools) > 10:
                             suggestion += f"... and {len(all_tools) - 10} more"
-                    
+
                     full_error = f"{error_msg} {suggestion}"
                     logger.error(full_error)
                     result = {"error": full_error}
-                
+                    images = []  # No images for error case
+
                 results.append({
                     "tool_call_id": tool_id,
                     "tool_name": tool_name,
                     "result": result,
+                    "images": images,  # NEW: Include images
                     "_origin": tool_call.get('_origin', 'response') if isinstance(tool_call, dict) else 'response'
                 })
                 
@@ -314,9 +329,10 @@ class RealToolExecutor:
                     "tool_call_id": tool_id,
                     "tool_name": tool_name,
                     "result": {"error": error_msg},
+                    "images": [],  # No images for error case
                     "_origin": tool_call.get('_origin', 'response') if isinstance(tool_call, dict) else 'response'
                 })
-                
+
         return results
     
     async def _execute_single_tool(self, tool_func: Callable, tool_args: Dict[str, Any], tool_name: str) -> Any:

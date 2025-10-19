@@ -950,6 +950,47 @@ class BrowserConnectionError(BrowserError):
         return ErrorAction.USER_FIXABLE
 
 
+class VisionAgentNotConfiguredError(BrowserError):
+    """
+    Raised when vision agent operations are attempted without proper configuration.
+
+    Examples:
+    - auto_screenshot=True but no vision-capable model configured
+    - Calling vision-based methods without vision_model_config
+    - Using prediction-based element detection without vision agent
+    """
+
+    def __init__(
+        self,
+        message: str,
+        operation: Optional[str] = None,
+        auto_screenshot: Optional[bool] = None,
+        **kwargs
+    ):
+        self.operation = operation
+        self.auto_screenshot = auto_screenshot
+
+        context = kwargs.get("context", {})
+        if operation:
+            context["attempted_operation"] = operation
+        if auto_screenshot is not None:
+            context["auto_screenshot"] = auto_screenshot
+
+        super().__init__(
+            message,
+            error_code="VISION_AGENT_NOT_CONFIGURED_ERROR",
+            context=context,
+            user_message="Vision agent not configured for this operation.",
+            suggestion="Provide vision_model_config parameter with a vision-capable model (VLM for local, or vision-enabled API model like gpt-4-vision, claude-3-opus), "
+                       "or ensure your main model_config is vision-capable when using auto_screenshot=True.",
+            **kwargs
+        )
+
+    def get_error_action(self) -> ErrorAction:
+        """Vision agent configuration errors are terminal - require code/config changes."""
+        return ErrorAction.TERMINAL
+
+
 class ToolExecutionError(AgentFrameworkError):
     """
     Raised when tool execution fails.

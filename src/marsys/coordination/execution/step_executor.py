@@ -44,6 +44,9 @@ from ...agents.exceptions import (
     AgentPermissionError,
     AgentLimitError,
 
+    # Browser errors
+    VisionAgentNotConfiguredError,
+
     # State errors
     StateError,
     SessionNotFoundError,
@@ -224,11 +227,20 @@ class StepExecutor:
             try:
                 # Execute pure agent logic (agent maintains its own memory)
                 run_context = {"request_context": step_context.to_request_context()}
-                
+
                 # Mark as continuation if this is a tool continuation
                 if context.get('tool_continuation'):
                     run_context["is_continuation"] = True
-                
+
+                # Mark as continuation if this is a step-executor level retry (framework errors)
+                if retry_count > 0:
+                    run_context["is_continuation"] = True
+
+                # Mark as continuation if this is an agent-level retry (validation errors from branch_executor)
+                agent_retry_count = context.get('metadata', {}).get('agent_retry_count', 0)
+                if agent_retry_count > 0:
+                    run_context["is_continuation"] = True
+
                 # Add format instructions to context if available
                 if topology_graph and branch:
                     format_instructions = self._get_dynamic_format_instructions(
@@ -323,13 +335,15 @@ class StepExecutor:
                                             role="tool",
                                             content=json.dumps(tr['result']) if not isinstance(tr['result'], str) else tr['result'],
                                             tool_call_id=tr['tool_call_id'],
-                                            name=tr['tool_name']
+                                            name=tr['tool_name'],
+                                            images=tr.get('images', [])  # NEW: Include images from tool result
                                         )
                                     else:  # origin == 'content'
                                         # Content-origin: Must use role="user" (OpenAI API restriction)
                                         agent.memory.add(
                                             role="user",
-                                            content=json.dumps(tr['result']) if not isinstance(tr['result'], str) else tr['result']
+                                            content=json.dumps(tr['result']) if not isinstance(tr['result'], str) else tr['result'],
+                                            images=tr.get('images', [])  # NEW: Include images from tool result
                                             # No tool_call_id or name fields when role != "tool"
                                         )
                             
@@ -413,6 +427,31 @@ class StepExecutor:
                         'details': e.developer_message,
                         'suggestion': e.suggestion,
                         'config_field': getattr(e, 'config_field', 'unknown')
+                    }
+                    branch = context.get('branch')
+                    if branch:
+                        return await self.user_node_handler._handle_terminal_error(
+                            branch, error_info, context
+                        )
+
+                # Otherwise just raise
+                raise
+
+            except VisionAgentNotConfiguredError as e:
+                # Vision agent configuration errors are terminal - route to user display
+                logger.error(f"Vision agent configuration error in {agent_name}: {str(e)}")
+
+                # If user node handler available, display terminal error
+                if self.user_node_handler:
+                    error_info = {
+                        'failed_agent': agent_name,
+                        'error_type': 'VisionAgentNotConfiguredError',
+                        'error_code': e.error_code,
+                        'message': e.user_message,
+                        'details': e.developer_message,
+                        'suggestion': e.suggestion,
+                        'operation': getattr(e, 'operation', 'unknown'),
+                        'auto_screenshot': getattr(e, 'auto_screenshot', None)
                     }
                     branch = context.get('branch')
                     if branch:
@@ -1123,13 +1162,13 @@ Detailed structure for the JSON object:
                 f'     Available agents: {", ".join(next_agents)}'
             )
         
-        # Add call_tool if agent has tools
+        # Add tool_calls if agent has tools
         if hasattr(agent, 'tools_schema') and agent.tools_schema:
-            available_actions.append("'call_tool'")
+            available_actions.append("'tool_calls'")
             action_descriptions.append(
-                '- If `next_action` is `"call_tool"`:\n'
-                '     `{"tool_calls": [{"id": "call_123", "type": "function", '
-                '"function": {"name": "tool_name", "arguments": "{\\"param\\": \\"value\\"}"}}]}`'
+                '- If you want to call tools:\n'
+                '     Use the native tool_calls response format (NOT as next_action)\n'
+                '     The model will automatically handle tool execution'
             )
 
         # CRITICAL: Only add final_response if agent has permission
@@ -1165,17 +1204,22 @@ Detailed structure for the JSON object:
         # Use concise guidelines for steering to avoid duplication with system prompt
         json_guidelines_concise = self._get_json_guidelines_concise(actions_str)
 
+        # Build action guidance from descriptions
+        action_guidance = "\n\n".join(action_descriptions) if action_descriptions else ""
+
         # Build steering based on retry
         if is_retry:
             return f"""Your previous response had an incorrect format. Let's try again with the correct structure.
-{json_guidelines_concise}"""
+{json_guidelines_concise}
 
-# You must provide your response as a single JSON object in a markdown code block."""
+Available options:
+{action_guidance}"""
         else:
             return f"""Make sure to format your response correctly:
-{json_guidelines_concise}"""
+{json_guidelines_concise}
 
-# You must provide your response as a single JSON object in a markdown code block."""
+Available options:
+{action_guidance}"""
     
     def _get_agent_request_example(self, agent_name: str) -> str:
         """

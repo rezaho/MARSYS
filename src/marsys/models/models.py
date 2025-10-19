@@ -503,9 +503,22 @@ class OpenRouterAdapter(APIProviderAdapter):
             content = cleaned_msg.get("content")
             
             # Gemini-specific fix when using OpenRouter
-            # Serialize arrays/dicts to JSON strings for Gemini compatibility
+            # Only serialize non-multimodal content to JSON strings for Gemini compatibility
+            # Skip serialization if content is a multimodal array with image_url parts
             if self.model_name and "gemini" in self.model_name.lower():
-                if isinstance(content, (list, dict)):
+                if isinstance(content, list):
+                    # Check if this is a multimodal content array with images
+                    has_images = any(
+                        isinstance(part, dict) and part.get("type") == "image_url"
+                        for part in content
+                    )
+                    # Only stringify if NO images are present (plain structured data)
+                    if not has_images:
+                        import json
+                        cleaned_msg["content"] = json.dumps(content)
+                        content = cleaned_msg["content"]
+                elif isinstance(content, dict):
+                    # Stringify dict content (structured data, not multimodal)
                     import json
                     cleaned_msg["content"] = json.dumps(content)
                     content = cleaned_msg["content"]
