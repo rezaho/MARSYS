@@ -1831,6 +1831,7 @@ Example for `final_response`:
         role = "user"  # Default role
         content = actual_request
         name = None
+        images = None  # NEW: Extract images from request
 
         # Handle Message objects
         if hasattr(actual_request, 'content'):
@@ -1838,6 +1839,7 @@ Example for `final_response`:
             content = actual_request.content or ""
             role = getattr(actual_request, 'role', 'user')
             name = getattr(actual_request, 'name', None)
+            images = getattr(actual_request, 'images', None)  # NEW: Extract images from Message
         # Handle different request types
         elif isinstance(actual_request, dict):
             # Check if this is a tool result
@@ -1852,11 +1854,27 @@ Example for `final_response`:
             # Otherwise extract prompt content
             elif "prompt" in actual_request:
                 content = actual_request["prompt"]
+            # NEW: Extract content field if present (for multimodal tasks)
+            elif "content" in actual_request:
+                content = actual_request["content"]
+
+            # NEW: Extract images from dict request (for multimodal tasks)
+            if "images" in actual_request:
+                images = actual_request["images"]
 
         # Add request to memory (skip if None or empty - e.g., tool continuation)
         # FIX: Don't add empty continuation signals to memory
         if hasattr(self, "memory") and content is not None and content != "":
-            request_msg_id = self.memory.add(role=role, content=content, name=name)
+            request_msg_id = self.memory.add(role=role, content=content, name=name, images=images)
+
+        # Call pre-step hook BEFORE retrieving memory and preparing messages
+        # This allows hooks to add context (like screenshots) after tool responses but before LLM call
+        # This ensures proper message ordering: [tool_call, tool_response, context_from_hook]
+        step_number = context.get("step_number", 0)
+        await self._pre_step_hook(
+            step_number=step_number,
+            request_context=request_context,
+        )
 
         # Get memory messages and prepare them for the model
         memory_messages = self.memory.retrieve_all() if hasattr(self, "memory") else []
@@ -1999,6 +2017,21 @@ Example for `final_response`:
                         raw_response = self._apply_context_template(
                             raw_response, context_data
                         )
+
+        # Call post-step hook (allows subclasses to perform custom actions)
+        step_number = context.get("step_number", 0)
+        action_type = (
+            raw_response.content.get("next_action")
+            if isinstance(raw_response.content, dict)
+            else "unknown"
+        )
+        await self._post_step_hook(
+            step_number=step_number,
+            action_type=action_type,
+            request_context=request_context,
+            raw_response_message=raw_response,
+            context=context
+        )
 
         # Return response with context information
         return {"response": raw_response, "context_selection": context_for_next}
@@ -2196,6 +2229,38 @@ Example for `final_response`:
             A Message object representing the agent's raw response.
         """
         raise NotImplementedError("_run must be implemented in subclasses.")
+
+    async def _pre_step_hook(
+        self,
+        step_number: int,
+        request_context: RequestContext,
+        **kwargs: Any,
+    ) -> None:
+        """
+        Pre-step hook that runs BEFORE each LLM call in run_step.
+
+        This method is called after the previous step's tool/agent responses have been
+        added to memory, but before the next LLM call is made. This is the correct
+        place to add contextual information (like screenshots) that should appear
+        AFTER tool responses in the message history.
+
+        This ensures proper message ordering for LLM APIs that require tool responses
+        to immediately follow tool calls (e.g., OpenAI API).
+
+        Use cases:
+        - Add screenshots after tool execution completes
+        - Add context summaries before next reasoning step
+        - Inject dynamic information based on current state
+        - Add observability data for the agent's next decision
+
+        Args:
+            step_number: The current step number (1-indexed, represents the step about to execute)
+            request_context: The current request context
+            **kwargs: Additional keyword arguments
+        """
+        # Default implementation does nothing
+        # Subclasses can override to add custom behavior
+        pass
 
     async def _post_step_hook(
         self,

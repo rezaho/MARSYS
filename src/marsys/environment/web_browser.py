@@ -3853,32 +3853,78 @@ class BrowserTool:
             Path to the downloaded file
         """
         r = reasoning or ""
-        
-        # Start waiting for download before clicking
-        async with self.page.expect_download() as download_info:
-            # Navigate to the URL to trigger download
-            await self.page.goto(url)
-        
-        download = await download_info.value
-        
-        # Determine filename
-        if not filename:
-            filename = download.suggested_filename or "downloaded_file"
-        
-        # Save the file
-        file_path = os.path.join(self.download_path, filename)
-        await download.save_as(file_path)
-        
-        self.history.append(
-            {
-                "action": "download_file",
-                "reasoning": r,
-                "url": url,
-                "filename": filename,
-                "path": file_path,
-            }
-        )
-        return file_path
+
+        # Use CDP session to fetch the file directly instead of waiting for download event
+        # This works better for PDFs that open in browser viewer
+        try:
+            import aiohttp
+            import urllib.parse
+
+            # Determine filename from URL if not provided
+            if not filename:
+                parsed_url = urllib.parse.urlparse(url)
+                filename = os.path.basename(parsed_url.path) or "downloaded_file"
+                # If no extension, try to get from content-type later
+
+            file_path = os.path.join(self.download_path, filename)
+
+            # Use aiohttp to download the file
+            async with aiohttp.ClientSession() as session:
+                async with session.get(url) as response:
+                    response.raise_for_status()
+
+                    # Get content-type to determine file extension if needed
+                    if '.' not in filename:
+                        content_type = response.headers.get('content-type', '')
+                        if 'pdf' in content_type:
+                            filename += '.pdf'
+                        elif 'image' in content_type:
+                            ext = content_type.split('/')[-1]
+                            filename += f'.{ext}'
+                        file_path = os.path.join(self.download_path, filename)
+
+                    # Write the file
+                    with open(file_path, 'wb') as f:
+                        f.write(await response.read())
+
+            self.history.append(
+                {
+                    "action": "download_file",
+                    "reasoning": r,
+                    "url": url,
+                    "filename": filename,
+                    "path": file_path,
+                }
+            )
+            return file_path
+
+        except ImportError:
+            # Fallback to old method if aiohttp not available
+            # Start waiting for download before clicking
+            async with self.page.expect_download() as download_info:
+                # Navigate to the URL to trigger download
+                await self.page.goto(url)
+
+            download = await download_info.value
+
+            # Determine filename
+            if not filename:
+                filename = download.suggested_filename or "downloaded_file"
+
+            # Save the file
+            file_path = os.path.join(self.download_path, filename)
+            await download.save_as(file_path)
+
+            self.history.append(
+                {
+                    "action": "download_file",
+                    "reasoning": r,
+                    "url": url,
+                    "filename": filename,
+                    "path": file_path,
+                }
+            )
+            return file_path
 
     async def get_clean_html(
         self, 
