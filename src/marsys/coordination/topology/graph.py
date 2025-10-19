@@ -346,22 +346,16 @@ class TopologyGraph:
     
     def find_entry_points(self) -> List[str]:
         """
-        Find the entry point of the topology.
+        Determine the entry point for the topology.
         
-        Resolution order:
-        1. Explicit User node (still the workflow entry boundary)
-        2. Metadata recorded by ``find_entry_point_with_manual`` (manual overrides)
-        3. Structural detection (nodes without incoming edges)
-        
-        Returns:
-            List containing the single entry point
-            
-        Raises:
-            TopologyError: If topology violates entry point rules
+        Priority order:
+            1. User node (if present)
+            2. Manually specified entry (stored in metadata)
+            3. Structurally detected node with no incoming edges
         """
         from .core import NodeType
-        
-        # First, check for User nodes
+
+        # 1. User node always acts as the workflow boundary
         user_nodes = [
             node_name
             for node_name, node in self.nodes.items()
@@ -377,12 +371,12 @@ class TopologyGraph:
                     affected_nodes=user_nodes
                 )
             return user_nodes
-        
-        # No User node - honor metadata recorded during analysis first
+
+        # 2. Respect manual overrides captured during analysis
         if self.metadata:
             entry_override = (
-                self.metadata.get("resolved_entry_point")
-                or self.metadata.get("specified_entry_point")
+                self.metadata.get("specified_entry_point")
+                or self.metadata.get("resolved_entry_point")
             )
             if entry_override:
                 if entry_override not in self.nodes:
@@ -392,8 +386,8 @@ class TopologyGraph:
                         affected_nodes=[entry_override]
                     )
                 return [entry_override]
-        
-        # Fallback to structural detection
+
+        # 3. Fall back to structural detection
         entry_points = [
             node_name
             for node_name, node in self.nodes.items()
@@ -525,6 +519,13 @@ class TopologyGraph:
                         affected_nodes=candidates
                     )
         
+        if entry_agent is None:
+            raise TopologyError(
+                "Unable to determine entry point for topology.",
+                topology_issue="entry_point_resolution_failed",
+                affected_nodes=list(self.nodes.keys())
+            )
+        
         self._update_entry_point_metadata(manual_entry, user_node, entry_agent)
         return (user_node, entry_agent)
 
@@ -535,7 +536,7 @@ class TopologyGraph:
         entry_agent: Optional[str]
     ) -> None:
         """Store resolved entry point details for downstream components."""
-        if not hasattr(self, "metadata"):
+        if not hasattr(self, "metadata") or self.metadata is None:
             self.metadata = {}
         
         if manual_entry:
@@ -550,8 +551,15 @@ class TopologyGraph:
         
         if entry_agent:
             self.metadata["resolved_entry_point"] = entry_agent
+            if user_node:
+                # Needed so orchestration knows which agent follows the User node
+                self.metadata["agent_after_user"] = entry_agent
         else:
             self.metadata.pop("resolved_entry_point", None)
+            self.metadata.pop("agent_after_user", None)
+        
+        if not user_node:
+            self.metadata.pop("agent_after_user", None)
     
     def find_exit_points_with_manual(
         self,

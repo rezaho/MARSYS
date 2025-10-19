@@ -947,17 +947,17 @@ class Orchestra:
             logger.error(f"Failed to find entry agents: {e}")
             raise
     
-    def _create_initial_branch(self, agent_name: str, task: Any, context: Dict[str, Any], 
+    def _create_initial_branch(self, agent_name: str, task: Any, context: Dict[str, Any],
                               branch_id: str = None) -> ExecutionBranch:
         """Create an initial execution branch for an agent."""
         if branch_id is None:
             branch_id = f"main_{agent_name}_{uuid.uuid4().hex[:8]}"
-        
+
         # Include topology metadata (e.g., auto_injected_user)
         metadata = {"initial_task": task, "context": context}
         if hasattr(self.topology_graph, 'metadata'):
             metadata.update(self.topology_graph.metadata)
-        
+
         return ExecutionBranch(
             id=branch_id,
             name=f"Main: {agent_name}",
