@@ -5,7 +5,7 @@ This module provides strongly-typed data structures for validating
 agent invocation requests, especially for parallel execution scenarios.
 """
 
-from pydantic import BaseModel, Field, field_validator
+from pydantic import BaseModel, Field, field_validator, ConfigDict
 from typing import Any, List, Optional, Literal
 import uuid
 
@@ -59,9 +59,8 @@ class AgentInvocation(BaseModel):
             "request": self.request,
             "instance_id": self.instance_id
         }
-    
-    class Config:
-        extra = "allow"  # Allow additional fields for extensibility
+
+    model_config = ConfigDict(extra="allow")  # Allow additional fields for extensibility
 
 
 class ValidationError(BaseModel):
