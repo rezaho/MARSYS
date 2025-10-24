@@ -22,6 +22,7 @@ from pydantic import (  # root_validator, # Ensure root_validator is removed or 
     ValidationInfo,
     field_validator,
     model_validator,  # Keep model_validator
+    ConfigDict,
 )
 
 # Import the new response models
@@ -801,6 +802,77 @@ class AnthropicAdapter(APIProviderAdapter):
             "anthropic-version": "2023-06-01",
         }
 
+    def _convert_content_to_anthropic_format(self, content: Any) -> Any:
+        """
+        Convert OpenAI-style image content to Anthropic format.
+
+        OpenAI format:
+        [
+            {"type": "text", "text": "..."},
+            {"type": "image_url", "image_url": {"url": "data:image/png;base64,..."}}
+        ]
+
+        Anthropic format:
+        [
+            {"type": "text", "text": "..."},
+            {"type": "image", "source": {"type": "base64", "media_type": "image/png", "data": "..."}}
+        ]
+
+        Args:
+            content: Content in OpenAI format (string, dict, or list)
+
+        Returns:
+            Content in Anthropic format
+        """
+        # If content is not a list, return as-is
+        if not isinstance(content, list):
+            return content
+
+        converted_content = []
+        for part in content:
+            if not isinstance(part, dict):
+                converted_content.append(part)
+                continue
+
+            # Handle text parts (pass through)
+            if part.get("type") == "text":
+                converted_content.append(part)
+
+            # Convert image_url to Anthropic image format
+            elif part.get("type") == "image_url":
+                image_url_obj = part.get("image_url", {})
+                image_url = image_url_obj.get("url", "")
+
+                # Parse data URL: data:image/{format};base64,{data}
+                if image_url.startswith("data:"):
+                    try:
+                        # Split on comma to separate header from data
+                        header, base64_data = image_url.split(",", 1)
+                        # Extract media type from header
+                        media_type = header.split(";")[0].replace("data:", "")
+
+                        # Create Anthropic format
+                        converted_content.append({
+                            "type": "image",
+                            "source": {
+                                "type": "base64",
+                                "media_type": media_type,
+                                "data": base64_data
+                            }
+                        })
+                    except Exception:
+                        # If parsing fails, skip this image
+                        pass
+                else:
+                    # Non-base64 URL, skip (Anthropic doesn't support URL references in older API versions)
+                    pass
+
+            # Other types: pass through
+            else:
+                converted_content.append(part)
+
+        return converted_content
+
     def format_request_payload(self, messages: List[Dict], **kwargs) -> Dict[str, Any]:
         # Extract system message if present (Claude handles it differently)
         system_message = None
@@ -814,6 +886,9 @@ class AnthropicAdapter(APIProviderAdapter):
                 cleaned_msg = msg.copy()
                 if cleaned_msg.get("content") is None:
                     cleaned_msg["content"] = ""
+                else:
+                    # Convert OpenAI image format to Anthropic format
+                    cleaned_msg["content"] = self._convert_content_to_anthropic_format(cleaned_msg.get("content"))
                 user_messages.append(cleaned_msg)
 
         # Build base payload with required fields
@@ -1469,9 +1544,7 @@ class ModelConfig(BaseModel):
         None, description="Quantization config dict for local models"
     )
 
-    # Allow extra fields for flexibility with different APIs/models
-    class Config:
-        extra = "allow"
+    model_config = ConfigDict(extra="allow")  # Allow extra fields for flexibility with different APIs/models
 
     @model_validator(mode="before")
     @classmethod
