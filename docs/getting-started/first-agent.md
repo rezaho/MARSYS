@@ -727,11 +727,59 @@ except Exception as e:
     # Fallback logic
 ```
 
+## 🖼️ Vision Agents (Multimodal)
+
+MARSYS supports vision models that can analyze images alongside text:
+
+```python
+from marsys.coordination import Orchestra
+from marsys.agents import Agent
+from marsys.models import ModelConfig
+
+# Create vision-enabled agent
+vision_agent = Agent(
+    model_config=ModelConfig(
+        type="api",
+        name="google/gemini-2.5-pro",
+        provider="openrouter",
+        api_key=os.getenv("OPENROUTER_API_KEY")
+    ),
+    agent_name="ImageAnalyst",
+    description="Analyzes images and visual content",
+    system_prompt="You are an expert at analyzing visual content in detail."
+)
+
+# Run with images
+result = await Orchestra.run(
+    task={
+        "content": "What is shown in this screenshot? Describe in detail.",
+        "images": ["/path/to/screenshot.png"]
+    },
+    topology={"nodes": ["ImageAnalyst"], "edges": []}
+)
+
+print(result.final_response)
+```
+
+**Key Points:**
+- Use `task` as a dict with `"content"` and `"images"` fields
+- Images can be local paths or URLs
+- Framework automatically encodes images for the vision model
+- Works with all vision models: GPT-5, Claude Sonnet 4.5, Gemini 2.5 Pro
+
+For more details, see the [Multimodal Agents Guide](../guides/multimodal-agents.md).
+
 ## 🚦 Next Steps
 
 Now that you can create custom agents:
 
 <div class="grid cards" markdown="1">
+
+- :material-image:{ .lg .middle } **[Multimodal Agents](../guides/multimodal-agents.md)**
+
+    ---
+
+    Build agents that process images and visual content
 
 - :material-cog:{ .lg .middle } **[Configure Execution](configuration/)**
 

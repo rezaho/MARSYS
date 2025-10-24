@@ -40,6 +40,57 @@ result = await Orchestra.run(
 )
 ```
 
+## 📋 Task Formats
+
+The `task` parameter accepts multiple formats to support different use cases:
+
+### Text Task (Simple)
+
+```python
+# Plain string for text-only tasks
+task = "Research the latest AI developments in 2025"
+```
+
+### Structured Task (Dict)
+
+```python
+# Dictionary for complex requests
+task = {
+    "request": "Analyze market trends",
+    "sectors": ["tech", "finance"],
+    "depth": "comprehensive"
+}
+```
+
+### Multimodal Task (Images)
+
+```python
+# Task with images for vision models
+task = {
+    "content": "What is shown in these images? Provide detailed analysis.",
+    "images": [
+        "/path/to/image1.png",
+        "/path/to/image2.jpg",
+        "https://example.com/image.png"  # URLs also supported
+    ]
+}
+```
+
+The framework automatically:
+1. Extracts the `images` field from the task
+2. Injects images into the first agent's memory
+3. Formats images for vision models (base64 encoding)
+4. Ensures proper multimodal message structure
+
+### Task Field Priority
+
+When using dict format, the framework looks for content in this order:
+1. `"content"` field (for multimodal)
+2. `"prompt"` field
+3. `"task"` field
+4. `"message"` field
+5. Entire dict (if none of the above)
+
 ## 📝 Class Methods
 
 ### Orchestra.run()
@@ -121,6 +172,21 @@ result = await Orchestra.run(
     max_steps=100,
     allow_follow_ups=True,
     follow_up_timeout=120.0
+)
+
+# Multimodal task with images
+result = await Orchestra.run(
+    task={
+        "content": "Analyze these screenshots and identify the UI issues",
+        "images": [
+            "/path/to/screenshot1.png",
+            "/path/to/screenshot2.png"
+        ]
+    },
+    topology={"nodes": ["VisionAnalyst"], "edges": []},
+    execution_config=ExecutionConfig(
+        status=StatusConfig.from_verbosity(1)
+    )
 )
 ```
 
