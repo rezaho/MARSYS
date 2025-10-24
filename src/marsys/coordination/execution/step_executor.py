@@ -329,22 +329,65 @@ class StepExecutor:
                                 for tr in tool_result.tool_results:
                                     origin = tr.get('_origin', 'response')
                                     
+                                    metadata = tr.get('metadata')
+
                                     if origin == 'response':
                                         # Response-origin: Standard OpenAI format with role="tool"
-                                        agent.memory.add(
-                                            role="tool",
-                                            content=json.dumps(tr['result']) if not isinstance(tr['result'], str) else tr['result'],
-                                            tool_call_id=tr['tool_call_id'],
-                                            name=tr['tool_name'],
-                                            images=tr.get('images', [])  # NEW: Include images from tool result
-                                        )
+
+                                        # Determine if we need two-message pattern:
+                                        # 1. If metadata is provided (usage guidance/context)
+                                        # 2. If result is a list (multimodal content with images)
+                                        #    Images must be in "user" message, not "tool" message
+                                        has_metadata = metadata is not None
+                                        is_multimodal = isinstance(tr['result'], list)
+                                        use_two_message_pattern = has_metadata or is_multimodal
+
+                                        if use_two_message_pattern:
+                                            # Two-message pattern:
+                                            # 1. Tool message (role="tool"): metadata/status
+                                            # 2. User message (role="user"): actual content (especially for images)
+
+                                            # Determine tool message content
+                                            if has_metadata:
+                                                # Use provided metadata
+                                                if isinstance(metadata, str):
+                                                    tool_content = metadata
+                                                else:
+                                                    # Fallback for legacy dict metadata
+                                                    import json
+                                                    tool_content = json.dumps(metadata, indent=2)
+                                            else:
+                                                # No metadata but has images/multimodal - use generic message
+                                                tool_content = "Tool execution completed successfully. Content in next message."
+
+                                            # 1. Tool message with metadata/status
+                                            agent.memory.add(
+                                                role="tool",
+                                                content=tool_content,
+                                                tool_call_id=tr['tool_call_id'],
+                                                name=tr['tool_name']
+                                            )
+
+                                            # 2. User message with actual content
+                                            # tr['result'] can be: string, dict, or list of content blocks
+                                            agent.memory.add(
+                                                role="user",
+                                                content=tr['result']
+                                            )
+                                        else:
+                                            # Single-message pattern: Simple text/dict response, no metadata, no images
+                                            agent.memory.add(
+                                                role="tool",
+                                                content=tr['result'],
+                                                tool_call_id=tr['tool_call_id'],
+                                                name=tr['tool_name']
+                                            )
                                     else:  # origin == 'content'
                                         # Content-origin: Must use role="user" (OpenAI API restriction)
+                                        # tr['result'] is already formatted by to_content_array()
                                         agent.memory.add(
                                             role="user",
-                                            content=json.dumps(tr['result']) if not isinstance(tr['result'], str) else tr['result'],
-                                            images=tr.get('images', [])  # NEW: Include images from tool result
-                                            # No tool_call_id or name fields when role != "tool"
+                                            content=tr['result']
                                         )
                             
                             # Mark that agent needs to continue processing tool results
