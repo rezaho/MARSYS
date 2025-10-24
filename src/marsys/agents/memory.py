@@ -152,7 +152,7 @@ class Message:
     """Represents a single message in a conversation, with a unique ID."""
 
     role: str
-    content: Optional[Union[str, Dict[str, Any]]] = None  # Can be string or any dictionary
+    content: Optional[Union[str, Dict[str, Any], List[Dict[str, Any]]]] = None  # Can be string, dict, or typed array
     message_id: str = dataclasses.field(default_factory=lambda: str(uuid.uuid4()))
     name: Optional[str] = None  # For tool role (tool name) or assistant name (model name)
     tool_calls: Optional[List[ToolCallMsg]] = None  # For assistant requesting tool calls
@@ -647,20 +647,61 @@ class ConversationMemory(BaseMemory):
 
     def _message_to_dict(self, msg: Message) -> Dict[str, Any]:
         """Convert Message to standard dict format for AI models"""
-        # Handle content with images if present
-        if msg.images and len(msg.images) > 0:
+
+        # Special handling for role="tool": content MUST be string
+        if msg.role == "tool":
+            # Tool messages require string content (OpenAI API requirement)
+            content = msg.content
+            if isinstance(content, dict):
+                content = json.dumps(content, ensure_ascii=False, separators=(',', ':'))
+            elif content is None:
+                content = ""
+            else:
+                content = str(content)
+
+            result = {
+                "role": "tool",
+                "content": content
+            }
+            # Add tool-specific fields
+            if msg.tool_call_id:
+                result["tool_call_id"] = msg.tool_call_id
+            if msg.name:
+                result["name"] = msg.name
+
+            return result
+
+        # For other roles: handle multimodal and typed arrays
+
+        # If content is already a typed array, use it directly
+        if isinstance(msg.content, list):
+            result = {
+                "role": msg.role,
+                "content": msg.content  # Already formatted as typed array
+            }
+        # Handle legacy images field (for backward compatibility)
+        elif msg.images and len(msg.images) > 0:
             # Create multimodal content with text and images
             content_parts = []
-            
+
             # Add text content if present
             if msg.content is not None:
-                content_text = json.dumps(msg.content, ensure_ascii=False, indent=2) if isinstance(msg.content, dict) else str(msg.content)
+                if isinstance(msg.content, dict):
+                    content_text = json.dumps(msg.content, ensure_ascii=False, separators=(',', ':'))
+                elif isinstance(msg.content, list):
+                    # If content is already a list, it might be a typed array
+                    # In this case, skip adding it here since we'll add images separately
+                    # This shouldn't happen in practice (mixing typed arrays with images field)
+                    content_text = json.dumps(msg.content, ensure_ascii=False, separators=(',', ':'))
+                else:
+                    content_text = str(msg.content)
+
                 if content_text.strip():
                     content_parts.append({
                         "type": "text",
                         "text": content_text
                     })
-            
+
             # Add image content with base64 encoding
             for image_path in msg.images:
                 encoded_image = msg._encode_image_to_base64(image_path)
@@ -669,32 +710,28 @@ class ConversationMemory(BaseMemory):
                         "type": "image_url",
                         "image_url": {"url": encoded_image}
                     })
-            
+
             result = {
                 "role": msg.role,
                 "content": content_parts
             }
         else:
-            # No images, use simple content
+            # No images, simple content
             content = msg.content
             if isinstance(content, dict):
-                content = json.dumps(content, ensure_ascii=False, indent=2)
-            
+                content = json.dumps(content, ensure_ascii=False, separators=(',', ':'))
+
             result = {
                 "role": msg.role,
                 "content": content,
             }
-        
-        # Only include non-None optional fields
-        if msg.name:
+
+        # Only include non-None optional fields (for non-tool roles)
+        if msg.name and msg.role != "tool":
             result["name"] = msg.name
         if msg.tool_calls:
             result["tool_calls"] = [tc.to_dict() for tc in msg.tool_calls]
-        
-        # Add tool_call_id for tool response messages
-        if msg.role == "tool" and msg.tool_call_id:
-            result["tool_call_id"] = msg.tool_call_id
-        
+
         # Note: agent_calls and structured_data not included in standard AI format
         return result
 
