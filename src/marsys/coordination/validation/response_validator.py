@@ -574,7 +574,7 @@ class ValidationProcessor:
         
         # Initialize processors in priority order
         self.processors: List[ResponseProcessor] = sorted([
-            ErrorMessageProcessor(),  # NEW - highest priority
+            ErrorMessageProcessor(),  # Highest priority for API errors
             StructuredJSONProcessor(),
             ToolCallProcessor(),
             NaturalLanguageProcessor()
@@ -588,8 +588,8 @@ class ValidationProcessor:
             ActionType.FINAL_RESPONSE: self._validate_final_response,
             ActionType.END_CONVERSATION: self._validate_end_conversation,
             ActionType.WAIT_AND_AGGREGATE: self._validate_wait_aggregate,
-            ActionType.ERROR_RECOVERY: self._validate_error_recovery,  # NEW
-            ActionType.TERMINAL_ERROR: self._validate_terminal_error   # NEW
+            ActionType.ERROR_RECOVERY: self._validate_error_recovery,
+            ActionType.TERMINAL_ERROR: self._validate_terminal_error
         }
     
     def _get_allowed_actions(self, agent: BaseAgent, branch: ExecutionBranch = None) -> List[str]:
@@ -635,28 +635,34 @@ class ValidationProcessor:
         4. Returns structured validation result
         """
         
-        # Handle empty responses - provide dynamic action suggestions with examples
+        # Handle empty responses - provide clear guidance based on available actions
         allowed_actions = self._get_allowed_actions(agent, branch)
 
-        # Build example structures for next_action options
-        examples = []
-        if "final_response" in allowed_actions:
-            examples.append('{"next_action": "final_response", "action_input": {"response": "Your final answer..."}}')
-        if "invoke_agent" in allowed_actions:
-            examples.append('{"next_action": "invoke_agent", "action_input": [{"agent_name": "agent_name", "request": "your request"}]}')
-        # NOTE: call_tool is NOT a next_action - tools are called via native tool_calls response
+        # Build guidance message based on what's available
+        guidance_parts = []
 
-        # Generate suggestion text
-        if len(examples) == 1:
-            format_hint = f"Use this structure: {examples[0]}"
-        elif len(examples) > 1:
-            format_hint = f"Use one of these structures: {' OR '.join(examples)}"
+        # Tool calls (native format)
+        if "tool_calls" in allowed_actions:
+            guidance_parts.append("use native tool_calls format to call tools")
+
+        # Agent invocations or final response (content field with next_action)
+        content_actions = []
+        if "invoke_agent" in allowed_actions:
+            content_actions.append('"invoke_agent"')
+        if "final_response" in allowed_actions:
+            content_actions.append('"final_response"')
+
+        if content_actions:
+            actions_str = " or ".join(content_actions)
+            guidance_parts.append(f'return content with "next_action" set to {actions_str} and proper "action_input"')
+
+        # Combine into format hint
+        if len(guidance_parts) == 2:
+            format_hint = f"You can either: {guidance_parts[0]}, OR {guidance_parts[1]}"
+        elif len(guidance_parts) == 1:
+            format_hint = f"You must: {guidance_parts[0]}"
         else:
             format_hint = "Provide a valid response"
-
-        # Add tool calling guidance if tools are available
-        if "tool_calls" in allowed_actions:
-            format_hint += ". You can also call available tools using the native tool_calls response format"
 
         if raw_response is None:
             return ValidationResult(
@@ -711,32 +717,38 @@ class ValidationProcessor:
                 )
             
             # Generic fallback - provide dynamic format instructions based on allowed actions
-            # Note: allowed_actions already retrieved above (line 674)
+            # Note: allowed_actions already retrieved above
 
-            # Build example structure based on allowed actions
-            examples = []
-            if "final_response" in allowed_actions:
-                examples.append('{"next_action": "final_response", "action_input": {"response": "Your final answer..."}}')
+            # Build clear guidance based on what's available
+            guidance_parts = []
+
+            # Tool calls (native format)
+            if "tool_calls" in allowed_actions:
+                guidance_parts.append("use native tool_calls format to call tools")
+
+            # Agent invocations or final response (content field with next_action)
+            content_actions = []
             if "invoke_agent" in allowed_actions:
-                examples.append('{"next_action": "invoke_agent", "action_input": [{"agent_name": "agent_name", "request": "your request"}]}')
-            # NOTE: call_tool is NOT a next_action - tools are called via native tool_calls response
+                content_actions.append('"invoke_agent"')
+            if "final_response" in allowed_actions:
+                content_actions.append('"final_response"')
 
-            # Generate retry suggestion with all allowed options
-            if len(examples) == 1:
-                format_hint = f"Use this structure: {examples[0]}"
-            elif len(examples) > 1:
-                format_hint = f"Use one of these structures: {' OR '.join(examples)}"
+            if content_actions:
+                actions_str = " or ".join(content_actions)
+                guidance_parts.append(f'return content with "next_action" set to {actions_str} and proper "action_input"')
+
+            # Combine into format hint
+            if len(guidance_parts) == 2:
+                format_hint = f"You can either: {guidance_parts[0]}, OR {guidance_parts[1]}"
+            elif len(guidance_parts) == 1:
+                format_hint = f"You must: {guidance_parts[0]}"
             else:
                 format_hint = "Provide a valid response"
-
-            # Add tool calling guidance if tools are available
-            if "tool_calls" in allowed_actions:
-                format_hint += ". You can also call available tools using the native tool_calls response format"
 
             return ValidationResult(
                 is_valid=False,
                 error_message="Could not parse response format - no processor could handle it",
-                retry_suggestion=f'Your response format was not recognized. Allowed actions: {", ".join(allowed_actions)}. {format_hint}'
+                retry_suggestion=f'Your response format was not recognized. {format_hint}'
             )
         
         # 2. Determine action type
@@ -756,18 +768,29 @@ class ValidationProcessor:
         except ValueError:
             allowed_actions = self._get_allowed_actions(agent, branch)
             valid_action_types = []
+            tool_calls_available = False
+
             for action in allowed_actions:
                 if action == "invoke_agent":
                     valid_action_types.append(ActionType.INVOKE_AGENT.value)
                 elif action == "tool_calls":
-                    # NOTE: allowed_actions uses "tool_calls" but ActionType is still CALL_TOOL
-                    valid_action_types.append(ActionType.CALL_TOOL.value)
+                    # Don't add "call_tool" to valid actions - tools are called via native response.tool_calls
+                    # Just track that tools are available for the hint message
+                    tool_calls_available = True
                 elif action == "final_response":
                     valid_action_types.append(ActionType.FINAL_RESPONSE.value)
+
+            # Build helpful error message
+            error_msg = f"'{action_str}' is not a valid action."
+            if valid_action_types:
+                error_msg += f" Valid next_action values are: {valid_action_types}."
+            if tool_calls_available:
+                error_msg += " To use tools, return them in the native tool_calls field (not as next_action)."
+
             return ValidationResult(
                 is_valid=False,
                 error_message=f"Unknown action type: {action_str}",
-                retry_suggestion=f"'{action_str}' is not a valid action. Your valid actions are: {valid_action_types}"
+                retry_suggestion=error_msg
             )
         
         # 3. Validate specific action
