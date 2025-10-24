@@ -252,14 +252,25 @@ class RealToolExecutor:
                     # Execute the tool
                     raw_result = await self._execute_single_tool(tool_func, tool_args, tool_name)
 
-                    # NEW: Extract images from tool result if present
-                    if isinstance(raw_result, dict):
+                    # Check if result is ToolResponse
+                    from marsys.environment.tool_response import ToolResponse
+
+                    if isinstance(raw_result, ToolResponse):
+                        # ToolResponse format: use to_content_array() for proper conversion
+                        # This returns str, dict, or list of content blocks (already formatted for LLM)
+                        result_content = raw_result.to_content_array()
+                        metadata = raw_result.metadata
+                        images = []  # Images are now embedded in content_array for multimodal
+                    elif isinstance(raw_result, dict):
+                        # Legacy dict format: check for images key
                         images = raw_result.get('images', [])
-                        result_text = raw_result.get('result', raw_result)
+                        result_content = raw_result.get('result', raw_result)
+                        metadata = None
                     else:
-                        # Legacy format: plain string/value
+                        # Simple format: plain string/value
                         images = []
-                        result_text = raw_result
+                        result_content = raw_result
+                        metadata = None
 
                     # Emit tool complete event
                     if self.event_bus:
@@ -275,7 +286,7 @@ class RealToolExecutor:
                             duration=time.time() - start_time if start_time else None
                         ))
 
-                    result = result_text
+                    result = result_content
                 else:
                     # Create helpful error message with fuzzy matching
                     all_tools = list(self.tool_registry.keys()) + list(agent_tools.keys())
@@ -296,12 +307,14 @@ class RealToolExecutor:
                     logger.error(full_error)
                     result = {"error": full_error}
                     images = []  # No images for error case
+                    metadata = None  # No metadata for error case
 
                 results.append({
                     "tool_call_id": tool_id,
                     "tool_name": tool_name,
                     "result": result,
-                    "images": images,  # NEW: Include images
+                    "images": images,
+                    "metadata": metadata,  # NEW: Include metadata from ToolResponse
                     "_origin": tool_call.get('_origin', 'response') if isinstance(tool_call, dict) else 'response'
                 })
                 
@@ -330,6 +343,7 @@ class RealToolExecutor:
                     "tool_name": tool_name,
                     "result": {"error": error_msg},
                     "images": [],  # No images for error case
+                    "metadata": None,  # No metadata for error case
                     "_origin": tool_call.get('_origin', 'response') if isinstance(tool_call, dict) else 'response'
                 })
 
@@ -351,9 +365,14 @@ class RealToolExecutor:
             
             # Log successful execution
             logger.info(f"Tool {tool_name} executed successfully")
-            
+
             # Ensure result is JSON serializable
-            if isinstance(result, str):
+            from marsys.environment.tool_response import ToolResponse
+
+            if isinstance(result, ToolResponse):
+                # Return ToolResponse as-is, don't serialize it
+                return result
+            elif isinstance(result, str):
                 try:
                     # Try to parse if it's JSON string
                     parsed = json.loads(result)
