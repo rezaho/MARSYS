@@ -269,6 +269,7 @@ class BranchExecutor:
                 if step_result.requires_retry and retry_counts[current_agent] < self.max_retries:
                     retry_counts[current_agent] += 1
                     logger.warning(f"Retrying agent '{current_agent}' after failure (attempt {retry_counts[current_agent]}/{self.max_retries})")
+                    current_request = None  # Use None for retry to let agent continue with memory
                     continue
                 else:
                     if retry_counts[current_agent] >= self.max_retries:
@@ -402,7 +403,33 @@ class BranchExecutor:
                         branch_memory=context.branch_memory,
                         metadata=result_metadata
                     )
-                
+
+                # Check if this was an error recovery attempt that failed due to no User node
+                if step_result.metadata and step_result.metadata.get('needs_error_display'):
+                    # User node was attempted but not available - log error and fail gracefully
+                    error_details = step_result.metadata.get('error_details', {})
+                    error_type = step_result.metadata.get('error_action_type', 'error')
+                    error_message = error_details.get('message', 'Unknown error')
+                    error_classification = error_details.get('classification', 'unknown')
+
+                    # Log error (following existing pattern from line 716)
+                    logger.error(
+                        f"[{error_type.upper()}] {error_classification}: {error_message}. "
+                        f"User node not available in topology. Terminating workflow."
+                    )
+
+                    # Return failed branch result with error details
+                    return BranchResult(
+                        branch_id=branch.id,
+                        success=False,
+                        final_response=None,
+                        total_steps=branch.state.current_step,
+                        execution_trace=execution_trace,
+                        branch_memory=context.branch_memory,
+                        error=f"[{error_type}] {error_classification}: {error_message}",
+                        metadata=step_result.metadata
+                    )
+
                 # No next agent - branch completes
                 # Extract the actual content from parsed response if available
                 final_content = step_result.response
@@ -858,18 +885,22 @@ class BranchExecutor:
 
                     # Handle error recovery routing - transfer error details to metadata
                     if validation.action_type in [ActionType.ERROR_RECOVERY, ActionType.TERMINAL_ERROR]:
+                        # Extract error details
+                        error_details = {}
                         if validation.invocations and len(validation.invocations) > 0:
-                            # Get the User invocation with error details
                             user_invocation = validation.invocations[0]
                             if hasattr(user_invocation, 'request'):
-                                # Transfer error details to step result metadata
-                                if not result.metadata:
-                                    result.metadata = {}
-                                result.metadata['error_details'] = user_invocation.request.get('error_details', {})
-                                result.metadata['retry_context'] = user_invocation.request.get('retry_context', {})
-                                result.metadata['failed_agent'] = user_invocation.request.get('retry_context', {}).get('agent_name')
-                                logger.debug(f"Transferring error details to StepResult metadata: {result.metadata['error_details']}")
-                        result.next_agent = "User"  # Route to User node
+                                error_details = user_invocation.request.get('error_details', {})
+
+                        # Transfer error details to result metadata
+                        if not result.metadata:
+                            result.metadata = {}
+                        result.metadata['error_details'] = error_details
+                        result.metadata['error_action_type'] = validation.action_type.value
+
+                        # Mark for error recovery routing - _execute_simple_branch will handle User node availability check
+                        result.next_agent = "User"  # Attempt to route to User
+                        result.metadata['needs_error_display'] = True  # Flag for graceful fallback if User not available
 
                     # Handle auto-retry for timeout/network errors
                     elif validation.action_type == ActionType.AUTO_RETRY:
@@ -2100,7 +2131,33 @@ class BranchExecutor:
                         branch_memory=context.branch_memory,
                         metadata=result_metadata
                     )
-                
+
+                # Check if this was an error recovery attempt that failed due to no User node
+                if step_result.metadata and step_result.metadata.get('needs_error_display'):
+                    # User node was attempted but not available - log error and fail gracefully
+                    error_details = step_result.metadata.get('error_details', {})
+                    error_type = step_result.metadata.get('error_action_type', 'error')
+                    error_message = error_details.get('message', 'Unknown error')
+                    error_classification = error_details.get('classification', 'unknown')
+
+                    # Log error (following existing pattern from line 716)
+                    logger.error(
+                        f"[{error_type.upper()}] {error_classification}: {error_message}. "
+                        f"User node not available in topology. Terminating workflow."
+                    )
+
+                    # Return failed branch result with error details
+                    return BranchResult(
+                        branch_id=branch.id,
+                        success=False,
+                        final_response=None,
+                        total_steps=branch.state.current_step,
+                        execution_trace=execution_trace,
+                        branch_memory=context.branch_memory,
+                        error=f"[{error_type}] {error_classification}: {error_message}",
+                        metadata=step_result.metadata
+                    )
+
                 # No next agent - branch completes
                 # Extract the actual content from parsed response if available
                 final_content = step_result.response
