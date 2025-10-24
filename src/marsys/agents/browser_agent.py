@@ -1351,10 +1351,9 @@ class BrowserAgent(Agent):
             return
 
         try:
-            # COMMENTED OUT: Keep all screenshots instead of sliding window
             # Enable sliding window to keep only last screenshot in context
             # This prevents memory explosion while maintaining current state visibility
-            # await self._remove_previous_auto_messages(request_context)
+            await self._remove_previous_auto_messages(request_context)
 
             # Use highlight_interactive_elements to capture current page state
             # Note: Set use_prediction=False to skip VLM and use only DOM-based detection for speed
