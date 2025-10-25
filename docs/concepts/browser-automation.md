@@ -6,10 +6,12 @@ MARSYS provides powerful browser automation capabilities through the BrowserAgen
 
 The browser automation system provides:
 
+- **Dual Operation Modes**: PRIMITIVE for fast content extraction, ADVANCED for complex multi-step scenarios with visual interaction
 - **Web Navigation**: Navigate, scrape, and interact with websites
 - **Intelligent Automation**: LLM-guided browser control and decision making
 - **Dynamic Content Handling**: JavaScript execution and async content loading
 - **Form Automation**: Fill forms, click elements, and handle interactions
+- **Multimodal Capabilities**: Screenshot-based visual understanding with element detection (ADVANCED mode)
 - **Robust Error Handling**: Retry mechanisms and resilient operations
 
 ## 🏗️ Architecture
@@ -46,6 +48,96 @@ graph TB
     style PW fill:#e1f5fe
 ```
 
+## 🎭 Operation Modes
+
+BrowserAgent supports two distinct operation modes optimized for different use cases:
+
+### PRIMITIVE Mode
+
+**Purpose**: Fast, efficient content extraction without visual interaction
+
+**Characteristics**:
+- High-level tools for quick content retrieval
+- No visual feedback or screenshots
+- No vision model required
+- Optimized for speed and simplicity
+- Single-step operations
+
+**Available Tools** (5):
+- `fetch_url` - Navigate and extract content in one step
+- `get_page_elements` - Get interactive elements with CSS selectors
+- `extract_text_content` - Extract text from specific selectors
+- `get_page_metadata` - Get page title, URL, and links
+- `download_file` - Download files from URLs
+
+**Best For**:
+- Web scraping and data extraction
+- Content aggregation
+- Simple information retrieval
+- API-like web interactions
+
+### ADVANCED Mode
+
+**Purpose**: Complex multi-step scenarios requiring visual interaction and coordinate-based control
+
+**Characteristics**:
+- Low-level coordinate-based tools
+- Visual feedback with auto-screenshot support
+- Vision model integration for visual understanding
+- Multi-step navigation and interaction
+- Form filling and complex workflows
+
+**Available Tools** (14):
+- All PRIMITIVE mode tools, plus:
+- `goto` - Navigate to URL
+- `scroll_up` / `scroll_down` - Scroll the page
+- `mouse_click` - Click at specific coordinates
+- `type_text` - Type text into focused elements
+- `keyboard_press` - Press keyboard keys
+- `go_back` - Navigate back
+- `reload` - Reload current page
+- `get_url` / `get_title` - Get page information
+- `screenshot` - Take screenshot with element highlighting (returns multimodal ToolResponse)
+
+**Best For**:
+- Form automation with complex interactions
+- Multi-step workflows requiring visual confirmation
+- Handling cookie popups and modals
+- Sites with anti-bot protections
+- Tasks requiring precise element interaction
+
+### Choosing the Right Mode
+
+```python
+from marsys.agents import BrowserAgent, BrowserAgentMode
+
+# Mode selection with enum (type-safe)
+browser_agent = await BrowserAgent.create_safe(
+    agent_name="scraper",
+    model_config=config,
+    mode=BrowserAgentMode.PRIMITIVE,  # Using enum
+    goal="Efficiently fetch and extract content from web pages"
+)
+
+# Mode selection with string (convenient)
+browser_agent = await BrowserAgent.create_safe(
+    agent_name="scraper",
+    model_config=config,
+    mode="primitive",  # Using string
+    goal="Efficiently fetch and extract content from web pages"
+)
+
+# ADVANCED mode - Visual interaction
+browser_agent = await BrowserAgent.create_safe(
+    agent_name="navigator",
+    model_config=config,
+    mode=BrowserAgentMode.ADVANCED,  # or mode="advanced"
+    auto_screenshot=True,  # Enable visual feedback
+    vision_agent=vision_model,  # Provide vision model
+    goal="Navigate and interact with web pages like a human"
+)
+```
+
 ## 📦 BrowserAgent
 
 ### Creating a BrowserAgent
@@ -54,18 +146,36 @@ graph TB
 from marsys.agents import BrowserAgent
 from marsys.models import ModelConfig
 
-# Create browser agent
+# PRIMITIVE Mode - Fast content extraction
 browser_agent = await BrowserAgent.create_safe(
+    agent_name="web_scraper",
+    model_config=ModelConfig(
+        type="api",
+        provider="openrouter",
+        name="anthropic/claude-haiku-4.5",
+        temperature=0.3
+    ),
+    mode="primitive",  # Simple string mode selection
+    description="Fast web scraping agent for content extraction",
+    headless_browser=True,
+    temp_dir="./tmp/browser"
+)
+
+# ADVANCED Mode - Visual interaction with auto-screenshot
+browser_agent_advanced = await BrowserAgent.create_safe(
     agent_name="web_navigator",
     model_config=ModelConfig(
         type="api",
-        provider="openai",
-        name="gpt-4",  # Use capable model for planning
-        temperature=0.3  # Lower temperature for consistent behavior
+        provider="openrouter",
+        name="anthropic/claude-sonnet-4",
+        temperature=0.3
     ),
-    description="Expert web automation agent for scraping and interaction",
-    headless_browser=True,  # Run without visible window
-    temp_dir="./tmp/screenshots",  # Directory for screenshots
+    mode="advanced",  # Simple string mode selection
+    description="Expert web automation agent for complex interactions",
+    auto_screenshot=True,  # Enable visual feedback
+    vision_agent=vision_model,  # Required for auto-screenshot
+    headless_browser=False,
+    temp_dir="./tmp/screenshots",
     playwright_browser_launch_options={
         "args": ["--disable-blink-features=AutomationControlled"],
         "ignore_default_args": ["--enable-automation"]
@@ -78,7 +188,7 @@ try:
     result = await browser_agent.run("Navigate to example.com and extract the main heading")
 finally:
     if browser_agent.browser_tool:
-        await browser_agent.browser_tool.close_browser()
+        await browser_agent.browser_tool.close()
 ```
 
 ### Using AgentPool for Parallel Browsing
@@ -111,6 +221,24 @@ await browser_pool.cleanup()
 ```
 
 ## 🔧 Browser Tools
+
+### Tool Overview by Mode
+
+**PRIMITIVE Mode Tools** (Fast content extraction):
+- `fetch_url` - Navigate and extract content in one step (returns Dict with markdown/text)
+- `get_page_elements` - Get interactive elements with CSS selectors in flat structure
+- `extract_text_content` - Extract text from selectors without navigation
+- `get_page_metadata` - Get title, URL, and links quickly
+- `download_file` - Download files from URLs
+
+**ADVANCED Mode Additional Tools** (Visual interaction):
+- `goto`, `go_back`, `reload` - Navigation control
+- `scroll_up`, `scroll_down` - Page scrolling
+- `mouse_click` - Click at coordinates
+- `type_text` - Type into focused elements
+- `keyboard_press` - Press keyboard keys
+- `screenshot` - Multimodal response with numbered element detection (ToolResponse format)
+- `get_url`, `get_title` - Current page information
 
 ### Navigation Tools
 
