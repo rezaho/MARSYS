@@ -5,6 +5,7 @@ import os
 import re
 import tempfile
 import uuid
+from enum import Enum
 from pathlib import Path
 from typing import Any, Callable, Dict, List, Optional
 from urllib.parse import urlparse
@@ -27,6 +28,78 @@ from .exceptions import (
 )
 
 logger = logging.getLogger(__name__)
+
+
+class BrowserAgentMode(Enum):
+    """
+    Browser agent operation modes.
+
+    PRIMITIVE: Fast content extraction mode with high-level tools.
+               No visual feedback, no screenshots, no vision model required.
+               Best for: content extraction, web scraping, data gathering.
+
+    ADVANCED: Visual interaction mode with low-level coordinate-based tools.
+              Supports auto-screenshot with vision model for human-like interaction.
+              Best for: complex UI navigation, form filling, interactive tasks.
+    """
+    PRIMITIVE = "primitive"
+    ADVANCED = "advanced"
+
+
+# Mode-specific default configurations
+BROWSER_MODE_DEFAULTS = {
+    "primitive": {
+        "goal": "Efficiently fetch and extract content from web pages",
+        "instruction": (
+            "You are a browser automation agent in PRIMITIVE mode, optimized for fast content extraction.\n\n"
+            "**Important**: Visual tools (screenshots, mouse, keyboard) are NOT available. You have high-level content extraction tools only.\n\n"
+            "**Primary tool**: fetch_url - navigates to a URL and returns its content in one step. This is your main tool for most tasks.\n\n"
+            "**Additional tools** (use only when fetch_url is insufficient):\n"
+            "- get_page_elements: Get page structure with element selectors (requires page to be already loaded)\n"
+            "- extract_text_content: Extract text from specific selectors on current page\n"
+            "- get_page_metadata: Get title, URL, and links from current page\n"
+            "- download_file: Download files\n\n"
+            "**Note**: The browser maintains state - after fetch_url loads a page, you can use other tools on that loaded page if needed. "
+            "However, fetch_url already returns the content, so additional steps are rarely necessary. Focus on speed and simplicity."
+        )
+    },
+    "advanced": {
+        "goal": "Navigate and interact with web pages like a human through visual observation",
+        "instruction_template": (
+            "You are a browser automation agent in ADVANCED mode for human-like web interaction.\n\n"
+            "{auto_screenshot_section}"
+            "\n**Core workflow:**\n"
+            "1. **Observe**: {observation_method}\n"
+            "2. **Identify**: Locate elements of interest (buttons, links, text, forms, etc.) using bounding boxes or positions\n"
+            "3. **Interact**: Use mouse clicks (coordinates), keyboard typing, or scrolling\n\n"
+            "**Reading text content with selectors:**\n"
+            "- get_page_elements: View all page elements with their CSS selectors\n"
+            "- extract_text_content: Extract text using a specific selector\n\n"
+            "**Form filling:**\n"
+            "- Text inputs: Click field coordinates → type with keyboard\n"
+            "- Dropdowns: Click dropdown → wait for observation → scroll to option if needed → click option coordinates\n"
+            "- Dropdown with search: Click dropdown → click search field → type query → click result\n\n"
+            "**Common situations:**\n"
+            "- **Cookie popups**: Decline if possible, otherwise accept to proceed\n"
+            "- **Anti-bot challenges**: Analyze and solve the challenge\n"
+            "- **Wrong navigation**: Use go_back to return\n"
+            "- **Unexpected state**: Review past actions and adjust\n"
+            "- **Page errors**: May restart from initial URL (avoid loops)\n\n"
+            "**When stuck**: If repeated attempts fail, report the issue to the requestor with details about what was tried."
+        ),
+        "auto_screenshot_enabled": (
+            "**Visual feedback**: After each browser action, you automatically receive a screenshot showing the current page state "
+            "with bounding boxes around elements. Use these bounding boxes to identify coordinates and positions for interaction."
+        ),
+        "auto_screenshot_disabled": (
+            "**Visual feedback**: You can use the screenshot tool when you need to observe the page state. "
+            "The screenshot will show bounding boxes around elements to help identify coordinates and positions for interaction. "
+            "Request screenshots when you need visual confirmation or to locate elements."
+        ),
+        "observation_auto": "Automatic screenshots after each action show the updated page",
+        "observation_manual": "Request screenshots when needed to observe the page state"
+    }
+}
 
 
 class InteractiveElementsAgent(Agent):
@@ -461,12 +534,13 @@ class BrowserAgent(Agent):
     def __init__(
         self,
         model_config: ModelConfig,
-        goal: str,
-        instruction: str,
+        goal: Optional[str] = None,
+        instruction: Optional[str] = None,
         tools: Optional[Dict[str, Callable[..., Any]]] = None,
         max_tokens: Optional[int] = None,
         name: Optional[str] = None,
         allowed_peers: Optional[List[str]] = None,
+        mode: str = "advanced",
         headless: bool = True,
         viewport_width: int = 1440,
         viewport_height: int = 960,
@@ -485,12 +559,15 @@ class BrowserAgent(Agent):
 
         Args:
             model_config: Configuration for the language model
-            goal: A 1-2 sentence summary of what this agent accomplishes
-            instruction: Detailed instructions on how the agent should behave and operate
+            goal: Optional additional goal to append to mode-specific default goal
+            instruction: Optional additional instructions to append to mode-specific instructions
             tools: Optional dictionary of additional tools
             max_tokens: Maximum tokens for model generation (overrides model_config default if provided)
             name: Optional name for registration
             allowed_peers: List of agent names this agent can invoke
+            mode: Operation mode - "primitive" or "advanced" (default: "advanced").
+                PRIMITIVE: Fast content extraction with high-level tools, no vision, no auto-screenshot.
+                ADVANCED: Visual interaction with low-level coordinate-based tools, supports auto-screenshot.
             headless: Whether to run browser in headless mode
             viewport_width: Browser viewport width
             viewport_height: Browser viewport height
@@ -508,6 +585,66 @@ class BrowserAgent(Agent):
             memory_retention: Memory retention policy - "single_run", "session", or "persistent"
             memory_storage_path: Path for persistent memory storage (if retention is "persistent")
         """
+        # Validate and normalize mode
+        mode_lower = mode.lower()
+        if mode_lower not in ("primitive", "advanced"):
+            raise AgentConfigurationError(
+                f"Invalid mode '{mode}'. Must be 'primitive' or 'advanced'.",
+                agent_name=name or "BrowserAgent",
+                config_field="mode",
+                config_value=mode,
+                suggestion="Use mode='primitive' for fast content extraction or mode='advanced' for visual interaction."
+            )
+
+        # Convert to enum
+        self.mode = BrowserAgentMode.PRIMITIVE if mode_lower == "primitive" else BrowserAgentMode.ADVANCED
+
+        # Validate mode-specific configurations
+        if self.mode == BrowserAgentMode.PRIMITIVE and auto_screenshot:
+            raise AgentConfigurationError(
+                "auto_screenshot=True is not compatible with mode='primitive'. "
+                "PRIMITIVE mode is designed for fast content extraction without visual feedback.",
+                agent_name=name or "BrowserAgent",
+                config_field="auto_screenshot",
+                config_value=True,
+                suggestion="Either set mode='advanced' to enable auto_screenshot, or set auto_screenshot=False for PRIMITIVE mode."
+            )
+
+        # Enhance goal and instruction based on mode
+        mode_defaults = BROWSER_MODE_DEFAULTS[mode_lower]
+
+        # Build final goal: mode default + user's goal (if provided)
+        final_goal = mode_defaults["goal"]
+        if goal:
+            # Add separator between default goal and user's goal (avoid double periods)
+            separator = ". " if not final_goal.endswith(".") else " "
+            final_goal += separator + goal
+
+        # Build final instruction based on mode
+        if self.mode == BrowserAgentMode.PRIMITIVE:
+            # For PRIMITIVE mode, use mode instruction + user's instruction
+            final_instruction = mode_defaults["instruction"]
+            if instruction:
+                final_instruction += "\n\n" + instruction
+        else:
+            # For ADVANCED mode, format template with auto_screenshot settings
+            auto_screenshot_section = (
+                mode_defaults["auto_screenshot_enabled"] if auto_screenshot
+                else mode_defaults["auto_screenshot_disabled"]
+            )
+            observation_method = (
+                mode_defaults["observation_auto"] if auto_screenshot
+                else mode_defaults["observation_manual"]
+            )
+
+            mode_instruction = mode_defaults["instruction_template"].format(
+                auto_screenshot_section=auto_screenshot_section,
+                observation_method=observation_method
+            )
+            final_instruction = mode_instruction
+            if instruction:
+                final_instruction += "\n\n" + instruction
+
         # Validate auto_screenshot configuration early (only for local models)
         if auto_screenshot and not vision_model_config and model_config.type == "local":
             # Will use main model_config for vision - validate it's vision-capable
@@ -561,33 +698,10 @@ class BrowserAgent(Agent):
         if tools:
             browser_tools.update(tools)
 
-        # Enhance the user-provided instruction with browser-specific context
-        enhanced_instruction = (
-            f"{instruction}\n\n"
-            "You are a browser automation agent powered by Playwright. You have the following capabilities:\n"
-            "- Web navigation and page interaction\n"
-            "- Element selection and manipulation using CSS selectors\n"
-            "- Screenshot capture (full page or specific elements)\n"
-            "- Form filling and submission\n"
-            "- JavaScript execution in page context\n"
-            "- Cookie and local storage management\n"
-            "- File downloads\n\n"
-            # "Available browser tools:\n"
-            # + "\n".join(
-            #     [
-            #         f"- {tool}: {func.__doc__.strip().split('.')[0] if func.__doc__ else 'No description'}"
-            #         for tool, func in browser_tools.items()
-            #     ][:10]
-            # )  # Show first 10 tools
-            # + f"\n... and {len(browser_tools) - 10} more tools"
-            # if len(browser_tools) > 10
-            # else ""
-        )
-
         super().__init__(
             model_config=model_config,
-            goal=goal,
-            instruction=enhanced_instruction,
+            goal=final_goal,
+            instruction=final_instruction,
             tools=browser_tools,
             max_tokens=max_tokens,
             name=name,
@@ -767,49 +881,39 @@ class BrowserAgent(Agent):
                 ) from e
 
     def _setup_browser_tools(self) -> None:
-        """Set up browser tools using BrowserTool methods."""
+        """Set up browser tools using BrowserTool methods, filtered by mode."""
         if not self.browser_tool:
             raise RuntimeError("BrowserTool not initialized. Call _initialize_browser first.")
-        
-        # Create browser tools dict using BrowserTool methods
-        browser_tools = {
-            "goto": self.browser_tool.goto,
-            # Mouse-based clicking methods (replaced selector-based click)
-            "scroll_up": self.browser_tool.scroll_up,
-            "scroll_down": self.browser_tool.scroll_down,
-            "mouse_click": self.browser_tool.mouse_click,
-            # "mouse_dbclick": self.browser_tool.mouse_dbclick,
-            "mouse_right_click": self.browser_tool.mouse_right_click,
-            # "type_text": self.browser_tool.type_text,
-            # "get_text": self.browser_tool.get_text,
-            # "get_attribute": self.browser_tool.get_attribute,
-            # "screenshot": self.browser_tool.screenshot,
-            "go_back": self.browser_tool.go_back,
-            # "go_forward": self.browser_tool.go_forward,
-            "reload": self.browser_tool.reload,
-            "get_url": self.browser_tool.get_url,
-            "get_title": self.browser_tool.get_title,
-            # "extract_links": self.browser_tool.extract_links,
-            # "fill_form": self.browser_tool.fill_form,
-            # "select_option": self.browser_tool.select_option,
-            # "check_checkbox": self.browser_tool.check_checkbox,
-            # "uncheck_checkbox": self.browser_tool.uncheck_checkbox,
-            # "hover": self.browser_tool.hover,
-            "type_text": self.browser_tool.type_text,
-            "keyboard_press": self.browser_tool.keyboard_press,
-            "get_accessibility_tree": self.browser_tool.get_accessibility_tree,
-            # "evaluate_javascript": self.browser_tool.evaluate_javascript,
-            "download_file": self.browser_tool.download_file,
-            # "get_clean_html": self.browser_tool.get_clean_html,
-            # "html_to_markdown": self.browser_tool.html_to_markdown,
-            # "fill": self.browser_tool.fill,
-            # "press": self.browser_tool.press,
-            # "open_new_tab": self.browser_tool.open_new_tab,
-            # "get_page_count": self.browser_tool.get_page_count,
-            # "switch_to_tab": self.browser_tool.switch_to_tab,
-            "extract_content_from_url": self.browser_tool.extract_content_from_url,
 
-        }
+        # Define mode-specific tools
+        if self.mode == BrowserAgentMode.PRIMITIVE:
+            # PRIMITIVE mode: High-level content extraction tools only
+            browser_tools = {
+                "fetch_url": self.browser_tool.fetch_url,
+                "get_page_elements": self.browser_tool.get_page_elements,
+                "extract_text_content": self.browser_tool.extract_text_content,
+                "get_page_metadata": self.browser_tool.get_page_metadata,
+                "download_file": self.browser_tool.download_file,
+            }
+        else:
+            # ADVANCED mode: Low-level visual interaction tools
+            browser_tools = {
+                "goto": self.browser_tool.goto,
+                "scroll_up": self.browser_tool.scroll_up,
+                "scroll_down": self.browser_tool.scroll_down,
+                "mouse_click": self.browser_tool.mouse_click,
+                "type_text": self.browser_tool.type_text,
+                "keyboard_press": self.browser_tool.keyboard_press,
+                "go_back": self.browser_tool.go_back,
+                "reload": self.browser_tool.reload,
+                "get_url": self.browser_tool.get_url,
+                "get_title": self.browser_tool.get_title,
+                "get_page_elements": self.browser_tool.get_page_elements,
+                "extract_text_content": self.browser_tool.extract_text_content,
+                "download_file": self.browser_tool.download_file,
+                "screenshot": self.browser_tool.screenshot,
+            }
+
         
         # Update the agent's tools
         if hasattr(self, 'tools') and self.tools:
@@ -1347,7 +1451,8 @@ class BrowserAgent(Agent):
         This ensures proper message ordering:
         [assistant with tool_calls, tool response, screenshot, elements, next LLM call]
         """
-        if not self.auto_screenshot:
+        # Only run in ADVANCED mode with auto_screenshot enabled
+        if self.mode == BrowserAgentMode.PRIMITIVE or not self.auto_screenshot:
             return
 
         try:

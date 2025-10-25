@@ -10,7 +10,7 @@ import re
 import tempfile
 import time
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Tuple, TypedDict, Union
+from typing import Any, Dict, List, Optional, Tuple, TypedDict, Union, TYPE_CHECKING
 
 from PIL import Image as PILImage
 from PIL import ImageDraw, ImageFont
@@ -24,6 +24,10 @@ from marsys.agents.exceptions import (
     ToolExecutionError,
     ActionValidationError
 )
+
+# Import ToolResponse for multimodal returns
+if TYPE_CHECKING:
+    from marsys.environment.tool_response import ToolResponse
 
 # Import BeautifulSoup and markdownify if available
 try:
@@ -2997,43 +3001,118 @@ class BrowserTool:
         reasoning: Optional[str] = None,
         highlight_bbox: bool = True,
         save_dir: Optional[str] = None,
-    ) -> Union[str, PILImage.Image]:
+    ) -> "ToolResponse":
         """
-        Take a screenshot of the current page.
+        Take a screenshot of the current page with interactive element highlighting.
 
-        If a filename is provided, the screenshot is saved to that file in the screenshot directory and the full file path is returned.
-        If no filename is provided (i.e. filename is None), the screenshot is returned as a PIL Image object.
+        Returns a multimodal ToolResponse containing:
+        - Text description of detected interactive elements
+        - Screenshot image with numbered bounding boxes
 
-        Additionally, if 'highlight_bbox' is True, interactive elements on the page are highlighted with bounding boxes.
+        This format matches the auto-screenshot behavior used in ADVANCED mode,
+        allowing the LLM to see both the visual context and element references.
 
         Parameters:
             filename (Optional[str]): The filename to save the screenshot.
-                                      If None, the screenshot is not saved to disk but returned as a PIL Image.
+                                      If None, uses timestamp-based naming.
             reasoning (Optional[str]): A description of the reasoning for taking this screenshot.
             highlight_bbox (bool): Whether to highlight interactive elements in the screenshot. Defaults to True.
             save_dir (Optional[str]): Override the default screenshot directory for this screenshot.
 
         Returns:
-            Union[str, PILImage.Image]: The full file path where the screenshot is saved, or the PIL Image object if no filename is provided.
+            ToolResponse: Multimodal response with:
+                - content: List of [text block, image block] for LLM consumption
+                - metadata: Element count, screenshot path, detection method
         """
+        from marsys.environment.tool_response import ToolResponse, ToolResponseContent
+
         r = reasoning or ""
+
         if highlight_bbox:
-            result = await highlight_interactive_elements(
-                self.page,
+            # Step 1: Detect interactive elements using rule-based approach
+            elements = await self.detect_interactive_elements_rule_based(
                 visible_only=True,
-                output_image=True,
-                draw_center_dot=False,
-                output_details=False,
-                save_path=None,
+                reasoning=r
             )
-            image = result.get("image", None)
-            if not image and filename:
-                image = PILImage.open(filename)
+
+            # Step 2: Add numbering to elements (1-indexed)
+            numbered_elements = []
+            for i, element in enumerate(elements):
+                numbered_element = element.copy()
+                numbered_element['number'] = i + 1
+                numbered_elements.append(numbered_element)
+
+            # Step 3: Generate filename
+            if not filename:
+                import time
+                timestamp = int(time.time() * 1000)
+                filename = f"screenshot_{timestamp}"
+
+            # Step 4: Render screenshot with highlighted bounding boxes
+            screenshot_path = await self.highlight_bbox(
+                elements=numbered_elements,
+                reasoning=r,
+                filename=filename
+            )
+
+            # Step 5: Build text description matching auto-screenshot format
+            if numbered_elements:
+                # Compact format: [num] label (x,y) - one line per element
+                element_lines = []
+                for element in numbered_elements:
+                    label = element.get('label', 'Unknown')
+                    number = element.get('number', '?')
+                    center = element.get('center', [0, 0])
+                    center_x = int(round(center[0]))
+                    center_y = int(round(center[1]))
+                    element_lines.append(f"[{number}] {label} ({center_x},{center_y})")
+
+                # Create concise, directive text that emphasizes this is FOR the model
+                elements_text = " | ".join(element_lines)
+                screenshot_content = (
+                    f"[VISUAL CONTEXT] Page screenshot with {len(numbered_elements)} clickable elements detected. "
+                    f"Use element numbers for interaction: {elements_text}. "
+                    f"IMPORTANT: These elements are FOR your reference to interact with the page. "
+                    f"Do NOT output element lists in your response - just use the numbers when clicking."
+                )
+            else:
+                screenshot_content = "[VISUAL CONTEXT] Current page screenshot (no interactive elements detected)."
+
+            # Step 6: Create multimodal ToolResponse
+            tool_response = ToolResponse(
+                content=[
+                    ToolResponseContent(type="text", text=screenshot_content),
+                    ToolResponseContent(type="image", image_path=screenshot_path)
+                ],
+                metadata={
+                    "screenshot_path": screenshot_path,
+                    "elements_count": len(numbered_elements),
+                    "detection_method": "rule_based"
+                }
+            )
+
+            # Update history
+            self.history.append({
+                "action": "screenshot",
+                "reasoning": r,
+                "filename": filename,
+                "path": screenshot_path,
+                "elements_count": len(numbered_elements)
+            })
+
+            return tool_response
+
         else:
+            # No highlighting - just return screenshot
             screenshot_bytes = await self.page.screenshot()
             image = PILImage.open(io.BytesIO(screenshot_bytes))
 
-        if filename:
+            # Generate filename and save
+            if not filename:
+                import time
+                timestamp = int(time.time() * 1000)
+                filename = f"screenshot_{timestamp}"
+
             # Use provided save_dir or default to self.screenshot_path
             screenshot_dir = save_dir or self.screenshot_path
             os.makedirs(screenshot_dir, exist_ok=True)
@@ -3044,24 +3123,24 @@ class BrowserTool:
 
             full_path = os.path.join(screenshot_dir, filename)
             image.save(full_path)
-            self.history.append(
-                {
-                    "action": "screenshot",
-                    "reasoning": r,
-                    "filename": filename,
-                    "path": full_path,
-                }
-            )
-            return full_path
 
-        self.history.append(
-            {
+            # Create simple ToolResponse with just image
+            tool_response = ToolResponse(
+                content=[
+                    ToolResponseContent(type="text", text="[VISUAL CONTEXT] Current page screenshot (no element highlighting)."),
+                    ToolResponseContent(type="image", image_path=full_path)
+                ],
+                metadata={"screenshot_path": full_path}
+            )
+
+            self.history.append({
                 "action": "screenshot",
                 "reasoning": r,
-                "output": "PIL Image object returned",
-            }
-        )
-        return image
+                "filename": filename,
+                "path": full_path,
+            })
+
+            return tool_response
 
     async def on_download(self, filename: str, reasoning: Optional[str] = None) -> None:
         """
@@ -3322,6 +3401,69 @@ class BrowserTool:
         )
         return links
 
+    async def get_page_metadata(self, url: str, reasoning: Optional[str] = None) -> Dict[str, Any]:
+        """
+        Get comprehensive page metadata (title, URL, links).
+
+        Multi-step tool that:
+        1. Navigates to URL
+        2. Gets page title
+        3. Gets current URL (may have redirected)
+        4. Extracts all links from the page
+
+        Parameters:
+            url: URL to get metadata from
+            reasoning: Optional reasoning for this action
+
+        Returns:
+            Dictionary with page metadata
+        """
+        r = reasoning or ""
+
+        try:
+            await self.goto(url, reasoning=r)
+            title = await self.get_title(reasoning=r)
+            final_url = await self.get_url(reasoning=r)
+            links = await self.extract_links(reasoning=r)
+
+            result = {
+                "success": True,
+                "url": final_url,
+                "original_url": url,
+                "title": title,
+                "links": links,
+                "link_count": len(links)
+            }
+
+            self.history.append({
+                "action": "get_page_metadata",
+                "reasoning": r,
+                "url": url,
+                "final_url": final_url,
+                "link_count": len(links),
+                "success": True
+            })
+
+            return result
+
+        except Exception as e:
+            logger.error(f"Failed to get page metadata for {url}: {e}")
+            error_msg = f"Failed to get metadata: {str(e)}"
+
+            self.history.append({
+                "action": "get_page_metadata",
+                "reasoning": r,
+                "url": url,
+                "success": False,
+                "error": error_msg
+            })
+
+            return {
+                "success": False,
+                "error": error_msg,
+                "url": url
+            }
+
     async def fill_form(self, form_data: Dict[str, str], reasoning: Optional[str] = None) -> None:
         """
         Fill out a form with the provided data.
@@ -3424,243 +3566,6 @@ class BrowserTool:
                 tool_args={"selector": selector},
                 execution_error=str(e)
             )
-
-    async def get_attribute(self, selector: str, attribute: str, timeout: Optional[int] = None) -> str:
-        """
-        Get an attribute value from an element.
-
-        Args:
-            selector: CSS selector for the element
-            attribute: Name of the attribute to get
-            timeout: Maximum time to wait for element in milliseconds
-
-        Returns:
-            Attribute value or empty string if not found
-        """
-        try:
-            element = await self.page.wait_for_selector(selector, timeout=timeout)
-            if element:
-                value = await element.get_attribute(attribute)
-                return value or ""
-            return ""
-        except Exception as e:
-            raise ToolExecutionError(
-                f"Failed to get attribute '{attribute}' from selector '{selector}': {e}",
-                tool_name="get_attribute",
-                tool_args={"selector": selector, "attribute": attribute},
-                execution_error=str(e)
-            )
-
-    async def wait_for_selector(self, selector: str, timeout: Optional[int] = None, state: str = "visible") -> str:
-        """
-        Wait for an element to appear.
-
-        Args:
-            selector: CSS selector to wait for
-            timeout: Maximum time to wait in milliseconds
-            state: State to wait for ('visible', 'hidden', 'attached', 'detached')
-
-        Returns:
-            Success message
-        """
-        try:
-            await self.page.wait_for_selector(selector, timeout=timeout, state=state)
-            return f"Element matching '{selector}' is now {state}"
-        except Exception as e:
-            raise ToolExecutionError(
-                f"Timeout waiting for selector '{selector}' to be {state}: {e}",
-                tool_name="wait_for_element",
-                tool_args={"selector": selector, "state": state},
-                execution_error=str(e)
-            )
-
-    async def go_forward(self, reasoning: Optional[str] = None, timeout: Optional[int] = None) -> None:
-        """
-        Navigate forward in the browser history.
-
-        Parameters:
-            reasoning (Optional[str]): The reasoning chain for this action. Defaults to empty string.
-            timeout (Optional[int]): Optional timeout in milliseconds.
-        """
-        r = reasoning or ""
-        await self.page.go_forward(timeout=timeout)
-        title = await self.page.title()
-        self.history.append(
-            {
-                "action": "go_forward",
-                "reasoning": r,
-                "output": title,
-            }
-        )
-
-    async def reload(self, reasoning: Optional[str] = None, timeout: Optional[int] = None) -> None:
-        """
-        Reload the current page.
-
-        Parameters:
-            reasoning (Optional[str]): The reasoning chain for this action.
-            timeout (Optional[int]): Optional timeout in milliseconds.
-        """
-        r = reasoning or ""
-        await self.page.reload(timeout=timeout)
-        title = await self.page.title()
-        self.history.append(
-            {
-                "action": "reload",
-                "reasoning": r,
-                "output": title,
-            }
-        )
-
-    async def get_url(self, reasoning: Optional[str] = None) -> str:
-        """
-        Get the current page URL.
-
-        Parameters:
-            reasoning (Optional[str]): The reasoning chain for this action.
-
-        Returns:
-            str: Current page URL
-        """
-        r = reasoning or ""
-        url = self.page.url
-        self.history.append(
-            {
-                "action": "get_url",
-                "reasoning": r,
-                "output": url,
-            }
-        )
-        return url
-
-    async def get_title(self, reasoning: Optional[str] = None) -> str:
-        """
-        Get the current page title.
-
-        Parameters:
-            reasoning (Optional[str]): The reasoning chain for this action.
-
-        Returns:
-            str: Current page title
-        """
-        r = reasoning or ""
-        title = await self.page.title()
-        self.history.append(
-            {
-                "action": "get_title",
-                "reasoning": r,
-                "output": title,
-            }
-        )
-        return title
-
-    async def extract_links(self, reasoning: Optional[str] = None) -> List[Dict[str, str]]:
-        """
-        Extract all links from the current page.
-
-        Parameters:
-            reasoning (Optional[str]): The reasoning chain for this action.
-
-        Returns:
-            List of dictionaries containing link information
-        """
-        r = reasoning or ""
-        links = await self.page.evaluate("""
-            () => {
-                const links = Array.from(document.querySelectorAll('a[href]'));
-                return links.map(link => ({
-                    text: link.textContent.trim(),
-                    href: link.href,
-                    title: link.title || ''
-                }));
-            }
-        """)
-        self.history.append(
-            {
-                "action": "extract_links",
-                "reasoning": r,
-                "output": f"Found {len(links)} links",
-            }
-        )
-        return links
-
-    async def fill_form(self, form_data: Dict[str, str], reasoning: Optional[str] = None) -> None:
-        """
-        Fill out a form with the provided data.
-
-        Parameters:
-            form_data: Dictionary mapping field names/selectors to values
-            reasoning (Optional[str]): The reasoning chain for this action.
-        """
-        r = reasoning or ""
-        for selector, value in form_data.items():
-            await self.page.fill(selector, value)
-        self.history.append(
-            {
-                "action": "fill_form",
-                "reasoning": r,
-                "form_data": form_data,
-            }
-        )
-
-    async def select_option(self, selector: str, value: str, reasoning: Optional[str] = None, timeout: Optional[int] = None) -> None:
-        """
-        Select an option from a dropdown.
-
-        Parameters:
-            selector: CSS selector for the select element
-            value: Value to select
-            reasoning (Optional[str]): The reasoning chain for this action.
-            timeout (Optional[int]): Optional timeout in milliseconds.
-        """
-        r = reasoning or ""
-        await self.page.select_option(selector, value, timeout=timeout)
-        self.history.append(
-            {
-                "action": "select_option",
-                "reasoning": r,
-                "selector": selector,
-                "value": value,
-            }
-        )
-
-    async def check_checkbox(self, selector: str, reasoning: Optional[str] = None, timeout: Optional[int] = None) -> None:
-        """
-        Check a checkbox.
-
-        Parameters:
-            selector: CSS selector for the checkbox
-            reasoning (Optional[str]): The reasoning chain for this action.
-            timeout (Optional[int]): Optional timeout in milliseconds.
-        """
-        r = reasoning or ""
-        await self.page.check(selector, timeout=timeout)
-        self.history.append(
-            {
-                "action": "check_checkbox",
-                "reasoning": r,
-                "selector": selector,
-            }
-        )
-
-    async def uncheck_checkbox(self, selector: str, reasoning: Optional[str] = None, timeout: Optional[int] = None) -> None:
-        """
-        Uncheck a checkbox.
-
-        Parameters:
-            selector: CSS selector for the checkbox
-            reasoning (Optional[str]): The reasoning chain for this action.
-            timeout (Optional[int]): Optional timeout in milliseconds.
-        """
-        r = reasoning or ""
-        await self.page.uncheck(selector, timeout=timeout)
-        self.history.append(
-            {
-                "action": "uncheck_checkbox",
-                "reasoning": r,
-                "selector": selector,
-            }
-        )
 
     async def press_key(self, key: str, reasoning: Optional[str] = None, delay: Optional[int] = None) -> None:
         """
@@ -4187,192 +4092,301 @@ class BrowserTool:
         else:
             raise IndexError(f"Tab index {index} out of range. Available tabs: 0-{len(pages)-1}")
 
-    async def extract_content_from_url(
-        self, 
-        url: str, 
+    async def fetch_url(
+        self,
+        url: str,
         selector: str = "main, article, .content, .post, .entry",
         max_text_length: Optional[int] = 5000,
         return_markdown: bool = True,
         reasoning: Optional[str] = None
     ) -> Dict[str, Any]:
         """
-        Enhanced version with anti-bot evasion and retry strategies.
+        Fetch and extract content from a URL in one step.
+
+        High-level primitive tool that navigates to URL and extracts content.
+        Steps:
+        1. Check if URL is a PDF
+        2. If PDF: delegate to PDF extraction
+        3. If HTML: navigate, wait for content, extract text/markdown
 
         Parameters:
-            url: URL to extract content from
-            selector: CSS selector for main content area
-            max_text_length: Maximum length of extracted text
-            return_markdown: Whether to return content as markdown
-            reasoning (Optional[str]): The reasoning chain for this action.
+            url: URL to fetch content from
+            selector: CSS selector for main content area (default: main, article, .content, .post, .entry)
+            max_text_length: Maximum length of extracted text (default: 5000)
+            return_markdown: Whether to return content as markdown (default: True)
+            reasoning: Optional reasoning for this action
 
         Returns:
-            Dictionary with extracted content information
-        """
-        import random
-        import asyncio
-        
-        r = reasoning or ""
-        
-        # Save current URL to return to later
-        original_url = self.page.url
-        
-        # Define retry strategies with different user agents and settings
-        strategies = [
+            Dictionary with extraction results:
             {
-                'name': 'standard_desktop',
-                'user_agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36',
-                'viewport': {'width': 1920, 'height': 1080},
-                'headers': {
-                    'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8',
-                    'Accept-Language': 'en-US,en;q=0.5',
-                    'Accept-Encoding': 'gzip, deflate, br',
-                    'DNT': '1',
-                    'Connection': 'keep-alive',
-                    'Upgrade-Insecure-Requests': '1'
-                }
-            },
-            {
-                'name': 'mobile_safari',
-                'user_agent': 'Mozilla/5.0 (iPhone; CPU iPhone OS 16_6 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/16.6 Mobile/15E148 Safari/604.1',
-                'viewport': {'width': 390, 'height': 844},
-                'headers': {
-                    'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
-                    'Accept-Language': 'en-US,en;q=0.9'
-                }
-            },
-            {
-                'name': 'googlebot',  # Some sites allow Googlebot
-                'user_agent': 'Mozilla/5.0 (compatible; Googlebot/2.1; +http://www.google.com/bot.html)',
-                'viewport': {'width': 1024, 'height': 768}
+                "success": bool,
+                "url": str,
+                "title": str,
+                "content": str,
+                "content_length": int,
+                "format": str,  # "markdown" or "text"
+                "type": str     # "html" or "pdf"
             }
-        ]
-        
-        for i, strategy in enumerate(strategies):
-            context = None
-            try:
-                logger.info(f"Attempting extraction with strategy: {strategy['name']} (attempt {i+1}/{len(strategies)})")
-                
-                # Create new context with user agent
-                context = await self.browser.new_context(
-                    user_agent=strategy['user_agent'],
-                    viewport=strategy['viewport'],
-                    extra_http_headers=strategy.get('headers', {})
-                )
-                page = await context.new_page()
-                
-                # Add random delay to appear more human
-                await asyncio.sleep(random.uniform(0.5, 2.0))
-                
-                # First, check if it's a PDF
-                try:
-                    head_response = await page.request.head(url)
-                    content_type = head_response.headers.get('content-type', '').lower()
-                except:
-                    content_type = ''
-                
-                is_pdf = (
-                    'application/pdf' in content_type or
-                    url.lower().endswith('.pdf') or
-                    '/pdf/' in url.lower()
-                )
-                
-                if is_pdf:
-                    # Use dedicated PDF extraction
-                    result = await self.extract_pdf_content_from_url(
-                        url,
-                        output_format="markdown" if return_markdown else "json",
-                        max_text_length=max_text_length,
-                        reasoning=reasoning
-                    )
-                    await context.close()
-                    return result
-                
-                # Navigate with timeout
-                response = await page.goto(url, wait_until='domcontentloaded', timeout=5000)
-                
-                # Check HTTP status
-                if response and response.status >= 400:
-                    logger.warning(f"HTTP {response.status} for {url}")
-                    await context.close()
-                    continue
-                
-                # Wait for content with shorter timeout
-                try:
-                    await page.wait_for_selector(selector, timeout=5000)
-                except:
-                    # Try body as fallback
-                    await page.wait_for_selector('body', timeout=2000)
-                
-                # Check for bot detection
-                content = await page.content()
-                if self._is_bot_blocked(content):
-                    logger.warning(f"Bot detection triggered with strategy {strategy['name']}")
-                    await context.close()
-                    continue
-                
-                # Extract and validate content
-                extracted = await self._extract_with_validation(page, selector, max_text_length, return_markdown)
-                
-                if extracted and len(extracted.get('content', '')) > 100:
-                    logger.info(f"Successfully extracted content with strategy: {strategy['name']}")
-                    
-                    result = {
-                        "success": True,
-                        "url": url,
-                        "title": extracted['title'],
-                        "content": extracted['content'],
-                        "content_length": extracted['length'],
-                        "format": "markdown" if return_markdown else "text",
-                        "type": "html",
-                        "strategy_used": strategy['name']
-                    }
-                    
-                    self.history.append(
-                        {
-                            "action": "extract_content_from_url",
-                            "reasoning": r,
-                            "url": url,
-                            "title": extracted['title'],
-                            "content_length": extracted['length'],
-                            "type": "html",
-                            "success": True,
-                            "strategy": strategy['name']
-                        }
-                    )
-                    
-                    await context.close()
-                    return result
-                
-                await context.close()
-                
-            except Exception as e:
-                logger.warning(f"Strategy {strategy['name']} failed: {str(e)[:100]}")
-                if context:
-                    await context.close()
-                continue
-        
-        # All strategies failed
-        logger.error(f"All extraction strategies failed for {url}")
-        error_msg = f"Unable to extract content from {url} after {len(strategies)} attempts"
-        
-        self.history.append(
+
+            On failure:
             {
-                "action": "extract_content_from_url",
+                "success": False,
+                "error": str,
+                "url": str
+            }
+        """
+        r = reasoning or ""
+
+        try:
+            # Check if PDF
+            is_pdf = False
+            try:
+                head_response = await self.page.request.head(url)
+                content_type = head_response.headers.get('content-type', '').lower()
+                is_pdf = 'application/pdf' in content_type or url.lower().endswith('.pdf')
+            except:
+                is_pdf = url.lower().endswith('.pdf')
+
+            if is_pdf:
+                # Delegate to PDF extraction
+                result = await self.extract_pdf_content_from_url(
+                    url,
+                    output_format="markdown" if return_markdown else "json",
+                    max_text_length=max_text_length,
+                    reasoning=reasoning
+                )
+                return result
+
+            # Navigate to page
+            await self.goto(url, reasoning=r)
+
+            # Wait for content with fallback
+            try:
+                await self.page.wait_for_selector(selector, timeout=5000)
+                element = await self.page.query_selector(selector)
+            except:
+                # Fallback to body
+                try:
+                    await self.page.wait_for_selector('body', timeout=2000)
+                    element = await self.page.query_selector('body')
+                except:
+                    element = None
+
+            if not element:
+                error_msg = "No content found on page"
+                self.history.append({
+                    "action": "fetch_url",
+                    "reasoning": r,
+                    "url": url,
+                    "success": False,
+                    "error": error_msg
+                })
+                return {
+                    "success": False,
+                    "error": error_msg,
+                    "url": url
+                }
+
+            # Extract content
+            if return_markdown:
+                html = await element.inner_html()
+                try:
+                    import markdownify
+                    content = markdownify.markdownify(html, strip=['script', 'style'])
+                except ImportError:
+                    logger.warning("markdownify not installed, falling back to text extraction")
+                    content = await element.text_content()
+            else:
+                content = await element.text_content()
+
+            if not content or len(content.strip()) == 0:
+                error_msg = "Extracted content is empty"
+                self.history.append({
+                    "action": "fetch_url",
+                    "reasoning": r,
+                    "url": url,
+                    "success": False,
+                    "error": error_msg
+                })
+                return {
+                    "success": False,
+                    "error": error_msg,
+                    "url": url
+                }
+
+            # Truncate if needed
+            if max_text_length and len(content) > max_text_length:
+                content = content[:max_text_length] + "..."
+
+            # Get title
+            title = await self.page.title()
+
+            result = {
+                "success": True,
+                "url": url,
+                "title": title,
+                "content": content,
+                "content_length": len(content),
+                "format": "markdown" if return_markdown else "text",
+                "type": "html"
+            }
+
+            self.history.append({
+                "action": "fetch_url",
+                "reasoning": r,
+                "url": url,
+                "title": title,
+                "content_length": len(content),
+                "type": "html",
+                "success": True
+            })
+
+            return result
+
+        except Exception as e:
+            logger.error(f"Content extraction failed for {url}: {e}")
+            error_msg = f"Failed to fetch content: {str(e)}"
+
+            self.history.append({
+                "action": "fetch_url",
                 "reasoning": r,
                 "url": url,
                 "success": False,
                 "error": error_msg
+            })
+
+            return {
+                "success": False,
+                "error": error_msg,
+                "url": url
             }
-        )
-        
-        return {
-            "success": False,
-            "error": error_msg,
-            "url": url,
-            "message": error_msg
-        }
-        
-        # Note: removed finally block since we're not navigating with self.page anymore
+
+    async def extract_text_content(
+        self,
+        selector: Optional[str] = None,
+        max_length: Optional[int] = 5000,
+        reasoning: Optional[str] = None
+    ) -> Dict[str, Any]:
+        """
+        Extract text content from the current page without navigation.
+
+        This is a PRIMITIVE mode tool that extracts content from the already-loaded page.
+        Use this when you're already on the page and want to extract specific content.
+
+        Parameters:
+            selector: CSS selector for content extraction (default: main content areas)
+            max_length: Maximum text length to return (default: 5000)
+            reasoning: Optional reasoning for this action
+
+        Returns:
+            On success:
+            {
+                "success": True,
+                "url": str,
+                "title": str,
+                "content": str,  # Plain text extracted from the page
+                "content_length": int,
+                "format": "text",
+                "selector_used": str
+            }
+
+            On failure:
+            {
+                "success": False,
+                "error": str,
+                "url": str
+            }
+        """
+        r = reasoning or ""
+        default_selector = "main, article, .content, .post, .entry, body"
+        selector_used = selector or default_selector
+
+        try:
+            # Get current URL and title
+            url = self.page.url
+            title = await self.page.title()
+
+            # Wait for content to be available
+            await self.page.wait_for_load_state("domcontentloaded", timeout=5000)
+
+            # Extract content using selector
+            content_script = f"""
+            () => {{
+                const selectors = '{selector_used}'.split(',').map(s => s.trim());
+                let content = '';
+
+                for (const sel of selectors) {{
+                    const elements = document.querySelectorAll(sel);
+                    if (elements.length > 0) {{
+                        for (const elem of elements) {{
+                            if (elem.innerText || elem.textContent) {{
+                                content += (elem.innerText || elem.textContent) + '\\n\\n';
+                            }}
+                        }}
+                        if (content.trim()) break;
+                    }}
+                }}
+
+                return content.trim();
+            }}
+            """
+
+            text_content = await self.page.evaluate(content_script)
+
+            if not text_content:
+                return {
+                    "success": False,
+                    "error": f"No content found with selector: {selector_used}",
+                    "url": url
+                }
+
+            # Text content is already extracted, no markdown conversion needed
+            # (JavaScript already extracted innerText/textContent which is plain text)
+            content = text_content
+
+            # Truncate if needed
+            if max_length and len(content) > max_length:
+                content = content[:max_length] + "..."
+
+            result = {
+                "success": True,
+                "url": url,
+                "title": title,
+                "content": content,
+                "content_length": len(content),
+                "format": "text",
+                "selector_used": selector_used
+            }
+
+            self.history.append({
+                "action": "extract_text_content",
+                "reasoning": r,
+                "url": url,
+                "title": title,
+                "content_length": len(content),
+                "selector": selector_used,
+                "success": True
+            })
+
+            return result
+
+        except Exception as e:
+            logger.error(f"Text content extraction failed: {e}")
+            error_msg = f"Failed to extract text content: {str(e)}"
+
+            self.history.append({
+                "action": "extract_text_content",
+                "reasoning": r,
+                "url": self.page.url if self.page else "unknown",
+                "success": False,
+                "error": error_msg
+            })
+
+            return {
+                "success": False,
+                "error": error_msg,
+                "url": self.page.url if self.page else "unknown"
+            }
 
     def _is_bot_blocked(self, content: str) -> bool:
         """Check for common bot detection/blocking indicators."""
@@ -4716,186 +4730,6 @@ class BrowserTool:
                     "message": f"Failed to extract PDF content"
                 }
 
-    async def press_key(self, key: str, reasoning: Optional[str] = None, delay: Optional[int] = None) -> None:
-        """
-        Press a key.
-
-        Parameters:
-            key: Key to press (e.g., 'Enter', 'Escape', 'ArrowDown')
-            reasoning (Optional[str]): The reasoning chain for this action.
-            delay (Optional[int]): Delay between key presses in milliseconds.
-        """
-        r = reasoning or ""
-        await self.page.keyboard.press(key, delay=delay)
-        self.history.append(
-            {
-                "action": "press_key",
-                "reasoning": r,
-                "key": key,
-            }
-        )
-
-    async def wait_for_navigation(self, timeout: Optional[int] = None, reasoning: Optional[str] = None) -> None:
-        """
-        Wait for navigation to complete.
-
-        Parameters:
-            timeout (Optional[int]): Optional timeout in milliseconds.
-            reasoning (Optional[str]): The reasoning chain for this action.
-        """
-        r = reasoning or ""
-        await self.page.wait_for_load_state("networkidle", timeout=timeout)
-        self.history.append(
-            {
-                "action": "wait_for_navigation",
-                "reasoning": r,
-            }
-        )
-
-    async def evaluate_javascript(self, script: str, reasoning: Optional[str] = None) -> Any:
-        """
-        Execute JavaScript in the page context.
-
-        Parameters:
-            script: JavaScript code to execute
-            reasoning (Optional[str]): The reasoning chain for this action.
-
-        Returns:
-            Result of the JavaScript execution
-        """
-        r = reasoning or ""
-        result = await self.page.evaluate(script)
-        self.history.append(
-            {
-                "action": "evaluate_javascript",
-                "reasoning": r,
-                "script": script[:100] + "..." if len(script) > 100 else script,
-                "output": str(result)[:200] + "..." if len(str(result)) > 200 else str(result),
-            }
-        )
-        return result
-
-    async def get_cookies(self, reasoning: Optional[str] = None) -> List[Dict[str, Any]]:
-        """
-        Get all cookies for the current page.
-
-        Parameters:
-            reasoning (Optional[str]): The reasoning chain for this action.
-
-        Returns:
-            List of cookie dictionaries
-        """
-        r = reasoning or ""
-        cookies = await self.context.cookies()
-        self.history.append(
-            {
-                "action": "get_cookies",
-                "reasoning": r,
-                "output": f"Found {len(cookies)} cookies",
-            }
-        )
-        return cookies
-
-    async def set_cookie(self, cookie: Dict[str, Any], reasoning: Optional[str] = None) -> None:
-        """
-        Set a cookie.
-
-        Parameters:
-            cookie: Cookie dictionary with name, value, domain, etc.
-            reasoning (Optional[str]): The reasoning chain for this action.
-        """
-        r = reasoning or ""
-        await self.context.add_cookies([cookie])
-        self.history.append(
-            {
-                "action": "set_cookie",
-                "reasoning": r,
-                "cookie": cookie,
-            }
-        )
-
-    async def delete_cookies(self, reasoning: Optional[str] = None) -> None:
-        """
-        Delete all cookies.
-
-        Parameters:
-            reasoning (Optional[str]): The reasoning chain for this action.
-        """
-        r = reasoning or ""
-        await self.context.clear_cookies()
-        self.history.append(
-            {
-                "action": "delete_cookies",
-                "reasoning": r,
-            }
-        )
-
-    async def get_local_storage(self, reasoning: Optional[str] = None) -> Dict[str, str]:
-        """
-        Get all local storage items.
-
-        Parameters:
-            reasoning (Optional[str]): The reasoning chain for this action.
-
-        Returns:
-            Dictionary of local storage key-value pairs
-        """
-        r = reasoning or ""
-        storage = await self.page.evaluate("""
-            () => {
-                const storage = {};
-                for (let i = 0; i < localStorage.length; i++) {
-                    const key = localStorage.key(i);
-                    storage[key] = localStorage.getItem(key);
-                }
-                return storage;
-            }
-        """)
-        self.history.append(
-            {
-                "action": "get_local_storage",
-                "reasoning": r,
-                "output": f"Found {len(storage)} items",
-            }
-        )
-        return storage
-
-    async def set_local_storage(self, key: str, value: str, reasoning: Optional[str] = None) -> None:
-        """
-        Set a local storage item.
-
-        Parameters:
-            key: Storage key
-            value: Storage value
-            reasoning (Optional[str]): The reasoning chain for this action.
-        """
-        r = reasoning or ""
-        await self.page.evaluate(f"localStorage.setItem('{key}', '{value}')")
-        self.history.append(
-            {
-                "action": "set_local_storage",
-                "reasoning": r,
-                "key": key,
-                "value": value,
-            }
-        )
-
-    async def clear_local_storage(self, reasoning: Optional[str] = None) -> None:
-        """
-        Clear all local storage.
-
-        Parameters:
-            reasoning (Optional[str]): The reasoning chain for this action.
-        """
-        r = reasoning or ""
-        await self.page.evaluate("localStorage.clear()")
-        self.history.append(
-            {
-                "action": "clear_local_storage",
-                "reasoning": r,
-            }
-        )
-
     async def close(self) -> None:
         """
         Close the browser and stop the Playwright instance.
@@ -4926,26 +4760,6 @@ class BrowserTool:
         self.history = self.history[-n:]
 
     # Add missing methods to BrowserTool class
-
-    async def type_text(self, selector: str, text: str, delay: int = 0, reasoning: Optional[str] = None, timeout: Optional[int] = None) -> str:
-        """
-        Type text into an element specified by selector.
-        
-        Args:
-            selector: CSS selector for the target element
-            text: Text to type
-            delay: Delay between keystrokes in milliseconds
-            reasoning: Optional reasoning for this action
-            timeout: Optional timeout in milliseconds
-            
-        Returns:
-            Success message
-        """
-        if reasoning:
-            logging.info(f"BrowserTool Type Text: {reasoning}")
-        
-        await self.page.type(selector, text, delay=delay, timeout=timeout)
-        return f"Successfully typed text into element: {selector}"
 
     async def detect_interactive_elements_rule_based(self, visible_only: bool = True, reasoning: Optional[str] = None) -> List[Dict[str, Any]]:
         """
@@ -5565,394 +5379,281 @@ class BrowserTool:
             }
         )
 
-    async def get_accessibility_tree(
+    async def get_page_elements(
         self,
         reasoning: Optional[str] = None,
         include_hidden: bool = False,
-        max_depth: Optional[int] = None,
-        simplify: bool = True,
     ) -> Dict[str, Any]:
         """
-        Get and return a clean accessibility tree of the current page for AI agent consumption.
+        Get interactive elements and page structure in a flat, easy-to-parse format.
 
-        This method retrieves the accessibility tree that assistive technologies use to understand
-        the page structure, then formats it in a clean, simplified format that's optimized for
-        AI agents to understand page content and structure without complex HTML parsing.
+        Returns all interactive elements (buttons, links, inputs, etc.) with their
+        selectors, positions, and states. Optimized for AI agents to quickly find
+        and interact with page elements.
 
         Parameters:
-            reasoning (Optional[str]): The reasoning chain for this action. Defaults to empty string.
-            include_hidden (bool): Whether to include hidden/invisible elements. Defaults to False.
-            max_depth (Optional[int]): Maximum depth to traverse in the tree. None for no limit.
-            simplify (bool): Whether to simplify the tree by removing redundant information. Defaults to True.
+            reasoning: Optional reasoning for this action
+            include_hidden: Whether to include hidden/invisible elements (default: False)
 
         Returns:
-            Dict[str, Any]: A dictionary containing the cleaned accessibility tree with metadata.
-                Structure:
-                {
-                    "url": "current_page_url",
-                    "title": "page_title", 
-                    "tree": {...}, # The accessibility tree structure with href information
-                    "summary": {
-                        "total_nodes": int,
-                        "interactive_elements": int,
-                        "text_nodes": int,
-                        "links_with_href": int,
-                        "depth": int
-                    }
+            Dictionary with flat structure:
+            {
+                "url": str,
+                "title": str,
+                "interactive_elements": [
+                    {
+                        "id": str,              # Unique ID for this element
+                        "type": str,            # button, link, input, select, etc.
+                        "text": str,            # Visible text or label
+                        "selector": str,        # CSS selector to target this element
+                        "position": {           # Coordinates for clicking
+                            "x": int,
+                            "y": int,
+                            "width": int,
+                            "height": int
+                        },
+                        "href": str,            # For links/buttons (if applicable)
+                        "value": str,           # Current value (for inputs)
+                        "state": {              # Interactive states
+                            "disabled": bool,
+                            "checked": bool,
+                            "selected": bool,
+                            "required": bool,
+                            "readonly": bool
+                        }
+                    },
+                    ...
+                ],
+                "headings": [
+                    {"level": int, "text": str, "selector": str},
+                    ...
+                ],
+                "summary": {
+                    "total_interactive": int,
+                    "buttons": int,
+                    "links": int,
+                    "inputs": int,
+                    "selects": int
                 }
-                
-                Each node in the tree may include:
-                - role: Element's ARIA role
-                - name: Element's accessible name/text
-                - value: Element's value (for inputs)
-                - href: URL destination for links and buttons (newly added)
-                - position: Bounding box coordinates for clicking
-                - disabled/checked/selected/expanded: Interactive states
+            }
         """
         r = reasoning or ""
-        
+
         try:
-            # Get the accessibility tree snapshot
-            snapshot = await self.page.accessibility.snapshot()
-            
-            if not snapshot:
+            # JavaScript to extract all interactive elements with selectors
+            extract_script = """
+            (includeHidden) => {
+                // Helper function to generate unique CSS selector for an element
+                function generateSelector(element) {
+                    // Try ID first (most specific)
+                    if (element.id) {
+                        return `#${element.id}`;
+                    }
+
+                    // Try name attribute for inputs
+                    if (element.name && ['INPUT', 'SELECT', 'TEXTAREA'].includes(element.tagName)) {
+                        const nameMatch = document.querySelectorAll(`${element.tagName.toLowerCase()}[name="${element.name}"]`);
+                        if (nameMatch.length === 1) {
+                            return `${element.tagName.toLowerCase()}[name="${element.name}"]`;
+                        }
+                    }
+
+                    // Try unique class combination
+                    if (element.className && typeof element.className === 'string') {
+                        const classes = element.className.trim().split(/\\s+/).filter(c => c);
+                        if (classes.length > 0) {
+                            const classSelector = element.tagName.toLowerCase() + '.' + classes.join('.');
+                            const classMatches = document.querySelectorAll(classSelector);
+                            if (classMatches.length === 1) {
+                                return classSelector;
+                            }
+                        }
+                    }
+
+                    // Build path from root
+                    const path = [];
+                    let current = element;
+
+                    while (current && current !== document.body) {
+                        let selector = current.tagName.toLowerCase();
+
+                        // Add nth-child if there are siblings with same tag
+                        if (current.parentElement) {
+                            const siblings = Array.from(current.parentElement.children)
+                                .filter(el => el.tagName === current.tagName);
+                            if (siblings.length > 1) {
+                                const index = siblings.indexOf(current) + 1;
+                                selector += `:nth-of-type(${index})`;
+                            }
+                        }
+
+                        path.unshift(selector);
+                        current = current.parentElement;
+
+                        // Stop if we have enough specificity (max 4 levels)
+                        if (path.length >= 4) break;
+                    }
+
+                    return path.join(' > ');
+                }
+
+                // Helper to check visibility
+                function isVisible(element) {
+                    if (includeHidden) return true;
+
+                    const style = window.getComputedStyle(element);
+                    return style.display !== 'none' &&
+                           style.visibility !== 'hidden' &&
+                           style.opacity !== '0' &&
+                           element.offsetWidth > 0 &&
+                           element.offsetHeight > 0;
+                }
+
+                // Helper to get element position
+                function getPosition(element) {
+                    const rect = element.getBoundingClientRect();
+                    return {
+                        x: Math.round(rect.left + window.scrollX),
+                        y: Math.round(rect.top + window.scrollY),
+                        width: Math.round(rect.width),
+                        height: Math.round(rect.height)
+                    };
+                }
+
+                // Helper to get text content
+                function getText(element) {
+                    // Try various text sources
+                    let text = element.getAttribute('aria-label') ||
+                               element.getAttribute('title') ||
+                               element.getAttribute('alt') ||
+                               element.getAttribute('placeholder') ||
+                               element.textContent ||
+                               element.innerText ||
+                               '';
+
+                    return text.trim().replace(/\\s+/g, ' ');
+                }
+
+                const interactive = [];
+                const headings = [];
+
+                // Extract interactive elements
+                const interactiveSelectors = [
+                    'a[href]',
+                    'button',
+                    'input:not([type="hidden"])',
+                    'select',
+                    'textarea',
+                    '[role="button"]',
+                    '[role="link"]',
+                    '[role="menuitem"]',
+                    '[role="tab"]',
+                    '[onclick]'
+                ];
+
+                const elements = document.querySelectorAll(interactiveSelectors.join(', '));
+
+                elements.forEach((element, index) => {
+                    if (!isVisible(element)) return;
+
+                    const tagName = element.tagName.toLowerCase();
+                    let type = tagName;
+
+                    // Determine element type
+                    if (tagName === 'input') {
+                        type = element.type || 'text';
+                    } else if (tagName === 'a') {
+                        type = 'link';
+                    } else if (element.getAttribute('role')) {
+                        type = element.getAttribute('role');
+                    }
+
+                    const item = {
+                        id: `elem_${index}`,
+                        type: type,
+                        text: getText(element),
+                        selector: generateSelector(element),
+                        position: getPosition(element),
+                        href: element.href || element.getAttribute('href') || null,
+                        value: element.value || '',
+                        state: {
+                            disabled: element.disabled || false,
+                            checked: element.checked || false,
+                            selected: element.selected || false,
+                            required: element.required || false,
+                            readonly: element.readOnly || false
+                        }
+                    };
+
+                    interactive.push(item);
+                });
+
+                // Extract headings
+                const headingElements = document.querySelectorAll('h1, h2, h3, h4, h5, h6');
+                headingElements.forEach(heading => {
+                    if (!isVisible(heading)) return;
+
+                    headings.push({
+                        level: parseInt(heading.tagName[1]),
+                        text: heading.textContent.trim().replace(/\\s+/g, ' '),
+                        selector: generateSelector(heading)
+                    });
+                });
+
+                // Generate summary
+                const summary = {
+                    total_interactive: interactive.length,
+                    buttons: interactive.filter(el => el.type === 'button' || el.type === 'submit').length,
+                    links: interactive.filter(el => el.type === 'link').length,
+                    inputs: interactive.filter(el => ['text', 'email', 'password', 'search', 'tel', 'url', 'number'].includes(el.type)).length,
+                    selects: interactive.filter(el => el.type === 'select').length
+                };
+
                 return {
-                    "url": self.page.url,
-                    "title": await self.page.title(),
-                    "tree": None,
-                    "summary": {
-                        "total_nodes": 0,
-                        "interactive_elements": 0,
-                        "text_nodes": 0,
-                        "links_with_href": 0,
-                        "depth": 0
-                    },
-                    "error": "No accessibility tree available"
-                }
-
-            # Extract href information for links and buttons
-            href_info = await self._extract_href_information()
-
-            # Clean and process the tree
-            cleaned_tree = self._clean_accessibility_node(
-                snapshot, 
-                include_hidden=include_hidden,
-                current_depth=0,
-                max_depth=max_depth,
-                simplify=simplify,
-                href_info=href_info
-            )
-            
-            # Generate summary statistics
-            summary = self._analyze_accessibility_tree(cleaned_tree)
-            
-            result = {
-                "url": self.page.url,
-                "title": await self.page.title(),
-                "tree": cleaned_tree,
-                "summary": summary
+                    interactive_elements: interactive,
+                    headings: headings,
+                    summary: summary
+                };
             }
-            
-            self.history.append(
-                {
-                    "action": "get_accessibility_tree",
-                    "reasoning": r,
-                    "include_hidden": include_hidden,
-                    "max_depth": max_depth,
-                    "simplify": simplify,
-                    "summary": summary,
-                }
-            )
-            
+            """
+
+            # Execute JavaScript to extract elements
+            result = await self.page.evaluate(extract_script, include_hidden)
+
+            # Add URL and title
+            result['url'] = self.page.url
+            result['title'] = await self.page.title()
+
+            # Log action
+            self.history.append({
+                "action": "get_page_elements",
+                "reasoning": r,
+                "include_hidden": include_hidden,
+                "summary": result['summary']
+            })
+
             return result
-            
+
         except Exception as e:
             error_result = {
                 "url": self.page.url,
                 "title": await self.page.title(),
-                "tree": None,
+                "interactive_elements": [],
+                "headings": [],
                 "summary": {
-                    "total_nodes": 0,
-                    "interactive_elements": 0,
-                    "text_nodes": 0,
-                    "links_with_href": 0,
-                    "depth": 0
+                    "total_interactive": 0,
+                    "buttons": 0,
+                    "links": 0,
+                    "inputs": 0,
+                    "selects": 0
                 },
                 "error": f"Failed to get accessibility tree: {str(e)}"
             }
-            
-            self.history.append(
-                {
-                    "action": "get_accessibility_tree",
-                    "reasoning": r,
-                    "error": str(e),
-                }
-            )
-            
+
+            self.history.append({
+                "action": "get_page_elements",
+                "reasoning": r,
+                "error": str(e)
+            })
+
             return error_result
-
-    async def _extract_href_information(self) -> Dict[str, str]:
-        """
-        Extract href information for all links and buttons on the page.
-        
-        Returns:
-            Dictionary mapping element text content to href values
-        """
-        try:
-            # JavaScript to extract href information with element text content for matching
-            href_script = """
-            () => {
-                const hrefMap = {};
-                
-                // Get all elements with href attributes (links, buttons with href, etc.)
-                const elementsWithHref = document.querySelectorAll('a[href], button[href], area[href]');
-                
-                elementsWithHref.forEach(element => {
-                    const href = element.getAttribute('href');
-                    if (href && href.trim()) {
-                        // Get text content for matching
-                        let textContent = element.textContent || element.innerText || '';
-                        textContent = textContent.trim().replace(/\\s+/g, ' ');
-                        
-                        // Also try aria-label, title, or alt attributes
-                        if (!textContent) {
-                            textContent = element.getAttribute('aria-label') || 
-                                         element.getAttribute('title') || 
-                                         element.getAttribute('alt') || '';
-                            textContent = textContent.trim();
-                        }
-                        
-                        if (textContent) {
-                            // Use text content as key for matching
-                            hrefMap[textContent] = href.trim();
-                        }
-                    }
-                });
-                
-                // Also check for buttons with formaction or data-href
-                const buttonsWithAction = document.querySelectorAll('button[formaction], button[data-href], input[formaction]');
-                buttonsWithAction.forEach(element => {
-                    const action = element.getAttribute('formaction') || element.getAttribute('data-href');
-                    if (action && action.trim()) {
-                        let textContent = element.textContent || element.innerText || '';
-                        textContent = textContent.trim().replace(/\\s+/g, ' ');
-                        
-                        if (!textContent) {
-                            textContent = element.getAttribute('aria-label') || 
-                                         element.getAttribute('title') || 
-                                         element.getAttribute('value') || '';
-                            textContent = textContent.trim();
-                        }
-                        
-                        if (textContent) {
-                            hrefMap[textContent] = action.trim();
-                        }
-                    }
-                });
-                
-                return hrefMap;
-            }
-            """
-            
-            return await self.page.evaluate(href_script)
-            
-        except Exception as e:
-            # If href extraction fails, return empty dict and continue with tree building
-            return {}
-
-    def _clean_accessibility_node(
-        self, 
-        node: Dict[str, Any], 
-        include_hidden: bool = False,
-        current_depth: int = 0,
-        max_depth: Optional[int] = None,
-        simplify: bool = True,
-        href_info: Optional[Dict[str, str]] = None
-    ) -> Optional[Dict[str, Any]]:
-        """
-        Clean and simplify an accessibility tree node for AI consumption.
-        
-        Args:
-            node: The accessibility tree node to clean
-            include_hidden: Whether to include hidden elements
-            current_depth: Current depth in the tree
-            max_depth: Maximum depth to process
-            simplify: Whether to simplify the output
-            href_info: Dictionary mapping element text to href values for link matching
-            
-        Returns:
-            Cleaned node dictionary or None if node should be filtered out
-        """
-        if not node:
-            return None
-            
-        # Check depth limit
-        if max_depth is not None and current_depth > max_depth:
-            return None
-        
-        # Filter out hidden elements if requested
-        if not include_hidden and node.get('hidden', False):
-            return None
-            
-        # Start with a clean node
-        cleaned = {}
-        
-        # Essential properties
-        if 'role' in node:
-            cleaned['role'] = node['role']
-        if 'name' in node and node['name']:
-            cleaned['name'] = node['name'].strip()
-        if 'value' in node and node['value']:
-            cleaned['value'] = str(node['value']).strip()
-        
-        # Interactive properties
-        if node.get('disabled'):
-            cleaned['disabled'] = True
-        if node.get('checked') is not None:
-            cleaned['checked'] = node['checked']
-        if node.get('selected') is not None:
-            cleaned['selected'] = node['selected']
-        if node.get('expanded') is not None:
-            cleaned['expanded'] = node['expanded']
-            
-        # Only include level if it's meaningful
-        if 'level' in node and node['level'] > 0:
-            cleaned['level'] = node['level']
-            
-        # Include coordinates if available (useful for clicking)
-        if 'boundingBox' in node:
-            bbox = node['boundingBox']
-            position = {
-                'x': int(bbox.get('x', 0)),
-                'y': int(bbox.get('y', 0)),
-                'width': int(bbox.get('width', 0)),
-                'height': int(bbox.get('height', 0))
-            }
-            cleaned['position'] = position
-        
-        # Try to find href information for this element using text matching
-        if href_info and cleaned.get('role') in {'link', 'button'}:
-            element_text = cleaned.get('name', '').strip()
-            if element_text and element_text in href_info:
-                cleaned['href'] = href_info[element_text]
-        
-        # Process children recursively
-        if 'children' in node and node['children']:
-            children = []
-            for child in node['children']:
-                cleaned_child = self._clean_accessibility_node(
-                    child, 
-                    include_hidden=include_hidden,
-                    current_depth=current_depth + 1,
-                    max_depth=max_depth,
-                    simplify=simplify,
-                    href_info=href_info
-                )
-                if cleaned_child:
-                    children.append(cleaned_child)
-            
-            if children:
-                cleaned['children'] = children
-        
-        # If simplifying, filter out nodes with no meaningful content
-        if simplify:
-            # Keep nodes that have:
-            # - A role that indicates interactivity or content
-            # - Text content (name or value)
-            # - Children
-            # - Position information
-            # - Href information (links/buttons with destinations)
-            interactive_roles = {
-                'button', 'link', 'textbox', 'combobox', 'listbox', 'menuitem',
-                'tab', 'tabpanel', 'slider', 'spinbutton', 'checkbox', 'radio'
-            }
-            content_roles = {
-                'heading', 'text', 'paragraph', 'article', 'main', 'navigation',
-                'banner', 'contentinfo', 'complementary', 'region'
-            }
-            
-            has_role = cleaned.get('role') in (interactive_roles | content_roles)
-            has_content = bool(cleaned.get('name') or cleaned.get('value'))
-            has_children = bool(cleaned.get('children'))
-            has_position = bool(cleaned.get('position'))
-            has_href = bool(cleaned.get('href'))
-            
-            if not (has_role or has_content or has_children or has_position or has_href):
-                return None
-        
-        return cleaned if cleaned else None
-
-    def _analyze_accessibility_tree(self, tree: Optional[Dict[str, Any]]) -> Dict[str, int]:
-        """
-        Analyze the accessibility tree and generate summary statistics.
-        
-        Args:
-            tree: The cleaned accessibility tree
-            
-        Returns:
-            Dictionary with summary statistics
-        """
-        if not tree:
-            return {
-                "total_nodes": 0,
-                "interactive_elements": 0,
-                "text_nodes": 0,
-                "links_with_href": 0,
-                "depth": 0
-            }
-        
-        interactive_roles = {
-            'button', 'link', 'textbox', 'combobox', 'listbox', 'menuitem',
-            'tab', 'tabpanel', 'slider', 'spinbutton', 'checkbox', 'radio'
-        }
-        
-        def count_nodes(node, current_depth=0):
-            if not node:
-                return {
-                    "total_nodes": 0,
-                    "interactive_elements": 0, 
-                    "text_nodes": 0,
-                    "links_with_href": 0,
-                    "max_depth": current_depth
-                }
-            
-            stats = {
-                "total_nodes": 1,
-                "interactive_elements": 0,
-                "text_nodes": 0,
-                "links_with_href": 0,
-                "max_depth": current_depth
-            }
-            
-            # Check if this node is interactive
-            if node.get('role') in interactive_roles:
-                stats["interactive_elements"] = 1
-                
-            # Check if this node has text content
-            if node.get('name') or node.get('value'):
-                stats["text_nodes"] = 1
-            
-            # Check if this node has href information
-            if node.get('href'):
-                stats["links_with_href"] = 1
-            
-            # Process children
-            if 'children' in node:
-                for child in node['children']:
-                    child_stats = count_nodes(child, current_depth + 1)
-                    stats["total_nodes"] += child_stats["total_nodes"]
-                    stats["interactive_elements"] += child_stats["interactive_elements"]
-                    stats["text_nodes"] += child_stats["text_nodes"]
-                    stats["links_with_href"] += child_stats["links_with_href"]
-                    stats["max_depth"] = max(stats["max_depth"], child_stats["max_depth"])
-            
-            return stats
-        
-        stats = count_nodes(tree)
-        return {
-            "total_nodes": stats["total_nodes"],
-            "interactive_elements": stats["interactive_elements"],
-            "text_nodes": stats["text_nodes"],
-            "links_with_href": stats["links_with_href"],
-            "depth": stats["max_depth"]
-        }
