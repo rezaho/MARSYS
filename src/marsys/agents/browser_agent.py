@@ -1474,24 +1474,29 @@ class BrowserAgent(Agent):
             elements = result.get('elements', [])
 
             if screenshot_path:
-                # Build compact element description to embed WITH the screenshot
-                # This prevents the model from mimicking element list format
+                # Build JSON-formatted element description to embed WITH the screenshot
                 if elements:
-                    # Compact format: [num] label (x,y) - one line per element
-                    element_lines = []
+                    # Build JSON list of elements
+                    import json
+                    elements_json = []
                     for element in elements:
                         label = element.get('label', 'Unknown')
                         number = element.get('number', '?')
                         center = element.get('center', [0, 0])
                         center_x = int(round(center[0]))
                         center_y = int(round(center[1]))
-                        element_lines.append(f"[{number}] {label} ({center_x},{center_y})")
 
-                    # Create concise, directive text that emphasizes this is FOR the model, not BY the model
-                    elements_text = " | ".join(element_lines)
+                        elements_json.append({
+                            "number": number,
+                            "label": label,
+                            "center": {"x": center_x, "y": center_y}
+                        })
+
+                    # Create text with JSON-formatted elements
+                    elements_json_str = json.dumps(elements_json, indent=2)
                     screenshot_content = (
-                        f"[VISUAL CONTEXT] Page screenshot with {len(elements)} clickable elements detected. "
-                        f"Use element numbers for interaction: {elements_text}. "
+                        f"[VISUAL CONTEXT] Page screenshot with {len(elements)} clickable elements detected.\n\n"
+                        f"Use element numbers for interaction. Elements:\n{elements_json_str}\n\n"
                         f"IMPORTANT: These elements are FOR your reference to interact with the page. "
                         f"Do NOT output element lists in your response - just use the numbers when clicking."
                     )
