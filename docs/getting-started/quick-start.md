@@ -95,6 +95,17 @@ import asyncio
 from marsys.coordination import Orchestra
 
 async def main():
+    # Create the agent first
+    poet = Agent(
+        model_config=ModelConfig(
+            type="api",
+            name="anthropic/claude-haiku-4.5",
+            provider="openrouter"
+        ),
+        agent_name="Poet",
+        description="Creative poet"
+    )
+
     # One-line execution
     result = await Orchestra.run(
         task="Write a haiku about artificial intelligence",
@@ -126,8 +137,8 @@ async def main():
     # Create a single model configuration
     model_config = ModelConfig(
         type="api",
-        name="gpt-5",
-        provider="openai"
+        name="anthropic/claude-haiku-4.5",
+        provider="openrouter"
     )
 
     # Create specialized agents with allowed_peers
@@ -176,8 +187,8 @@ async def main():
     # Use a single model configuration
     model_config = ModelConfig(
         type="api",
-        name="gpt-5",
-        provider="openai"
+        name="anthropic/claude-haiku-4.5",
+        provider="openrouter"
     )
 
     # Create three specialized agents
@@ -234,8 +245,8 @@ async def main():
     # Use a single model configuration
     model_config = ModelConfig(
         type="api",
-        name="gpt-5",
-        provider="openai"
+        name="anthropic/claude-haiku-4.5",
+        provider="openrouter"
     )
 
     # Topology with User node
@@ -249,14 +260,14 @@ async def main():
         ]
     }
 
-    # Create agents
-    Agent(
+    # Create agents (must assign to variables)
+    assistant = Agent(
         model_config=model_config,
         agent_name="Assistant",
         description="Helpful AI assistant that can consult experts"
     )
 
-    Agent(
+    expert = Agent(
         model_config=model_config,
         agent_name="Expert",
         description="Domain expert for complex questions"
@@ -325,8 +336,8 @@ async def main():
     agent = Agent(
         model_config=ModelConfig(
             type="api",
-            name="gpt-5",
-            provider="openai"
+            name="anthropic/claude-haiku-4.5",  # Fast and capable for tool use
+            provider="openrouter"
         ),
         agent_name="ResearchAssistant",
         description="Research assistant with calculation and search capabilities",
@@ -359,8 +370,8 @@ async def main():
     browser = BrowserAgent(
         model_config=ModelConfig(
             type="api",
-            name="gpt-5",
-            provider="openai"
+            name="anthropic/claude-haiku-4.5",
+            provider="openrouter"
         ),
         agent_name="WebScraper",
         description="Extracts information from websites",
@@ -391,25 +402,36 @@ from marsys.models import ModelConfig
 
 async def main():
     # Create pipeline agents
-    agents = {
-        "DataCollector": "Collects raw data from sources",
-        "DataCleaner": "Cleans and validates data",
-        "DataAnalyzer": "Analyzes cleaned data",
-        "ReportWriter": "Writes final report"
-    }
-
     model_config = ModelConfig(
         type="api",
-        name="gpt-5",
-        provider="openai"
+        name="anthropic/claude-haiku-4.5",
+        provider="openrouter"
     )
 
-    for name, desc in agents.items():
-        Agent(
-            model_config=model_config,
-            agent_name=name,
-            description=desc
-        )
+    # Must assign each agent to a variable to prevent garbage collection
+    data_collector = Agent(
+        model_config=model_config,
+        agent_name="DataCollector",
+        description="Collects raw data from sources"
+    )
+
+    data_cleaner = Agent(
+        model_config=model_config,
+        agent_name="DataCleaner",
+        description="Cleans and validates data"
+    )
+
+    data_analyzer = Agent(
+        model_config=model_config,
+        agent_name="DataAnalyzer",
+        description="Analyzes cleaned data"
+    )
+
+    report_writer = Agent(
+        model_config=model_config,
+        agent_name="ReportWriter",
+        description="Writes final report"
+    )
 
     # Pipeline pattern
     topology = PatternConfig.pipeline(
@@ -458,41 +480,40 @@ def save_report(content: str, filename: str) -> str:
     return f"Report saved to {filename}"
 
 async def main():
-    # Create research team
-    team = {
-        "LeadResearcher": {
-            "desc": "Coordinates research and assigns tasks",
-            "tools": []
-        },
-        "DataAnalyst": {
-            "desc": "Analyzes data and statistics",
-            "tools": [search_web]
-        },
-        "FactChecker": {
-            "desc": "Verifies information accuracy",
-            "tools": [search_web]
-        },
-        "TechnicalWriter": {
-            "desc": "Writes comprehensive reports",
-            "tools": [save_report]
-        }
-    }
-
     # Use single model configuration
     model_config = ModelConfig(
         type="api",
-        name="gpt-5",
-        provider="openai"
+        name="anthropic/claude-haiku-4.5",
+        provider="openrouter"
     )
 
-    # Create agents
-    for name, config in team.items():
-        Agent(
-            model_config=model_config,
-            agent_name=name,
-            description=config["desc"],
-            tools=config.get("tools", [])
-        )
+    # Create research team (must assign to variables)
+    lead_researcher = Agent(
+        model_config=model_config,
+        agent_name="LeadResearcher",
+        description="Coordinates research and assigns tasks"
+    )
+
+    data_analyst = Agent(
+        model_config=model_config,
+        agent_name="DataAnalyst",
+        description="Analyzes data and statistics",
+        tools=[search_web]
+    )
+
+    fact_checker = Agent(
+        model_config=model_config,
+        agent_name="FactChecker",
+        description="Verifies information accuracy",
+        tools=[search_web]
+    )
+
+    technical_writer = Agent(
+        model_config=model_config,
+        agent_name="TechnicalWriter",
+        description="Writes comprehensive reports",
+        tools=[save_report]
+    )
 
     # Hub-and-spoke with parallel workers
     topology = PatternConfig.hub_and_spoke(

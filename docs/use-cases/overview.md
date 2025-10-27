@@ -134,8 +134,10 @@ from marsys import Agent, ModelConfig
 
 config = ModelConfig(
     type="api",
-    name="gpt-4",
-    api_key="your-key"
+    provider="openrouter",
+    name="anthropic/claude-haiku-4.5",
+    api_key="your-key",
+    max_tokens=12000
 )
 
 monitor = Agent(

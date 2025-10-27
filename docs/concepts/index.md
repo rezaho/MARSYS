@@ -111,8 +111,9 @@ graph LR
 # 1. Configure model
 model_config = ModelConfig(
     type="api",
-    name="gpt-4",
-    provider="openai"
+    name="anthropic/claude-haiku-4.5",
+    provider="openrouter",
+    max_tokens=12000
 )
 
 # 2. Create agent with components
@@ -198,8 +199,8 @@ agent = Agent(tools=[search])  # Auto-schema generation
 Unified interface for all models:
 ```python
 # Same interface, different providers
-openai_config = ModelConfig(provider="openai", name="gpt-4")
-anthropic_config = ModelConfig(provider="anthropic", name="claude-3")
+openrouter_config = ModelConfig(provider="openrouter", name="openai/gpt-5", max_tokens=12000)
+anthropic_config = ModelConfig(provider="openrouter", name="anthropic/claude-sonnet-4.5", max_tokens=12000)
 local_config = ModelConfig(provider="ollama", name="llama2")
 ```
 
@@ -233,8 +234,9 @@ all_agents = AgentRegistry.list()
 agent = Agent(
     model_config=ModelConfig(
         type="api",
-        name="gpt-4",
-        provider="openai"
+        name="anthropic/claude-haiku-4.5",
+        provider="openrouter",
+        max_tokens=12000
     ),
     agent_name="Assistant",
     memory_retention="session"

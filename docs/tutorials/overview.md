@@ -68,8 +68,9 @@ from marsys.models import ModelConfig
 researcher = Agent(
     model_config=ModelConfig(
         type="api",
-        provider="openai",
-        name="gpt-4"
+        provider="openrouter",
+        name="anthropic/claude-haiku-4.5",
+        max_tokens=12000
     ),
     agent_name="Researcher",
     description="Research and analyze topics",

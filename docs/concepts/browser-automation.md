@@ -20,7 +20,7 @@ The browser automation system provides:
 graph TB
     subgraph "Browser System"
         BA[BrowserAgent<br/>High-level Interface]
-        BT[BrowserTool<br/>Low-level Operations]
+        BT[BrowserTool<br/>Low-level Operations]over
         PW[Playwright<br/>Browser Control]
     end
 

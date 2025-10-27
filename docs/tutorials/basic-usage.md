@@ -24,24 +24,23 @@ from marsys.coordination import Orchestra
 ### Step 2: Configure Your Model
 
 ```python
-# OpenAI Configuration
-openai_config = ModelConfig(
+# OpenRouter Configuration (Recommended)
+openrouter_config = ModelConfig(
     type="api",
-    name="gpt-4",
-    provider="openai",
+    name="anthropic/claude-haiku-4.5",
+    provider="openrouter",
     api_key="your-api-key",
-    parameters={
-        "temperature": 0.7,
-        "max_tokens": 2000
-    }
+    temperature=0.7,
+    max_tokens=12000
 )
 
-# Or use Claude
+# Or use Claude directly
 claude_config = ModelConfig(
     type="api",
-    name="claude-3-opus",
-    provider="anthropic",
-    api_key="your-api-key"
+    name="anthropic/claude-sonnet-4.5",
+    provider="openrouter",
+    api_key="your-api-key",
+    max_tokens=12000
 )
 
 # Or use local Ollama
@@ -381,9 +380,10 @@ async def create_support_system():
     # Configure model
     config = ModelConfig(
         type="api",
-        provider="openai",
-        name="gpt-4",
-        api_key="your-api-key"
+        provider="openrouter",
+        name="anthropic/claude-haiku-4.5",
+        api_key="your-api-key",
+        max_tokens=12000
     )
 
     # Create support agents
