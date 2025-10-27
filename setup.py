@@ -28,6 +28,8 @@ core_deps = [
     "playwright>=1.55.0",
     "pillow>=12.0.0",  # Updated for file operations image handling
     "beautifulsoup4>=4.14.2",
+    "lxml>=6.0.2",  # Fast HTML parsing for search tools
+    "brotli>=1.1.0",  # Compression support for HTTP requests
     "markdownify>=1.2.0",
     # UI/Terminal
     "rich>=14.1.0",
