@@ -227,9 +227,10 @@ from marsys.models import ModelConfig
 assistant = Agent(
     model_config=ModelConfig(
         type="api",
-        provider="openai",
-        name="gpt-4",
-        temperature=0.7
+        provider="openrouter",
+        name="anthropic/claude-haiku-4.5",
+        temperature=0.7,
+        max_tokens=12000
     ),
     name="assistant",
     goal="Provide helpful assistance to users",

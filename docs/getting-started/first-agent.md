@@ -23,12 +23,12 @@ from marsys.agents import Agent
 from marsys.models import ModelConfig
 
 async def main():
-    # Create an agent with OpenAI
+    # Create an agent with Claude Haiku 4.5
     agent = Agent(
         model_config=ModelConfig(
             type="api",
-            name="gpt-4",
-            provider="openai"
+            name="anthropic/claude-haiku-4.5",
+            provider="openrouter"
         ),
         name="Assistant",
         goal="Provide helpful assistance to users",
@@ -56,8 +56,8 @@ Customize agent behavior with detailed system prompts:
 agent = Agent(
     model_config=ModelConfig(
         type="api",
-        name="gpt-4",
-        provider="openai"
+        name="anthropic/claude-sonnet-4.5",
+        provider="openrouter"
     ),
     name="TechnicalWriter",
     goal="Write clear, professional technical documentation",
@@ -81,17 +81,15 @@ MARSYS supports multiple AI providers:
     agent = Agent(
         model_config=ModelConfig(
             type="api",
-            name="gpt-4",
-            provider="openai",
-            api_key=os.getenv("OPENAI_API_KEY"),
-            parameters={
-                "temperature": 0.7,
-                "max_tokens": 2000
-            }
+            name="openai/gpt-5",
+            provider="openrouter",
+            api_key=os.getenv("OPENROUTER_API_KEY"),
+            temperature=0.7,
+            max_tokens=12000
         ),
         name="GPTAgent",
-        goal="Assist with general AI tasks using GPT-4",
-        instruction="An intelligent OpenAI GPT-4 agent for versatile assistance"
+        goal="Assist with general AI tasks using GPT-5",
+        instruction="An intelligent GPT-5 agent for versatile assistance"
     )
     ```
 
@@ -100,13 +98,11 @@ MARSYS supports multiple AI providers:
     agent = Agent(
         model_config=ModelConfig(
             type="api",
-            name="claude-3-sonnet",
-            provider="anthropic",
-            api_key=os.getenv("ANTHROPIC_API_KEY"),
-            parameters={
-                "temperature": 0.5,
-                "max_tokens": 4096
-            }
+            name="anthropic/claude-sonnet-4.5",
+            provider="openrouter",
+            api_key=os.getenv("OPENROUTER_API_KEY"),
+            temperature=0.5,
+            max_tokens=12000
         ),
         name="ClaudeAgent",
         goal="Provide thoughtful assistance using Claude's capabilities",
@@ -164,8 +160,8 @@ from marsys.environment.tools import AVAILABLE_TOOLS
 agent = Agent(
     model_config=ModelConfig(
         type="api",
-        name="gpt-4",
-        provider="openai"
+        name="anthropic/claude-haiku-4.5",
+        provider="openrouter"
     ),
     name="ToolMaster",
     goal="Execute various tools to assist with complex tasks",
@@ -224,13 +220,13 @@ def analyze_sentiment(text: str, language: str = "en") -> dict:
 agent = Agent(
     model_config=ModelConfig(
         type="api",
-        name="gpt-4",
-        provider="openai"
+        name="openai/gpt-5",
+        provider="openrouter"
     ),
     name="FinancialAnalyst",
     goal="Analyze financial data and provide investment insights",
     instruction="Financial analysis expert with stock price and sentiment analysis capabilities",
-    tools=[fetch_stock_price, analyze_sentiment]  # Auto-converts to schemas
+    tools=[fetch_stock_price, analyze_sentiment]
 )
 ```
 
@@ -300,8 +296,9 @@ async def fetch_news(
 agent = Agent(
     model_config=ModelConfig(
         type="api",
-        name="gpt-4",
-        provider="openai"
+        name="anthropic/claude-haiku-4.5",
+        provider="openrouter",
+        max_tokens=12000
     ),
     name="NewsAnalyst",
     goal="Analyze and summarize news articles for key insights",
@@ -498,15 +495,16 @@ from marsys.agents import BrowserAgent
 browser_agent = BrowserAgent(
     model_config=ModelConfig(
         type="api",
-        name="gpt-4-vision",  # Vision model for screenshots
-        provider="openai"
+        name="google/gemini-2.5-pro",
+        provider="openrouter",
+        max_tokens=12000
     ),
     name="WebNavigator",
     goal="Navigate and extract information from websites",
     instruction="Web automation specialist capable of browser control and content extraction",
-    headless=False,  # Show browser window
+    headless=False,
     viewport_size=(1280, 720),
-    timeout=30000  # 30 seconds timeout
+    timeout=30000
 )
 
 # Use in a topology
@@ -657,22 +655,17 @@ agent = Agent(
 agent = Agent(
     model_config=ModelConfig(
         type="api",
-        name="gpt-4",
-        provider="openai",
-        parameters={
-            "temperature": 0.3,  # More focused responses
-            "top_p": 0.9,
-            "frequency_penalty": 0.5,  # Reduce repetition
-            "presence_penalty": 0.5,
-            "max_tokens": 2000
-        }
+        name="anthropic/claude-sonnet-4.5",
+        provider="openrouter",
+        temperature=0.3,
+        max_tokens=12000
     ),
     agent_name="PrecisionAgent",
     description="High-precision analytical agent",
-    max_tokens=2000,  # Agent-level token limit
-    auto_summarize=True,  # Summarize long contexts
-    response_format="markdown",  # Prefer markdown output
-    error_handling="retry",  # Auto-retry on errors
+    max_tokens=12000,
+    auto_summarize=True,
+    response_format="markdown",
+    error_handling="retry",
     retry_config={
         "max_retries": 3,
         "backoff_factor": 2
@@ -694,9 +687,10 @@ description = "Writer"
 
 ### 2. **Appropriate Models**
 Choose models based on task requirements:
-- **GPT-4**: Complex reasoning, code generation
-- **Claude**: Long documents, analysis
-- **Gemini**: Multimodal tasks
+- **Claude Haiku 4.5** (`anthropic/claude-haiku-4.5`): Fast agentic tasks, web browsing, massive text processing
+- **Claude Sonnet 4.5** (`anthropic/claude-sonnet-4.5`): Orchestration, planning, writing
+- **GPT-5** (`openai/gpt-5`): Advanced reasoning, critical analysis, complex tasks
+- **Gemini 2.5 Pro** (`google/gemini-2.5-pro`): Vision tasks, UI element detection, all-rounder
 - **Local**: Privacy-sensitive data
 
 ### 3. **Tool Design**

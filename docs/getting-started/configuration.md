@@ -68,8 +68,8 @@ from marsys.models import ModelConfig
 
 config = ModelConfig(
     type="api",                    # "api" or "local"
-    provider="openai",             # Provider name
-    name="gpt-4",                  # Model name
+    provider="openrouter",         # Provider name
+    name="anthropic/claude-haiku-4.5",  # Model name
     api_key=None,                  # Auto-loads from env
     base_url=None,                 # Custom endpoint
     parameters={                   # Model parameters
@@ -84,68 +84,80 @@ config = ModelConfig(
 
 ### Provider-Specific Configurations
 
-=== "OpenAI"
+=== "OpenAI (via OpenRouter)"
     ```python
     config = ModelConfig(
         type="api",
-        provider="openai",
-        name="gpt-4-turbo-preview",
-        api_key=os.getenv("OPENAI_API_KEY"),
-        parameters={
-            "temperature": 0.7,
-            "max_tokens": 4096,
-            "top_p": 1.0,
-            "frequency_penalty": 0,
-            "presence_penalty": 0,
-            "response_format": {"type": "json_object"},  # JSON mode
-            "seed": 42,  # Deterministic output
-            "tools": [...],  # Function calling
-            "tool_choice": "auto"
-        }
+        provider="openrouter",
+        name="openai/gpt-5",
+        api_key=os.getenv("OPENROUTER_API_KEY"),
+        temperature=0.7,
+        max_tokens=12000,
+        # OpenAI-specific parameters (passed as extra kwargs)
+        reasoning_effort="medium",  # low, medium, high - for reasoning models
+        top_p=1.0,
+        frequency_penalty=0.0,  # Range: -2.0 to 2.0
+        presence_penalty=0.0,   # Range: -2.0 to 2.0
+        seed=42,                # For deterministic output
+        response_format={"type": "json_object"}  # JSON mode
     )
     ```
 
-=== "Anthropic"
+=== "Anthropic (via OpenRouter)"
     ```python
     config = ModelConfig(
         type="api",
-        provider="anthropic",
-        name="claude-3-opus-20240229",
-        api_key=os.getenv("ANTHROPIC_API_KEY"),
-        parameters={
-            "temperature": 0.5,
-            "max_tokens": 4096,
-            "top_p": 0.9,
-            "top_k": 0,
-            "stop_sequences": ["Human:", "Assistant:"],
-            "metadata": {
-                "user_id": "user123"
+        provider="openrouter",
+        name="anthropic/claude-sonnet-4.5",
+        api_key=os.getenv("OPENROUTER_API_KEY"),
+        temperature=0.5,
+        max_tokens=12000,
+        thinking_budget=2048,  # Min: 1024 tokens - for extended thinking
+        # Anthropic-specific parameters
+        top_p=0.9,
+        top_k=40,
+        stop_sequences=["Human:", "Assistant:"],
+        metadata={"user_id": "user123"}
+    )
+    ```
+
+=== "Google Gemini (via OpenRouter)"
+    ```python
+    config = ModelConfig(
+        type="api",
+        provider="openrouter",
+        name="google/gemini-2.5-pro",
+        api_key=os.getenv("OPENROUTER_API_KEY"),
+        temperature=0.9,
+        max_tokens=12000,
+        thinking_budget=2048,  # For Gemini 2.5 thinking capability
+        # Google-specific parameters
+        top_p=0.95,
+        top_k=40,
+        candidate_count=1,  # Range: 1-8
+        safety_settings=[
+            {
+                "category": "HARM_CATEGORY_DANGEROUS_CONTENT",
+                "threshold": "BLOCK_MEDIUM_AND_ABOVE"
+            },
+            {
+                "category": "HARM_CATEGORY_HARASSMENT",
+                "threshold": "BLOCK_MEDIUM_AND_ABOVE"
             }
-        }
+        ]
     )
     ```
 
-=== "Google"
+=== "xAI Grok (via OpenRouter)"
     ```python
     config = ModelConfig(
         type="api",
-        provider="google",
-        name="gemini-1.5-pro",
-        api_key=os.getenv("GOOGLE_API_KEY"),
-        parameters={
-            "temperature": 0.9,
-            "max_output_tokens": 2048,
-            "top_p": 0.95,
-            "top_k": 40,
-            "candidate_count": 1,
-            "stop_sequences": [],
-            "safety_settings": [
-                {
-                    "category": "HARM_CATEGORY_DANGEROUS",
-                    "threshold": "BLOCK_MEDIUM_AND_ABOVE"
-                }
-            ]
-        }
+        provider="openrouter",
+        name="x-ai/grok-4",
+        api_key=os.getenv("OPENROUTER_API_KEY"),
+        temperature=0.7,
+        max_tokens=12000,
+        reasoning_effort="medium"  # For Grok reasoning models
     )
     ```
 
@@ -379,13 +391,13 @@ error_config = ErrorHandlingConfig(
             "max_retries": 3,
             "base_retry_delay": 60,
             "insufficient_quota_action": "raise",  # or "fallback"
-            "fallback_model": "gpt-3.5-turbo"
+            "fallback_model": "gpt-5-mini"
         },
         "anthropic": {
             "max_retries": 2,
             "base_retry_delay": 30,
             "insufficient_quota_action": "fallback",
-            "fallback_model": "claude-3-haiku"
+            "fallback_model": "anthropic/claude-haiku-4.5"
         },
         "google": {
             "max_retries": 3,
@@ -479,7 +491,7 @@ def create_production_config():
                 "max_retries": 3,
                 "base_retry_delay": 60,
                 "insufficient_quota_action": "fallback",
-                "fallback_model": "gpt-3.5-turbo"
+                "fallback_model": "gpt-5-mini"
             }
         }
     )

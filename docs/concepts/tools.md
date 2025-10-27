@@ -143,8 +143,9 @@ from marsys.models import ModelConfig
 agent = Agent(
     model_config=ModelConfig(
         type="api",
-        name="gpt-4",
-        provider="openai"
+        name="anthropic/claude-haiku-4.5",
+        provider="openrouter",
+        max_tokens=12000
     ),
     agent_name="DataAnalyst",
     description="Expert data analyst with database access",

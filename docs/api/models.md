@@ -97,22 +97,22 @@ class ModelConfig(BaseModel):
 ```python
 from marsys.models import ModelConfig
 
-# OpenAI GPT-4
-gpt4_config = ModelConfig(
+# OpenAI GPT-5
+gpt5_config = ModelConfig(
     type="api",
-    provider="openai",
-    name="gpt-4",
+    provider="openrouter",
+    name="openai/gpt-5",
     temperature=0.7,
-    max_tokens=2000
+    max_tokens=12000
 )
 
-# Anthropic Claude
+# Anthropic Claude Sonnet 4.5
 claude_config = ModelConfig(
     type="api",
-    provider="anthropic",
-    name="claude-3-opus-20240229",
+    provider="openrouter",
+    name="anthropic/claude-sonnet-4.5",
     temperature=0.5,
-    max_tokens=4000
+    max_tokens=12000
 )
 
 # Local Llama 2
@@ -306,11 +306,11 @@ class BaseAPIModel:
 
 | Provider | Models | Environment Variable |
 |----------|--------|---------------------|
-| `openai` | gpt-4, gpt-3.5-turbo | `OPENAI_API_KEY` |
-| `anthropic` | claude-3-opus, claude-3-sonnet | `ANTHROPIC_API_KEY` |
-| `google` | gemini-pro, gemini-ultra | `GOOGLE_API_KEY` |
-| `groq` | mixtral-8x7b, llama2-70b | `GROQ_API_KEY` |
-| `openrouter` | Various models | `OPENROUTER_API_KEY` |
+| `openrouter` | All major models | `OPENROUTER_API_KEY` |
+| `openai` | gpt-5, gpt-5-mini, gpt-5-chat, etc. | `OPENAI_API_KEY` |
+| `anthropic` | claude-haiku-4.5, claude-sonnet-4.5, etc. | `ANTHROPIC_API_KEY` |
+| `google` | gemini-2.5-pro, gemini-2.5-flash, etc. | `GOOGLE_API_KEY` |
+| `xai` | grok-4, grok-4-fast, grok-3, etc. | `XAI_API_KEY` |
 
 #### Methods
 
@@ -330,9 +330,10 @@ Execute API model.
 from marsys.models import BaseAPIModel
 
 model = BaseAPIModel(
-    provider="openai",
-    model_name="gpt-4",
-    temperature=0.7
+    provider="openrouter",
+    model_name="anthropic/claude-haiku-4.5",
+    temperature=0.7,
+    max_tokens=12000
 )
 
 response = await model.run(
@@ -390,8 +391,9 @@ from marsys.models import create_model, ModelConfig
 # Create from config
 config = ModelConfig(
     type="api",
-    provider="openai",
-    name="gpt-4"
+    provider="openrouter",
+    name="anthropic/claude-haiku-4.5",
+    max_tokens=12000
 )
 
 model = create_model(config)
@@ -559,17 +561,17 @@ from marsys.models import ModelConfig
 
 config = ModelConfig(
     type="api",
-    provider="openai",
-    name=os.getenv("MODEL_NAME", "gpt-4"),
+    provider="openrouter",
+    name=os.getenv("MODEL_NAME", "anthropic/claude-haiku-4.5"),
     temperature=float(os.getenv("MODEL_TEMPERATURE", "0.7")),
-    max_tokens=int(os.getenv("MAX_TOKENS", "2000"))
+    max_tokens=int(os.getenv("MAX_TOKENS", "12000"))
 )
 
 # ❌ BAD - Hardcoded values
 config = ModelConfig(
     type="api",
-    provider="openai",
-    name="gpt-4",
+    provider="openrouter",
+    name="anthropic/claude-haiku-4.5",
     api_key="sk-..."  # Never hardcode!
 )
 ```

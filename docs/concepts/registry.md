@@ -65,8 +65,9 @@ agent1 = Agent(
     agent_name="data_processor",
     model_config=ModelConfig(
         type="api",
-        provider="openai",
-        name="gpt-4"
+        provider="openrouter",
+        name="anthropic/claude-haiku-4.5",
+        max_tokens=12000
     ),
     description="Processes and analyzes data"
 )
@@ -372,7 +373,7 @@ class PersistentRegistry:
         """Restore agents from saved state."""
         for agent_name, info in state.get("agents", {}).items():
             agent_type = info["type"]
-            model_name = info.get("model", "gpt-4")
+            model_name = info.get("model", "anthropic/claude-haiku-4.5")
 
             # Get appropriate config
             config = model_configs.get(model_name)

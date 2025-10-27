@@ -96,16 +96,17 @@ from marsys.models import ModelConfig
 agent = Agent(
     model_config=ModelConfig(
         type="api",
-        name="gpt-4",
-        provider="openai",
-        api_key=os.getenv("OPENAI_API_KEY"),
-        parameters={"temperature": 0.7}
+        name="anthropic/claude-haiku-4.5",
+        provider="openrouter",
+        api_key=os.getenv("OPENROUTER_API_KEY"),
+        parameters={"temperature": 0.7},
+        max_tokens=12000
     ),
     name="DataAnalyst",
     goal="Analyze data and extract meaningful trends and insights",
     instruction="You are a thorough data analyst...",
     tools=[analyze_data, create_chart],
-    memory_retention="session"  # single_run, session, or persistent
+    memory_retention="session"
 )
 ```
 
@@ -204,8 +205,9 @@ from marsys.models import ModelConfig
 assistant = Agent(
     model_config=ModelConfig(
         type="api",
-        name="gpt-4",
-        provider="openai"
+        name="anthropic/claude-haiku-4.5",
+        provider="openrouter",
+        max_tokens=12000
     ),
     name="Assistant",
     goal="Provide helpful assistance to users",
@@ -393,14 +395,13 @@ from marsys.models import ModelConfig
 # API Model (OpenAI, Anthropic, Google)
 api_config = ModelConfig(
     type="api",
-    provider="openai",
-    name="gpt-4",
-    api_key=os.getenv("OPENAI_API_KEY"),
+    provider="openrouter",
+    name="anthropic/claude-haiku-4.5",
+    api_key=os.getenv("OPENROUTER_API_KEY"),
     parameters={
-        "temperature": 0.7,
-        "max_tokens": 2000,
-        "top_p": 0.9
-    }
+        "temperature": 0.7
+    },
+    max_tokens=12000
 )
 
 # Local LLM
@@ -417,13 +418,10 @@ local_config = ModelConfig(
 
 # Vision-Language Model
 vlm_config = ModelConfig(
-    type="vlm",
-    provider="openai",
-    name="gpt-4-vision",
-    parameters={
-        "detail": "high",
-        "max_tokens": 4096
-    }
+    type="api",
+    provider="openrouter",
+    name="google/gemini-2.5-pro",
+    max_tokens=12000
 )
 ```
 
