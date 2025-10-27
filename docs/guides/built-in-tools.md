@@ -10,6 +10,14 @@ MARSYS includes several built-in tools for common operations. Each tool has spec
 
 ## 🔍 Web Search Tools
 
+!!! warning "Production Recommendation"
+    **For production deployments, use Google Custom Search API** (`tool_google_search_api` or `web_search` with API key configured). DuckDuckGo has aggressive bot detection and will block automated requests. DuckDuckGo should only be used for:
+
+    - Development/testing
+    - Low-volume use cases (< 10 searches/hour)
+    - Fallback when Google quota is exhausted
+    - Privacy-sensitive queries where API usage must be avoided
+
 ### tool_google_search_api
 
 Google Custom Search API integration for high-quality web search results.
@@ -407,8 +415,9 @@ from marsys.environment.tools import (
 agent = Agent(
     model_config=ModelConfig(
         type="api",
-        name="gpt-4",
-        provider="openai"
+        name="anthropic/claude-haiku-4.5",
+        provider="openrouter",
+        max_tokens=12000
     ),
     agent_name="ResearchAgent",
     description="Research agent with web search capabilities",
@@ -484,11 +493,19 @@ pip install pypdf pdfminer.six
 
 ## 📋 Best Practices
 
-### 1. **Use API Tools for Production**
+### 1. **Use Google API for Production Search**
 ```python
-# ✅ GOOD - Reliable for production
+# ✅ BEST - Google Custom Search API (recommended for production)
+from marsys.environment.tools import tool_google_search_api
+# Requires GOOGLE_SEARCH_API_KEY and GOOGLE_CSE_ID_GENERIC
+
+# ✅ GOOD - Automatic fallback (API if available, scraper otherwise)
 from marsys.environment.tools import web_search
-# Automatically uses API if available
+
+# ⚠️  DEVELOPMENT ONLY - DuckDuckGo (will be blocked in production)
+from marsys.environment.search_tools import SearchTools
+search_tools = SearchTools()
+# Only for testing/development, < 10 searches/hour
 
 # ❌ AVOID - Community scraper for production
 from marsys.environment.tools import tool_google_search_community
