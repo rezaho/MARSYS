@@ -325,70 +325,78 @@ class StepExecutor:
                         
                         if tool_result.tool_results:
                             # Add tool results to agent's memory (source of truth)
+                            # CRITICAL: OpenAI API requires ALL tool messages (role="tool") to come immediately
+                            # after the assistant message with tool_calls, BEFORE any user messages.
+                            # We must batch: 1) all tool messages first, 2) then all user messages
                             if hasattr(agent, 'memory') and hasattr(agent.memory, 'add'):
+                                # Phase 1: Collect tool messages and user messages separately
+                                tool_messages = []  # Messages with role="tool"
+                                user_messages = []  # Messages with role="user" for multimodal/array content
+
                                 for tr in tool_result.tool_results:
                                     origin = tr.get('_origin', 'response')
-                                    
-                                    metadata = tr.get('metadata')
+                                    result = tr['result']
 
                                     if origin == 'response':
                                         # Response-origin: Standard OpenAI format with role="tool"
 
-                                        # Determine if we need two-message pattern:
-                                        # 1. If metadata is provided (usage guidance/context)
-                                        # 2. If result is a list (multimodal content with images)
-                                        #    Images must be in "user" message, not "tool" message
-                                        has_metadata = metadata is not None
-                                        is_multimodal = isinstance(tr['result'], list)
-                                        use_two_message_pattern = has_metadata or is_multimodal
+                                        # Check if result is ToolResponse object
+                                        from marsys.environment.tool_response import ToolResponse
 
-                                        if use_two_message_pattern:
-                                            # Two-message pattern:
+                                        if isinstance(result, ToolResponse):
+                                            # Two-message pattern for ToolResponse:
                                             # 1. Tool message (role="tool"): metadata/status
-                                            # 2. User message (role="user"): actual content (especially for images)
+                                            # 2. User message (role="user"): actual content from to_content_array()
 
-                                            # Determine tool message content
-                                            if has_metadata:
-                                                # Use provided metadata
-                                                if isinstance(metadata, str):
-                                                    tool_content = metadata
-                                                else:
-                                                    # Fallback for legacy dict metadata
-                                                    import json
-                                                    tool_content = json.dumps(metadata, indent=2)
-                                            else:
-                                                # No metadata but has images/multimodal - use generic message
-                                                tool_content = "Tool execution completed successfully. Content in next message."
+                                            # Message 1: Tool message with metadata
+                                            tool_content = result.get_metadata_str()
+                                            tool_messages.append({
+                                                'role': 'tool',
+                                                'content': tool_content,
+                                                'tool_call_id': tr['tool_call_id'],
+                                                'name': tr['tool_name']
+                                            })
 
-                                            # 1. Tool message with metadata/status
-                                            agent.memory.add(
-                                                role="tool",
-                                                content=tool_content,
-                                                tool_call_id=tr['tool_call_id'],
-                                                name=tr['tool_name']
-                                            )
+                                            # Message 2: User message with actual content
+                                            # Convert ToolResponse to content array (typed array format)
+                                            content_array = result.to_content_array()
 
-                                            # 2. User message with actual content
-                                            # tr['result'] can be: string, dict, or list of content blocks
-                                            agent.memory.add(
-                                                role="user",
-                                                content=tr['result']
-                                            )
+                                            # If content is a list (multimodal), prepend reference block
+                                            if isinstance(content_array, list):
+                                                reference_block = {
+                                                    "type": "text",
+                                                    "text": f"[Tool response content for tool_call_id: {tr['tool_call_id']}]"
+                                                }
+                                                content_array = [reference_block] + content_array
+
+                                            user_messages.append({
+                                                'role': 'user',
+                                                'content': content_array
+                                            })
                                         else:
-                                            # Single-message pattern: Simple text/dict response, no metadata, no images
-                                            agent.memory.add(
-                                                role="tool",
-                                                content=tr['result'],
-                                                tool_call_id=tr['tool_call_id'],
-                                                name=tr['tool_name']
-                                            )
+                                            # Single-message pattern for string results
+                                            # Result is already stringified by tool_executor
+                                            tool_messages.append({
+                                                'role': 'tool',
+                                                'content': str(result),  # Ensure it's a string
+                                                'tool_call_id': tr['tool_call_id'],
+                                                'name': tr['tool_name']
+                                            })
                                     else:  # origin == 'content'
                                         # Content-origin: Must use role="user" (OpenAI API restriction)
                                         # tr['result'] is already formatted by to_content_array()
-                                        agent.memory.add(
-                                            role="user",
-                                            content=tr['result']
-                                        )
+                                        user_messages.append({
+                                            'role': 'user',
+                                            'content': tr['result']
+                                        })
+
+                                # Phase 2: Add all tool messages first (MUST come immediately after tool_calls)
+                                for tool_msg in tool_messages:
+                                    agent.memory.add(**tool_msg)
+
+                                # Phase 3: Add all user messages second
+                                for user_msg in user_messages:
+                                    agent.memory.add(**user_msg)
                             
                             # Mark that agent needs to continue processing tool results
                             step_result.next_agent = agent_name  # Continue with same agent
