@@ -149,12 +149,12 @@ class BaseAgent(ABC):
     def __init__(
         self,
         model: Union["BaseVLM", "BaseLLM", BaseAPIModel],
+        name: str,
         goal: str,
         instruction: str,
         tools: Optional[Dict[str, Callable[..., Any]]] = None,
         # tools_schema: Optional[List[Dict[str, Any]]] = None, # Removed parameter
-        max_tokens: Optional[int] = 512,
-        name: Optional[str] = None,
+        max_tokens: Optional[int] = 10000,
         allowed_peers: Optional[List[str]] = None,
         bidirectional_peers: bool = False,  # NEW: Control edge directionality
         is_convergence_point: Optional[bool] = None,  # NEW: Optional convergence flag
@@ -4021,6 +4021,7 @@ class Agent(BaseAgent):
                 temperature=temperature_cfg,
                 provider=provider,  # Pass the provider parameter
                 thinking_budget=config.thinking_budget,  # Pass the thinking budget
+                reasoning_effort=config.reasoning_effort,  # Pass the reasoning effort
                 **extra_kwargs,
             )
         else:
@@ -4051,6 +4052,7 @@ class Agent(BaseAgent):
                 "max_tokens",  # Handled by Agent init and run override
                 "temperature",  # Handled by Agent init and run override
                 "thinking_budget",  # Passed to BaseAPIModel init
+                "reasoning_effort",  # Passed to BaseAPIModel init
                 "model_class",  # Local model specific
                 "torch_dtype",  # Local model specific
                 "device_map",  # Local model specific
