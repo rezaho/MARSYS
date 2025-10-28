@@ -149,11 +149,21 @@ class SearchTools:
 
         return tools
 
-    def _google_search_wrapper(self, *args, **kwargs):
-        """Wrapper for Google search - imports and calls tool_google_search_api."""
+    def _google_search_wrapper(self, query: str, num_results: int = 10, lang: str = "en") -> str:
+        """
+        Performs a Google web search using the official Custom Search API.
+
+        Args:
+            query: The search query.
+            num_results: Number of results to return (min: 1, max: 10 due to Google API limit). Defaults to 10.
+            lang: Language for search (e.g., 'en', 'es'). Defaults to 'en'.
+
+        Returns:
+            A JSON string of search results or an error.
+        """
         from marsys.environment.tools import tool_google_search_api
 
-        return tool_google_search_api(*args, **kwargs)
+        return tool_google_search_api(query=query, num_results=num_results, lang=lang)
 
     async def _ddg_rate_limit_wait(self):
         """Enforce rate limiting for DuckDuckGo requests."""
