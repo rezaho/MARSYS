@@ -130,10 +130,17 @@ browser_agent = await BrowserAgent.create_safe(
 # ADVANCED mode - Visual interaction
 browser_agent = await BrowserAgent.create_safe(
     agent_name="navigator",
-    model_config=config,
+    model_config=config,  # Main agent model (Claude Haiku/Sonnet recommended)
     mode=BrowserAgentMode.ADVANCED,  # or mode="advanced"
     auto_screenshot=True,  # Enable visual feedback
-    vision_agent=vision_model,  # Provide vision model
+    vision_model_config=ModelConfig(  # Vision model for screenshot analysis
+        type="api",
+        provider="openrouter",
+        name="google/gemini-2.5-flash",  # Recommended: fast and cost-effective
+        # For complex tasks, use: "google/gemini-2.5-pro"
+        temperature=0,
+        thinking_budget=0  # Disable thinking for faster vision responses
+    ),
     goal="Navigate and interact with web pages like a human"
 )
 ```
@@ -167,13 +174,20 @@ browser_agent_advanced = await BrowserAgent.create_safe(
     model_config=ModelConfig(
         type="api",
         provider="openrouter",
-        name="anthropic/claude-sonnet-4",
+        name="anthropic/claude-haiku-4.5",  # Main agent for decision-making and planning
         temperature=0.3
     ),
     mode="advanced",  # Simple string mode selection
     description="Expert web automation agent for complex interactions",
     auto_screenshot=True,  # Enable visual feedback
-    vision_agent=vision_model,  # Required for auto-screenshot
+    vision_model_config=ModelConfig(  # Required for auto-screenshot
+        type="api",
+        provider="openrouter",
+        name="google/gemini-2.5-flash",  # Recommended: fast and cost-effective for browser vision
+        # For complex tasks, use: "google/gemini-2.5-pro"
+        temperature=0,
+        thinking_budget=0  # Disable thinking for faster vision responses
+    ),
     headless_browser=False,
     temp_dir="./tmp/screenshots",
     playwright_browser_launch_options={

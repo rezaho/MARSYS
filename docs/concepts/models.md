@@ -215,6 +215,48 @@ message = Message(
 response = await vision_agent.run(message)
 ```
 
+#### BrowserAgent Vision Models
+
+For browser automation with visual interaction, use separate models for the main agent (planning/decision-making) and vision analysis (screenshot understanding):
+
+```python
+from marsys.agents import BrowserAgent
+from marsys.models import ModelConfig
+
+# Create BrowserAgent with vision capabilities
+browser_agent = await BrowserAgent.create_safe(
+    agent_name="WebNavigator",
+    # Main model: Any text-based model for planning and decision-making
+    model_config=ModelConfig(
+        type="api",
+        provider="openrouter",
+        name="anthropic/claude-haiku-4.5",  # or claude-sonnet-4.5
+        temperature=0.3
+    ),
+    mode="advanced",
+    auto_screenshot=True,
+    # Vision model: Use Gemini for screenshot analysis
+    vision_model_config=ModelConfig(
+        type="api",
+        provider="openrouter",
+        name="google/gemini-2.5-flash",  # Recommended: fast and cost-effective
+        # For complex UI tasks, use: "google/gemini-2.5-pro"
+        temperature=0,
+        thinking_budget=0  # Disable thinking for faster vision responses
+    ),
+    headless_browser=True
+)
+```
+
+**Vision Model Recommendations for BrowserAgent**:
+
+| Task Complexity | Recommended Model | Characteristics |
+|-----------------|-------------------|-----------------|
+| **Standard browsing** | `google/gemini-2.5-flash` | Fast, cost-effective, handles most UI detection tasks |
+| **Complex UIs** | `google/gemini-2.5-pro` | Higher accuracy for complex layouts, anti-bot challenges |
+
+**Note**: While Claude (Sonnet/Haiku 4.5) and other models work well for the main BrowserAgent planning logic, **Gemini models are specifically recommended for the vision component** due to superior performance in browser control and UI element detection tasks.
+
 ### Custom API Models
 
 For proprietary or specialized endpoints:
@@ -354,6 +396,8 @@ stream_config = ModelConfig(
 | **Fast Responses** | Claude Haiku 4.5 | Low latency, cost-effective |
 | **Long Context** | Claude Sonnet 4.5 | Extended context window |
 | **Image Analysis** | Gemini 2.5 Pro | Multimodal capabilities |
+| **Browser Vision** | Gemini 2.5 Flash | Fast screenshot analysis for BrowserAgent |
+| **Complex Browser Vision** | Gemini 2.5 Pro | Advanced UI understanding for BrowserAgent |
 | **Critical Reasoning** | GPT-5 | Advanced reasoning |
 | **Writing & Analysis** | Claude Sonnet 4.5, GPT-5-Chat | High-quality content generation |
 | **Local/Private** | Llama 2, Mistral | Data privacy, no API costs |

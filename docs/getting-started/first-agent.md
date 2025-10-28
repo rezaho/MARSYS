@@ -690,7 +690,8 @@ Choose models based on task requirements:
 - **Claude Haiku 4.5** (`anthropic/claude-haiku-4.5`): Fast agentic tasks, web browsing, massive text processing
 - **Claude Sonnet 4.5** (`anthropic/claude-sonnet-4.5`): Orchestration, planning, writing
 - **GPT-5** (`openai/gpt-5`): Advanced reasoning, critical analysis, complex tasks
-- **Gemini 2.5 Pro** (`google/gemini-2.5-pro`): Vision tasks, UI element detection, all-rounder
+- **Gemini 2.5 Flash** (`google/gemini-2.5-flash`): Browser vision (fast, cost-effective), general vision tasks
+- **Gemini 2.5 Pro** (`google/gemini-2.5-pro`): Complex vision tasks, advanced UI detection
 - **Local**: Privacy-sensitive data
 
 ### 3. **Tool Design**
