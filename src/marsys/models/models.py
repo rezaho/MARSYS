@@ -17,12 +17,12 @@ from PIL import Image
 # Ensure necessary Pydantic imports are present
 from pydantic import (  # root_validator, # Ensure root_validator is removed or commented out
     BaseModel,
+    ConfigDict,
     Field,
     ValidationError,
     ValidationInfo,
     field_validator,
     model_validator,  # Keep model_validator
-    ConfigDict,
 )
 
 # Import the new response models
@@ -482,6 +482,15 @@ class OpenRouterAdapter(APIProviderAdapter):
         self.thinking_budget = thinking_budget
         self.reasoning_effort = reasoning_effort  # "high", "medium", "low"
 
+        # Store additional OpenRouter sampling parameters from kwargs
+        self.frequency_penalty = kwargs.get("frequency_penalty")
+        self.presence_penalty = kwargs.get("presence_penalty")
+        self.repetition_penalty = kwargs.get("repetition_penalty")
+        self.top_k = kwargs.get("top_k")
+        self.min_p = kwargs.get("min_p")
+        self.top_a = kwargs.get("top_a")
+        self.seed = kwargs.get("seed")
+
     def get_headers(self) -> Dict[str, str]:
         headers = {
             "Authorization": f"Bearer {self.api_key}",
@@ -539,6 +548,22 @@ class OpenRouterAdapter(APIProviderAdapter):
             payload["top_p"] = kwargs["top_p"]
         elif self.top_p is not None:
             payload["top_p"] = self.top_p
+
+        # Add other OpenRouter sampling parameters (only if they have values)
+        sampling_params = {
+            "frequency_penalty": kwargs.get("frequency_penalty", self.frequency_penalty),
+            "presence_penalty": kwargs.get("presence_penalty", self.presence_penalty),
+            "repetition_penalty": kwargs.get("repetition_penalty", self.repetition_penalty),
+            "top_k": kwargs.get("top_k", self.top_k),
+            "min_p": kwargs.get("min_p", self.min_p),
+            "top_a": kwargs.get("top_a", self.top_a),
+            "seed": kwargs.get("seed", self.seed),
+        }
+
+        # Only add non-None parameters to payload
+        for param_name, param_value in sampling_params.items():
+            if param_value is not None:
+                payload[param_name] = param_value
 
         # OpenRouter + Gemini fix: Can't combine tools with json_mode
         # Force json_mode=False when tools are present to avoid API errors
@@ -624,14 +649,20 @@ class OpenRouterAdapter(APIProviderAdapter):
             "max_tokens",
             "temperature",
             "top_p",
+            "top_k",
             "json_mode",
             "tools",
+            "tool_choice",
             "response_format",
+            "response_schema",  # For structured output
             "thinking_budget",
             "reasoning_effort",
             "exclude_reasoning",
             "frequency_penalty",
             "presence_penalty",
+            "repetition_penalty",
+            "min_p",
+            "top_a",
             "logit_bias",
             "logprobs",
             "top_logprobs",
