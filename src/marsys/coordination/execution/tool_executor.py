@@ -210,8 +210,7 @@ class RealToolExecutor:
                     results.append({
                         "tool_call_id": tool_id,
                         "tool_name": tool_name,
-                        "result": result,
-                        "images": [],  # Context tools don't return images
+                        "result": result,  # String result from context tool
                         "_origin": tool_call.get('_origin', 'response') if isinstance(tool_call, dict) else 'response'
                     })
                     continue
@@ -230,8 +229,7 @@ class RealToolExecutor:
                     results.append({
                         "tool_call_id": tool_id,
                         "tool_name": tool_name,
-                        "result": result,
-                        "images": [],  # Context tools don't return images
+                        "result": result,  # String result from context tool
                         "_origin": tool_call.get('_origin', 'response') if isinstance(tool_call, dict) else 'response'
                     })
                     continue
@@ -252,26 +250,6 @@ class RealToolExecutor:
                     # Execute the tool
                     raw_result = await self._execute_single_tool(tool_func, tool_args, tool_name)
 
-                    # Check if result is ToolResponse
-                    from marsys.environment.tool_response import ToolResponse
-
-                    if isinstance(raw_result, ToolResponse):
-                        # ToolResponse format: use to_content_array() for proper conversion
-                        # This returns str, dict, or list of content blocks (already formatted for LLM)
-                        result_content = raw_result.to_content_array()
-                        metadata = raw_result.metadata
-                        images = []  # Images are now embedded in content_array for multimodal
-                    elif isinstance(raw_result, dict):
-                        # Legacy dict format: check for images key
-                        images = raw_result.get('images', [])
-                        result_content = raw_result.get('result', raw_result)
-                        metadata = None
-                    else:
-                        # Simple format: plain string/value
-                        images = []
-                        result_content = raw_result
-                        metadata = None
-
                     # Emit tool complete event
                     if self.event_bus:
                         import time
@@ -286,7 +264,9 @@ class RealToolExecutor:
                             duration=time.time() - start_time if start_time else None
                         ))
 
-                    result = result_content
+                    # Store raw result - either ToolResponse object or string
+                    # Step executor will determine message pattern based on result type
+                    result = raw_result
                 else:
                     # Create helpful error message with fuzzy matching
                     all_tools = list(self.tool_registry.keys()) + list(agent_tools.keys())
@@ -305,16 +285,13 @@ class RealToolExecutor:
 
                     full_error = f"{error_msg} {suggestion}"
                     logger.error(full_error)
-                    result = {"error": full_error}
-                    images = []  # No images for error case
-                    metadata = None  # No metadata for error case
+                    # Return error as string (will use single-message pattern)
+                    result = full_error
 
                 results.append({
                     "tool_call_id": tool_id,
                     "tool_name": tool_name,
-                    "result": result,
-                    "images": images,
-                    "metadata": metadata,  # NEW: Include metadata from ToolResponse
+                    "result": result,  # ToolResponse object or string
                     "_origin": tool_call.get('_origin', 'response') if isinstance(tool_call, dict) else 'response'
                 })
                 
@@ -335,15 +312,13 @@ class RealToolExecutor:
                         duration=time.time() - start_time if 'start_time' in locals() and start_time else None
                     ))
 
-                # Create clear error message for the agent
+                # Create clear error message for the agent (as string)
                 error_msg = f"Tool '{tool_name}' failed: {str(e)}"
 
                 results.append({
                     "tool_call_id": tool_id,
                     "tool_name": tool_name,
-                    "result": {"error": error_msg},
-                    "images": [],  # No images for error case
-                    "metadata": None,  # No metadata for error case
+                    "result": error_msg,  # Error as string (single-message pattern)
                     "_origin": tool_call.get('_origin', 'response') if isinstance(tool_call, dict) else 'response'
                 })
 
@@ -366,26 +341,24 @@ class RealToolExecutor:
             # Log successful execution
             logger.info(f"Tool {tool_name} executed successfully")
 
-            # Ensure result is JSON serializable
+            # Process result based on type
+            # Two-message pattern: ONLY for ToolResponse objects
+            # Single-message pattern: All other results (converted to string)
             from marsys.environment.tool_response import ToolResponse
 
             if isinstance(result, ToolResponse):
-                # Return ToolResponse as-is, don't serialize it
+                # ToolResponse: use as-is (will trigger two-message pattern in step_executor)
+                # ToolResponse.to_content_array() handles proper typed array conversion
                 return result
-            elif isinstance(result, str):
-                try:
-                    # Try to parse if it's JSON string
-                    parsed = json.loads(result)
-                    return parsed
-                except json.JSONDecodeError:
-                    # Return as content if not JSON
-                    return {"content": result}
-            elif isinstance(result, dict):
-                return result
-            elif isinstance(result, list):
-                return {"results": result}
             else:
-                return {"result": str(result)}
+                # Everything else: stringify for single-message pattern
+                # This includes: strings, dicts, lists, numbers, etc.
+                if isinstance(result, (dict, list)):
+                    # Convert to compact JSON string
+                    return json.dumps(result, ensure_ascii=False, separators=(',', ':'))
+                else:
+                    # Convert to string
+                    return str(result)
                 
         except Exception as e:
             logger.error(f"Tool execution failed for {tool_name}: {e}", exc_info=True)
