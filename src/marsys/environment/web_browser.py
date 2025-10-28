@@ -2531,6 +2531,50 @@ class BrowserTool:
             }
         )
 
+    async def mouse_triple_click(
+        self,
+        x: int,
+        y: int,
+        reasoning: Optional[str] = None,
+        timeout: Optional[int] = None,
+        use_smooth_movement: bool = False,
+    ) -> None:
+        """
+        Perform a triple click at the specified (x, y) coordinate on the page using the mouse.
+        Triple-clicking typically selects an entire paragraph or line of text, making it very
+        reliable for selecting all text in input fields.
+
+        Parameters:
+            x (int): The x-coordinate for the mouse triple click.
+            y (int): The y-coordinate for the mouse triple click.
+            reasoning (Optional[str]): The reasoning chain for this action. Defaults to empty string.
+            timeout (Optional[int]): Optional timeout in milliseconds for the triple click action.
+            use_smooth_movement (bool): If True, uses smooth human-like movement before triple clicking. Defaults to False.
+
+        Returns:
+            None
+        """
+        r = reasoning or ""
+
+        # Use smooth movement if requested
+        if use_smooth_movement:
+            await self.mouse_move_smooth(
+                target=(x, y),
+                reasoning=f"Smooth movement before triple click: {r}"
+            )
+
+        # Perform triple click using click_count parameter
+        await self.page.mouse.click(x, y, click_count=3, timeout=timeout)
+        self.history.append(
+            {
+                "action": "mouse_triple_click",
+                "reasoning": r,
+                "x": x,
+                "y": y,
+                "use_smooth_movement": use_smooth_movement,
+            }
+        )
+
     async def mouse_right_click(
         self,
         x: int,
@@ -4788,7 +4832,7 @@ class BrowserTool:
         interactive_selectors = [
             'button',
             'input[type="button"]',
-            'input[type="submit"]', 
+            'input[type="submit"]',
             'input[type="reset"]',
             'input[type="image"]',
             'input[type="checkbox"]',
@@ -4806,6 +4850,7 @@ class BrowserTool:
             'input[type="file"]',
             'textarea',
             'select',
+            'option',  # Individual dropdown options (visible when select is opened)
             'a[href]',
             '[onclick]',
             '[role="button"]',
@@ -4902,6 +4947,7 @@ class BrowserTool:
                                 'input[type="text"]': 5,
                                 'input[type="password"]': 5,
                                 'select': 5,
+                                'option': 4,  # Dropdown options (lower priority than select itself)
                                 'textarea': 5,
                                 '[tabindex]': 3,
                                 '.btn': 2,

@@ -46,6 +46,32 @@ class BrowserAgentMode(Enum):
     ADVANCED = "advanced"
 
 
+class ElementDetectionMode(Enum):
+    """
+    Element detection method for screenshots and interactive element highlighting.
+
+    RULE_BASED: Fast DOM-based detection using HTML structure analysis.
+                No vision model required. Most accurate for standard HTML elements.
+
+    VISION: AI-based detection using vision model for screenshot analysis.
+            Slower but can detect dynamically rendered elements not in DOM.
+            Requires vision_model_config to be provided.
+
+    BOTH: Intelligently combines rule-based and vision-based detection.
+          Uses rule-based for accuracy, vision for coverage.
+          Automatically deduplicates overlapping detections.
+          Requires vision_model_config to be provided.
+
+    AUTO: Automatically chooses detection mode based on configuration:
+          - If vision_model_config provided: uses BOTH
+          - If no vision_model_config: uses RULE_BASED
+    """
+    RULE_BASED = "rule_based"
+    VISION = "vision"
+    BOTH = "both"
+    AUTO = "auto"
+
+
 # Mode-specific default configurations
 BROWSER_MODE_DEFAULTS = {
     "primitive": {
@@ -79,6 +105,9 @@ BROWSER_MODE_DEFAULTS = {
             "- Text inputs: Click field coordinates → type with keyboard\n"
             "- Dropdowns: Click dropdown → wait for observation → scroll to option if needed → click option coordinates\n"
             "- Dropdown with search: Click dropdown → click search field → type query → click result\n\n"
+            "**Clearing text from inputs:**\n"
+            "- Method 1 (recommended): Triple-click field coordinates → press 'Backspace' (reliably selects all text in single/multi-line inputs)\n"
+            "- Method 2 (fallback): Click field → right-click → look for 'Select All' option in context menu → click it → press 'Backspace'\n\n"
             "**Common situations:**\n"
             "- **Cookie popups**: Decline if possible, otherwise accept to proceed\n"
             "- **Anti-bot challenges**: Analyze and solve the challenge\n"
@@ -114,9 +143,8 @@ class InteractiveElementsAgent(Agent):
     def __init__(
         self,
         model_config: ModelConfig,
-        agent_name: Optional[str] = None,
+        name: str,
         allowed_peers: Optional[List[str]] = None,
-        max_tokens: Optional[int] = 4096,
     ) -> None:
         """
         Initialize the InteractiveElementsAgent.
@@ -131,6 +159,12 @@ class InteractiveElementsAgent(Agent):
 
         instruction = """
 You are an expert UI analyst. Your task is to identify ALL currently accessible interactive elements, understanding modal interaction hierarchy.
+
+OUTPUT FORMAT REQUIREMENT:
+- CRITICAL: Return compact JSON without any indentation, newlines, or unnecessary whitespace
+- Use single-line JSON format to minimize token usage but ensure JSON is syntactically correct
+- Each object MUST have proper opening and closing braces: {"box_2d":[...],"label":"..."}
+- Example: [{"box_2d":[100,200,150,300],"label":"Button"},{"box_2d":[200,300,250,400],"label":"Link"}]
 
 INTERACTION HIERARCHY UNDERSTANDING:
 When a modal/dialog is present, there are typically TWO layers of accessible elements:
@@ -234,12 +268,11 @@ Return ALL currently accessible interactive elements, understanding that both mo
 
         super().__init__(
             model_config=model_config,
+            name=name,
             goal=goal,
             instruction=instruction,
             tools=None,  # InteractiveElementsAgent doesn't use tools
             memory_type="conversation_history",
-            max_tokens=max_tokens,
-            name=agent_name,
             allowed_peers=allowed_peers,
             input_schema=input_schema,
             output_schema=output_schema,
@@ -337,20 +370,11 @@ Return ALL currently accessible interactive elements, understanding that both mo
             # Prepare the refined analysis prompt using normalized coordinates
             analysis_prompt = """
 Analyze this webpage screenshot and identify ALL currently accessible interactive UI elements using the modal hierarchy understanding from your system instructions.
-
 Return a JSON array containing each interactive element with:
 
 COORDINATE FORMAT (CRITICAL):
 - box_2d: [y_min, x_min, y_max, x_max] in NORMALIZED coordinates (0-1000 scale)
 - label: Descriptive, context-aware label as specified in system instructions
-
-COORDINATE SYSTEM:
-- Normalized scale: 0-1000 (NOT pixel coordinates)
-- Format: [y_min, x_min, y_max, x_max] where:
-  * y_min: top edge (0-1000)
-  * x_min: left edge (0-1000) 
-  * y_max: bottom edge (0-1000)
-  * x_max: right edge (0-1000)
 
 DETECTION REQUIREMENTS:
 1. Follow modal hierarchy rules from system instructions
@@ -361,7 +385,15 @@ DETECTION REQUIREMENTS:
 
 Return a JSON array of objects with "box_2d" and "label" fields only.
             """
-
+# """
+# COORDINATE SYSTEM:
+# - Normalized scale: 0-1000 (NOT pixel coordinates)
+# - Format: [y_min, x_min, y_max, x_max] where:
+#   * y_min: top edge (0-1000)
+#   * x_min: left edge (0-1000) 
+#   * y_max: bottom edge (0-1000)
+#   * x_max: right edge (0-1000)
+# """
             # Prepare messages for the model
             # In pure _run(), we construct messages directly from passed context
             messages = []
@@ -438,12 +470,16 @@ Return a JSON array of objects with "box_2d" and "label" fields only.
             api_model_kwargs['response_schema'] = bounding_box_schema
             api_model_kwargs['json_mode'] = True
 
+            # Get temperature and top_p from model config (use defaults if not set)
+            temperature = getattr(self._model_config, 'temperature', 0.1) if hasattr(self, '_model_config') else 0.1
+            top_p = getattr(self._model_config, 'top_p', 1.0) if hasattr(self, '_model_config') else 1.0
+
             # Call the model asynchronously for better performance
             raw_model_output = await self.model.arun(
                 messages=messages,
                 max_tokens=self.max_tokens,
-                temperature=0.1,
-                top_p=1,
+                temperature=temperature,
+                top_p=top_p,
                 **api_model_kwargs,
             )
 
@@ -531,25 +567,203 @@ class BrowserAgent(Agent):
     - Form filling and submission
     """
 
+    @staticmethod
+    def _validate_and_resolve_detection_mode(
+        element_detection_mode: str,
+        vision_model_config: Optional[ModelConfig],
+        model_config: ModelConfig,
+        auto_screenshot: bool,
+        agent_name: str
+    ) -> ElementDetectionMode:
+        """
+        Validate element_detection_mode parameter and resolve AUTO mode to concrete mode.
+
+        Args:
+            element_detection_mode: User-provided detection mode string
+            vision_model_config: Optional vision model configuration
+            model_config: Main model configuration
+            auto_screenshot: Whether auto-screenshot is enabled
+            agent_name: Name of the agent (for error messages)
+
+        Returns:
+            Resolved ElementDetectionMode enum value
+
+        Raises:
+            AgentConfigurationError: If mode is invalid or requirements not met
+        """
+        # Validate input
+        detection_mode_lower = element_detection_mode.lower()
+        if detection_mode_lower not in ["rule_based", "vision", "both", "auto"]:
+            raise AgentConfigurationError(
+                f"Invalid element_detection_mode: '{element_detection_mode}'. "
+                f"Must be one of: 'rule_based', 'vision', 'both', 'auto'",
+                agent_name=agent_name,
+                config_field="element_detection_mode",
+                config_value=element_detection_mode,
+                suggestion="Use 'auto' for automatic selection, 'rule_based' for DOM-only, "
+                           "'vision' for AI-only, or 'both' for combined detection"
+            )
+
+        # Convert string to enum
+        mode = ElementDetectionMode[detection_mode_lower.upper()]
+
+        # Resolve AUTO mode based on vision model availability
+        if mode == ElementDetectionMode.AUTO:
+            # Determine if vision model will be available
+            effective_vision_config = vision_model_config or (
+                model_config if auto_screenshot and model_config.type == "api" else None
+            )
+
+            if effective_vision_config:
+                # Vision model available: use BOTH for best coverage
+                mode = ElementDetectionMode.BOTH
+                logger.debug(f"{agent_name}: AUTO mode selected BOTH detection (vision model available)")
+            else:
+                # No vision model: use RULE_BASED
+                mode = ElementDetectionMode.RULE_BASED
+                logger.debug(f"{agent_name}: AUTO mode selected RULE_BASED detection (no vision model)")
+
+        # Validate vision model requirement for vision-based modes
+        if mode in [ElementDetectionMode.VISION, ElementDetectionMode.BOTH]:
+            # Check if vision model will be available
+            will_have_vision = vision_model_config or (auto_screenshot and model_config.type == "api")
+
+            if not will_have_vision:
+                raise AgentConfigurationError(
+                    f"element_detection_mode='{detection_mode_lower}' requires vision_model_config to be provided",
+                    agent_name=agent_name,
+                    config_field="element_detection_mode",
+                    config_value=element_detection_mode,
+                    suggestion="Either provide vision_model_config parameter or set element_detection_mode='rule_based'"
+                )
+
+        return mode
+
+    def _get_detection_flags(self) -> Dict[str, bool]:
+        """
+        Convert element_detection_mode to use_prediction and use_rule_based flags.
+
+        Returns:
+            Dictionary with 'use_prediction' and 'use_rule_based' boolean flags
+        """
+        if self.element_detection_mode == ElementDetectionMode.RULE_BASED:
+            return {"use_prediction": False, "use_rule_based": True}
+        elif self.element_detection_mode == ElementDetectionMode.VISION:
+            return {"use_prediction": True, "use_rule_based": False}
+        elif self.element_detection_mode == ElementDetectionMode.BOTH:
+            return {"use_prediction": True, "use_rule_based": True}
+        else:
+            # Fallback to RULE_BASED if something went wrong
+            logger.warning(f"Unexpected element_detection_mode: {self.element_detection_mode}. Using RULE_BASED.")
+            return {"use_prediction": False, "use_rule_based": True}
+
+    async def _screenshot_with_detection_mode(
+        self,
+        filename: Optional[str] = None,
+        reasoning: Optional[str] = None,
+        highlight_bbox: bool = True
+    ):
+        """
+        Wrapper for screenshot tool that applies element_detection_mode.
+
+        This method wraps BrowserTool.screenshot but uses highlight_interactive_elements
+        to respect the agent's element_detection_mode setting.
+
+        Args:
+            filename: Optional custom filename (without extension)
+            reasoning: Description of why screenshot is being taken
+            highlight_bbox: Whether to highlight interactive elements
+
+        Returns:
+            ToolResponse with screenshot and element information
+        """
+        from marsys.environment.tool_response import ToolResponse, ToolResponseContent
+
+        if not highlight_bbox:
+            # No highlighting needed - use BrowserTool directly
+            return await self.browser_tool.screenshot(
+                filename=filename,
+                reasoning=reasoning,
+                highlight_bbox=False
+            )
+
+        # Use highlight_interactive_elements with element_detection_mode
+        detection_flags = self._get_detection_flags()
+        result = await self.highlight_interactive_elements(
+            visible_only=True,
+            use_prediction=detection_flags["use_prediction"],
+            use_rule_based=detection_flags["use_rule_based"],
+            screenshot_filename=filename,
+            filter_keys=None  # Return all element data for manual screenshot
+        )
+
+        screenshot_path = result.get('screenshot_path')
+        elements = result.get('elements', [])
+
+        # Build text description with JSON-formatted elements (same as BrowserTool.screenshot)
+        if elements:
+            import json
+            elements_json = []
+            for element in elements:
+                label = element.get('label', 'Unknown')
+                number = element.get('number', '?')
+                center = element.get('center', [0, 0])
+                center_x = int(round(center[0]))
+                center_y = int(round(center[1]))
+
+                elements_json.append({
+                    "number": number,
+                    "label": label,
+                    "center": {"x": center_x, "y": center_y}
+                })
+
+            elements_json_str = json.dumps(elements_json, indent=2)
+            text_description = (
+                f"Screenshot captured with {len(elements)} interactive elements detected.\n\n"
+                f"Elements (use numbers for interaction):\n{elements_json_str}"
+            )
+        else:
+            text_description = "Screenshot captured (no interactive elements detected)."
+
+        # Create multimodal response
+        content_blocks = [
+            ToolResponseContent(type="text", text=text_description),
+            ToolResponseContent(type="image_file", source=screenshot_path)
+        ]
+
+        return ToolResponse(
+            content=content_blocks,
+            metadata={
+                "element_count": len(elements),
+                "screenshot_path": screenshot_path,
+                "detection_mode": self.element_detection_mode.value,
+                "detection_methods": {
+                    "rule_based": detection_flags["use_rule_based"],
+                    "ai_prediction": detection_flags["use_prediction"]
+                }
+            }
+        )
+
     def __init__(
         self,
         model_config: ModelConfig,
+        name: str,
         goal: Optional[str] = None,
         instruction: Optional[str] = None,
         tools: Optional[Dict[str, Callable[..., Any]]] = None,
         max_tokens: Optional[int] = None,
-        name: Optional[str] = None,
         allowed_peers: Optional[List[str]] = None,
         mode: str = "advanced",
         headless: bool = True,
-        viewport_width: int = 1440,
-        viewport_height: int = 960,
+        viewport_width: int = 1536,
+        viewport_height: int = 1536,
         tmp_dir: Optional[str] = None,
         browser_channel: Optional[str] = None,
         vision_model_config: Optional[ModelConfig] = None,
         input_schema: Optional[Any] = None,
         output_schema: Optional[Any] = None,
         auto_screenshot: bool = False,
+        element_detection_mode: str = "auto",
         timeout: int = 5000,
         memory_retention: str = "session",
         memory_storage_path: Optional[str] = None,
@@ -575,12 +789,18 @@ class BrowserAgent(Agent):
             browser_channel: Optional browser channel (e.g., 'chrome', 'msedge')
             vision_model_config: Optional separate model config for vision analysis.
                 If auto_screenshot=True and this is not provided, the main model_config will be used.
-                Must be vision-capable (VLM for local models, or API models with vision support like gpt-4-vision, claude-3-opus).
+                Must be vision-capable (VLM for local models, or API models with vision support).
+                **Recommended**: google/gemini-2.5-flash (fast, cost-effective) or google/gemini-2.5-pro (complex tasks).
             input_schema: Optional input schema for the agent
             output_schema: Optional output schema for the agent
             auto_screenshot: Whether to automatically take screenshots with interactive element detection after each step.
                 Requires a vision-capable model. If vision_model_config is not provided, uses the main model_config.
                 For local models, model_class must be 'vlm'. For API models, must support vision (e.g., gpt-4-vision, claude-3-opus).
+            element_detection_mode: Method for detecting interactive elements in screenshots.
+                - "auto" (default): Automatically chooses based on vision_model_config availability
+                - "rule_based": Fast DOM-based detection (no vision model needed)
+                - "vision": AI-based detection using vision model (requires vision_model_config)
+                - "both": Combines both methods intelligently (requires vision_model_config)
             timeout: Default timeout in milliseconds for browser operations (default: 5000)
             memory_retention: Memory retention policy - "single_run", "session", or "persistent"
             memory_storage_path: Path for persistent memory storage (if retention is "persistent")
@@ -661,6 +881,15 @@ class BrowserAgent(Agent):
                                "or set model_config.model_class='vlm' if using a local vision model."
                 )
 
+        # Validate and set element_detection_mode
+        self.element_detection_mode = self._validate_and_resolve_detection_mode(
+            element_detection_mode,
+            vision_model_config,
+            model_config,
+            auto_screenshot,
+            name or "BrowserAgent"
+        )
+
         # Check for playwright-stealth support
         try:
             from playwright_stealth import stealth_async
@@ -700,11 +929,11 @@ class BrowserAgent(Agent):
 
         super().__init__(
             model_config=model_config,
+            name=name,
             goal=final_goal,
             instruction=final_instruction,
             tools=browser_tools,
             max_tokens=max_tokens,
-            name=name,
             allowed_peers=allowed_peers,
             input_schema=input_schema,
             output_schema=output_schema,
@@ -734,7 +963,7 @@ class BrowserAgent(Agent):
             # Create the vision agent with the model config
             self.vision_agent = InteractiveElementsAgent(
                 model_config=actual_vision_config,
-                agent_name=f"{name or 'BrowserAgent'}_VisionAnalyzer"
+                name=f"{name or 'BrowserAgent'}_VisionAnalyzer"
             )
             logger.info(f"Vision agent initialized for {name or 'BrowserAgent'} using {'provided vision_model_config' if vision_model_config else 'main model_config'}")
 
@@ -764,21 +993,23 @@ class BrowserAgent(Agent):
     async def create_safe(
         cls,
         model_config: ModelConfig,
-        goal: str,
-        instruction: str,
+        name: str,
+        goal: Optional[str] = None,
+        instruction: Optional[str] = None,
         tools: Optional[Dict[str, Callable[..., Any]]] = None,
         max_tokens: Optional[int] = None,
-        name: Optional[str] = None,
         allowed_peers: Optional[List[str]] = None,
+        mode: str = "advanced",
         headless: bool = True,
-        viewport_width: int = 1440,
-        viewport_height: int = 960,
+        viewport_width: int = 1536,
+        viewport_height: int = 1536,
         tmp_dir: Optional[str] = None,
         browser_channel: Optional[str] = None,
         vision_model_config: Optional[ModelConfig] = None,
         input_schema: Optional[Any] = None,
         output_schema: Optional[Any] = None,
         auto_screenshot: bool = False,
+        element_detection_mode: str = "auto",
         timeout: int = 5000,
         memory_retention: str = "session",
         memory_storage_path: Optional[str] = None,
@@ -792,12 +1023,13 @@ class BrowserAgent(Agent):
         # Create agent instance (Agent's __init__ will handle model creation)
         agent = cls(
             model_config=model_config,
+            name=name,
             goal=goal,
             instruction=instruction,
             tools=tools,
             max_tokens=max_tokens,
-            name=name,
             allowed_peers=allowed_peers,
+            mode=mode,
             headless=headless,
             viewport_width=viewport_width,
             viewport_height=viewport_height,
@@ -807,6 +1039,7 @@ class BrowserAgent(Agent):
             input_schema=input_schema,
             output_schema=output_schema,
             auto_screenshot=auto_screenshot,
+            element_detection_mode=element_detection_mode,
             timeout=timeout,
             memory_retention=memory_retention,
             memory_storage_path=memory_storage_path,
@@ -902,6 +1135,9 @@ class BrowserAgent(Agent):
                 "scroll_up": self.browser_tool.scroll_up,
                 "scroll_down": self.browser_tool.scroll_down,
                 "mouse_click": self.browser_tool.mouse_click,
+                "mouse_dbclick": self.browser_tool.mouse_dbclick,
+                "mouse_triple_click": self.browser_tool.mouse_triple_click,
+                "mouse_right_click": self.browser_tool.mouse_right_click,
                 "type_text": self.browser_tool.type_text,
                 "keyboard_press": self.browser_tool.keyboard_press,
                 "go_back": self.browser_tool.go_back,
@@ -911,7 +1147,7 @@ class BrowserAgent(Agent):
                 "get_page_elements": self.browser_tool.get_page_elements,
                 "extract_text_content": self.browser_tool.extract_text_content,
                 "download_file": self.browser_tool.download_file,
-                "screenshot": self.browser_tool.screenshot,
+                "screenshot": self._screenshot_with_detection_mode,
             }
 
         
@@ -1049,11 +1285,26 @@ class BrowserAgent(Agent):
             )
 
         # Take a screenshot for analysis using BrowserTool
-        screenshot_path = await self.browser_tool.screenshot(
+        screenshot_response = await self.browser_tool.screenshot(
             filename="vision_analysis_screenshot.png",
             reasoning="Take screenshot for vision analysis",
             highlight_bbox=False
         )
+
+        # Extract actual file path from ToolResponse
+        screenshot_path = None
+        if hasattr(screenshot_response, 'content'):
+            for content_item in screenshot_response.content:
+                if content_item.type == 'image' and content_item.image_path:
+                    screenshot_path = content_item.image_path
+                    break
+
+        # Fallback to metadata if not found in content
+        if not screenshot_path and hasattr(screenshot_response, 'metadata'):
+            screenshot_path = screenshot_response.metadata.get('screenshot_path')
+
+        if not screenshot_path:
+            raise Exception("Could not extract screenshot path from BrowserTool.screenshot() response")
 
         try:
             # Create request context for the InteractiveElementsAgent call
@@ -1461,11 +1712,12 @@ class BrowserAgent(Agent):
             await self._remove_previous_auto_messages(request_context)
 
             # Use highlight_interactive_elements to capture current page state
-            # Note: Set use_prediction=False to skip VLM and use only DOM-based detection for speed
+            # Detection method determined by element_detection_mode
+            detection_flags = self._get_detection_flags()
             result = await self.highlight_interactive_elements(
                 visible_only=True,
-                use_prediction=False,  # Skip VLM for faster detection (DOM-only)
-                use_rule_based=True,   # Use BrowserTool's DOM-based detection
+                use_prediction=detection_flags["use_prediction"],
+                use_rule_based=detection_flags["use_rule_based"],
                 screenshot_filename=f"auto_step_{step_number}",
                 filter_keys=["label", "number", "center"]  # Only include AI-relevant keys
             )
