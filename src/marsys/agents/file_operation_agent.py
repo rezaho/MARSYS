@@ -21,7 +21,7 @@ class FileOperationAgent(Agent):
     def __init__(
         self,
         model_config: ModelConfig,
-        agent_name: str = "FileOperationAgent",
+        name: str,
         goal: Optional[str] = None,
         instruction: Optional[str] = None,
         enable_bash: bool = False,
@@ -85,7 +85,7 @@ class FileOperationAgent(Agent):
             goal=goal,
             instruction=instruction,
             tools=tools,
-            name=agent_name,
+            name=name,
             **kwargs
         )
 
