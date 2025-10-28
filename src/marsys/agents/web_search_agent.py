@@ -18,7 +18,7 @@ class WebSearchAgent(Agent):
     def __init__(
         self,
         model_config: ModelConfig,
-        agent_name: str = "WebSearchAgent",
+        name: str,
         goal: Optional[str] = None,
         instruction: Optional[str] = None,
         search_mode: str = "all",
@@ -36,7 +36,7 @@ class WebSearchAgent(Agent):
 
         Args:
             model_config: Model configuration for the agent
-            agent_name: Unique agent identifier
+            name: Unique agent identifier
             goal: Agent's goal description (auto-generated if None)
             instruction: Agent's instruction set (auto-generated if None)
             search_mode: Search mode - "all", "web", or "scholarly"
@@ -152,7 +152,7 @@ class WebSearchAgent(Agent):
             goal=goal,
             instruction=instruction,
             tools=tools,
-            name=agent_name,
+            name=name,
             **kwargs
         )
 
@@ -308,7 +308,9 @@ For each relevant result you return, provide:
         instruction += """ or description of the content
 - **Source**: Which search tool found this ("""
 
-        source_names = [tool_name.replace("tool_", "").replace("_search", "").replace("_api", "") for _, tool_name in web_sources]
+        # Combine all web sources for source name list
+        all_web_sources = web_text_sources + web_image_sources + web_news_sources
+        source_names = [tool_name.replace("tool_", "").replace("_search", "").replace("_api", "") for _, tool_name in all_web_sources]
         source_names += [tool_name.replace("tool_", "").replace("_search", "") for _, tool_name, _ in scholarly_sources]
         instruction += ", ".join(source_names)
 
@@ -330,7 +332,7 @@ For each relevant result you return, provide:
 **Be strategic**: Start broad, learn terminology from results, search again with specific terms sources actually use.
 **Be thorough**: Search multiple"""
 
-        if len(web_sources) + len(scholarly_sources) > 1:
+        if len(all_web_sources) + len(scholarly_sources) > 1:
             instruction += """ sources and"""
 
         instruction += """ angles for comprehensive coverage.
