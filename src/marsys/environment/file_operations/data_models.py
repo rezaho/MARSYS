@@ -435,17 +435,23 @@ class FileContent:
                 metadata=self._build_tool_response_metadata()
             )
 
-    def _build_tool_response_metadata(self) -> str:
+    def _build_tool_response_metadata(self) -> Dict[str, Any]:
         """
-        Build metadata string for ToolResponse.
+        Build metadata dict for ToolResponse.
         This creates the explanation message that appears in the tool response.
         """
         if self.partial:
             # For partial content: return usage guide (detailed explanation)
-            return self.generate_usage_guide()
+            return {
+                "status": "partial",
+                "message": self.generate_usage_guide()
+            }
         else:
             # For complete content: simple success message
-            return "Tool execution completed successfully."
+            return {
+                "status": "success",
+                "message": "Tool execution completed successfully."
+            }
 
 
 @dataclass
