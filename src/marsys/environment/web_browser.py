@@ -10,7 +10,7 @@ import re
 import tempfile
 import time
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Tuple, TypedDict, Union, TYPE_CHECKING
+from typing import TYPE_CHECKING, Any, Dict, List, Optional, Tuple, TypedDict, Union
 
 from PIL import Image as PILImage
 from PIL import ImageDraw, ImageFont
@@ -18,11 +18,11 @@ from playwright.async_api import BrowserContext, Page, async_playwright
 
 # Import framework exceptions
 from marsys.agents.exceptions import (
+    ActionValidationError,
+    BrowserConnectionError,
     BrowserError,
     BrowserNotInitializedError,
-    BrowserConnectionError,
     ToolExecutionError,
-    ActionValidationError
 )
 
 # Import ToolResponse for multimodal returns
@@ -45,8 +45,9 @@ import logging
 import re
 import tempfile
 from pathlib import Path
-from bs4 import BeautifulSoup, Comment
+
 import markdownify
+from bs4 import BeautifulSoup, Comment
 
 # Build the absolute path to the assets directory (assuming the repo structure provided)
 CURRENT_DIR = os.path.dirname(os.path.abspath(__file__))
@@ -2205,6 +2206,10 @@ class BrowserTool:
             await self.page.wait_for_load_state("networkidle", timeout=5000)
         except Exception:
             await self.page.wait_for_timeout(3000)
+
+        # Reinject mouse helper after navigation
+        await self._reinject_mouse_helper()
+
         title = await self.page.title()
         self.history.append(
             {
@@ -2227,6 +2232,10 @@ class BrowserTool:
         """
         r = reasoning or ""
         await self.page.go_back(timeout=timeout)
+
+        # Reinject mouse helper after navigation
+        await self._reinject_mouse_helper()
+
         title = await self.page.title()
         self.history.append(
             {
@@ -2280,6 +2289,11 @@ class BrowserTool:
         JavaScript's window.scrollBy() function. The scroll is immediate and does not simulate
         natural mouse wheel scrolling.
 
+        Note: Does NOT work with plugins (e.g., PDFs), embedded documents, or scrollable containers. If this method doesn't work:
+        1. Use mouse_click on the document/section content you want to scroll (click on text, images, or background
+           to focus that scrollable area, but avoid clicking on interactive elements like links, buttons, or form fields)
+        2. Then use mouse_scroll with negative delta_y to scroll up
+
         Parameters:
             distance (int): The number of pixels to scroll up. Must be a positive integer.
             reasoning (Optional[str]): The reasoning chain for this action. Defaults to empty string.
@@ -2305,6 +2319,11 @@ class BrowserTool:
         JavaScript's window.scrollBy() function. The scroll is immediate and does not simulate
         natural mouse wheel scrolling.
 
+        Note: Does NOT work with plugins (e.g., PDFs), embedded documents, or scrollable containers. If this method doesn't work:
+        1. Use mouse_click on the document/section content you want to scroll (click on text, images, or background
+           to focus that scrollable area, but avoid clicking on interactive elements like links, buttons, or form fields)
+        2. Then use mouse_scroll with positive delta_y to scroll down
+
         Parameters:
             distance (int): The number of pixels to scroll down. Must be a positive integer.
             reasoning (Optional[str]): The reasoning chain for this action. Defaults to empty string.
@@ -2324,81 +2343,51 @@ class BrowserTool:
 
     async def mouse_scroll(
         self,
-        x: int = 0,
-        y: int = 0,
+        delta_x: int = 0,
+        delta_y: int = 0,
         reasoning: Optional[str] = None,
     ) -> None:
         """
         Scroll the page horizontally and/or vertically using the mouse wheel.
 
-        This method accepts both horizontal (x) and vertical (y) scroll offsets. A positive y value scrolls
+        This method accepts both horizontal (x) and vertical (y) scroll offsets in PIXELS. A positive y value scrolls
         downwards while a negative y value scrolls upwards. Similarly, a positive x value scrolls to the right,
         and a negative x value scrolls to the left.
 
-        The method uses the mouse wheel action and waits until the page's scroll position reaches the expected
-        offsets based on the initial position and the provided x and y values.
+        IMPORTANT - Units and Typical Values:
+        - delta_x and delta_y are specified in PIXELS (not lines or other units)
+        - Recommended scroll amounts for typical use cases:
+          * Small scroll (1-2 scroll wheel clicks): 200-500 pixels
+          * Medium scroll (partial page): 600-1000 pixels
+          * Large scroll (near full page): 1200-2000 pixels
+        - Examples: delta_y=800 scrolls down moderately, delta_y=-1500 scrolls up substantially
+
+        Note: If mouse scrolling doesn't work (e.g., PDFs, plugins, embedded documents, iframes, or scrollable containers):
+        1. Use mouse_click on the document/section content you want to scroll (click on text, images, or background
+           to focus that scrollable area, but avoid clicking on interactive elements like links, buttons, or form fields)
+        2. Then use mouse_scroll to scroll the focused region
 
         Parameters:
-            x (int): The horizontal scroll offset. Set to a negative value to scroll left, and positive to scroll right.
-            y (int): The vertical scroll offset. Set to a negative value to scroll up, and positive to scroll down.
-            reasoning (Optional[str]): A description of the reasoning for this scroll action. Defaults to an empty string.
+            delta_x (int): Pixels to scroll horizontally. Positive values scroll right,
+                          negative values scroll left. Typical values: 200-2000.
+            delta_y (int): Pixels to scroll vertically. Positive values scroll down,
+                          negative values scroll up. Typical values: 200-2000.
+            reasoning (Optional[str]): A description of the reasoning for this scroll action.
+                                      Defaults to an empty string.
 
         Returns:
             None
         """
         r = reasoning or ""
 
-        # Get the initial scroll positions.
-        initial_x = await self.page.evaluate("() => window.scrollX")
-        initial_y = await self.page.evaluate("() => window.scrollY")
-
-        # Calculate expected positions, clamping horizontal scroll to at least 0 and at most the maximum scrollable width.
-        max_x = await self.page.evaluate(
-            "() => document.body.scrollWidth - window.innerWidth"
-        )
-        expected_x = initial_x + x
-        if x < 0:
-            expected_x = max(0, expected_x)
-        else:
-            expected_x = min(expected_x, max_x)
-
-        # Calculate expected vertical position (similarly, clamp to a minimum of 0).
-        max_y = await self.page.evaluate(
-            "() => document.body.scrollHeight - window.innerHeight"
-        )
-        expected_y = initial_y + y
-        if y < 0:
-            expected_y = max(0, expected_y)
-        else:
-            expected_y = min(expected_y, max_y)
-
-        # Perform the scroll action.
-        await self.page.mouse.wheel(x, y)
-
-        # Poll until the scroll positions reach (or surpass) the expected positions.
-        while True:
-            current_x = await self.page.evaluate("() => window.scrollX")
-            current_y = await self.page.evaluate("() => window.scrollY")
-            x_done = (
-                (x >= 0 and current_x >= expected_x)
-                or (x < 0 and current_x <= expected_x)
-                or (x == 0)
-            )
-            y_done = (
-                (y >= 0 and current_y >= expected_y)
-                or (y < 0 and current_y <= expected_y)
-                or (y == 0)
-            )
-            if x_done and y_done:
-                break
-            await self.page.wait_for_timeout(100)  # wait 100ms before rechecking
+        await self.page.mouse.wheel(delta_x, delta_y)
 
         self.history.append(
             {
                 "action": "mouse_scroll",
                 "reasoning": r,
-                "x": x,
-                "y": y,
+                "delta_x": delta_x,
+                "delta_y": delta_y
             }
         )
 
@@ -2471,15 +2460,22 @@ class BrowserTool:
             None
         """
         r = reasoning or ""
-        
+
         # Use smooth movement if requested
         if use_smooth_movement:
             await self.mouse_move_smooth(
                 target=(x, y),
                 reasoning=f"Smooth movement before click: {r}"
             )
-        
+
         await self.page.mouse.click(x, y)
+
+        # Update visual mouse helper
+        try:
+            await self.page.evaluate(f"window.__updateMouseHelper?.({x}, {y})")
+        except Exception:
+            pass
+
         self.history.append(
             {
                 "action": "mouse_click",
@@ -2512,15 +2508,22 @@ class BrowserTool:
             None
         """
         r = reasoning or ""
-        
+
         # Use smooth movement if requested
         if use_smooth_movement:
             await self.mouse_move_smooth(
                 target=(x, y),
                 reasoning=f"Smooth movement before double click: {r}"
             )
-        
+
         await self.page.mouse.dblclick(x, y, timeout=timeout)
+
+        # Update visual mouse helper
+        try:
+            await self.page.evaluate(f"window.__updateMouseHelper?.({x}, {y})")
+        except Exception:
+            pass
+
         self.history.append(
             {
                 "action": "mouse_dbclick",
@@ -2565,6 +2568,13 @@ class BrowserTool:
 
         # Perform triple click using click_count parameter
         await self.page.mouse.click(x, y, click_count=3, timeout=timeout)
+
+        # Update visual mouse helper
+        try:
+            await self.page.evaluate(f"window.__updateMouseHelper?.({x}, {y})")
+        except Exception:
+            pass
+
         self.history.append(
             {
                 "action": "mouse_triple_click",
@@ -2597,15 +2607,22 @@ class BrowserTool:
             None
         """
         r = reasoning or ""
-        
+
         # Use smooth movement if requested
         if use_smooth_movement:
             await self.mouse_move_smooth(
                 target=(x, y),
                 reasoning=f"Smooth movement before right click: {r}"
             )
-        
+
         await self.page.mouse.click(x, y, button="right", timeout=timeout)
+
+        # Update visual mouse helper
+        try:
+            await self.page.evaluate(f"window.__updateMouseHelper?.({x}, {y})")
+        except Exception:
+            pass
+
         self.history.append(
             {
                 "action": "mouse_right_click",
@@ -2613,6 +2630,83 @@ class BrowserTool:
                 "x": x,
                 "y": y,
                 "use_smooth_movement": use_smooth_movement,
+            }
+        )
+
+    async def mouse_down(
+        self,
+        x: int,
+        y: int,
+        reasoning: Optional[str] = None,
+        button: str = "left",
+    ) -> None:
+        """
+        Press mouse button down at the specified coordinates without releasing.
+
+        Used for drag operations: mouse_down → mouse_move → mouse_up.
+
+        Parameters:
+            x (int): The x-coordinate to press the mouse button.
+            y (int): The y-coordinate to press the mouse button.
+            reasoning (Optional[str]): The reasoning chain for this action.
+            button (str): Mouse button to press ("left", "right", "middle"). Defaults to "left".
+        """
+        r = reasoning or ""
+        await self.page.mouse.move(x, y, steps=5)
+        await self.page.mouse.down(button=button)
+
+        # Update visual mouse helper
+        try:
+            await self.page.evaluate(f"window.__updateMouseHelper?.({x}, {y}, true)")
+        except Exception:
+            pass
+
+        self.history.append(
+            {
+                "action": "mouse_down",
+                "reasoning": r,
+                "x": x,
+                "y": y,
+                "button": button,
+            }
+        )
+
+    async def mouse_up(
+        self,
+        x: int,
+        y: int,
+        reasoning: Optional[str] = None,
+        button: str = "left",
+    ) -> None:
+        """
+        Release mouse button at the specified coordinates.
+
+        Completes drag operations: mouse_down → mouse_move → mouse_up.
+        Automatically moves to (x, y) before releasing.
+
+        Parameters:
+            x (int): The x-coordinate to release the mouse button.
+            y (int): The y-coordinate to release the mouse button.
+            reasoning (Optional[str]): The reasoning chain for this action.
+            button (str): Mouse button to release ("left", "right", "middle"). Defaults to "left".
+        """
+        r = reasoning or ""
+        await self.page.mouse.move(x, y, steps=5)
+        await self.page.mouse.up(button=button)
+
+        # Update visual mouse helper
+        try:
+            await self.page.evaluate(f"window.__updateMouseHelper?.({x}, {y}, false)")
+        except Exception:
+            pass
+
+        self.history.append(
+            {
+                "action": "mouse_up",
+                "reasoning": r,
+                "x": x,
+                "y": y,
+                "button": button,
             }
         )
 
@@ -2668,7 +2762,7 @@ class BrowserTool:
         x: int,
         y: int,
         reasoning: Optional[str] = None,
-        timeout: Optional[int] = None,
+        steps: Optional[int] = None,
     ) -> None:
         """
         Move the mouse to the specified (x, y) coordinate on the page.
@@ -2679,21 +2773,201 @@ class BrowserTool:
             x (int): The x-coordinate to move the mouse to.
             y (int): The y-coordinate to move the mouse to.
             reasoning (Optional[str]): A description of the reasoning for this action.
-            timeout (Optional[int]): Optional timeout in milliseconds for the move action.
+            steps (Optional[int]): Number of intermediate mousemove events to send. Defaults to 1.
 
         Returns:
             None
         """
         r = reasoning or ""
-        await self.page.mouse.move(x, y, timeout=timeout)
+        if steps is not None:
+            await self.page.mouse.move(x, y, steps=steps)
+        else:
+            await self.page.mouse.move(x, y)
+
+        # Update visual mouse helper if enabled
+        try:
+            await self.page.evaluate(f"window.__updateMouseHelper?.({x}, {y})")
+        except Exception:
+            pass
+
         self.history.append(
             {
                 "action": "mouse_move",
                 "reasoning": r,
                 "x": x,
                 "y": y,
+                "steps": steps,
             }
         )
+
+    async def show_mouse_helper(self) -> None:
+        """
+        Enable visual mouse cursor overlay for debugging mouse movements.
+
+        This injects a realistic cursor icon that follows the mouse pointer,
+        switching between pointer and hand icons when the mouse button is pressed.
+        The helper automatically updates when using Playwright mouse methods (move, down, up, click).
+        """
+        # Load cursor images as base64
+        import base64
+
+        assets_dir = Path(__file__).parent.parent / "agents" / "custom_agents" / "assets"
+        cursor_path = assets_dir / "cursor.png"
+        hand_path = assets_dir / "hand-pointer.png"
+
+        # Read and encode images
+        with open(cursor_path, "rb") as f:
+            cursor_b64 = base64.b64encode(f.read()).decode("utf-8")
+        with open(hand_path, "rb") as f:
+            hand_b64 = base64.b64encode(f.read()).decode("utf-8")
+
+        mouse_helper_script = f"""
+        (() => {{
+            // Don't add multiple helpers
+            if (window.__playwrightMouseHelper) {{
+                return;
+            }}
+
+            const box = document.createElement('div');
+            box.classList.add('playwright-mouse-helper');
+
+            const cursorImg = 'data:image/png;base64,{cursor_b64}';
+            const handImg = 'data:image/png;base64,{hand_b64}';
+
+            // Create coordinate label
+            const coordLabel = document.createElement('div');
+            coordLabel.classList.add('playwright-mouse-coords');
+
+            const styleElement = document.createElement('style');
+            styleElement.innerHTML = `
+                .playwright-mouse-helper {{
+                    pointer-events: none;
+                    position: fixed;
+                    width: 23px;
+                    height: 23px;
+                    background-image: url('${{cursorImg}}');
+                    background-size: contain;
+                    background-repeat: no-repeat;
+                    z-index: 999999;
+                    transition: left 0.1s, top 0.1s, margin-left 0.1s;
+                    display: block;
+                    visibility: visible;
+                    margin-left: -3.5px;
+                }}
+                .playwright-mouse-helper.button-down {{
+                    background-image: url('${{handImg}}');
+                    margin-left: -7px;
+                }}
+                .playwright-mouse-coords {{
+                    pointer-events: none;
+                    position: fixed;
+                    font-family: monospace;
+                    font-size: 13px;
+                    background: rgba(0, 0, 0, 0.6);
+                    color: white;
+                    padding: 2px 6px;
+                    border-radius: 3px;
+                    z-index: 999999;
+                    white-space: nowrap;
+                    transition: left 0.1s, top 0.1s;
+                }}
+            `;
+            document.head.appendChild(styleElement);
+
+            // Initialize at center of viewport using pixel values
+            const centerX = window.innerWidth / 2;
+            const centerY = window.innerHeight / 2;
+            box.style.left = centerX + 'px';
+            box.style.top = centerY + 'px';
+            coordLabel.textContent = `(${{Math.round(centerX)}}, ${{Math.round(centerY)}})`;
+
+            document.body.appendChild(box);
+            document.body.appendChild(coordLabel);
+
+            // Position label after adding to DOM so we can measure it
+            const labelWidth = coordLabel.offsetWidth;
+            const rightEdgeThreshold = window.innerWidth - labelWidth - 30;
+            if (centerX > rightEdgeThreshold) {{
+                coordLabel.style.left = (centerX - labelWidth - 10) + 'px';
+            }} else {{
+                coordLabel.style.left = (centerX + 25) + 'px';
+            }}
+            coordLabel.style.top = (centerY - 5) + 'px';
+
+            // Store reference globally for programmatic updates
+            window.__playwrightMouseHelper = box;
+            window.__playwrightMouseCoords = coordLabel;
+
+            // Update helper function for programmatic use
+            window.__updateMouseHelper = (x, y, buttonDown) => {{
+                if (x !== undefined && y !== undefined) {{
+                    box.style.left = x + 'px';
+                    box.style.top = y + 'px';
+                    coordLabel.textContent = `(${{Math.round(x)}}, ${{Math.round(y)}})`;
+
+                    // Get actual label width after updating text
+                    const labelWidth = coordLabel.offsetWidth;
+                    const rightEdgeThreshold = window.innerWidth - labelWidth - 30;
+
+                    if (x > rightEdgeThreshold) {{
+                        // Position to the left of cursor (account for actual width + small gap)
+                        coordLabel.style.left = (x - labelWidth - 10) + 'px';
+                    }} else {{
+                        // Position to the right of cursor
+                        coordLabel.style.left = (x + 25) + 'px';
+                    }}
+                    coordLabel.style.top = (y - 5) + 'px';
+                }}
+                if (buttonDown === true) {{
+                    box.classList.add('button-down');
+                }} else if (buttonDown === false) {{
+                    box.classList.remove('button-down');
+                }}
+            }};
+
+            console.log('Mouse helper initialized at:', centerX, centerY);
+        }})();
+        """
+        await self.page.evaluate(mouse_helper_script)
+        print("✓ Mouse helper enabled - cursor should be visible in browser window")
+
+        # Store that helper is enabled and cache the script for reinjection
+        self._mouse_helper_enabled = True
+        self._mouse_helper_script = mouse_helper_script
+
+        # Set up automatic reinjection on page navigation events
+        if not hasattr(self, '_mouse_helper_listener_attached'):
+            def on_load_handler_sync(frame):
+                # Create task to handle async reinjection
+                import asyncio
+                if frame == self.page.main_frame:
+                    async def reinject():
+                        await self.page.wait_for_timeout(100)
+                        await self._reinject_mouse_helper()
+                        print("✓ Mouse helper reinjected after navigation")
+
+                    # Schedule the coroutine
+                    try:
+                        asyncio.create_task(reinject())
+                    except RuntimeError:
+                        # If no event loop, run in current context
+                        asyncio.ensure_future(reinject())
+
+            self.page.on("domcontentloaded", on_load_handler_sync)
+            self._mouse_helper_listener_attached = True
+            print("✓ Mouse helper event listener attached")
+
+    async def _reinject_mouse_helper(self) -> None:
+        """
+        Reinject mouse helper after page navigation if it was previously enabled.
+        Called automatically after goto, reload, go_back, go_forward.
+        """
+        if getattr(self, '_mouse_helper_enabled', False):
+            try:
+                await self.page.evaluate(self._mouse_helper_script)
+            except Exception:
+                # Silently fail - page might not be ready yet
+                pass
 
     async def mouse_move_smooth(
         self,
@@ -3351,6 +3625,10 @@ class BrowserTool:
         """
         r = reasoning or ""
         await self.page.go_forward(timeout=timeout)
+
+        # Reinject mouse helper after navigation
+        await self._reinject_mouse_helper()
+
         title = await self.page.title()
         self.history.append(
             {
@@ -3370,6 +3648,10 @@ class BrowserTool:
         """
         r = reasoning or ""
         await self.page.reload(timeout=timeout)
+
+        # Reinject mouse helper after navigation
+        await self._reinject_mouse_helper()
+
         title = await self.page.title()
         self.history.append(
             {
@@ -3814,8 +4096,9 @@ class BrowserTool:
         # Use CDP session to fetch the file directly instead of waiting for download event
         # This works better for PDFs that open in browser viewer
         try:
-            import aiohttp
             import urllib.parse
+
+            import aiohttp
 
             # Determine filename from URL if not provided
             if not filename:
@@ -5378,8 +5661,8 @@ class BrowserTool:
         Raises:
             ValueError: If min_delay >= max_delay or variation_factor is negative.
         """
-        import random
         import asyncio
+        import random
 
         if min_delay >= max_delay:
             raise ActionValidationError(

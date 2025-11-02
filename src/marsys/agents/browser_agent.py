@@ -3,7 +3,6 @@ import json
 import logging
 import os
 import re
-import tempfile
 import uuid
 from enum import Enum
 from pathlib import Path
@@ -93,6 +92,7 @@ BROWSER_MODE_DEFAULTS = {
         "goal": "Navigate and interact with web pages like a human through visual observation",
         "instruction_template": (
             "You are a browser automation agent in ADVANCED mode for human-like web interaction.\n\n"
+            "**Browser Viewport:** {viewport_width}x{viewport_height} pixels\n\n"
             "{auto_screenshot_section}"
             "\n**Core workflow:**\n"
             "1. **Observe**: {observation_method}\n"
@@ -108,12 +108,22 @@ BROWSER_MODE_DEFAULTS = {
             "**Clearing text from inputs:**\n"
             "- Method 1 (recommended): Triple-click field coordinates → press 'Backspace' (reliably selects all text in single/multi-line inputs)\n"
             "- Method 2 (fallback): Click field → right-click → look for 'Select All' option in context menu → click it → press 'Backspace'\n\n"
+            "**Scrolling:**\n"
+            "- Use mouse_scroll with delta_y (positive = scroll down, negative = scroll up)\n"
+            "- IMPORTANT: If mouse_scroll doesn't work, it's because the scrollable area is NOT IN FOCUS\n"
+            "  Solution:\n"
+            "  1. Use mouse_click to click on the document/section content you want to scroll\n"
+            "     - Click on text, images, or document background (safe targets)\n"
+            "     - Avoid clicking on links, buttons, or form fields (this would trigger actions)\n"
+            "  2. Then use mouse_scroll - the click brings that area into focus, enabling scrolling\n"
+            "  Common cases: PDFs, plugins, embedded documents, iframes, scrollable containers\n\n"
             "**Common situations:**\n"
             "- **Cookie popups**: Decline if possible, otherwise accept to proceed\n"
             "- **Anti-bot challenges**: Analyze and solve the challenge\n"
             "- **Wrong navigation**: Use go_back to return\n"
             "- **Unexpected state**: Review past actions and adjust\n"
-            "- **Page errors**: May restart from initial URL (avoid loops)\n\n"
+            "- **Page errors**: May restart from initial URL (avoid loops)\n"
+            "- **Scrolling not working**: Click on the content area first (text/images/background) to focus it, then use mouse_scroll\n\n"
             "**When stuck**: If repeated attempts fail, report the issue to the requestor with details about what was tried."
         ),
         "auto_screenshot_enabled": (
@@ -145,6 +155,9 @@ class InteractiveElementsAgent(Agent):
         model_config: ModelConfig,
         name: str,
         allowed_peers: Optional[List[str]] = None,
+        viewport_width: int = 1536,
+        viewport_height: int = 1536,
+        output_schema: Optional[Dict[str, Any]] = None,
     ) -> None:
         """
         Initialize the InteractiveElementsAgent.
@@ -154,10 +167,15 @@ class InteractiveElementsAgent(Agent):
             agent_name: Optional name for registration
             allowed_peers: List of agent names this agent can invoke
             max_tokens: Maximum tokens for model generation
+            viewport_width: Browser viewport width in pixels
+            viewport_height: Browser viewport height in pixels
+            output_schema: Optional custom output schema. If not provided, uses default bbox detection schema.
         """
         goal = "Analyze webpage screenshots to identify all currently accessible interactive UI elements using vision AI"
 
-        instruction = """
+        viewport_info = f"**Browser Viewport:** {viewport_width}x{viewport_height} pixels\n\n"
+
+        instruction = viewport_info + """
 You are an expert UI analyst. Your task is to identify ALL currently accessible interactive elements, understanding modal interaction hierarchy.
 
 OUTPUT FORMAT REQUIREMENT:
@@ -246,25 +264,27 @@ Return ALL currently accessible interactive elements, understanding that both mo
             "required": ["screenshot_path"]
         }
 
-        # Define output schema for this agent (matches BoundingBox model exactly)
-        output_schema = {
-                    "type": "array",
-                    "items": {
-                        "type": "object",
-                        "properties": {
-                            "box_2d": {
-                                "type": "array",
-                                "items": {"type": "integer"},
-                        "description": "Bounding box coordinates in normalized format [y_min, x_min, y_max, x_max] (0-1000 scale)"
-                            },
-                            "label": {
-                                "type": "string",
-                        "description": "Descriptive label for the UI element"
-                            }
+        # Define default output schema for bbox detection if not provided
+        # This ensures InteractiveElementsAgent always has structured output
+        if output_schema is None:
+            output_schema = {
+                "type": "array",
+                "items": {
+                    "type": "object",
+                    "properties": {
+                        "box_2d": {
+                            "type": "array",
+                            "items": {"type": "integer"},
+                            "description": "Bounding box coordinates in normalized format [y_min, x_min, y_max, x_max] (0-1000 scale)"
                         },
-                        "required": ["box_2d", "label"]
-                    }
-        }
+                        "label": {
+                            "type": "string",
+                            "description": "Descriptive label for the UI element"
+                        }
+                    },
+                    "required": ["box_2d", "label"]
+                }
+            }
 
         super().__init__(
             model_config=model_config,
@@ -441,34 +461,16 @@ Return a JSON array of objects with "box_2d" and "label" fields only.
             }
             messages.append(vision_message)
 
-            # Define the JSON schema for bounding box response (matches our BoundingBox model)
-            bounding_box_schema = {
-                "type": "array",
-                "items": {
-                    "type": "object",
-                    "properties": {
-                        "box_2d": {
-                            "type": "array",
-                            "items": {"type": "integer"},
-                            "description": "Bounding box coordinates in normalized format [y_min, x_min, y_max, x_max] (0-1000 scale)"
-                        },
-                        "label": {
-                            "type": "string",
-                            "description": "Descriptive label for the UI element"
-                        }
-                    },
-                    "required": ["box_2d", "label"]
-                }
-            }
-
             # Get API kwargs for the vision model
             api_model_kwargs = {}
             if hasattr(self, '_get_api_kwargs'):
                 api_model_kwargs = self._get_api_kwargs()
 
-            # Use response_schema for structured output
-            api_model_kwargs['response_schema'] = bounding_box_schema
-            api_model_kwargs['json_mode'] = True
+            # Since we override _run(), we need to manually set response_schema
+            # Use self.output_schema that was defined in __init__
+            if self.output_schema:
+                api_model_kwargs['response_schema'] = self.output_schema
+                api_model_kwargs['json_mode'] = True  # Fallback for providers without structured output
 
             # Get temperature and top_p from model config (use defaults if not set)
             temperature = getattr(self._model_config, 'temperature', 0.1) if hasattr(self, '_model_config') else 0.1
@@ -489,39 +491,37 @@ Return a JSON array of objects with "box_2d" and "label" fields only.
                 name=self.name
             )
             
-            # For InteractiveElementsAgent, we need to parse the content as JSON array
+            # Parse the response content as JSON array of bounding boxes
             content = assistant_message.content
-            
-            # For InteractiveElementsAgent, we expect a JSON array of bounding boxes
+
             try:
+                # With response_schema enforcement, we should get clean JSON
+                # But handle both string and already-parsed cases
                 if isinstance(content, str):
-                    # Extract JSON from markdown if present
-                    json_match = re.search(r'```json\s*(.*?)\s*```', content, re.DOTALL)
-                    if json_match:
-                        json_content = json_match.group(1)
-                    else:
-                        # Handle cases where content might have prefix characters like '![' 
-                        # Try to find JSON array pattern
-                        json_array_match = re.search(r'(\[.*\])', content, re.DOTALL)
-                        if json_array_match:
-                            json_content = json_array_match.group(1)
+                    # Try direct JSON parse first (most common with structured output)
+                    try:
+                        bounding_boxes = json.loads(content)
+                    except json.JSONDecodeError:
+                        # Fallback: Extract JSON from markdown or find JSON pattern
+                        json_match = re.search(r'```json\s*(.*?)\s*```', content, re.DOTALL)
+                        if json_match:
+                            json_content = json_match.group(1)
                         else:
-                            json_content = content.strip()
-                    
-                    bounding_boxes = json.loads(json_content)
+                            json_array_match = re.search(r'(\[.*\])', content, re.DOTALL)
+                            if json_array_match:
+                                json_content = json_array_match.group(1)
+                            else:
+                                json_content = content.strip()
+                        bounding_boxes = json.loads(json_content)
                 elif isinstance(content, list):
+                    # Already parsed (some providers return parsed JSON directly)
                     bounding_boxes = content
                 else:
                     raise ValueError(f"Expected list of bounding boxes, got: {type(content)}")
 
-                # Validate that we have a list of bounding boxes
+                # Basic validation (schema should ensure this, but check anyway)
                 if not isinstance(bounding_boxes, list):
                     raise ValueError("Response must be a list of bounding boxes")
-                
-                # Validate each bounding box has required fields
-                for bbox in bounding_boxes:
-                    if not isinstance(bbox, dict) or "box_2d" not in bbox or "label" not in bbox:
-                        raise ValueError("Each bounding box must have 'box_2d' and 'label' fields")
 
                 # Update the message content with the parsed bounding boxes
                 assistant_message.content = bounding_boxes
@@ -699,6 +699,7 @@ class BrowserAgent(Agent):
 
         screenshot_path = result.get('screenshot_path')
         elements = result.get('elements', [])
+        detection_info = result.get('detection_methods', {})
 
         # Build text description with JSON-formatted elements (same as BrowserTool.screenshot)
         if elements:
@@ -727,8 +728,8 @@ class BrowserAgent(Agent):
 
         # Create multimodal response
         content_blocks = [
-            ToolResponseContent(type="text", text=text_description),
-            ToolResponseContent(type="image_file", source=screenshot_path)
+            ToolResponseContent(text=text_description),
+            ToolResponseContent(image_path=screenshot_path)
         ]
 
         return ToolResponse(
@@ -737,10 +738,7 @@ class BrowserAgent(Agent):
                 "element_count": len(elements),
                 "screenshot_path": screenshot_path,
                 "detection_mode": self.element_detection_mode.value,
-                "detection_methods": {
-                    "rule_based": detection_flags["use_rule_based"],
-                    "ai_prediction": detection_flags["use_prediction"]
-                }
+                "detection_methods": detection_info  # Include success/failure details
             }
         )
 
@@ -767,6 +765,7 @@ class BrowserAgent(Agent):
         timeout: int = 5000,
         memory_retention: str = "session",
         memory_storage_path: Optional[str] = None,
+        show_mouse_helper: bool = True,
     ) -> None:
         """
         Initialize the BrowserAgent.
@@ -804,6 +803,8 @@ class BrowserAgent(Agent):
             timeout: Default timeout in milliseconds for browser operations (default: 5000)
             memory_retention: Memory retention policy - "single_run", "session", or "persistent"
             memory_storage_path: Path for persistent memory storage (if retention is "persistent")
+            show_mouse_helper: Whether to show visual mouse cursor in browser (default: True in advanced mode, False in primitive mode).
+                Uses realistic cursor icons (pointer/hand) to visualize mouse movements and clicks.
         """
         # Validate and normalize mode
         mode_lower = mode.lower()
@@ -858,6 +859,8 @@ class BrowserAgent(Agent):
             )
 
             mode_instruction = mode_defaults["instruction_template"].format(
+                viewport_width=viewport_width,
+                viewport_height=viewport_height,
                 auto_screenshot_section=auto_screenshot_section,
                 observation_method=observation_method
             )
@@ -903,9 +906,10 @@ class BrowserAgent(Agent):
         if tmp_dir:
             self.tmp_dir = Path(tmp_dir)
         else:
-            # Create a temporary directory that will be cleaned up on agent deletion
-            self._temp_dir_obj = tempfile.TemporaryDirectory()
-            self.tmp_dir = Path(self._temp_dir_obj.name)
+            # Create tmp directory in current working directory
+            self.tmp_dir = Path.cwd() / "tmp"
+            self.tmp_dir.mkdir(parents=True, exist_ok=True)
+            self._temp_dir_obj = None  # Not using tempfile.TemporaryDirectory for local tmp
 
         # Create subdirectories for downloads and screenshots
         self.downloads_dir = self.tmp_dir / "downloads"
@@ -915,9 +919,12 @@ class BrowserAgent(Agent):
 
         # Store auto_screenshot setting
         self.auto_screenshot = auto_screenshot
-        
+
         # Store timeout setting
         self.timeout = timeout
+
+        # Store show_mouse_helper setting (only applies in advanced mode)
+        self.show_mouse_helper = show_mouse_helper and (self.mode == BrowserAgentMode.ADVANCED)
 
         # Initialize browser-specific tools - these will be set after browser_tool is initialized
         # For now, create empty dict and populate later in create_safe
@@ -963,7 +970,9 @@ class BrowserAgent(Agent):
             # Create the vision agent with the model config
             self.vision_agent = InteractiveElementsAgent(
                 model_config=actual_vision_config,
-                name=f"{name or 'BrowserAgent'}_VisionAnalyzer"
+                name=f"{name or 'BrowserAgent'}_VisionAnalyzer",
+                viewport_width=viewport_width,
+                viewport_height=viewport_height
             )
             logger.info(f"Vision agent initialized for {name or 'BrowserAgent'} using {'provided vision_model_config' if vision_model_config else 'main model_config'}")
 
@@ -1076,7 +1085,15 @@ class BrowserAgent(Agent):
                     logger.info(f"Stealth mode enabled for {self.name}")
                 except Exception as e:
                     logger.warning(f"Failed to apply stealth mode: {e}")
-            
+
+            # Initialize visual mouse helper if enabled (advanced mode only)
+            if self.show_mouse_helper:
+                try:
+                    await self.browser_tool.show_mouse_helper()
+                    logger.info(f"Mouse helper enabled for {self.name}")
+                except Exception as e:
+                    logger.warning(f"Failed to enable mouse helper: {e}")
+
             logger.info(
                 f"Browser initialized for {self.name} using BrowserTool (headless={self.headless}, timeout={self.timeout}ms)"
             )
@@ -1132,12 +1149,14 @@ class BrowserAgent(Agent):
             # ADVANCED mode: Low-level visual interaction tools
             browser_tools = {
                 "goto": self.browser_tool.goto,
-                "scroll_up": self.browser_tool.scroll_up,
-                "scroll_down": self.browser_tool.scroll_down,
+                "mouse_scroll": self.browser_tool.mouse_scroll,
                 "mouse_click": self.browser_tool.mouse_click,
                 "mouse_dbclick": self.browser_tool.mouse_dbclick,
                 "mouse_triple_click": self.browser_tool.mouse_triple_click,
                 "mouse_right_click": self.browser_tool.mouse_right_click,
+                "mouse_down": self.browser_tool.mouse_down,
+                "mouse_up": self.browser_tool.mouse_up,
+                "mouse_move": self.browser_tool.mouse_move,
                 "type_text": self.browser_tool.type_text,
                 "keyboard_press": self.browser_tool.keyboard_press,
                 "go_back": self.browser_tool.go_back,
@@ -1147,8 +1166,11 @@ class BrowserAgent(Agent):
                 "get_page_elements": self.browser_tool.get_page_elements,
                 "extract_text_content": self.browser_tool.extract_text_content,
                 "download_file": self.browser_tool.download_file,
-                "screenshot": self._screenshot_with_detection_mode,
             }
+
+            # Only add screenshot tool if auto_screenshot is disabled
+            if not self.auto_screenshot:
+                browser_tools["screenshot"] = self._screenshot_with_detection_mode
 
         
         # Update the agent's tools
@@ -1438,17 +1460,25 @@ class BrowserAgent(Agent):
             raise ValueError("At least one detection method (use_prediction or use_rule_based) must be enabled")
 
         elements = []
-        
+        rule_based_success = False
+        vision_prediction_success = False
+
         # Step 1: Use rule-based detection if requested
         if use_rule_based:
-            rule_based_elements = await self.browser_tool.detect_interactive_elements_rule_based(
-                visible_only=visible_only
-            )
-            # Mark elements as rule-based for overlap resolution
-            for elem in rule_based_elements:
-                elem['source'] = 'rule_based'
-            elements.extend(rule_based_elements)
-        
+            try:
+                rule_based_elements = await self.browser_tool.detect_interactive_elements_rule_based(
+                    visible_only=visible_only
+                )
+                # Mark elements as rule-based for overlap resolution
+                for elem in rule_based_elements:
+                    elem['source'] = 'rule_based'
+                elements.extend(rule_based_elements)
+                rule_based_success = True
+                logger.debug(f"Rule-based detection succeeded: {len(rule_based_elements)} elements")
+            except Exception as e:
+                logger.warning(f"Rule-based element detection failed: {e}")
+                # Continue - might still have vision prediction
+
         # Step 2: Use AI prediction if requested
         if use_prediction:
             if not self.vision_agent:
@@ -1459,15 +1489,23 @@ class BrowserAgent(Agent):
                     operation="highlight_interactive_elements with use_prediction=True",
                     auto_screenshot=self.auto_screenshot
                 )
-            
-            predicted_elements = await self.predict_interactive_elements()
-            # Mark elements as predicted for overlap resolution
-            for elem in predicted_elements:
-                elem['source'] = 'vision_prediction'
-            elements.extend(predicted_elements)
-        
+
+            try:
+                predicted_elements = await self.predict_interactive_elements()
+                # Mark elements as predicted for overlap resolution
+                for elem in predicted_elements:
+                    elem['source'] = 'vision_prediction'
+                elements.extend(predicted_elements)
+                vision_prediction_success = True
+                logger.debug(f"Vision prediction succeeded: {len(predicted_elements)} elements")
+            except Exception as e:
+                logger.warning(f"Vision-based element prediction failed: {e}")
+                # If BOTH mode and rule-based succeeded, continue with rule-based only
+                # If VISION-only mode, we'll take screenshot without bboxes below
+
         # Step 3: Intelligently combine rule-based and prediction-based elements
-        if use_rule_based and use_prediction and intersection_threshold > 0:
+        # Only combine if both methods succeeded
+        if rule_based_success and vision_prediction_success and intersection_threshold > 0:
             # Use intelligent combination when both methods are used
             rule_based_elements = [elem for elem in elements if elem.get('source') == 'rule_based']
             prediction_elements = [elem for elem in elements if elem.get('source') == 'vision_prediction']
@@ -1504,8 +1542,10 @@ class BrowserAgent(Agent):
             'elements': filtered_elements,  # Return filtered elements
             'total_elements': len(filtered_elements),
             'detection_methods': {
-                'rule_based': use_rule_based,
-                'ai_prediction': use_prediction
+                'rule_based_requested': use_rule_based,
+                'rule_based_succeeded': rule_based_success,
+                'ai_prediction_requested': use_prediction,
+                'ai_prediction_succeeded': vision_prediction_success
             }
         }
 
