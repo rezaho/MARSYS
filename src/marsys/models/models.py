@@ -11,6 +11,9 @@ from typing import Any, Callable, Dict, List, Literal, Optional, Union
 
 import requests
 
+# Setup logger
+logger = logging.getLogger(__name__)
+
 # Ensure other necessary imports are present
 from PIL import Image
 
@@ -321,7 +324,20 @@ class OpenAIAdapter(APIProviderAdapter):
             payload["top_p"] = self.top_p
 
         # Handle structured output (takes precedence over simple json_mode)
-        if kwargs.get("response_format"):
+        # Priority: response_schema > response_format > json_mode
+        response_schema = kwargs.get("response_schema")
+        if response_schema:
+            # Convert unified response_schema to OpenAI's response_format
+            payload["response_format"] = {
+                "type": "json_schema",
+                "json_schema": {
+                    "name": "response_schema",
+                    "strict": True,
+                    "schema": response_schema
+                }
+            }
+        elif kwargs.get("response_format"):
+            # Allow direct response_format for advanced use cases
             payload["response_format"] = kwargs["response_format"]
         elif kwargs.get("json_mode"):
             payload["response_format"] = {"type": "json_object"}
@@ -581,7 +597,20 @@ class OpenRouterAdapter(APIProviderAdapter):
             wants_json_mode = False
 
         # Handle structured output (takes precedence over simple json_mode)
-        if kwargs.get("response_format"):
+        # Priority: response_schema > response_format > json_mode
+        response_schema = kwargs.get("response_schema")
+        if response_schema:
+            # Convert unified response_schema to OpenRouter's response_format (same as OpenAI)
+            payload["response_format"] = {
+                "type": "json_schema",
+                "json_schema": {
+                    "name": "response_schema",
+                    "strict": True,
+                    "schema": response_schema
+                }
+            }
+        elif kwargs.get("response_format"):
+            # Allow direct response_format for advanced use cases
             payload["response_format"] = kwargs["response_format"]
         elif wants_json_mode:
             payload["response_format"] = {"type": "json_object"}
@@ -708,40 +737,17 @@ class OpenRouterAdapter(APIProviderAdapter):
             classification={"category": api_error.classification, "is_retryable": api_error.is_retryable, "retry_after": api_error.retry_after, "suggested_action": api_error.suggested_action},
         )
 
-    def _extract_json_from_content(self, content: str) -> dict:
-        """Extract JSON from content using robust parsing utilities."""
-        import json
-
-        from marsys.utils.parsing import robust_json_loads
-
-        if not content or not isinstance(content, str):
-            return content
-
-        try:
-            # Use the robust JSON parser from utils
-            parsed = robust_json_loads(content)
-            return parsed
-        except (json.JSONDecodeError, ValueError):
-            # If parsing fails, return original content
-            return content
-
     def harmonize_response(
         self, raw_response: Dict[str, Any], request_start_time: float
     ) -> HarmonizedResponse:
         """Convert OpenRouter response to standardized Pydantic model"""
-        import json
 
         # Extract message content
         message = raw_response.get("choices", [{}])[0].get("message", {})
         choice = raw_response.get("choices", [{}])[0]
 
-        # Enhanced content parsing: try to parse JSON from content
+        # Get raw content without any parsing
         content = message.get("content")
-        if content and content.strip():
-            content = self._extract_json_from_content(content)
-            # If it's a dict, convert back to JSON string for consistency
-            if isinstance(content, dict):
-                content = json.dumps(content)
 
         # Build tool calls
         tool_calls = []
@@ -938,8 +944,22 @@ class AnthropicAdapter(APIProviderAdapter):
         if system_message:
             payload["system"] = system_message
 
-        # Claude doesn't support OpenAI's response_format, handle JSON mode differently
-        if kwargs.get("json_mode") and user_messages:
+        # Claude doesn't support OpenAI's response_format or native structured output
+        # Handle response_schema by falling back to json_mode with schema in prompt
+        response_schema = kwargs.get("response_schema")
+        if response_schema and user_messages:
+            import warnings
+            import json
+            warnings.warn(
+                "Anthropic/Claude does not natively support structured outputs with schema enforcement. "
+                "Falling back to json_mode with schema description in prompt. "
+                "Consider using tool_use pattern for more reliable structured output with Claude."
+            )
+            last_msg = user_messages[-1]
+            if last_msg.get("role") == "user":
+                schema_str = json.dumps(response_schema, indent=2)
+                last_msg["content"] += f"\n\nPlease respond with valid JSON that follows this schema:\n```json\n{schema_str}\n```"
+        elif kwargs.get("json_mode") and user_messages:
             last_msg = user_messages[-1]
             if last_msg.get("role") == "user":
                 last_msg["content"] += "\n\nPlease respond with valid JSON only."
@@ -2079,6 +2099,7 @@ class BaseAPIModel:
         self,
         messages: List[Dict[str, str]],
         json_mode: bool = False,
+        response_schema: Optional[Dict[str, Any]] = None,
         max_tokens: Optional[int] = None,
         temperature: Optional[float] = None,
         top_p: Optional[float] = None,
@@ -2091,7 +2112,17 @@ class BaseAPIModel:
 
         Args:
             messages: A list of message dictionaries, following the OpenAI format.
-            json_mode: If True, requests JSON output from the model.
+            json_mode: If True, requests that the model output valid JSON (without enforcing a specific schema).
+                      The model will return JSON but the structure is not guaranteed.
+            response_schema: Optional JSON schema for structured output. When provided, enforces that the response
+                           follows this exact schema (strict mode). This is the recommended way to get reliable
+                           structured JSON. Format: Standard JSON Schema dict with "type", "properties", "required".
+                           The adapter will convert this to provider-specific format:
+                           - OpenAI/OpenRouter: response_format with json_schema
+                           - Google/Gemini: responseSchema in generationConfig
+                           - Anthropic/Claude: Not natively supported (falls back to json_mode)
+                           Note: Requires compatible models (e.g., gpt-4o-2024-08-06+, gemini-1.5+).
+                           response_schema takes precedence over json_mode if both are provided.
             max_tokens: Overrides the default max_tokens for this specific call.
             temperature: Overrides the default temperature for this specific call.
             top_p: Overrides the default top_p for this specific call.
@@ -2126,12 +2157,16 @@ class BaseAPIModel:
             adapter_response = self.adapter.run(
                 messages=messages,
                 json_mode=json_mode,
+                response_schema=response_schema,
                 max_tokens=max_tokens,
                 temperature=temperature,
                 top_p=top_p,
                 tools=tools,
                 **kwargs,
             )
+
+            # Log model output for debugging/analysis
+            logger.debug(f"Model {self.adapter.model_name} response: {adapter_response}")
 
             # Check if response is an ErrorResponse and convert to exception
             if isinstance(adapter_response, ErrorResponse):
@@ -2180,6 +2215,7 @@ class BaseAPIModel:
         self,
         messages: List[Dict[str, str]],
         json_mode: bool = False,
+        response_schema: Optional[Dict[str, Any]] = None,
         max_tokens: Optional[int] = None,
         temperature: Optional[float] = None,
         top_p: Optional[float] = None,
@@ -2194,7 +2230,8 @@ class BaseAPIModel:
 
         Args:
             messages: A list of message dictionaries, following the OpenAI format.
-            json_mode: If True, requests JSON output from the model.
+            json_mode: If True, requests that the model output valid JSON (without enforcing a specific schema).
+            response_schema: Optional JSON schema for structured output (same as run() method).
             max_tokens: Overrides the default max_tokens for this specific call.
             temperature: Overrides the default temperature for this specific call.
             top_p: Overrides the default top_p for this specific call.
@@ -2225,12 +2262,16 @@ class BaseAPIModel:
             adapter_response = await self.async_adapter.arun(
                 messages=messages,
                 json_mode=json_mode,
+                response_schema=response_schema,
                 max_tokens=max_tokens,
                 temperature=temperature,
                 top_p=top_p,
                 tools=tools,
                 **kwargs
             )
+
+            # Log model output for debugging/analysis
+            logger.debug(f"Model {self.async_adapter.model_name} response: {adapter_response}")
 
             # Check if response is an ErrorResponse
             if isinstance(adapter_response, ErrorResponse):
@@ -2277,6 +2318,7 @@ class BaseAPIModel:
                 return self.run(
                     messages=messages,
                     json_mode=json_mode,
+                    response_schema=response_schema,
                     max_tokens=max_tokens,
                     temperature=temperature,
                     top_p=top_p,

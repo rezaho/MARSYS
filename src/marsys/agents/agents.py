@@ -4210,17 +4210,22 @@ class Agent(BaseAgent):
         json_mode_for_llm_native = False  # Default: disabled for compatibility
 
         if self._compiled_output_schema:
+            # Use structured output with response_schema for schema enforcement
+            # This provides much more reliable JSON than json_mode alone
+            api_model_kwargs["response_schema"] = self.output_schema
+            # Also set json_mode as fallback for providers that don't support response_schema
             api_model_kwargs["json_mode"] = True
         elif run_mode == "auto_step" and isinstance(self.model, BaseAPIModel):
             # For auto_step mode with API models, we might need JSON mode
             # but keep it disabled by default for markdown-wrapped JSON compatibility
             api_model_kwargs["json_mode"] = json_mode_for_llm_native
 
-        # Only request native JSON format when explicitly needed
+        # Only request native JSON format when explicitly needed (fallback for old code)
         if (
             json_mode_for_llm_native
             and isinstance(self.model, BaseAPIModel)
             and getattr(self._model_config, "provider", "") == "openai"
+            and "response_schema" not in api_model_kwargs  # Don't override response_schema
         ):
             api_model_kwargs["response_format"] = {"type": "json_object"}
 
