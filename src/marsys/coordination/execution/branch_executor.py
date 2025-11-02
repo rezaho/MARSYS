@@ -277,7 +277,7 @@ class BranchExecutor:
                     return BranchResult(
                         branch_id=branch.id,
                         success=False,
-                        final_response=step_result.response,
+                        final_response=self._extract_content_from_response(step_result.response),
                         total_steps=branch.state.current_step,
                         execution_trace=execution_trace,
                         branch_memory=context.branch_memory,
@@ -307,7 +307,7 @@ class BranchExecutor:
                 return BranchResult(
                     branch_id=branch.id,
                     success=True,
-                    final_response=step_result.response,
+                    final_response=self._extract_content_from_response(step_result.response),
                     total_steps=branch.state.current_step,
                     execution_trace=execution_trace,
                     branch_memory=context.branch_memory,
@@ -367,12 +367,14 @@ class BranchExecutor:
                             group = self.branch_spawner.parallel_groups.get(group_id)
                             if group:
                                 # Record convergence with response for aggregation
+                                # Extract content from Message object to avoid JSON serialization issues
+                                response_content = self._extract_content_from_response(step_result.response)
                                 group.record_branch_convergence(
                                     branch.id,
                                     convergence_target,
                                     {
                                         'branch_id': branch.id,
-                                        'response': step_result.response,
+                                        'response': response_content,
                                         'timestamp': time.time(),
                                         'agent': current_agent
                                     }
@@ -397,7 +399,7 @@ class BranchExecutor:
                     return BranchResult(
                         branch_id=branch.id,
                         success=True,
-                        final_response=step_result.response,
+                        final_response=self._extract_content_from_response(step_result.response),
                         total_steps=branch.state.current_step,
                         execution_trace=execution_trace,
                         branch_memory=context.branch_memory,
@@ -465,7 +467,7 @@ class BranchExecutor:
         return BranchResult(
             branch_id=branch.id,
             success=True,
-            final_response=execution_trace[-1].response if execution_trace else None,
+            final_response=self._extract_content_from_response(execution_trace[-1].response) if execution_trace else None,
             total_steps=branch.state.current_step,
             execution_trace=execution_trace,
             branch_memory=context.branch_memory,
@@ -538,7 +540,7 @@ class BranchExecutor:
                 return BranchResult(
                     branch_id=branch.id,
                     success=False,
-                    final_response=step_result.response,
+                    final_response=self._extract_content_from_response(step_result.response),
                     total_steps=branch.state.current_step,
                     execution_trace=execution_trace,
                     branch_memory=context.branch_memory,
@@ -570,7 +572,7 @@ class BranchExecutor:
                 return BranchResult(
                     branch_id=branch.id,
                     success=True,
-                    final_response=step_result.response,
+                    final_response=self._extract_content_from_response(step_result.response),
                     total_steps=branch.state.current_step,
                     execution_trace=execution_trace,
                     branch_memory=context.branch_memory,
@@ -590,7 +592,7 @@ class BranchExecutor:
         return BranchResult(
             branch_id=branch.id,
             success=True,
-            final_response=execution_trace[-1].response if execution_trace else None,
+            final_response=self._extract_content_from_response(execution_trace[-1].response) if execution_trace else None,
             total_steps=branch.state.current_step,
             execution_trace=execution_trace,
             branch_memory=context.branch_memory,
@@ -823,6 +825,30 @@ class BranchExecutor:
                         "metadata": context.metadata  # CRITICAL: Pass metadata for retry tracking
                     }
                 )
+
+                # VALIDATION: Ensure StepExecutor didn't set routing fields inappropriately
+                # StepExecutor should NEVER set these fields
+                if result.next_agent is not None:
+                    logger.warning(f"StepExecutor set next_agent='{result.next_agent}' - this should only be set by BranchExecutor - clearing it")
+                    result.next_agent = None
+                if result.action_type is not None:
+                    logger.warning(f"StepExecutor set action_type='{result.action_type}' - this should only be set by BranchExecutor - clearing it")
+                    result.action_type = None
+                if result.parsed_response is not None:
+                    logger.warning("StepExecutor set parsed_response - this should only be set by BranchExecutor - clearing it")
+                    result.parsed_response = None
+                if result.should_end_branch:
+                    logger.warning("StepExecutor set should_end_branch=True - this should only be set by BranchExecutor - clearing it")
+                    result.should_end_branch = False
+                if result.waiting_for_children:
+                    logger.warning("StepExecutor set waiting_for_children=True - this should only be set by BranchExecutor - clearing it")
+                    result.waiting_for_children = False
+                if result.child_branch_ids:
+                    logger.warning("StepExecutor set child_branch_ids - this should only be set by BranchExecutor - clearing it")
+                    result.child_branch_ids = []
+                if result.convergence_target is not None:
+                    logger.warning("StepExecutor set convergence_target - this should only be set by BranchExecutor - clearing it")
+                    result.convergence_target = None
             else:
                 # Direct execution (fallback)
                 response = await agent.run_step(
@@ -861,9 +887,15 @@ class BranchExecutor:
                     },
                 )
 
-            # Validate response if validator available
-            # Skip validation if this is a tool continuation (tools already executed)
-            if self.response_validator and result.success and not (result.tool_results and result.metadata.get('tool_continuation')):
+            # Handle tool continuation specially - skip validation but set required attributes
+            if result.tool_results and result.metadata and result.metadata.get('tool_continuation'):
+                # Tool continuation - set routing attributes for agent to continue processing tool results
+                result.action_type = "invoke_agent"  # Self-invocation to continue after tools
+                result.next_agent = agent_name  # Continue with same agent
+                # Don't set parsed_response - it's not needed for tool continuation flow
+                logger.debug(f"Tool continuation for {agent_name} - skipping validation, agent will process tool results")
+            elif self.response_validator and result.success:
+                # Normal validation path
                 # Create a mock ExecutionState for validation
                 from ..branches.types import ExecutionState
                 exec_state = ExecutionState(
@@ -872,8 +904,9 @@ class BranchExecutor:
                     status="running"
                 )
                 
+                # Pass Message object directly to validator (result.response is now a Message)
                 validation = await self.response_validator.process_response(
-                    raw_response=result.parsed_response if result.response is None and result.parsed_response else result.response,
+                    raw_response=result.response,
                     agent=agent,
                     branch=branch,
                     exec_state=exec_state
@@ -1567,31 +1600,30 @@ class BranchExecutor:
                 "suggested_actions": step_result.metadata.get("error_details", {}).get("suggested_actions", [])
             }
 
-        # CASE 1: Error from previous step - don't propagate
-        if not step_result.success and step_result.error:
-            # Special handling for invalid response errors
-            if hasattr(step_result, 'metadata') and step_result.metadata.get('invalid_response'):
-                # Return the error which contains format instructions
-                return step_result.error
-            # Regular error - return clean message
-            error_msg = f"Previous agent '{step_result.agent_name}' encountered an error. Please proceed with your task."
-            logger.warning(f"Preventing error propagation from {step_result.agent_name}: {step_result.error}")
-            return error_msg
-        
-        # CASE 2: Tool continuation - no additional message needed
+        # DEFENSIVE CHECK: This should be impossible to reach with failed step_result
+        # If step_result.success=False, _execute_simple_branch should have either:
+        # - Retried with same agent (line 273 continue)
+        # - Failed the branch (line 277 return)
+        # This check catches bugs in future code modifications
+        if not step_result.success:
+            raise RuntimeError(
+                f"BUG: _prepare_next_request called with failed step_result from agent '{step_result.agent_name}'. "
+                f"This should be impossible - check _execute_simple_branch flow. "
+                f"Error was: {step_result.error}, requires_retry: {step_result.requires_retry}"
+            )
+
+        # CASE 1: Tool continuation - no additional message needed
         if hasattr(step_result, 'metadata') and step_result.metadata.get('tool_continuation'):
             # Tool results are already in memory from step_executor
             # No additional continuation message needed
             return None
-        
-        # CASE 3: Invalid response retry - return format error
-        if hasattr(step_result, 'metadata') and step_result.metadata.get('invalid_response'):
-            if step_result.error:
-                return step_result.error  # This already contains format instructions
-            else:
-                return "Your previous response was not in the expected format. Please provide a valid JSON response."
-        
-        # CASE 4: Normal continuation
+
+        # Note: Removed obsolete 'invalid_response' checks
+        # - StepExecutor no longer sets this metadata (doesn't parse responses)
+        # - ValidationProcessor handles all parsing, sets result.success=False on errors
+        # - Validation errors are added to agent memory and retried
+
+        # CASE 2: Normal continuation
         base_request = self._get_base_request(step_result)
 
         # Validation logging for debugging
@@ -1615,30 +1647,55 @@ class BranchExecutor:
         )
     
     def _get_base_request(self, step_result: StepResult) -> Any:
-        """Extract base request from step result (existing logic)."""
+        """Extract base request from step result."""
+        from ...agents.memory import Message
+
         if step_result.action_type == "final_response":
             if step_result.parsed_response:
-                return (step_result.parsed_response.get("content") or 
-                       step_result.parsed_response.get("final_response") or 
-                       step_result.response)
-            return step_result.response
+                return (step_result.parsed_response.get("content") or
+                       step_result.parsed_response.get("final_response") or
+                       self._extract_content_from_response(step_result.response))
+            return self._extract_content_from_response(step_result.response)
 
-        # Handle invoke_agent with invocation array
+        # Handle NEW format: invocations array from ValidationProcessor
+        if step_result.parsed_response and "invocations" in step_result.parsed_response:
+            invocations = step_result.parsed_response["invocations"]
+            if invocations and len(invocations) > 0:
+                # DEFENSIVE CHECK: Multiple invocations should be handled by _handle_parallel_invocation
+                # If we have multiple here, it's a bug
+                if len(invocations) > 1:
+                    raise RuntimeError(
+                        f"BUG: _get_base_request received {len(invocations)} invocations. "
+                        f"Multiple invocations should be handled by parallel invocation handler. "
+                        f"Agent: {step_result.agent_name}, action_type: {step_result.action_type}"
+                    )
+
+                first_inv = invocations[0]
+                # Handle AgentInvocation object
+                if hasattr(first_inv, 'request'):
+                    return first_inv.request
+                # Handle dict format (defensive)
+                elif isinstance(first_inv, dict) and "request" in first_inv:
+                    return first_inv.get("request", "")
+
+        # action_input format is no longer supported
         if step_result.parsed_response and "action_input" in step_result.parsed_response:
+            raise RuntimeError(
+                f"BUG: Unexpected 'action_input' in parsed_response. "
+                f"Agent invocations must use 'invocations' array format. "
+                f"Agent: {step_result.agent_name}, keys: {list(step_result.parsed_response.keys())}"
+            )
 
-            action_input = step_result.parsed_response["action_input"]
+        # Fallback: extract content from response
+        return self._extract_content_from_response(step_result.response)
 
-            # Check if action_input is an invocation array (reflexive case)
-            if isinstance(action_input, list) and len(action_input) > 0:
-                first_item = action_input[0]
-                if isinstance(first_item, dict) and "request" in first_item:
-                    # This is an invocation array - extract the request
-                    return first_item.get("request", "")
+    def _extract_content_from_response(self, response: Any) -> Any:
+        """Helper to extract content from Message or other response types."""
+        from ...agents.memory import Message
 
-            # Normal case - action_input is the direct request
-            return action_input
-
-        return step_result.response
+        if isinstance(response, Message):
+            return response.content
+        return response
 
     def _prepend_caller_name(self, request: Any, caller_name: str) -> Any:
         """
@@ -2051,7 +2108,7 @@ class BranchExecutor:
                     return BranchResult(
                         branch_id=branch.id,
                         success=False,
-                        final_response=step_result.response,
+                        final_response=self._extract_content_from_response(step_result.response),
                         total_steps=branch.state.current_step,
                         execution_trace=execution_trace,
                         branch_memory=context.branch_memory,
@@ -2125,7 +2182,7 @@ class BranchExecutor:
                     return BranchResult(
                         branch_id=branch.id,
                         success=True,
-                        final_response=step_result.response,
+                        final_response=self._extract_content_from_response(step_result.response),
                         total_steps=branch.state.current_step,
                         execution_trace=execution_trace,
                         branch_memory=context.branch_memory,
@@ -2191,7 +2248,7 @@ class BranchExecutor:
         return BranchResult(
             branch_id=branch.id,
             success=True,
-            final_response=execution_trace[-1].response if execution_trace else None,
+            final_response=self._extract_content_from_response(execution_trace[-1].response) if execution_trace else None,
             total_steps=branch.state.current_step,
             execution_trace=execution_trace,
             branch_memory=context.branch_memory,

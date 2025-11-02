@@ -119,23 +119,30 @@ class ExecutionState:
 @dataclass
 class StepResult:
     """Result of executing a single step within a branch."""
+    # Core execution fields (set by StepExecutor)
     agent_name: str
     success: bool
-    response: Any = None  # The agent's response
+    response: Any = None  # Raw response content from agent
+
+    # Execution metadata (set by StepExecutor)
     step_id: Optional[str] = None
-    action_type: Optional[str] = None  # "continue", "final_response", "end_conversation", etc.
     memory_updates: List[Dict[str, Any]] = field(default_factory=list)
-    tool_calls: List[Dict[str, Any]] = field(default_factory=list)
+    tool_calls: List[Dict[str, Any]] = field(default_factory=list)  # Native tool_calls only
     tool_results: List[Dict[str, Any]] = field(default_factory=list)  # Results from tool execution
-    next_agent: Optional[str] = None  # For routing within branch
-    should_end_branch: bool = False  # Signal to end this branch
-    error: Optional[str] = None
+    error: Optional[str] = None  # Execution errors only
     requires_retry: bool = False
-    parsed_response: Optional[Dict[str, Any]] = None  # Parsed structured response
-    waiting_for_children: bool = False  # Signal that branch should wait
-    child_branch_ids: List[str] = field(default_factory=list)  # IDs of spawned child branches
     context_selection: Optional[Dict[str, Any]] = None  # Context saved by agent to pass to next
-    metadata: Dict[str, Any] = field(default_factory=dict)  # Metadata for tracking continuation states
+    metadata: Dict[str, Any] = field(default_factory=dict)  # Execution metadata only
+
+    # Routing decision fields (set by BranchExecutor ONLY, default to None)
+    # StepExecutor must NEVER set these fields (except next_agent for tool continuation)
+    action_type: Optional[str] = None  # Action type from ValidationResult (invoke_agent, final_response, etc.)
+    parsed_response: Optional[Dict[str, Any]] = None  # Parsed content from ValidationResult
+    next_agent: Optional[str] = None  # Next agent to invoke (from ValidationResult OR tool continuation)
+    should_end_branch: bool = False  # Whether branch should complete after this step
+    waiting_for_children: bool = False  # Whether branch is waiting for parallel child branches
+    child_branch_ids: List[str] = field(default_factory=list)  # IDs of spawned child branches
+    convergence_target: Optional[str] = None  # Convergence point name if branch reached one
 
 
 @dataclass
