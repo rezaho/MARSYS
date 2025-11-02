@@ -295,12 +295,11 @@ class StepExecutor:
                             action_type=raw_response.get("next_action")
                         ))
 
-                # 3. Process response
-                step_result = await self._process_agent_response(
-                    agent,
+                # 3. Process tool calls only
+                step_result = await self._process_tool_calls(
                     raw_response,
-                    step_context,
-                    context_selection
+                    agent,
+                    step_context
                 )
                 
                 # 4. Handle tool execution if needed
@@ -397,14 +396,14 @@ class StepExecutor:
                                 # Phase 3: Add all user messages second
                                 for user_msg in user_messages:
                                     agent.memory.add(**user_msg)
-                            
+
                             # Mark that agent needs to continue processing tool results
-                            step_result.next_agent = agent_name  # Continue with same agent
+                            # BranchExecutor will set next_agent based on this metadata
                             if not hasattr(step_result, 'metadata'):
                                 step_result.metadata = {}
                             step_result.metadata['tool_continuation'] = True
                             step_result.metadata['has_tool_results'] = True
-                            
+
                             logger.info(f"Agent '{agent_name}' executed {len(tool_result.tool_results)} tools - will continue in next step")
                 
                 # Update statistics
@@ -441,7 +440,7 @@ class StepExecutor:
                         agent_name=agent_name,
                         success=step_result.success,
                         duration=time.time() - start_time,
-                        next_action=step_result.action_type,
+                        next_action=None,  # Action type not yet determined - set by BranchExecutor after validation
                         error=step_result.error
                     ))
 
@@ -1344,305 +1343,55 @@ Available options:
         # For any other type or unknown schema
         return '<request-data-specific-to-agent>'
     
-    async def _process_agent_response(
+    async def _process_tool_calls(
         self,
-        agent: BaseAgent,
         raw_response: Any,
-        context: StepContext,
-        context_selection: Optional[Dict[str, Any]] = None
+        agent: BaseAgent,
+        context: StepContext
     ) -> StepResult:
         """
-        Process the raw agent response into a StepResult.
-        
-        This handles different response formats and extracts relevant information.
+        Process ONLY native tool calls using ToolCallProcessor.
+        NO content parsing, NO routing decisions.
+        ONLY accepts Message responses.
         """
-        # Start with basic result
+        from ...agents.memory import Message
+        from ..validation.response_validator import ToolCallProcessor
+
+        # CRITICAL: Only accept Message responses
+        if not isinstance(raw_response, Message):
+            raise TypeError(
+                f"Agent {context.agent_name} must return Message object, "
+                f"got {type(raw_response).__name__}"
+            )
+
         result = StepResult(
             agent_name=context.agent_name,
             success=True,
-            response=raw_response
+            response=raw_response  # Store full Message object
         )
-        
-        # Handle different response types
-        if isinstance(raw_response, dict):
-            # Check for error responses
-            if raw_response.get("error"):
-                result.success = False
-                result.error = raw_response.get("error")
-                result.requires_retry = raw_response.get("retry", True)
-                return result
-            
-            # Extract tool calls if present
-            if "tool_calls" in raw_response:
-                result.tool_calls = raw_response["tool_calls"]
-                # Mark these as response-origin tool calls
-                if isinstance(result.tool_calls, list):
-                    for tc in result.tool_calls:
-                        if isinstance(tc, dict):
-                            tc['_origin'] = 'response'
-            
-            # Extract next action if present
-            if "next_action" in raw_response:
-                result.action_type = raw_response["next_action"]
-                
-                # Handle call_tool action
-                if result.action_type == "call_tool" and "action_input" in raw_response:
-                    action_input = raw_response["action_input"]
-                    if isinstance(action_input, dict) and "tool_calls" in action_input:
-                        # Merge tool calls from action_input with any existing tool calls
-                        content_tool_calls = action_input["tool_calls"]
-                        # Mark content-based tool calls with their origin
-                        for tc in content_tool_calls:
-                            if isinstance(tc, dict):
-                                tc['_origin'] = 'content'
-                        
-                        if result.tool_calls:
-                            # Convert to list if needed and merge
-                            existing = result.tool_calls if isinstance(result.tool_calls, list) else [result.tool_calls]
-                            result.tool_calls = existing + content_tool_calls
-                        else:
-                            result.tool_calls = content_tool_calls
-                
-                # Extract next agent for invoke_agent action
-                elif result.action_type == "invoke_agent" and "action_input" in raw_response:
-                    action_input = raw_response["action_input"]
-                    
-                    # Handle unified array format
-                    if isinstance(action_input, list) and len(action_input) > 0:
-                        # For single agent, extract the first one
-                        first_agent = action_input[0]
-                        if isinstance(first_agent, dict) and "agent_name" in first_agent:
-                            result.next_agent = first_agent["agent_name"]
-                        else:
-                            # Fallback if array contains strings
-                            result.next_agent = str(first_agent)
-                    # Handle legacy format (string or dict)
-                    elif isinstance(action_input, dict):
-                        # Enhanced format with agent_name
-                        if "agent_name" in action_input:
-                            result.next_agent = action_input["agent_name"]
-                        else:
-                            # Very old format where action_input is agent name
-                            result.next_agent = str(action_input)
-                    else:
-                        # Legacy format - action_input is agent name
-                        result.next_agent = str(action_input)
-            
-            # Store parsed response
-            result.parsed_response = raw_response
-            
-            # Store context selection if available
-            if context_selection:
-                result.context_selection = context_selection
-            
-        elif isinstance(raw_response, Message):
-            # Check if this is an error Message BEFORE storing content
-            if raw_response.role == "error":
-                # Mark this as an error response for ValidationProcessor
-                result.response = raw_response  # Keep the full Message
-                result.is_error_message = True  # Add flag for detection
-            else:
-                # Normal Message handling
-                result.response = raw_response.content
-            if raw_response.tool_calls:
-                result.tool_calls = raw_response.tool_calls
-                # Mark these as response-origin since they came from the agent's response
-                if isinstance(result.tool_calls, list):
-                    for tc in result.tool_calls:
-                        if isinstance(tc, dict) and '_origin' not in tc:
-                            tc['_origin'] = 'response'
-                
-                # ENSURE parsed_response exists for tool calls with proper structure
-                if not result.parsed_response:
-                    result.parsed_response = {
-                        'next_action': 'call_tool',  # Add required next_action field
-                        'tool_calls': result.tool_calls,
-                        '_has_tool_calls': True,
-                        'action_input': {
-                            'tool_calls': result.tool_calls
-                        }
-                    }
-            
-            # Try to parse JSON content if it's a string that looks like JSON
-            if isinstance(raw_response.content, str):
-                content = raw_response.content.strip()
-                
-                # Check for markdown code blocks
-                if content.startswith('```'):
-                    # Extract JSON from markdown
-                    import re
-                    json_match = re.search(r'```(?:json)?\s*\n?(.*?)```', content, re.DOTALL)
-                    if json_match:
-                        content = json_match.group(1).strip()
-                
-                # Try to parse as JSON
-                if content.startswith('{') and content.endswith('}'):
-                    try:
-                        parsed = json.loads(content)
-                        
-                        # Extract structured action information
-                        if isinstance(parsed, dict) and "next_action" in parsed:
-                            result.action_type = parsed["next_action"]
-                            result.parsed_response = parsed
-                            
-                            # Handle call_tool action
-                            if parsed["next_action"] == "call_tool" and "action_input" in parsed:
-                                action_input = parsed["action_input"]
-                                if isinstance(action_input, dict) and "tool_calls" in action_input:
-                                    # Merge tool calls from content with existing Message.tool_calls
-                                    content_tool_calls = action_input["tool_calls"]
-                                    # Mark content-based tool calls with their origin
-                                    for tc in content_tool_calls:
-                                        if isinstance(tc, dict):
-                                            tc['_origin'] = 'content'
-                                    
-                                    if result.tool_calls:
-                                        # Convert to list if needed and merge
-                                        existing = result.tool_calls if isinstance(result.tool_calls, list) else [result.tool_calls]
-                                        # Mark existing tool calls (from response.tool_calls) with their origin
-                                        for tc in existing:
-                                            if isinstance(tc, dict) and '_origin' not in tc:
-                                                tc['_origin'] = 'response'
-                                        result.tool_calls = existing + content_tool_calls
-                                    else:
-                                        result.tool_calls = content_tool_calls
-                            
-                            # Update the agent's memory with merged tool_calls
-                            if result.tool_calls and hasattr(agent, 'memory') and hasattr(agent.memory, 'memory'):
-                                # Convert any dict tool calls to ToolCallMsg objects
-                                from marsys.agents.memory import ToolCallMsg
-                                normalized_tool_calls = []
-                                for tc in result.tool_calls:
-                                    if isinstance(tc, dict):
-                                        normalized_tool_calls.append(ToolCallMsg.from_dict(tc))
-                                    else:
-                                        normalized_tool_calls.append(tc)
-                                
-                                # Find the last assistant message in agent's memory
-                                for i in range(len(agent.memory.memory) - 1, -1, -1):
-                                    msg = agent.memory.memory[i]
-                                    if hasattr(msg, 'role') and msg.role == 'assistant':
-                                        # Update its tool_calls with the normalized list
-                                        msg.tool_calls = normalized_tool_calls
-                                        break
-                            
-                            # Handle invoke_agent action
-                            elif parsed["next_action"] == "invoke_agent" and "action_input" in parsed:
-                                action_input = parsed["action_input"]
-                                if isinstance(action_input, dict) and "agent_name" in action_input:
-                                    result.next_agent = action_input["agent_name"]
-                                elif isinstance(action_input, str):
-                                    result.next_agent = action_input
-                                    
-                    except json.JSONDecodeError:
-                        # Not valid JSON, keep as string
-                        pass
-            
-            # Create memory update
-            # IMPORTANT: Only include response-origin tool calls in the message's tool_calls field
-            # Content-origin tool calls will be handled separately to avoid OpenAI API errors
-            response_origin_tool_calls = None
-            if result.tool_calls:
-                # Separate tool calls by origin
-                response_origin_tool_calls = [
-                    tc for tc in result.tool_calls 
-                    if isinstance(tc, dict) and tc.get('_origin') == 'response'
-                ]
-                # If no response-origin tool calls, don't include tool_calls field at all
-                if not response_origin_tool_calls:
-                    response_origin_tool_calls = None
-            
-            memory_update = {
-                "role": raw_response.role,
-                "content": raw_response.content,
-                "name": raw_response.name or context.agent_name,
-                "timestamp": time.time()
-            }
-            
-            # Only add tool_calls if we have response-origin ones
-            if response_origin_tool_calls:
-                memory_update["tool_calls"] = response_origin_tool_calls
-                
-            result.memory_updates = [memory_update]
-        
-        else:
-            # Handle string or other responses
-            result.response = str(raw_response)
-            result.memory_updates = [{
-                "role": "assistant",
-                "content": str(raw_response),
-                "name": context.agent_name,
-                "timestamp": time.time()
-            }]
-        
-        # TOOL CONTINUATION RULE:
-        # When an agent returns tool_calls, the agent MUST continue in the next step
-        # This applies regardless of whether next_agent is specified
-        if result.tool_calls and not result.next_agent:
-            result.next_agent = context.agent_name
-            if not hasattr(result, 'metadata'):
-                result.metadata = {}
-            result.metadata['tool_continuation'] = True
-            result.metadata['has_tool_calls'] = True
-            
-            # Ensure parsed_response has continuation markers for branch spawner
-            if not result.parsed_response:
-                result.parsed_response = {}
-            if isinstance(result.parsed_response, dict):
-                result.parsed_response['_tool_continuation'] = True
-                result.parsed_response['_pending_tools_count'] = len(result.tool_calls)
-            logger.info(f"Agent '{context.agent_name}' executed {len(result.tool_calls)} tools - will continue in next step")
-        
-        # INVALID RESPONSE HANDLING:
-        # Special case: content=None with tool_calls is valid
-        if result.tool_calls and (result.response is None or result.response == "None" or result.response == ""):
-            # This is valid - agent wants to execute tools without additional content
-            # Tool continuation is already handled above
-            pass
-        # Special case: error Messages are valid and should be processed by ValidationProcessor
-        elif hasattr(result, 'is_error_message') and result.is_error_message:
-            # Error messages will be handled by ErrorMessageProcessor in ValidationProcessor
-            # Don't mark as invalid or require retry
-            pass
-        # If no action type, no tools, and no next agent specified, this is an invalid response
-        elif not result.action_type and not result.tool_calls and not result.next_agent:
-            result.next_agent = context.agent_name  # Stay with same agent
-            result.requires_retry = True
-            if not hasattr(result, 'metadata'):
-                result.metadata = {}
-            result.metadata['invalid_response'] = True
-            result.metadata['retry_reason'] = 'format_error'
-            
-            # FIX 3: Generate dynamic format instructions based on allowed actions
-            # Get topology graph from context if available
-            topology_graph = None
-            if hasattr(context, 'topology_graph'):
-                topology_graph = context.topology_graph
-            elif hasattr(self, 'topology_graph'):
-                topology_graph = self.topology_graph
-            
-            # Generate dynamic instructions
-            format_instructions = self._get_dynamic_format_instructions(
-                agent, 
-                context.branch if hasattr(context, 'branch') else None,
-                topology_graph
-            )
-            
-            # Try to get agent-specific format instructions if available (override dynamic)
-            if hasattr(agent, '_get_response_guidelines'):
-                try:
-                    format_instructions = agent._get_response_guidelines()
-                except:
-                    pass  # Use dynamic format
-            elif hasattr(agent, '_get_unified_response_format'):
-                try:
-                    format_instructions = agent._get_unified_response_format()
-                except:
-                    pass  # Use dynamic format
-            
-            result.error = f"Invalid response format. {format_instructions}"
-            logger.warning(f"Agent '{context.agent_name}' provided invalid response - will retry with format instructions")
-        
+
+        # Extract native tool_calls using ToolCallProcessor
+        tool_processor = ToolCallProcessor()
+        if tool_processor.can_process(raw_response):
+            parsed = tool_processor.process(raw_response)
+            if parsed and "tool_calls" in parsed:
+                result.tool_calls = parsed["tool_calls"]
+                logger.debug(f"Extracted {len(result.tool_calls)} native tool_calls from {context.agent_name}")
+
+        # Create memory update with all Message fields
+        memory_update = {
+            "role": raw_response.role,
+            "content": raw_response.content,
+            "name": raw_response.name or context.agent_name,
+            "timestamp": time.time()
+        }
+
+        # Include tool_calls in memory if present
+        if raw_response.tool_calls:
+            memory_update["tool_calls"] = raw_response.tool_calls
+
+        result.memory_updates = [memory_update]
+
         return result
     
     async def _execute_tools(
