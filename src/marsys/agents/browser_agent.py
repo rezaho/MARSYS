@@ -97,7 +97,25 @@ BROWSER_MODE_DEFAULTS = {
             "\n**Core workflow:**\n"
             "1. **Observe**: {observation_method}\n"
             "2. **Identify**: Locate elements of interest (buttons, links, text, forms, etc.) using bounding boxes or positions\n"
-            "3. **Interact**: Use mouse clicks (coordinates), keyboard typing, or scrolling\n\n"
+            "3. **Interact**: Use mouse clicks (coordinates), keyboard typing, or scrolling\n"
+            "4. **Verify**: Check screenshot feedback after each action to confirm the result\n"
+            "5. **Adjust**: If action didn't achieve intended result, analyze the visual feedback and correct your approach\n\n"
+            "**CRITICAL - Visual Feedback Loop:**\n"
+            "Human-like interaction requires continuous feedback and adjustment. After EVERY action, observe the screenshot to verify:\n"
+            "- **Mouse positioning**: If you clicked but missed the target, check where the pointer landed in the screenshot\n"
+            "  * Pointer too far LEFT of target? Increase x coordinate (move right)\n"
+            "  * Pointer too far RIGHT of target? Decrease x coordinate (move left)\n"
+            "  * Pointer ABOVE target? Increase y coordinate (move down)\n"
+            "  * Pointer BELOW target? Decrease y coordinate (move up)\n"
+            "  Use mouse_move to reposition, then try the click again\n"
+            "- **Form input verification**: After typing, check if correct text appears in the field\n"
+            "  * Wrong text? Clear it (triple-click → Backspace) and re-type\n"
+            "  * Text in wrong field? Click correct field and re-enter\n"
+            "  * Field not focused? Click field again before typing\n"
+            "- **Action outcomes**: Did the button press work? Did the dropdown open? Did the page scroll?\n"
+            "  * If not, don't repeat the exact same action - analyze WHY it failed and adjust your approach\n"
+            "  * Example: Click didn't work? Check if element moved, if pointer was off-target, or if page state changed\n\n"
+            "**Never blindly repeat failed actions** - use the visual feedback to understand what went wrong and correct it.\n\n"
             "**Reading text content with selectors:**\n"
             "- get_page_elements: View all page elements with their CSS selectors\n"
             "- extract_text_content: Extract text using a specific selector\n\n"
@@ -657,6 +675,130 @@ class BrowserAgent(Agent):
             logger.warning(f"Unexpected element_detection_mode: {self.element_detection_mode}. Using RULE_BASED.")
             return {"use_prediction": False, "use_rule_based": True}
 
+    # Mouse tool wrapper methods for tool registration
+    async def mouse_click(self, x: int, y: int, reasoning: Optional[str] = None, use_smooth_movement: bool = False):
+        """
+        Click at specified pixel coordinates.
+
+        Args:
+            x: Horizontal pixel position (0 to viewport_width, typically 0-1536)
+            y: Vertical pixel position (0 to viewport_height, typically 0-1536)
+            reasoning: Optional explanation for this action
+            use_smooth_movement: Whether to use smooth human-like mouse movement
+
+        Returns:
+            Success message with pointer position
+
+        Note:
+            Coordinates are in absolute pixels relative to viewport origin (top-left corner).
+            Use visual feedback from screenshots to verify pointer landed on target and adjust if needed.
+        """
+        return await self.browser_tool.mouse_click(x=x, y=y, reasoning=reasoning, use_smooth_movement=use_smooth_movement)
+
+    async def mouse_dbclick(self, x: int, y: int, reasoning: Optional[str] = None):
+        """
+        Double-click at specified pixel coordinates.
+
+        Args:
+            x: Horizontal pixel position (0 to viewport_width)
+            y: Vertical pixel position (0 to viewport_height)
+            reasoning: Optional explanation for this action
+
+        Returns:
+            Success message with pointer position
+
+        Note:
+            Coordinates are in absolute pixels. Useful for selecting text or opening items.
+        """
+        return await self.browser_tool.mouse_dbclick(x=x, y=y, reasoning=reasoning)
+
+    async def mouse_triple_click(self, x: int, y: int, reasoning: Optional[str] = None):
+        """
+        Triple-click at specified pixel coordinates.
+
+        Args:
+            x: Horizontal pixel position (0 to viewport_width)
+            y: Vertical pixel position (0 to viewport_height)
+            reasoning: Optional explanation for this action
+
+        Returns:
+            Success message with pointer position
+
+        Note:
+            Coordinates are in absolute pixels. Useful for selecting entire paragraphs or lines.
+        """
+        return await self.browser_tool.mouse_triple_click(x=x, y=y, reasoning=reasoning)
+
+    async def mouse_right_click(self, x: int, y: int, reasoning: Optional[str] = None):
+        """
+        Right-click at specified pixel coordinates to open context menu.
+
+        Args:
+            x: Horizontal pixel position (0 to viewport_width)
+            y: Vertical pixel position (0 to viewport_height)
+            reasoning: Optional explanation for this action
+
+        Returns:
+            Success message with pointer position
+
+        Note:
+            Coordinates are in absolute pixels. Opens browser context menu at specified location.
+        """
+        return await self.browser_tool.mouse_right_click(x=x, y=y, reasoning=reasoning)
+
+    async def mouse_down(self, x: int, y: int, reasoning: Optional[str] = None):
+        """
+        Press and hold mouse button at specified pixel coordinates.
+
+        Args:
+            x: Horizontal pixel position (0 to viewport_width)
+            y: Vertical pixel position (0 to viewport_height)
+            reasoning: Optional explanation for this action
+
+        Returns:
+            Success message with pointer position
+
+        Note:
+            Coordinates are in absolute pixels. Use with mouse_move and mouse_up for drag operations.
+        """
+        return await self.browser_tool.mouse_down(x=x, y=y, reasoning=reasoning)
+
+    async def mouse_up(self, x: int, y: int, reasoning: Optional[str] = None):
+        """
+        Release mouse button at specified pixel coordinates.
+
+        Args:
+            x: Horizontal pixel position (0 to viewport_width)
+            y: Vertical pixel position (0 to viewport_height)
+            reasoning: Optional explanation for this action
+
+        Returns:
+            Success message with pointer position
+
+        Note:
+            Coordinates are in absolute pixels. Completes drag operation started with mouse_down.
+        """
+        return await self.browser_tool.mouse_up(x=x, y=y, reasoning=reasoning)
+
+    async def mouse_move(self, x: int, y: int, reasoning: Optional[str] = None, steps: Optional[int] = None):
+        """
+        Move mouse pointer to specified pixel coordinates.
+
+        Args:
+            x: Horizontal pixel position (0 to viewport_width)
+            y: Vertical pixel position (0 to viewport_height)
+            reasoning: Optional explanation for this action
+            steps: Number of intermediate steps for smooth movement (default: 1)
+
+        Returns:
+            Success message with new pointer position
+
+        Note:
+            Coordinates are in absolute pixels. Use visual feedback to verify pointer position
+            and adjust coordinates if needed. Increase steps for more human-like movement.
+        """
+        return await self.browser_tool.mouse_move(x=x, y=y, reasoning=reasoning, steps=steps)
+
     async def _screenshot_with_detection_mode(
         self,
         filename: Optional[str] = None,
@@ -742,6 +884,40 @@ class BrowserAgent(Agent):
             }
         )
 
+    @staticmethod
+    def _get_optimal_viewport_size(model_config: ModelConfig) -> tuple[int, int]:
+        """
+        Determine optimal viewport size based on model family.
+
+        Different vision models have different optimal input sizes:
+        - Claude (Anthropic): 1344x896 (optimized for their vision model)
+        - Gemini (Google): 1536x1536 (works well with square inputs)
+        - GPT-4V (OpenAI): 1024x1024 (optimized for their vision model)
+
+        Args:
+            model_config: The model configuration
+
+        Returns:
+            Tuple of (width, height) in pixels
+        """
+        provider = getattr(model_config, 'provider', '').lower()
+        model_name = getattr(model_config, 'name', '').lower()
+
+        # Check for Claude/Anthropic models
+        if 'anthropic' in provider or 'claude' in model_name:
+            return (1344, 896)
+
+        # Check for Gemini/Google models
+        elif 'google' in provider or 'gemini' in model_name:
+            return (1536, 1536)
+
+        # Check for GPT/OpenAI models
+        elif 'openai' in provider or 'gpt' in model_name:
+            return (1024, 1024)
+
+        # Default fallback (Gemini size - most permissive)
+        return (1536, 1536)
+
     def __init__(
         self,
         model_config: ModelConfig,
@@ -753,8 +929,8 @@ class BrowserAgent(Agent):
         allowed_peers: Optional[List[str]] = None,
         mode: str = "advanced",
         headless: bool = True,
-        viewport_width: int = 1536,
-        viewport_height: int = 1536,
+        viewport_width: Optional[int] = None,
+        viewport_height: Optional[int] = None,
         tmp_dir: Optional[str] = None,
         browser_channel: Optional[str] = None,
         vision_model_config: Optional[ModelConfig] = None,
@@ -950,8 +1126,20 @@ class BrowserAgent(Agent):
 
         # Browser settings
         self.headless = headless
-        self.viewport_width = viewport_width
-        self.viewport_height = viewport_height
+
+        # Determine viewport size: use provided values or auto-detect based on model family
+        if viewport_width is None or viewport_height is None:
+            auto_width, auto_height = self._get_optimal_viewport_size(model_config)
+            self.viewport_width = viewport_width or auto_width
+            self.viewport_height = viewport_height or auto_height
+            logger.info(
+                f"Auto-detected viewport size for {model_config.provider}/{model_config.name}: "
+                f"{self.viewport_width}x{self.viewport_height}"
+            )
+        else:
+            self.viewport_width = viewport_width
+            self.viewport_height = viewport_height
+
         self.browser_channel = browser_channel
 
         # Initialize vision analysis agent
@@ -971,8 +1159,8 @@ class BrowserAgent(Agent):
             self.vision_agent = InteractiveElementsAgent(
                 model_config=actual_vision_config,
                 name=f"{name or 'BrowserAgent'}_VisionAnalyzer",
-                viewport_width=viewport_width,
-                viewport_height=viewport_height
+                viewport_width=self.viewport_width,
+                viewport_height=self.viewport_height
             )
             logger.info(f"Vision agent initialized for {name or 'BrowserAgent'} using {'provided vision_model_config' if vision_model_config else 'main model_config'}")
 
@@ -1010,8 +1198,8 @@ class BrowserAgent(Agent):
         allowed_peers: Optional[List[str]] = None,
         mode: str = "advanced",
         headless: bool = True,
-        viewport_width: int = 1536,
-        viewport_height: int = 1536,
+        viewport_width: Optional[int] = None,
+        viewport_height: Optional[int] = None,
         tmp_dir: Optional[str] = None,
         browser_channel: Optional[str] = None,
         vision_model_config: Optional[ModelConfig] = None,
@@ -1147,16 +1335,17 @@ class BrowserAgent(Agent):
             }
         else:
             # ADVANCED mode: Low-level visual interaction tools
+            # Mouse tools use wrapper methods that convert normalized (0-1000) coordinates to viewport pixels
             browser_tools = {
                 "goto": self.browser_tool.goto,
                 "mouse_scroll": self.browser_tool.mouse_scroll,
-                "mouse_click": self.browser_tool.mouse_click,
-                "mouse_dbclick": self.browser_tool.mouse_dbclick,
-                "mouse_triple_click": self.browser_tool.mouse_triple_click,
-                "mouse_right_click": self.browser_tool.mouse_right_click,
-                "mouse_down": self.browser_tool.mouse_down,
-                "mouse_up": self.browser_tool.mouse_up,
-                "mouse_move": self.browser_tool.mouse_move,
+                "mouse_click": self.mouse_click,  # Wrapper with coordinate conversion
+                "mouse_dbclick": self.mouse_dbclick,  # Wrapper with coordinate conversion
+                "mouse_triple_click": self.mouse_triple_click,  # Wrapper with coordinate conversion
+                "mouse_right_click": self.mouse_right_click,  # Wrapper with coordinate conversion
+                "mouse_down": self.mouse_down,  # Wrapper with coordinate conversion
+                "mouse_up": self.mouse_up,  # Wrapper with coordinate conversion
+                "mouse_move": self.mouse_move,  # Wrapper with coordinate conversion
                 "type_text": self.browser_tool.type_text,
                 "keyboard_press": self.browser_tool.keyboard_press,
                 "go_back": self.browser_tool.go_back,
