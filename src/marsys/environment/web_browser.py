@@ -124,7 +124,7 @@ def find_label_position_with_masking(
     if global_mask.shape != (image_height, image_width):
         raise ActionValidationError(
             f"Mask shape {global_mask.shape} doesn't match image size ({image_height}, {image_width})",
-            action_name="apply_mask",
+            action="apply_mask",
             invalid_params={"mask_shape": global_mask.shape, "expected_shape": (image_height, image_width)}
         )
     
@@ -616,7 +616,7 @@ async def highlight_interactive_elements(
     if not (output_image or output_details):
         raise ActionValidationError(
             "At least one of output_image or output_details must be True.",
-            action_name="highlight_elements",
+            action="highlight_elements",
             invalid_params={"output_image": output_image, "output_details": output_details}
         )
 
@@ -1056,7 +1056,7 @@ def resolve_color(color_name_or_hex: str) -> str:
         return color_name_or_hex
     raise ActionValidationError(
         f"Unknown color '{color_name_or_hex}'. Must be a valid hex code or one of {list(DEFAULT_COLOR_MAP.keys())}.",
-        action_name="get_color_hex",
+        action="get_color_hex",
         invalid_params={"color": color_name_or_hex, "valid_colors": list(DEFAULT_COLOR_MAP.keys())}
     )
 
@@ -2413,14 +2413,14 @@ class BrowserTool:
         if selector and role:
             raise ActionValidationError(
                 "Only one of 'selector' or 'role' should be provided, not both.",
-                action_name="click",
+                action="click",
                 invalid_params={"selector": selector, "role": role}
             )
 
         if not selector and not role:
             raise ActionValidationError(
                 "Either 'selector' or 'role' must be provided.",
-                action_name=self.name if hasattr(self, 'name') else 'browser_action',
+                action=self.name if hasattr(self, 'name') else 'browser_action',
                 invalid_params={"selector": None, "role": None}
             )
 
@@ -2516,7 +2516,8 @@ class BrowserTool:
                 reasoning=f"Smooth movement before double click: {r}"
             )
 
-        await self.page.mouse.dblclick(x, y, timeout=timeout)
+        # Note: page.mouse.dblclick() doesn't support timeout parameter
+        await self.page.mouse.dblclick(x, y)
 
         # Update visual mouse helper
         try:
@@ -2567,7 +2568,8 @@ class BrowserTool:
             )
 
         # Perform triple click using click_count parameter
-        await self.page.mouse.click(x, y, click_count=3, timeout=timeout)
+        # Note: page.mouse.click() doesn't support timeout parameter
+        await self.page.mouse.click(x, y, click_count=3)
 
         # Update visual mouse helper
         try:
@@ -2615,7 +2617,8 @@ class BrowserTool:
                 reasoning=f"Smooth movement before right click: {r}"
             )
 
-        await self.page.mouse.click(x, y, button="right", timeout=timeout)
+        # Note: page.mouse.click() doesn't support timeout parameter
+        await self.page.mouse.click(x, y, button="right")
 
         # Update visual mouse helper
         try:
@@ -2734,14 +2737,14 @@ class BrowserTool:
         if selector and role:
             raise ActionValidationError(
                 "Only one of 'selector' or 'role' should be provided, not both.",
-                action_name="click",
+                action="click",
                 invalid_params={"selector": selector, "role": role}
             )
 
         if not selector and not role:
             raise ActionValidationError(
                 "Either 'selector' or 'role' must be provided.",
-                action_name=self.name if hasattr(self, 'name') else 'browser_action',
+                action=self.name if hasattr(self, 'name') else 'browser_action',
                 invalid_params={"selector": None, "role": None}
             )
 
@@ -3097,7 +3100,7 @@ class BrowserTool:
         if key not in allowed_keys:
             raise ActionValidationError(
                 f"Special key '{key}' is not recognized. Allowed keys: {sorted(allowed_keys)}",
-                action_name="press_key",
+                action="press_key",
                 invalid_params={"key": key, "allowed_keys": sorted(allowed_keys)}
             )
 
@@ -3135,13 +3138,13 @@ class BrowserTool:
         if selector and role:
             raise ActionValidationError(
                 "Only one of 'selector' or 'role' should be provided, not both.",
-                action_name="click",
+                action="click",
                 invalid_params={"selector": selector, "role": role}
             )
         if not selector and not role:
             raise ActionValidationError(
                 "Either 'selector' or 'role' must be provided.",
-                action_name=self.name if hasattr(self, 'name') else 'browser_action',
+                action=self.name if hasattr(self, 'name') else 'browser_action',
                 invalid_params={"selector": None, "role": None}
             )
         actual_selector = selector if selector else f'[role="{role}"]'
@@ -3181,14 +3184,14 @@ class BrowserTool:
         if selector and role:
             raise ActionValidationError(
                 "Only one of 'selector' or 'role' should be provided, not both.",
-                action_name="click",
+                action="click",
                 invalid_params={"selector": selector, "role": role}
             )
 
         if not selector and not role:
             raise ActionValidationError(
                 "Either 'selector' or 'role' must be provided.",
-                action_name=self.name if hasattr(self, 'name') else 'browser_action',
+                action=self.name if hasattr(self, 'name') else 'browser_action',
                 invalid_params={"selector": None, "role": None}
             )
 
@@ -3229,14 +3232,14 @@ class BrowserTool:
         if selector and role:
             raise ActionValidationError(
                 "Only one of 'selector' or 'role' should be provided, not both.",
-                action_name="click",
+                action="click",
                 invalid_params={"selector": selector, "role": role}
             )
 
         if not selector and not role:
             raise ActionValidationError(
                 "Either 'selector' or 'role' must be provided.",
-                action_name=self.name if hasattr(self, 'name') else 'browser_action',
+                action=self.name if hasattr(self, 'name') else 'browser_action',
                 invalid_params={"selector": None, "role": None}
             )
 
@@ -3283,7 +3286,7 @@ class BrowserTool:
         ):
             raise ActionValidationError(
                 "Provide either 'source_selector' or 'source_role' (but not both) for the source element.",
-                action_name="drag_and_drop",
+                action="drag_and_drop",
                 invalid_params={"source_selector": source_selector, "source_role": source_role}
             )
 
@@ -3292,7 +3295,7 @@ class BrowserTool:
         ):
             raise ActionValidationError(
                 "Provide either 'target_selector' or 'target_role' (but not both) for the target element.",
-                action_name="drag_and_drop",
+                action="drag_and_drop",
                 invalid_params={"target_selector": target_selector, "target_role": target_role}
             )
 
@@ -5667,13 +5670,13 @@ class BrowserTool:
         if min_delay >= max_delay:
             raise ActionValidationError(
                 "min_delay must be less than max_delay",
-                action_name="wait",
+                action="wait",
                 invalid_params={"min_delay": min_delay, "max_delay": max_delay}
             )
         if variation_factor < 0:
             raise ActionValidationError(
                 "variation_factor must be non-negative",
-                action_name="wait",
+                action="wait",
                 invalid_params={"variation_factor": variation_factor}
             )
 
