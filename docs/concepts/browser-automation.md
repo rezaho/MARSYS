@@ -87,13 +87,14 @@ BrowserAgent supports two distinct operation modes optimized for different use c
 - Multi-step navigation and interaction
 - Form filling and complex workflows
 
-**Available Tools** (14):
+**Available Tools** (15):
 - All PRIMITIVE mode tools, plus:
-- `goto` - Navigate to URL
+- `goto` - Navigate to URL (auto-detects downloads)
 - `scroll_up` / `scroll_down` - Scroll the page
-- `mouse_click` - Click at specific coordinates
-- `type_text` - Type text into focused elements
-- `keyboard_press` - Press keyboard keys
+- `mouse_click` - Click at specific coordinates (auto-detects downloads)
+- `type` - Type regular text into focused elements (letters, numbers, words)
+- `keyboard_press` - Press special keys (Enter, Tab, arrows, etc.) (auto-detects downloads)
+- `search_page` - **NEW!** Find text on page with Chrome-like highlighting
 - `go_back` - Navigate back
 - `reload` - Reload current page
 - `get_url` / `get_title` - Get page information
@@ -249,8 +250,9 @@ await browser_pool.cleanup()
 - `goto`, `go_back`, `reload` - Navigation control
 - `scroll_up`, `scroll_down` - Page scrolling
 - `mouse_click` - Click at coordinates
-- `type_text` - Type into focused elements
-- `keyboard_press` - Press keyboard keys
+- `type` - Type regular text into focused elements (letters, numbers, sentences)
+- `keyboard_press` - Press special keys (Enter, Tab, Escape, arrows, etc.)
+- `search_page` - Search for text on page with visual highlighting (Chrome-like find)
 - `screenshot` - Multimodal response with numbered element detection (ToolResponse format)
 - `get_url`, `get_title` - Current page information
 
@@ -339,6 +341,109 @@ class InteractionAgent(BrowserAgent):
                 find(el => el.textContent.includes('{text}'))?.click()
             """
             await self.browser_tool.evaluate_javascript_in_page(script)
+```
+
+### Text Search on Page
+
+!!! success "New Feature: search_page()"
+    Find text on web pages with Chrome-like visual highlighting and navigation!
+
+```python
+# Search for text on the current page
+result = await browser_tool.search_page("quantum computing")
+# Returns: "Match 1/5 found and highlighted"
+# All matches highlighted in YELLOW, current match in ORANGE
+
+# Navigate to next match - call again with SAME term
+result = await browser_tool.search_page("quantum computing")
+# Returns: "Match 2/5"
+# Scrolls to and highlights next occurrence
+
+# Continue navigating
+result = await browser_tool.search_page("quantum computing")
+# Returns: "Match 3/5"
+# Wraps around after last match back to first
+```
+
+**Features:**
+- **Visual Highlighting**: All matches in YELLOW, current in ORANGE (Chrome-like)
+- **Auto-scroll**: Automatically scrolls to current match (centered in viewport)
+- **Match Counter**: Shows "Match X/Y" so you know your progress
+- **Wrap-around**: After last match, returns to first match
+- **Case-insensitive**: Finds text regardless of case
+
+**Limitations:**
+- ❌ Does NOT work with PDF files (PDFs are auto-downloaded, not displayed)
+- ❌ Does NOT search across multiple pages
+- ✅ Works with regular web pages, including shadow DOM content
+
+**Example - Finding Specific Information:**
+```python
+# Navigate to documentation page
+await browser_tool.goto("https://docs.example.com/api")
+
+# Search for specific API endpoint
+result = await browser_tool.search_page("/api/v2/users")
+# Match 1/3 found - scrolls to first occurrence
+
+# Check if it's the right one with screenshot
+screenshot = await browser_tool.screenshot()
+# Visual: See highlighted text in orange
+
+# Not the right one? Navigate to next match
+result = await browser_tool.search_page("/api/v2/users")
+# Match 2/3 - scrolls to second occurrence
+```
+
+### Automatic Download Detection
+
+!!! info "Smart Download Handling"
+    Actions that trigger file downloads are automatically detected and reported!
+
+The browser automatically detects when actions (clicks, Enter key presses, navigation) trigger file downloads:
+
+```python
+# Clicking a download link automatically detects the download
+result = await browser_tool.mouse_click(x=450, y=300)
+# Returns: "Action 'mouse_click' triggered a file download.
+#          File 'report.pdf' has been downloaded to: /path/to/tmp/downloads/report.pdf"
+
+# Navigating to a PDF URL triggers automatic download
+result = await browser_tool.goto("https://example.com/paper.pdf")
+# Returns: "Action 'goto' triggered a file download.
+#          File 'paper.pdf' has been downloaded to: /path/to/tmp/downloads/paper.pdf"
+
+# Pressing Enter on a download button
+await browser_tool.mouse_click(x=500, y=400)  # Focus download button
+await browser_tool.keyboard_press("Enter")
+# Returns: "Action 'keyboard_press' triggered a file download.
+#          File 'data.xlsx' has been downloaded to: /path/to/tmp/downloads/data.xlsx"
+```
+
+**Automatic Detection Features:**
+- ✅ Detects downloads triggered by clicks, keyboard presses, or navigation
+- ✅ Returns file path and filename in response
+- ✅ Downloads saved to `./tmp/downloads/` by default
+- ✅ PDFs are **always** downloaded (never displayed in browser)
+- ✅ Works with all file types (PDF, Excel, CSV, images, etc.)
+
+**PDF-Specific Behavior:**
+```python
+# PDFs are NEVER displayed in browser - always downloaded
+await browser_tool.goto("https://research.org/paper.pdf")
+# Automatically downloads to ./tmp/downloads/paper.pdf
+# Browser stays on previous page
+
+# search_page() does NOT work with PDFs
+# Instead, use file operation tools on the downloaded file
+```
+
+**Download Path Configuration:**
+```python
+browser_tool = await BrowserTool.create(
+    downloads_path="/custom/path/downloads",  # Custom download directory
+    temp_dir="/custom/tmp",  # Custom temp directory (default: ./tmp)
+)
 ```
 
 ### Data Extraction

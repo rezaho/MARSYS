@@ -1,5 +1,6 @@
 ## Description of function calling definitions for each method in the class
 import asyncio
+import functools
 import io
 import json
 import logging
@@ -54,6 +55,71 @@ CURRENT_DIR = os.path.dirname(os.path.abspath(__file__))
 ASSETS_DIR = os.path.join(CURRENT_DIR, "..", "assets")
 
 logger = logging.getLogger(__name__)
+
+##############################################
+###   Download Detection Decorator        ###
+##############################################
+
+def check_download(timeout_ms: int = 500):
+    """
+    Decorator to check for downloads after browser action execution.
+
+    This decorator wraps BrowserTool methods to automatically detect if a file download
+    was triggered by the action (e.g., clicking a PDF link, pressing Enter on a download button).
+
+    If a download is detected within the timeout period:
+    - Returns a ToolResponse with the file path and download message
+    - Informs the agent that the action triggered a download
+
+    If no download occurs:
+    - Returns the original method result unchanged
+
+    Args:
+        timeout_ms: Milliseconds to wait for a download event (default: 500ms)
+
+    Usage:
+        @check_download(timeout_ms=500)
+        async def mouse_click(self, x, y, ...):
+            # Original implementation
+            ...
+    """
+    def decorator(func):
+        @functools.wraps(func)
+        async def wrapper(self, *args, **kwargs):
+            # Execute the original method
+            result = await func(self, *args, **kwargs)
+
+            # Check if download was triggered
+            download_info = await self._check_for_download(timeout_ms)
+
+            if download_info:
+                from marsys.environment.tool_response import ToolResponse, ToolResponseContent
+
+                # Build download message
+                action_name = func.__name__
+                download_msg = (
+                    f"Action '{action_name}' triggered a file download. "
+                    f"File '{download_info['filename']}' has been downloaded to: {download_info['path']}"
+                )
+
+                # Return ToolResponse with download info
+                return ToolResponse(
+                    content=[
+                        ToolResponseContent(text=download_msg)
+                    ],
+                    metadata={
+                        "download_triggered": True,
+                        "file_path": download_info['path'],
+                        "filename": download_info['filename'],
+                        "original_action": action_name
+                    }
+                )
+
+            # No download - return original result
+            return result
+        return wrapper
+    return decorator
+
 ##############################################
 ###   Helper Functions for Browser Tool   ###
 ##############################################
@@ -1665,9 +1731,11 @@ FN_WEB_MOUSE_RIGHT_CLICK: ToolUseSchema = {
 FN_WEB_KEYBOARD_TYPE: ToolUseSchema = {
     "type": "function",
     "function": {
-        "name": "keyboard_type",
+        "name": "type",
         "description": (
-            "Uses the Playwright library's keyboard API to type the provided text into the element that currently has focus. "
+            "Type regular text (letters, numbers, punctuation) into the currently focused element. "
+            "Use this for typing words, sentences, URLs, or any text content. "
+            "For special keys like Enter, Escape, Tab, or arrow keys, use keyboard_press instead. "
             "An optional delay between keystrokes can be specified to simulate natural typing."
         ),
         "parameters": {
@@ -1697,9 +1765,12 @@ FN_WEB_KEYBOARD_PRESS: ToolUseSchema = {
     "function": {
         "name": "keyboard_press",
         "description": (
-            "Uses the Playwright keyboard API to press a specified special key (e.g., 'Enter', 'Escape', etc.) on the page. "
-            "Ensure that the key is one of the supported keys: 'Enter', 'Tab', 'Escape', 'ArrowUp', 'ArrowDown', 'ArrowLeft', "
-            "'ArrowRight', 'Backspace', 'Delete', 'Home', 'End', 'PageUp', 'PageDown', 'Insert', 'Meta', 'Shift', 'Control', 'Alt'."
+            "Press special keyboard keys (NOT for typing text). "
+            "Use this for control keys like Enter, Tab, Escape, arrow keys (ArrowUp, ArrowDown, ArrowLeft, ArrowRight), "
+            "Backspace, Delete, Home, End, PageUp, PageDown, and modifier keys (Shift, Control, Alt, Meta). "
+            "For typing regular text (letters, numbers, words), use the 'type' method instead. "
+            "Supported keys: 'Enter', 'Tab', 'Escape', 'ArrowUp', 'ArrowDown', 'ArrowLeft', 'ArrowRight', "
+            "'Backspace', 'Delete', 'Home', 'End', 'PageUp', 'PageDown', 'Insert', 'Meta', 'Shift', 'Control', 'Alt'."
         ),
         "parameters": {
             "type": "object",
@@ -2045,6 +2116,54 @@ class BrowserTool:
         # History to store the reasoning chains, actions, screenshots, and outputs
         self.history: List[Dict[str, Any]] = []
 
+        # Global download detection infrastructure
+        self._download_queue: asyncio.Queue = asyncio.Queue()
+        self._setup_global_download_listener()
+
+    def _setup_global_download_listener(self):
+        """
+        Set up a persistent global download listener that captures ALL downloads.
+
+        This listener is registered once during initialization and persists across
+        all browser actions. Downloads are queued for methods to consume.
+        """
+        async def on_download(download):
+            await self._download_queue.put(download)
+
+        # Register persistent download listener
+        self.page.on("download", on_download)
+
+    async def _check_for_download(self, timeout_ms: int = 500) -> Optional[Dict[str, str]]:
+        """
+        Check if a download was triggered by the last action.
+
+        This method waits for a download event for up to timeout_ms milliseconds.
+        If a download occurs, it saves the file and returns download information.
+
+        Args:
+            timeout_ms: Milliseconds to wait for a download event
+
+        Returns:
+            Dictionary with 'filename' and 'path' if download occurred, None otherwise
+        """
+        try:
+            # Wait for download event with timeout
+            download = await asyncio.wait_for(
+                self._download_queue.get(),
+                timeout=timeout_ms / 1000.0
+            )
+
+            # Save the download
+            filename = download.suggested_filename
+            file_path = os.path.join(self.download_path, filename)
+            await download.save_as(file_path)
+
+            return {"filename": filename, "path": file_path}
+
+        except asyncio.TimeoutError:
+            # No download triggered - this is normal for most actions
+            return None
+
     @classmethod
     async def create(
         cls,
@@ -2114,18 +2233,50 @@ class BrowserTool:
         Returns:
             BrowserTool: An instance with a page navigated to a default URL (https://google.com).
         """
+        # Set up directories: default to current working directory + tmp/
         if temp_dir is None:
-            temp_dir = tempfile.gettempdir()
-        
+            temp_dir = os.path.join(os.getcwd(), "tmp")
+        os.makedirs(temp_dir, exist_ok=True)
+
+        # Set up downloads directory
+        if downloads_path is None:
+            downloads_path = os.path.join(temp_dir, "downloads")
+        os.makedirs(downloads_path, exist_ok=True)
+
+        # Set up screenshots directory
+        if screenshot_dir is None:
+            screenshot_dir = os.path.join(temp_dir, "screenshots")
+        os.makedirs(screenshot_dir, exist_ok=True)
+
         # Use browser_channel if provided, otherwise use default_browser
         channel = browser_channel or default_browser
-        
+
         playwright = await async_playwright().start()
-        
-        # Set up launch options with enhanced configuration
-        launch_options = {
+
+        # Create temporary user data directory for persistent context
+        user_data_dir = Path(tempfile.mkdtemp(prefix="pw-user-data-"))
+
+        # Seed Chromium Preferences to force PDF downloads and set download path
+        prefs_path = user_data_dir / "Default" / "Preferences"
+        prefs_path.parent.mkdir(parents=True, exist_ok=True)
+        prefs = {
+            "plugins": {
+                "always_open_pdf_externally": True
+            },
+            "download": {
+                "default_directory": downloads_path,
+                "prompt_for_download": False
+            }
+        }
+        prefs_path.write_text(json.dumps(prefs))
+
+        # Set up persistent context options
+        context_kwargs = {
+            "user_data_dir": str(user_data_dir),
             "headless": headless,
-            # Add args to speed up browser and disable font loading
+            "accept_downloads": True,
+            "java_script_enabled": True,
+            "bypass_csp": True,  # Bypass Content Security Policy for better compatibility
             "args": [
                 "--disable-web-security",
                 "--disable-features=VizDisplayCompositor",
@@ -2138,87 +2289,99 @@ class BrowserTool:
                 "--disable-dev-shm-usage",
             ]
         }
+
+        # Add channel if specified
         if channel:
-            launch_options["channel"] = channel
-        
-        browser = await playwright.chromium.launch(**launch_options)
-        
-        # Set up context options
-        context_kwargs = {
-            "accept_downloads": True,
-            "java_script_enabled": True,
-            "bypass_csp": True,  # Bypass Content Security Policy for better compatibility
-        }
-        
+            context_kwargs["channel"] = channel
+
         # Handle viewport settings
         if viewport:
             context_kwargs["viewport"] = viewport
         else:
             context_kwargs["viewport"] = {"width": viewport_width, "height": viewport_height}
-        
-        # Enable downloads - Playwright handles downloads automatically to a temp directory
-        # We can't set a custom downloads path in context creation, but downloads are accessible via the Download API
-        context_kwargs["accept_downloads"] = True
-        
-        # Create downloads directory for manual file operations if needed
-        if downloads_path:
-            os.makedirs(downloads_path, exist_ok=True)
-        elif temp_dir:
-            downloads_dir = os.path.join(temp_dir, "downloads")
-            os.makedirs(downloads_dir, exist_ok=True)
-        
+
         for attempt in range(3):
             try:
+                # Use launch_persistent_context instead of launch + new_context
+                # This returns a context that acts as both browser and context
                 context = await asyncio.wait_for(
-                    browser.new_context(**context_kwargs), timeout=1.5
+                    playwright.chromium.launch_persistent_context(**context_kwargs), timeout=3.0
                 )
-                
+
                 # Set default timeouts for the context
                 if timeout:
                     context.set_default_navigation_timeout(timeout)
                     context.set_default_timeout(timeout)
-                
-                page = await asyncio.wait_for(context.new_page(), timeout=0.5)
+
+                # Persistent context often starts with a default page, use it instead of creating a new one
+                existing_pages = context.pages
+                if existing_pages:
+                    page = existing_pages[0]
+                else:
+                    page = await asyncio.wait_for(context.new_page(), timeout=0.5)
                 break
             except asyncio.TimeoutError:
                 if attempt == 2:
                     raise TimeoutError("BrowserTool creation timed out.")
-        
-        tool = cls(playwright, browser, context, page, temp_dir, screenshot_dir, downloads_path)
+
+        # For persistent context, browser is None (context acts as both)
+        tool = cls(playwright, None, context, page, temp_dir, screenshot_dir, downloads_path)
         
         # Don't navigate to default page automatically - let the caller decide
         return tool
 
+    @check_download(timeout_ms=1000)
     async def goto(
         self, url: str, reasoning: Optional[str] = None, timeout: Optional[int] = None
-    ) -> None:
+    ) -> str:
         """
         Navigate the page to a given URL.
+
+        If the URL points to a downloadable file (e.g., PDF), the file will be downloaded automatically
+        and the download path will be returned. Otherwise, navigates to the page normally.
 
         Parameters:
             url (str): The URL to navigate to.
             reasoning (Optional[str]): The reasoning chain for this navigation. Defaults to empty string.
             timeout (Optional[int]): Optional timeout in milliseconds.
+
+        Returns:
+            str: File path if download was triggered, otherwise success message.
         """
         r = reasoning or ""
-        await self.page.goto(url, timeout=timeout)
+
         try:
-            await self.page.wait_for_load_state("networkidle", timeout=5000)
-        except Exception:
-            await self.page.wait_for_timeout(3000)
+            # Navigate to URL
+            await self.page.goto(url, timeout=timeout)
+            try:
+                await self.page.wait_for_load_state("networkidle", timeout=5000)
+            except Exception:
+                await self.page.wait_for_timeout(3000)
 
-        # Reinject mouse helper after navigation
-        await self._reinject_mouse_helper()
+            # Regular navigation
+            await self._reinject_mouse_helper()
 
-        title = await self.page.title()
-        self.history.append(
-            {
-                "action": "goto",
-                "reasoning": r,
-                "url": url,
-                "output": title,
-            }
-        )
+            title = await self.page.title()
+            self.history.append(
+                {
+                    "action": "goto",
+                    "reasoning": r,
+                    "url": url,
+                    "output": title,
+                }
+            )
+            return f"Navigated to: {url}"
+
+        except Exception as e:
+            # Handle ERR_ABORTED (download triggered before page load)
+            if "ERR_ABORTED" in str(e):
+                # Wait a bit longer for download event to be captured by global listener
+                await self.page.wait_for_timeout(500)
+                # The decorator will check for download after this method returns
+                # Return a placeholder message - decorator will replace with download info if found
+                return "Navigation aborted (download may have been triggered)"
+            else:
+                raise
 
     async def go_back(
         self, reasoning: Optional[str] = None, timeout: Optional[int] = None
@@ -2289,10 +2452,7 @@ class BrowserTool:
         JavaScript's window.scrollBy() function. The scroll is immediate and does not simulate
         natural mouse wheel scrolling.
 
-        Note: Does NOT work with plugins (e.g., PDFs), embedded documents, or scrollable containers. If this method doesn't work:
-        1. Use mouse_click on the document/section content you want to scroll (click on text, images, or background
-           to focus that scrollable area, but avoid clicking on interactive elements like links, buttons, or form fields)
-        2. Then use mouse_scroll with negative delta_y to scroll up
+        Note: Does NOT work with plugins (e.g., PDFs), embedded documents, or scrollable containers.
 
         Parameters:
             distance (int): The number of pixels to scroll up. Must be a positive integer.
@@ -2319,10 +2479,7 @@ class BrowserTool:
         JavaScript's window.scrollBy() function. The scroll is immediate and does not simulate
         natural mouse wheel scrolling.
 
-        Note: Does NOT work with plugins (e.g., PDFs), embedded documents, or scrollable containers. If this method doesn't work:
-        1. Use mouse_click on the document/section content you want to scroll (click on text, images, or background
-           to focus that scrollable area, but avoid clicking on interactive elements like links, buttons, or form fields)
-        2. Then use mouse_scroll with positive delta_y to scroll down
+        Note: Does NOT work with plugins (e.g., PDFs), embedded documents, or scrollable containers.
 
         Parameters:
             distance (int): The number of pixels to scroll down. Must be a positive integer.
@@ -2361,11 +2518,6 @@ class BrowserTool:
           * Medium scroll (partial page): 600-1000 pixels
           * Large scroll (near full page): 1200-2000 pixels
         - Examples: delta_y=800 scrolls down moderately, delta_y=-1500 scrolls up substantially
-
-        Note: If mouse scrolling doesn't work (e.g., PDFs, plugins, embedded documents, iframes, or scrollable containers):
-        1. Use mouse_click on the document/section content you want to scroll (click on text, images, or background
-           to focus that scrollable area, but avoid clicking on interactive elements like links, buttons, or form fields)
-        2. Then use mouse_scroll to scroll the focused region
 
         Parameters:
             delta_x (int): Pixels to scroll horizontally. Positive values scroll right,
@@ -2438,6 +2590,7 @@ class BrowserTool:
             }
         )
 
+    @check_download(timeout_ms=500)
     async def mouse_click(
         self,
         x: int,
@@ -2486,6 +2639,7 @@ class BrowserTool:
             }
         )
 
+    @check_download(timeout_ms=500)
     async def mouse_dbclick(
         self,
         x: int,
@@ -2535,6 +2689,7 @@ class BrowserTool:
             }
         )
 
+    @check_download(timeout_ms=500)
     async def mouse_triple_click(
         self,
         x: int,
@@ -2713,6 +2868,7 @@ class BrowserTool:
             }
         )
 
+    @check_download(timeout_ms=500)
     async def click(
         self,
         selector: Optional[str] = None,
@@ -3026,17 +3182,20 @@ class BrowserTool:
         )
         return result
 
-    async def keyboard_type(
+    async def type(
         self,
         text: str,
         reasoning: Optional[str] = None,
         delay: Optional[int] = None,
     ) -> None:
         """
-        Type the provided text using the keyboard, sending the input to the element that currently has focus.
+        Type regular text (letters, numbers, punctuation) into the currently focused element.
+
+        Use this method for typing words, sentences, URLs, or any text content. For special keys like
+        Enter, Escape, Tab, or arrow keys, use keyboard_press instead.
 
         Parameters:
-            text (str): The text to type using the keyboard.
+            text (str): The text to type using the keyboard (letters, numbers, punctuation, etc.).
             reasoning (Optional[str]): A description of the reasoning behind this action. Defaults to an empty string.
             delay (Optional[int]): Optional delay (in milliseconds) between keystrokes for a more natural typing simulation.
 
@@ -3047,13 +3206,14 @@ class BrowserTool:
         await self.page.keyboard.type(text, delay=delay)
         self.history.append(
             {
-                "action": "keyboard_type",
+                "action": "type",
                 "reasoning": r,
                 "text": text,
                 "delay": delay,
             }
         )
 
+    @check_download(timeout_ms=500)
     async def keyboard_press(
         self,
         key: str,
@@ -3061,18 +3221,23 @@ class BrowserTool:
         delay: Optional[int] = None,
     ) -> None:
         """
-        Press a special keyboard key (such as 'Enter', 'Escape', etc.) on the page using the Playwright keyboard API.
+        Press special keyboard keys (NOT for typing text).
+
+        Use this method for control keys like Enter, Tab, Escape, arrow keys, Backspace, Delete, etc.
+        For typing regular text (letters, numbers, words), use the 'type' method instead.
 
         This method sends a key press event to the element that currently has focus (or globally if no specific element is focused).
         It validates that the provided key is one of the recognized special keys.
 
         Parameters:
-            key (str): The special key to press (e.g., "Enter", "Escape", "ArrowUp", etc.). Must be one of the allowed keys.
+            key (str): The special key to press (e.g., "Enter", "Escape", "ArrowUp", "PageDown", etc.).
+                      Must be one of: Enter, Tab, Escape, ArrowUp, ArrowDown, ArrowLeft, ArrowRight,
+                      Backspace, Delete, Home, End, PageUp, PageDown, Insert, Meta, Shift, Control, Alt.
             reasoning (Optional[str]): A description of the reasoning for this action. Defaults to an empty string.
             delay (Optional[int]): Optional delay (in milliseconds) before releasing the key, for a more natural simulation.
 
         Raises:
-            ValueError: If the provided key is not one of the recognized special keys.
+            ActionValidationError: If the provided key is not one of the recognized special keys.
 
         Returns:
             None
@@ -3115,6 +3280,189 @@ class BrowserTool:
             }
         )
 
+    async def search_page(
+        self,
+        search_term: str,
+        reasoning: Optional[str] = None,
+    ) -> str:
+        """
+        Search for text on the current page and scroll to the first match.
+
+        Uses browser-specific search APIs to find text on the page:
+        - Chromium: Uses CDP (Chrome DevTools Protocol) to search including shadow DOM
+        - Firefox/WebKit: Uses JavaScript window.find() API
+
+        The first match will be scrolled into view. Call this method again to navigate to the next match.
+        Works for regular web pages and shadow DOM content.
+
+        Note: Does NOT work with PDF files. PDFs are automatically downloaded instead of displayed in browser.
+        Use file operation tools to search within downloaded PDF files.
+
+        Parameters:
+            search_term (str): The text to search for on the page (case-insensitive).
+            reasoning (Optional[str]): A description of why you're searching for this term.
+
+        Returns:
+            str: Confirmation message with search results (found/not found and match count for Chromium).
+        """
+        r = reasoning or ""
+
+        # Check if this is a continuation of previous search (same term)
+        is_same_search = (
+            hasattr(self, '_last_search_term') and
+            self._last_search_term == search_term
+        )
+
+        # Use JavaScript-based search with custom highlighting (works on all browsers)
+        result = await self.page.evaluate(
+            """(args) => {
+                const { query, isNext } = args;
+                const regex = new RegExp(query.replace(/[.*+?^${}()|[\\]\\\\]/g, '\\\\$&'), 'gi');
+
+                // If this is a new search, remove previous highlights and create new ones
+                if (!isNext) {
+                    // Remove previous highlights
+                    const existingHighlights = document.querySelectorAll('mark[data-pw-search]');
+                    existingHighlights.forEach(mark => {
+                        const parent = mark.parentNode;
+                        parent.replaceChild(document.createTextNode(mark.textContent), mark);
+                        parent.normalize();
+                    });
+
+                    // Find all text nodes containing the query
+                    const matches = [];
+                    const walker = document.createTreeWalker(
+                        document.body,
+                        NodeFilter.SHOW_TEXT,
+                        {
+                            acceptNode: (node) => {
+                                // Skip script, style, and already highlighted nodes
+                                if (node.parentElement.closest('script, style, noscript, mark[data-pw-search]')) {
+                                    return NodeFilter.FILTER_REJECT;
+                                }
+                                return regex.test(node.textContent) ? NodeFilter.FILTER_ACCEPT : NodeFilter.FILTER_REJECT;
+                            }
+                        },
+                        false
+                    );
+
+                    let node;
+                    while (node = walker.nextNode()) {
+                        matches.push(node);
+                    }
+
+                    if (matches.length === 0) {
+                        return { found: 0, current: 0 };
+                    }
+
+                    // Highlight all matches
+                    let markCounter = 0;
+                    matches.forEach((textNode) => {
+                        const text = textNode.textContent;
+                        const parent = textNode.parentNode;
+                        const fragment = document.createDocumentFragment();
+
+                        let lastIndex = 0;
+                        text.replace(regex, (match, offset) => {
+                            // Add text before match
+                            if (offset > lastIndex) {
+                                fragment.appendChild(document.createTextNode(text.substring(lastIndex, offset)));
+                            }
+
+                            // Create highlighted mark
+                            const mark = document.createElement('mark');
+                            mark.textContent = match;
+                            mark.setAttribute('data-pw-search', 'true');
+                            mark.setAttribute('data-pw-index', markCounter.toString());
+
+                            // Chrome-like colors: yellow for all, orange for current (index 0)
+                            if (markCounter === 0) {
+                                mark.style.backgroundColor = '#ff9632';  // Orange for current
+                                mark.style.color = 'black';
+                            } else {
+                                mark.style.backgroundColor = '#ffff00';  // Yellow for others
+                                mark.style.color = 'black';
+                            }
+                            mark.style.padding = '0';
+                            mark.style.margin = '0';
+
+                            fragment.appendChild(mark);
+
+                            lastIndex = offset + match.length;
+                            markCounter++;
+                            return match;
+                        });
+
+                        // Add remaining text
+                        if (lastIndex < text.length) {
+                            fragment.appendChild(document.createTextNode(text.substring(lastIndex)));
+                        }
+
+                        parent.replaceChild(fragment, textNode);
+                    });
+
+                    // Scroll to first match
+                    const firstMark = document.querySelector('mark[data-pw-index="0"]');
+                    if (firstMark) {
+                        firstMark.scrollIntoView({ block: 'center', inline: 'nearest', behavior: 'smooth' });
+                    }
+
+                    const totalMarks = document.querySelectorAll('mark[data-pw-search]').length;
+                    return { found: totalMarks, current: 1 };
+                } else {
+                    // Navigate to next match
+                    const allMarks = Array.from(document.querySelectorAll('mark[data-pw-search]'));
+                    if (allMarks.length === 0) {
+                        return { found: 0, current: 0 };
+                    }
+
+                    // Find current orange mark
+                    let currentIndex = -1;
+                    allMarks.forEach((mark, idx) => {
+                        if (mark.style.backgroundColor === 'rgb(255, 150, 50)') {  // #ff9632 in rgb
+                            currentIndex = idx;
+                            // Change to yellow
+                            mark.style.backgroundColor = '#ffff00';
+                        }
+                    });
+
+                    // Move to next (wrap around)
+                    const nextIndex = (currentIndex + 1) % allMarks.length;
+                    const nextMark = allMarks[nextIndex];
+                    nextMark.style.backgroundColor = '#ff9632';  // Orange
+                    nextMark.scrollIntoView({ block: 'center', inline: 'nearest', behavior: 'smooth' });
+
+                    return { found: allMarks.length, current: nextIndex + 1 };
+                }
+            }""",
+            {"query": search_term, "isNext": is_same_search}
+        )
+
+        total_found = result.get("found", 0) if isinstance(result, dict) else 0
+        current_index = result.get("current", 1) if isinstance(result, dict) else 1
+
+        # Store search term for next call
+        self._last_search_term = search_term
+
+        self.history.append({
+            "action": "search_page",
+            "reasoning": r,
+            "search_term": search_term,
+            "matches_found": total_found,
+            "current_match": current_index,
+        })
+
+        if total_found == 0:
+            return f"No matches found for '{search_term}' on the page."
+        elif total_found == 1:
+            return f"Found 1 match for '{search_term}'. The match is highlighted in orange and scrolled into view."
+        else:
+            return (
+                f"Match {current_index}/{total_found} for '{search_term}' is highlighted in orange. "
+                f"Call search_page('{search_term}') again to navigate to the next match."
+            )
+
+    @check_download(timeout_ms=500)
     async def dbclick(
         self,
         selector: Optional[str] = None,
@@ -5639,30 +5987,34 @@ class BrowserTool:
         self,
         text: str,
         reasoning: Optional[str] = None,
-        min_delay: int = 50,
-        max_delay: int = 150,
-        variation_factor: float = 0.3,
+        min_delay: Optional[int] = 50,
+        max_delay: Optional[int] = 150,
+        variation_factor: Optional[float] = 0.3,
     ) -> None:
         """
-        Type text with realistic human-like behavior including random delays and typing variations.
+        Type regular text (letters, numbers, punctuation) with realistic human-like behavior.
+
+        Use this method for typing words, sentences, URLs, or any text content into the currently focused element.
+        For special keys like Enter, Escape, Tab, or arrow keys, use keyboard_press instead.
 
         This method simulates natural human typing patterns by introducing random delays between
         keystrokes and slight variations in typing speed to make the interaction appear more
         human-like and less detectable as automated input.
 
         Parameters:
-            text (str): The text to type. Each character will be typed individually with realistic delays.
+            text (str): The text to type (letters, numbers, punctuation, etc.). Each character will be typed
+                       individually with realistic delays.
             reasoning (Optional[str]): The reasoning chain for this action. Defaults to empty string.
-            min_delay (int): Minimum delay between keystrokes in milliseconds. Defaults to 50ms.
-            max_delay (int): Maximum delay between keystrokes in milliseconds. Defaults to 150ms.
-            variation_factor (float): Factor to add randomness to delays (0.0 = no variation, 1.0 = high variation). 
-                                    Defaults to 0.3 for natural variation.
+            min_delay (Optional[int]): Minimum delay between keystrokes in milliseconds. Defaults to 50ms.
+            max_delay (Optional[int]): Maximum delay between keystrokes in milliseconds. Defaults to 150ms.
+            variation_factor (Optional[float]): Factor to add randomness to delays (0.0 = no variation, 1.0 = high variation).
+                                               Defaults to 0.3 for natural variation.
 
         Returns:
             None
 
         Raises:
-            ValueError: If min_delay >= max_delay or variation_factor is negative.
+            ActionValidationError: If min_delay >= max_delay or variation_factor is negative.
         """
         import asyncio
         import random
