@@ -799,8 +799,34 @@ class ModelAPIError(ModelError):
                 if error_data:
                     message = error_data.get("message", message)
 
-                if status_code == 402:
+                if status_code == 400:
+                    # 400 Bad Request can be various issues - check message for hints
+                    # Some are transient (server overload), some are permanent (malformed request)
+                    message_lower = message.lower()
+                    if "context length" in message_lower or "too many tokens" in message_lower:
+                        classification = APIErrorClassification.INVALID_REQUEST.value
+                        # Context length errors are not retryable without changing the request
+                        is_retryable = False
+                    elif "invalid" in message_lower or "missing" in message_lower or "cors" in message_lower:
+                        classification = APIErrorClassification.INVALID_REQUEST.value
+                        is_retryable = False
+                    else:
+                        # Unknown 400 error - could be transient server issue
+                        # Mark as validation error but don't retry (handled by adapter retry logic)
+                        classification = APIErrorClassification.VALIDATION_ERROR.value
+                        is_retryable = False
+                elif status_code == 401:
+                    classification = APIErrorClassification.AUTHENTICATION_FAILED.value
+                elif status_code == 402:
                     classification = APIErrorClassification.INSUFFICIENT_CREDITS.value
+                elif status_code == 403:
+                    # Moderation flagged
+                    classification = APIErrorClassification.PERMISSION_DENIED.value
+                elif status_code == 408:
+                    # Request timeout - server-side issue, should be retried by adapter
+                    classification = APIErrorClassification.TIMEOUT.value
+                    is_retryable = True
+                    retry_after = 5
                 elif status_code == 429:
                     classification = APIErrorClassification.RATE_LIMIT.value
                     is_retryable = True
@@ -808,8 +834,21 @@ class ModelAPIError(ModelError):
                     if reset_time:
                         import time
                         retry_after = max(int(reset_time) - int(time.time()), 1)
-                elif status_code == 401:
-                    classification = APIErrorClassification.AUTHENTICATION_FAILED.value
+                elif status_code == 502:
+                    # Bad Gateway - provider error, should be retried by adapter
+                    classification = APIErrorClassification.SERVICE_UNAVAILABLE.value
+                    is_retryable = True
+                    retry_after = 5
+                elif status_code == 503:
+                    # Service Unavailable - no available provider, should be retried by adapter
+                    classification = APIErrorClassification.SERVICE_UNAVAILABLE.value
+                    is_retryable = True
+                    retry_after = 10
+                elif status_code >= 500:
+                    # Other server errors
+                    classification = APIErrorClassification.SERVICE_UNAVAILABLE.value
+                    is_retryable = True
+                    retry_after = 10
 
             elif provider == "xai":
                 if status_code == 429:
