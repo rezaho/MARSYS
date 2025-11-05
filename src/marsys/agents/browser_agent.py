@@ -126,6 +126,16 @@ BROWSER_MODE_DEFAULTS = {
             "**Clearing text from inputs:**\n"
             "- Method 1 (recommended): Triple-click field coordinates → press 'Backspace' (reliably selects all text in single/multi-line inputs)\n"
             "- Method 2 (fallback): Click field → right-click → look for 'Select All' option in context menu → click it → press 'Backspace'\n\n"
+            "**Searching for text on page:**\n"
+            "- Use search_page(\"term\") to find specific text on web pages - much more efficient than manual scrolling\n"
+            "- Visual highlighting: All matches highlighted in YELLOW, current match in ORANGE (like Chrome's find)\n"
+            "- Automatically scrolls to the current match (centered in viewport)\n"
+            "- **Navigate to next matches**: Call search_page(\"term\") again with the SAME term to move to next occurrence\n"
+            "- Wraps around: After last match, returns to first match\n"
+            "- Returns match count (e.g., \"Match 3/10\") so you know progress\n"
+            "- Use screenshots to see highlighted results if needed\n"
+            "- **Important**: Does NOT work with PDFs (PDFs are automatically downloaded, not displayed in browser)\n"
+            "- When navigating to PDF URLs: The file downloads automatically and you get the file path\n\n"
             "**Scrolling:**\n"
             "- Use mouse_scroll with delta_y (positive = scroll down, negative = scroll up)\n"
             "- IMPORTANT: If mouse_scroll doesn't work, it's because the scrollable area is NOT IN FOCUS\n"
@@ -1348,6 +1358,7 @@ class BrowserAgent(Agent):
                 "mouse_move": self.mouse_move,  # Wrapper with coordinate conversion
                 "type_text": self.browser_tool.type_text,
                 "keyboard_press": self.browser_tool.keyboard_press,
+                "search_page": self.browser_tool.search_page,
                 "go_back": self.browser_tool.go_back,
                 "reload": self.browser_tool.reload,
                 "get_url": self.browser_tool.get_url,
