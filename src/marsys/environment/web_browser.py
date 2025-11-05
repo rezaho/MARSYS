@@ -2164,6 +2164,33 @@ class BrowserTool:
             # No download triggered - this is normal for most actions
             return None
 
+    async def _take_screenshot_without_blur(self) -> bytes:
+        """
+        Take a screenshot using Chrome DevTools Protocol (CDP) to avoid triggering blur events.
+
+        Standard page.screenshot() can trigger blur/focus events that close dropdowns, modals,
+        and other dynamic UI elements. Using CDP directly bypasses this issue.
+
+        Returns:
+            Screenshot bytes (PNG format)
+        """
+        try:
+            # Use CDP session to capture screenshot without affecting page state
+            client = await self.page.context.new_cdp_session(self.page)
+            result = await client.send('Page.captureScreenshot', {
+                'format': 'png',
+                'captureBeyondViewport': False
+            })
+            await client.detach()
+
+            # Decode base64 screenshot data
+            import base64
+            return base64.b64decode(result['data'])
+        except Exception as e:
+            # Fallback to standard screenshot if CDP fails
+            logger.warning(f"CDP screenshot failed, falling back to standard method: {e}")
+            return await self.page.screenshot()
+
     @classmethod
     async def create(
         cls,
@@ -3779,7 +3806,8 @@ class BrowserTool:
 
         else:
             # No highlighting - just return screenshot
-            screenshot_bytes = await self.page.screenshot()
+            # Use CDP to avoid triggering blur events that would close dropdowns/modals
+            screenshot_bytes = await self._take_screenshot_without_blur()
             image = PILImage.open(io.BytesIO(screenshot_bytes))
 
             # Generate filename and save
@@ -5681,9 +5709,10 @@ class BrowserTool:
         
         if reasoning:
             logging.info(f"BrowserTool Highlight Bbox: {reasoning}")
-        
+
         # Take a fresh screenshot for annotation
-        screenshot_bytes = await self.page.screenshot()
+        # Use CDP to avoid triggering blur events that would close dropdowns/modals
+        screenshot_bytes = await self._take_screenshot_without_blur()
         image = PILImage.open(io.BytesIO(screenshot_bytes))
         # Convert to RGBA for transparency support
         if image.mode != 'RGBA':
