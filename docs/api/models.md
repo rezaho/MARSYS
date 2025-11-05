@@ -495,10 +495,59 @@ async for chunk in model.stream(
 
 ## 🛡️ Error Handling
 
-### Model Errors
+### Automatic Retry for Server Errors
+
+!!! success "Built-in Resilience"
+    API adapters **automatically retry** transient server errors with exponential backoff. No manual retry needed!
+
+**Automatic Retry Behavior:**
+
+- **Max Retries**: 3 (total 4 attempts)
+- **Backoff**: 1s → 2s → 4s (exponential)
+- **Retryable Status Codes**:
+    - `500` - Internal Server Error
+    - `502` - Bad Gateway
+    - `503` - Service Unavailable
+    - `504` - Gateway Timeout
+    - `529` - Overloaded (Anthropic)
+    - `408` - Request Timeout (OpenRouter)
+    - `429` - Rate Limit (respects `retry-after` header)
+
+**Example:**
+```python
+from marsys.models import BaseAPIModel
+
+model = BaseAPIModel(
+    provider="openrouter",
+    model_name="anthropic/claude-sonnet-4.5",
+    api_key=api_key
+)
+
+# API adapter automatically retries server errors (500, 502, 503, etc.)
+# No manual retry logic needed!
+response = await model.arun(messages)
+
+# Logs will show retry attempts:
+# WARNING - Server error 503 from claude-sonnet-4.5. Retry 1/3 after 1.0s
+# WARNING - Server error 503 from claude-sonnet-4.5. Retry 2/3 after 2.0s
+# INFO - Request successful after 2 retries
+```
+
+**What Gets Retried Automatically:**
+
+| Provider | Retryable Errors | Non-Retryable Errors |
+|----------|------------------|----------------------|
+| **OpenRouter** | 408, 429, 502, 503, 500+ | 400, 401, 402, 403 |
+| **OpenAI** | 429, 500, 502, 503 | 400, 401, 404 |
+| **Anthropic** | 429, 500, 529 | 400, 401, 403, 413 |
+| **Google** | 429, 500, 503, 504 | 400, 403, 404 |
+
+### Manual Error Handling
+
+For errors that aren't automatically retried (client errors, quota issues, etc.):
 
 ```python
-from marsys.models.exceptions import (
+from marsys.agents.exceptions import (
     ModelError,
     ModelAPIError,
     ModelTimeoutError,
@@ -510,21 +559,51 @@ try:
     response = await model.run(messages)
 
 except ModelRateLimitError as e:
-    # Handle rate limiting
-    wait_time = e.retry_after or 60
-    await asyncio.sleep(wait_time)
+    # Rate limits are auto-retried, but if exhausted:
+    logger.error(f"Rate limit exceeded after {e.context.get('max_retries', 3)} retries")
+    if e.retry_after:
+        logger.info(f"Retry after {e.retry_after}s")
 
 except ModelTokenLimitError as e:
-    # Reduce input size
+    # Token limit requires reducing input
+    logger.warning(f"Token limit exceeded: {e.message}")
     messages = truncate_messages(messages, e.limit)
-
-except ModelTimeoutError as e:
-    # Handle timeout
-    logger.error(f"Model timeout: {e}")
+    response = await model.run(messages)
 
 except ModelAPIError as e:
-    # Handle API errors
-    logger.error(f"API error: {e.status_code} - {e.message}")
+    # Check if it's a server error (already auto-retried)
+    if e.status_code and e.status_code >= 500:
+        logger.error(f"Server error persisted after retries: {e.message}")
+    else:
+        # Client error (400-level)
+        logger.error(f"Client error: {e.status_code} - {e.message}")
+        # Handle based on error classification
+        if e.classification == "invalid_request":
+            # Fix request and retry
+            pass
+        elif e.classification == "insufficient_credits":
+            # Handle quota
+            pass
+```
+
+### Error Classification
+
+All `ModelAPIError` instances include classification:
+
+```python
+except ModelAPIError as e:
+    print(f"Error Code: {e.error_code}")
+    print(f"Classification: {e.classification}")
+    print(f"Is Retryable: {e.is_retryable}")
+    print(f"Retry After: {e.retry_after}s")
+    print(f"Suggested Action: {e.suggested_action}")
+
+    # Example output for OpenRouter 503:
+    # Error Code: MODEL_API_SERVICE_UNAVAILABLE_ERROR
+    # Classification: service_unavailable
+    # Is Retryable: True
+    # Retry After: 10s
+    # Suggested Action: Service temporarily unavailable. Please try again later.
 ```
 
 ## 📊 Usage Tracking

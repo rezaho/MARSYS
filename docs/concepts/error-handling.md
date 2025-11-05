@@ -204,7 +204,107 @@ async def execute_agent_task(agent, task, context):
         raise wrapped
 ```
 
-### Retry with Exponential Backoff
+### Automatic Retry in API Adapters
+
+!!! success "Built-in Retry Logic"
+    MARSYS **automatically retries** server-side API errors with exponential backoff at the adapter level. No manual retry logic needed for API calls!
+
+#### How It Works
+
+All API adapters (`APIProviderAdapter` and `AsyncBaseAPIAdapter`) automatically retry:
+
+**Retryable Status Codes:**
+- **500** - Internal Server Error
+- **502** - Bad Gateway
+- **503** - Service Unavailable
+- **504** - Gateway Timeout
+- **529** - Overloaded (Anthropic)
+- **408** - Request Timeout (OpenRouter)
+- **429** - Rate Limit (respects `retry-after` header)
+
+**Configuration:**
+- **Max retries**: 3 (total 4 attempts)
+- **Base delay**: 1 second
+- **Exponential backoff**: 1s → 2s → 4s
+
+**Example Log Output:**
+```
+2025-11-05 00:58:46 - WARNING - Server error 503 from gpt-4. Retry 1/3 after 1.0s
+2025-11-05 00:58:47 - WARNING - Server error 503 from gpt-4. Retry 2/3 after 2.0s
+2025-11-05 00:58:49 - INFO - Request successful after 2 retries
+```
+
+#### Provider-Specific Behavior
+
+=== "OpenRouter"
+    ```python
+    # Retryable errors
+    - 408: Request Timeout → retry after 5s
+    - 429: Rate Limit → respect X-RateLimit-Reset header
+    - 502: Bad Gateway (provider error) → retry after 5s
+    - 503: Service Unavailable → retry after 10s
+    - 500+: Server errors → retry after 10s
+
+    # Non-retryable errors (fail immediately)
+    - 400: Bad Request (malformed request)
+    - 401: Unauthorized (invalid API key)
+    - 402: Insufficient Credits
+    - 403: Forbidden (moderation flagged)
+    ```
+
+=== "OpenAI"
+    ```python
+    # Retryable errors
+    - 429: Rate Limit → respect retry-after header
+    - 500: Internal Server Error → retry
+    - 502: Bad Gateway → retry
+    - 503: Service Unavailable → retry
+
+    # Non-retryable errors
+    - 400: Bad Request
+    - 401: Authentication Failed
+    - 404: Invalid Model
+    ```
+
+=== "Anthropic"
+    ```python
+    # Retryable errors
+    - 429: Rate Limit → respect retry-after header
+    - 500: API Error (internal) → retry
+    - 529: Overloaded → retry
+
+    # Non-retryable errors
+    - 400: Invalid Request
+    - 401: Authentication Error
+    - 403: Permission Error
+    - 413: Request Too Large
+    ```
+
+=== "Google Gemini"
+    ```python
+    # Retryable errors
+    - 429: Resource Exhausted → retry
+    - 500: INTERNAL → retry
+    - 503: UNAVAILABLE → retry
+    - 504: DEADLINE_EXCEEDED → retry
+
+    # Non-retryable errors
+    - 400: INVALID_ARGUMENT
+    - 403: PERMISSION_DENIED
+    - 404: NOT_FOUND
+    ```
+
+#### When to Use Manual Retry
+
+The built-in adapter retry handles **transient API errors**. Use manual retry for:
+
+1. **Application-level errors** (business logic failures)
+2. **Multi-step workflows** (coordinating multiple agents)
+3. **Custom retry policies** (non-standard backoff)
+
+### Manual Retry with Exponential Backoff
+
+For application-level retry needs:
 
 ```python
 class RetryHandler:
@@ -251,10 +351,12 @@ class RetryHandler:
                 last_exception = e
 
             except APIError as e:
+                # Note: API adapters already retry server errors automatically
+                # This manual retry is for application-level API error handling
                 if e.context.get("status_code") in [500, 502, 503, 504]:
-                    # Retry on server errors
+                    # Server error after adapter retries exhausted
                     delay = self._calculate_delay(attempt)
-                    logger.warning(f"Server error. Retry {attempt + 1}/{self.max_retries} in {delay}s")
+                    logger.warning(f"Server error (after adapter retries). Retry {attempt + 1}/{self.max_retries} in {delay}s")
                     await asyncio.sleep(delay)
                     last_exception = e
                 else:
