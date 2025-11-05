@@ -57,50 +57,101 @@ class APIProviderAdapter(ABC):
         # Each adapter handles its own config in __init__
 
     def run(self, messages: List[Dict], **kwargs) -> HarmonizedResponse:
-        """Common orchestration flow - calls abstract methods"""
-        response = None
-        try:
-            # Record start time for response time calculation
-            request_start_time = time.time()
+        """Common orchestration flow with exponential backoff retry for server errors"""
+        max_retries = 3
+        base_delay = 1.0  # Start with 1 second
 
-            # 1. Build request components using abstract methods
-            headers = self.get_headers()
-            payload = self.format_request_payload(messages, **kwargs)
-            url = self.get_endpoint_url()
-
-            # 2. Make request (common logic)
-            response = requests.post(url, headers=headers, json=payload, timeout=180)
-
-            # # Debug: Print the actual response for debugging
-            if response.status_code != 200:
-                response.raise_for_status()
-
-            # 3. Get raw response and harmonize
-            raw_response = response.json()
-
-            # 4. Always use harmonize_response - it's the only method now
-            return self.harmonize_response(raw_response, request_start_time)
-
-        except requests.exceptions.RequestException as e:
+        for attempt in range(max_retries + 1):  # 0, 1, 2, 3 = 4 total attempts
+            response = None
             try:
-                return self.handle_api_error(e, response)
-            except Exception as api_error:
-                # Re-raise ModelAPIError that was raised by handle_api_error
-                raise api_error
-        except Exception as e:
-            # Catch any other exceptions (like Pydantic validation errors)
+                # Record start time for response time calculation
+                request_start_time = time.time()
 
-            if response is not None:
-                print(f"  Response status code: {response.status_code}")
-                print(f"  Response text: {response.text}")
+                # 1. Build request components using abstract methods
+                headers = self.get_headers()
+                payload = self.format_request_payload(messages, **kwargs)
+                url = self.get_endpoint_url()
 
-            # Convert unexpected exceptions to ErrorResponse
-            return ErrorResponse(
-                error=f"Unexpected error: {str(e)}",
-                error_type=type(e).__name__,
-                provider=getattr(self, "provider", "unknown"),
-                model=getattr(self, "model_name", "unknown"),
-            )
+                # 2. Make request (common logic)
+                response = requests.post(url, headers=headers, json=payload, timeout=180)
+
+                # Check for server errors that should trigger retry
+                if response.status_code in [500, 502, 503, 504, 529, 408]:
+                    # Server-side error - should retry
+                    if attempt < max_retries:
+                        # Calculate exponential backoff delay
+                        delay = base_delay * (2 ** attempt)
+                        logger.warning(
+                            f"Server error {response.status_code} from {self.model_name}. "
+                            f"Retry {attempt + 1}/{max_retries} after {delay:.1f}s"
+                        )
+                        time.sleep(delay)
+                        continue  # Retry
+                    else:
+                        # Max retries exhausted - raise error to be handled below
+                        logger.error(
+                            f"Max retries ({max_retries}) exhausted for server error {response.status_code}"
+                        )
+                        response.raise_for_status()
+
+                # Check for rate limit with retry-after header
+                elif response.status_code == 429:
+                    if attempt < max_retries:
+                        # Try to get retry-after from header
+                        retry_after = response.headers.get("retry-after")
+                        retry_after = response.headers.get("x-ratelimit-reset-after", retry_after)
+
+                        if retry_after:
+                            try:
+                                delay = float(retry_after)
+                            except ValueError:
+                                delay = base_delay * (2 ** attempt)
+                        else:
+                            delay = base_delay * (2 ** attempt)
+
+                        logger.warning(
+                            f"Rate limit (429) from {self.model_name}. "
+                            f"Retry {attempt + 1}/{max_retries} after {delay:.1f}s"
+                        )
+                        time.sleep(delay)
+                        continue  # Retry
+                    else:
+                        # Max retries exhausted - raise error to be handled below
+                        logger.error(f"Max retries ({max_retries}) exhausted for rate limit (429)")
+                        response.raise_for_status()
+
+                # For other non-200 responses, raise immediately (client errors)
+                elif response.status_code != 200:
+                    response.raise_for_status()
+
+                # 3. Get raw response and harmonize
+                raw_response = response.json()
+
+                # 4. Always use harmonize_response - it's the only method now
+                return self.harmonize_response(raw_response, request_start_time)
+
+            except requests.exceptions.RequestException as e:
+                # Error occurred - handle it via provider-specific error handler
+                try:
+                    return self.handle_api_error(e, response)
+                except Exception as api_error:
+                    # Re-raise ModelAPIError that was raised by handle_api_error
+                    raise api_error
+
+            except Exception as e:
+                # Catch any other exceptions (like Pydantic validation errors)
+
+                if response is not None:
+                    print(f"  Response status code: {response.status_code}")
+                    print(f"  Response text: {response.text}")
+
+                # Convert unexpected exceptions to ErrorResponse
+                return ErrorResponse(
+                    error=f"Unexpected error: {str(e)}",
+                    error_type=type(e).__name__,
+                    provider=getattr(self, "provider", "unknown"),
+                    model=getattr(self, "model_name", "unknown"),
+                )
 
     # Abstract methods that each provider must implement
     @abstractmethod
@@ -171,7 +222,7 @@ class AsyncBaseAPIAdapter(APIProviderAdapter):
 
     async def arun(self, messages: List[Dict], **kwargs) -> HarmonizedResponse:
         """
-        Async orchestration flow with aiohttp.
+        Async orchestration flow with aiohttp and exponential backoff retry for server errors.
 
         This method provides true async HTTP calls, allowing the event loop
         to handle other branches while waiting for API responses.
@@ -187,53 +238,106 @@ class AsyncBaseAPIAdapter(APIProviderAdapter):
             ModelError: For any API or network errors
         """
         import aiohttp
+        import asyncio
 
-        try:
-            # Record start time for response time calculation
-            request_start_time = time.time()
+        max_retries = 3
+        base_delay = 1.0  # Start with 1 second
 
-            # Build request components using parent's abstract methods
-            headers = self.get_headers()
-            payload = self.format_request_payload(messages, **kwargs)
-            url = self.get_endpoint_url()
-
-            # Get or create session
-            session = await self._ensure_session()
-
-            # Make async HTTP request
-            # While waiting for response, event loop can handle other branches
-            async with session.post(
-                url,
-                headers=headers,
-                json=payload,
-                timeout=aiohttp.ClientTimeout(total=180)
-            ) as response:
-                # Check status before reading body
-                if response.status != 200:
-                    # Raise aiohttp exception
-                    response.raise_for_status()
-
-                # Read JSON response
-                raw_response = await response.json()
-
-            # Reuse parent's harmonization logic
-            return self.harmonize_response(raw_response, request_start_time)
-
-        except aiohttp.ClientError as e:
-            # Call handle_api_error like sync adapter does
-            # This ensures proper error classification for async requests
+        for attempt in range(max_retries + 1):  # 0, 1, 2, 3 = 4 total attempts
+            response = None
             try:
-                return self.handle_api_error(e, response=None)
-            except Exception as api_error:
-                # Re-raise ModelAPIError that was raised by handle_api_error
-                raise api_error
-        except Exception as e:
-            # For unexpected errors, also use handle_api_error for consistency
-            try:
-                return self.handle_api_error(e, response=None)
-            except Exception as api_error:
-                # Re-raise ModelAPIError that was raised by handle_api_error
-                raise api_error
+                # Record start time for response time calculation
+                request_start_time = time.time()
+
+                # Build request components using parent's abstract methods
+                headers = self.get_headers()
+                payload = self.format_request_payload(messages, **kwargs)
+                url = self.get_endpoint_url()
+
+                # Get or create session
+                session = await self._ensure_session()
+
+                # Make async HTTP request
+                # While waiting for response, event loop can handle other branches
+                async with session.post(
+                    url,
+                    headers=headers,
+                    json=payload,
+                    timeout=aiohttp.ClientTimeout(total=180)
+                ) as response:
+                    response_status = response.status
+
+                    # Check for server errors that should trigger retry
+                    if response_status in [500, 502, 503, 504, 529, 408]:
+                        # Server-side error - should retry
+                        if attempt < max_retries:
+                            # Calculate exponential backoff delay
+                            delay = base_delay * (2 ** attempt)
+                            logger.warning(
+                                f"Server error {response_status} from {self.model_name}. "
+                                f"Retry {attempt + 1}/{max_retries} after {delay:.1f}s"
+                            )
+                            await asyncio.sleep(delay)
+                            continue  # Retry
+
+                        else:
+                            # Max retries exhausted - raise error to be handled below
+                            logger.error(
+                                f"Max retries ({max_retries}) exhausted for server error {response_status}"
+                            )
+                            response.raise_for_status()
+
+                    # Check for rate limit with retry-after header
+                    elif response_status == 429:
+                        if attempt < max_retries:
+                            # Try to get retry-after from header
+                            retry_after = response.headers.get("retry-after")
+                            retry_after = response.headers.get("x-ratelimit-reset-after", retry_after)
+
+                            if retry_after:
+                                try:
+                                    delay = float(retry_after)
+                                except ValueError:
+                                    delay = base_delay * (2 ** attempt)
+                            else:
+                                delay = base_delay * (2 ** attempt)
+
+                            logger.warning(
+                                f"Rate limit (429) from {self.model_name}. "
+                                f"Retry {attempt + 1}/{max_retries} after {delay:.1f}s"
+                            )
+                            await asyncio.sleep(delay)
+                            continue  # Retry
+                        else:
+                            # Max retries exhausted - raise error to be handled below
+                            logger.error(f"Max retries ({max_retries}) exhausted for rate limit (429)")
+                            response.raise_for_status()
+
+                    # For other non-200 responses, raise immediately (client errors)
+                    elif response_status != 200:
+                        response.raise_for_status()
+
+                    # Read JSON response
+                    raw_response = await response.json()
+
+                # Reuse parent's harmonization logic
+                return self.harmonize_response(raw_response, request_start_time)
+
+            except aiohttp.ClientError as e:
+                # Error occurred - handle it via provider-specific error handler
+                try:
+                    return self.handle_api_error(e, response=None)
+                except Exception as api_error:
+                    # Re-raise ModelAPIError that was raised by handle_api_error
+                    raise api_error
+
+            except Exception as e:
+                # For unexpected errors, also use handle_api_error for consistency
+                try:
+                    return self.handle_api_error(e, response=None)
+                except Exception as api_error:
+                    # Re-raise ModelAPIError that was raised by handle_api_error
+                    raise api_error
 
     async def cleanup(self):
         """
