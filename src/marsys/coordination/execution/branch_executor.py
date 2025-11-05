@@ -1119,7 +1119,7 @@ class BranchExecutor:
                     return True
         
         # Check max steps as safety
-        max_steps = branch.topology.metadata.get("max_steps", 30)
+        max_steps = branch.topology.metadata.get("max_steps", 100)
         return branch.state.current_step >= max_steps
     
     async def _should_hold_for_convergence(
