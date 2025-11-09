@@ -11,13 +11,17 @@ from .response_validator import (
     ToolCallProcessor,
     NaturalLanguageProcessor
 )
+from .types import AgentInvocation, ValidationError, ValidationErrorCategory
 
 __all__ = [
     "ValidationProcessor",
-    "ValidationResult", 
+    "ValidationResult",
     "ActionType",
     "ResponseProcessor",
     "StructuredJSONProcessor",
     "ToolCallProcessor",
-    "NaturalLanguageProcessor"
+    "NaturalLanguageProcessor",
+    "AgentInvocation",
+    "ValidationError",
+    "ValidationErrorCategory",
 ]

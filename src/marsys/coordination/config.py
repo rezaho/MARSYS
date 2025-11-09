@@ -231,7 +231,10 @@ class ExecutionConfig:
     """Configuration for multi-agent system execution."""
 
     # Steering configuration
-    steering_mode: Literal["auto", "always", "never"] = "never"
+    # "error" = inject only when error occurred (minimum interference)
+    # "auto" = inject on any retry
+    # "always" = inject on every step
+    steering_mode: Literal["auto", "always", "error"] = "error"
 
     # Convergence behavior
     dynamic_convergence_enabled: bool = True
@@ -255,22 +258,25 @@ class ExecutionConfig:
     initial_user_msg: Optional[str] = None  # Message shown to user in user-first mode
     user_interaction: str = "terminal"  # Type of user interaction: "terminal", "none"
     
-    def should_apply_steering(self, is_retry: bool = False) -> bool:
+    def should_apply_steering(self, is_retry: bool = False, has_error: bool = False) -> bool:
         """
         Determine if steering should be applied.
-        
+
         Args:
             is_retry: Whether this is a retry attempt
+            has_error: Whether an error occurred in previous attempt
 
         Returns:
             True if steering should be applied, False otherwise
         """
-        if self.steering_mode == "never":
-            return False
+        if self.steering_mode == "error":
+            return has_error
+        elif self.steering_mode == "auto":
+            return is_retry
         elif self.steering_mode == "always":
             return True
-        else:  # auto mode - only on retries
-            return is_retry
+
+        return False
 
 
 @dataclass
