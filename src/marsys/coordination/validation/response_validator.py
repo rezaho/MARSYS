@@ -18,7 +18,7 @@ from typing import TYPE_CHECKING, Any, Dict, List, Optional, Type
 
 from ..branches.types import ExecutionBranch, ExecutionState, StepResult
 from ..topology.graph import TopologyGraph
-from .types import AgentInvocation, ValidationError
+from .types import AgentInvocation, ValidationErrorCategory, ValidationError
 
 if TYPE_CHECKING:
     from ...agents import BaseAgent
@@ -48,6 +48,7 @@ class ValidationResult:
     parsed_response: Optional[Dict[str, Any]] = None
     error_message: Optional[str] = None
     retry_suggestion: Optional[str] = None
+    error_category: Optional[str] = None  # NEW: Error category for steering (from ErrorCategory enum)
     invocations: List['AgentInvocation'] = None  # Complete invocation data for invoke/parallel_invoke
     tool_calls: List[Dict[str, Any]] = None
 
@@ -747,21 +748,24 @@ class ValidationProcessor:
             return ValidationResult(
                 is_valid=False,
                 error_message="Response content is None",
-                retry_suggestion=f"Your response was empty. {format_hint}"
+                retry_suggestion=f"Your response was empty. {format_hint}",
+                error_category=ValidationErrorCategory.FORMAT_ERROR.value
             )
 
         if isinstance(content_to_parse, str) and not content_to_parse.strip():
             return ValidationResult(
                 is_valid=False,
                 error_message="Response content is empty string",
-                retry_suggestion=f"Your response was an empty string. {format_hint}"
+                retry_suggestion=f"Your response was an empty string. {format_hint}",
+                error_category=ValidationErrorCategory.FORMAT_ERROR.value
             )
 
         if isinstance(content_to_parse, dict) and not content_to_parse:
             return ValidationResult(
                 is_valid=False,
                 error_message="Response content is empty dictionary",
-                retry_suggestion=f"Your response was an empty dictionary. {format_hint}"
+                retry_suggestion=f"Your response was an empty dictionary. {format_hint}",
+                error_category=ValidationErrorCategory.FORMAT_ERROR.value
             )
 
         # 1. Try each processor to parse response content
@@ -784,7 +788,8 @@ class ValidationProcessor:
                 return ValidationResult(
                     is_valid=False,
                     error_message="JSON parsing failed - likely due to unescaped special characters in content",
-                    retry_suggestion=f"Your JSON had unescaped special characters. Please ensure all quotes, newlines, and special characters are properly escaped. Valid actions: {', '.join(allowed_actions)}"
+                    retry_suggestion=f"Your JSON had unescaped special characters. Please ensure all quotes, newlines, and special characters are properly escaped. Valid actions: {', '.join(allowed_actions)}",
+                    error_category=ValidationErrorCategory.FORMAT_ERROR.value
                 )
 
             # Check if it's a tool response that needs processing
@@ -792,7 +797,8 @@ class ValidationProcessor:
                 return ValidationResult(
                     is_valid=False,
                     error_message="Tool response detected but couldn't be parsed",
-                    retry_suggestion=f"Your tool response format was incorrect. Please ensure it follows proper JSON structure. Valid actions: {', '.join(allowed_actions)}"
+                    retry_suggestion=f"Your tool response format was incorrect. Please ensure it follows proper JSON structure. Valid actions: {', '.join(allowed_actions)}",
+                    error_category=ValidationErrorCategory.FORMAT_ERROR.value
                 )
             
             # Generic fallback - provide dynamic format instructions based on allowed actions
@@ -827,7 +833,8 @@ class ValidationProcessor:
             return ValidationResult(
                 is_valid=False,
                 error_message="Could not parse response format - no processor could handle it",
-                retry_suggestion=f'Your response format was not recognized. {format_hint}'
+                retry_suggestion=f'Your response format was not recognized. {format_hint}',
+                error_category=ValidationErrorCategory.FORMAT_ERROR.value
             )
         
         # 2. Determine action type
@@ -838,7 +845,8 @@ class ValidationProcessor:
             return ValidationResult(
                 is_valid=False,
                 error_message="No action specified in response",
-                retry_suggestion=f"You didn't specify 'next_action'. You must choose one of: {', '.join(allowed_actions)}"
+                retry_suggestion=f"You didn't specify 'next_action'. You must choose one of: {', '.join(allowed_actions)}",
+                error_category=ValidationErrorCategory.ACTION_ERROR.value
             )
         
         try:
@@ -869,7 +877,8 @@ class ValidationProcessor:
             return ValidationResult(
                 is_valid=False,
                 error_message=f"Unknown action type: {action_str}",
-                retry_suggestion=error_msg
+                retry_suggestion=error_msg,
+                error_category=ValidationErrorCategory.ACTION_ERROR.value
             )
         
         # 3. Validate specific action
@@ -909,7 +918,8 @@ class ValidationProcessor:
             return ValidationResult(
                 is_valid=False,
                 error_message="Missing invocations for agent invocation",
-                retry_suggestion="You indicated 'invoke_agent' but didn't specify which agent. You must provide the agent_name and request."
+                retry_suggestion="You indicated 'invoke_agent' but didn't specify which agent. You must provide the agent_name and request.",
+                error_category=ValidationErrorCategory.FORMAT_ERROR.value
             )
         
         # Extract agent names from invocations for validation
@@ -926,7 +936,8 @@ class ValidationProcessor:
             return ValidationResult(
                 is_valid=False,
                 error_message=f"Agent {agent.name} cannot invoke: {invalid_targets}",
-                retry_suggestion=f"You cannot invoke {invalid_targets}. Your available agents are: {next_agents}"
+                retry_suggestion=f"You cannot invoke {invalid_targets}. Your available agents are: {next_agents}",
+                error_category=ValidationErrorCategory.PERMISSION_ERROR.value
             )
         
         # Determine action type based on number of invocations
@@ -1056,7 +1067,8 @@ class ValidationProcessor:
                     ),
                     retry_suggestion=(
                         f"You cannot use 'final_response' from this agent. You must invoke one of: {next_agents}"
-                    )
+                    ),
+                    error_category=ValidationErrorCategory.PERMISSION_ERROR.value
                 )
         else:
             logger.debug(f"Agent '{agent.name}' is allowed to use final_response (has User access)")

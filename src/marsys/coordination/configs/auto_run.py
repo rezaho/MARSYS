@@ -60,7 +60,13 @@ class AutoRunConfig:
 
         # Map execution settings
         if 'steering_mode' in kwargs:
-            config.execution.steering_mode = kwargs['steering_mode']
+            steering_mode = kwargs['steering_mode']
+            # Validate steering mode
+            valid_modes = ["auto", "always", "error"]
+            if steering_mode not in valid_modes:
+                logger.warning(f"Invalid steering_mode '{steering_mode}', defaulting to 'error'")
+                steering_mode = "error"
+            config.execution.steering_mode = steering_mode
         if 'auto_detect_convergence' in kwargs:
             config.execution.auto_detect_convergence = kwargs['auto_detect_convergence']
         if 'parent_completes_on_spawn' in kwargs:
