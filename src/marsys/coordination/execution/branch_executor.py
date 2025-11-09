@@ -43,6 +43,7 @@ from ..validation.response_validator import (
     ValidationProcessor,
     ValidationResult,
 )
+from ..validation.types import ValidationErrorCategory
 
 logger = logging.getLogger(__name__)
 
@@ -234,10 +235,13 @@ class BranchExecutor:
         
         # Start with the entry agent
         current_agent = branch.topology.entry_agent
-        
+
         # Track retry attempts per agent (stored on branch for persistence across pause/resume)
         if not hasattr(branch, 'retry_counts'):
             branch.retry_counts = defaultdict(int)
+        if not hasattr(branch, 'agent_retry_info'):
+            branch.agent_retry_info = {}  # {agent_name: error_context_dict}
+
         retry_counts = branch.retry_counts
         
         while True:
@@ -245,8 +249,12 @@ class BranchExecutor:
             if await self._should_complete(branch, context, execution_trace):
                 break
 
-            # Pass actual retry count in context metadata (for future use)
+            # Pass retry context to StepExecutor for steering
+            agent_retry_info = branch.agent_retry_info.get(current_agent)
             context.metadata["agent_retry_count"] = retry_counts.get(current_agent, 0)
+            if agent_retry_info:
+                context.metadata["agent_error_context"] = agent_retry_info
+                logger.debug(f"Passing error context for {current_agent}: {agent_retry_info['category']}")
 
             # Execute current agent
             step_result = await self._execute_agent_step(
@@ -255,7 +263,14 @@ class BranchExecutor:
                 context,
                 branch
             )
-            
+
+            # Check if User node signaled to clear error context (user provided feedback)
+            if step_result.metadata and step_result.metadata.get("clear_error_context"):
+                # Clear all agent retry info (user feedback supersedes previous errors)
+                if hasattr(branch, 'agent_retry_info'):
+                    branch.agent_retry_info.clear()
+                    logger.info("Cleared all error context after user feedback")
+
             execution_trace.append(step_result)
             branch.state.current_step += 1
             
@@ -916,6 +931,11 @@ class BranchExecutor:
                     result.action_type = validation.action_type.value if validation.action_type else "continue"
                     result.parsed_response = validation.parsed_response
 
+                    # Clear error context on successful validation
+                    if agent_name in branch.agent_retry_info:
+                        logger.debug(f"Clearing error context for {agent_name} after successful validation")
+                        del branch.agent_retry_info[agent_name]
+
                     # Handle error recovery routing - transfer error details to metadata
                     if validation.action_type in [ActionType.ERROR_RECOVERY, ActionType.TERMINAL_ERROR]:
                         # Extract error details
@@ -944,6 +964,17 @@ class BranchExecutor:
                         result.success = False
                         result.requires_retry = True  # Trigger retry logic
                         result.error = error_info.get('message', 'API error - retrying')
+
+                        # Store error context for steering (minimal for API errors)
+                        retry_count = branch.retry_counts.get(agent_name, 0) if hasattr(branch, 'retry_counts') else 0
+                        branch.agent_retry_info[agent_name] = {
+                            "category": ValidationErrorCategory.API_TRANSIENT.value,
+                            "error_message": error_info.get('message', 'API error'),
+                            "retry_suggestion": None,  # No format suggestions for API errors
+                            "retry_count": retry_count + 1,
+                            "classification": error_info.get('classification')
+                        }
+
                         if not result.metadata:
                             result.metadata = {}
                         result.metadata.update({
@@ -964,22 +995,23 @@ class BranchExecutor:
                     if validation.next_agents and len(validation.next_agents) > 0:
                         result.next_agent = validation.next_agents[0]
                 else:
+                    # Validation failed
                     result.success = False
                     result.error = validation.error_message
                     result.requires_retry = True
 
-                    # FIX: Send validation error back to agent as user message
-                    if hasattr(agent, 'memory') and validation.error_message:
-                        error_message = f"Your response format was invalid. {validation.error_message}"
-                        if validation.retry_suggestion:
-                            error_message += f"\n{validation.retry_suggestion}"
-
-                        # Add error message to agent's memory
-                        agent.memory.add(
-                            role="user",
-                            content=error_message
-                        )
-                        logger.debug(f"Added validation error to {agent_name}'s memory for retry")
+                    # Store error context for SteeringManager (replaces memory injection)
+                    retry_count = branch.retry_counts.get(agent_name, 0) if hasattr(branch, 'retry_counts') else 0
+                    # Use category from ValidationProcessor (it knows the exact error type)
+                    error_category = validation.error_category or ValidationErrorCategory.FORMAT_ERROR.value
+                    branch.agent_retry_info[agent_name] = {
+                        "category": error_category,
+                        "error_message": validation.error_message,
+                        "retry_suggestion": validation.retry_suggestion,
+                        "retry_count": retry_count + 1,
+                        "failed_action": validation.parsed_response.get("next_action") if validation.parsed_response else None
+                    }
+                    logger.debug(f"Stored validation error context for {agent_name} (category: {error_category})")
             
             # Apply FLOW_CONTROL rules if we have a rules engine
             if self.rules_engine and result.success:
@@ -2076,8 +2108,12 @@ class BranchExecutor:
             if await self._should_complete(branch, context, execution_trace):
                 break
 
-            # Pass actual retry count in context metadata (same as _execute_simple_branch)
+            # Pass retry context to StepExecutor for steering (same as _execute_simple_branch)
+            agent_retry_info = branch.agent_retry_info.get(current_agent)
             context.metadata["agent_retry_count"] = retry_counts.get(current_agent, 0)
+            if agent_retry_info:
+                context.metadata["agent_error_context"] = agent_retry_info
+                logger.debug(f"Passing error context for {current_agent}: {agent_retry_info['category']}")
 
             # Determine next agent (might be the same agent continuing)
             step_result = await self._execute_agent_step(

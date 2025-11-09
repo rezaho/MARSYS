@@ -19,6 +19,8 @@ from collections import defaultdict
 from ...agents.memory import Message
 from ..branches.types import StepResult, ExecutionBranch
 from .tool_executor import RealToolExecutor
+from ..steering.manager import SteeringManager, SteeringContext, ErrorContext
+from ..validation.types import ValidationErrorCategory
 
 # Enhanced error handling imports
 from ...agents.exceptions import (
@@ -125,7 +127,10 @@ class StepExecutor:
         self.event_bus = event_bus
         self.max_retries = max_retries
         self.retry_delay = retry_delay
-        
+
+        # Initialize steering manager
+        self.steering_manager = SteeringManager()
+
         # Track execution statistics
         self.stats = defaultdict(lambda: {
             "total_steps": 0,
@@ -252,21 +257,54 @@ class StepExecutor:
                         run_context["format_instructions"] = format_instructions
                         logger.debug(f"Passing dynamic format instructions for {agent_name} via context")
                 
-                # NEW: Add steering based on config
-                # Get agent retry count from context (if available)
+                # NEW: Add steering based on config using SteeringManager
                 agent_retry_count = context.get('metadata', {}).get('agent_retry_count', 0)
+                agent_error_context_dict = context.get('metadata', {}).get('agent_error_context')
 
-                # Convert to boolean: is this ANY kind of retry?
+                # Build ErrorContext if present
+                error_context = None
+                if agent_error_context_dict:
+                    try:
+                        error_context = ErrorContext(
+                            category=ValidationErrorCategory(agent_error_context_dict['category']),
+                            error_message=agent_error_context_dict['error_message'],
+                            retry_suggestion=agent_error_context_dict.get('retry_suggestion'),
+                            retry_count=agent_error_context_dict['retry_count'],
+                            classification=agent_error_context_dict.get('classification'),
+                            failed_action=agent_error_context_dict.get('failed_action')
+                        )
+                    except (KeyError, ValueError) as e:
+                        logger.warning(f"Failed to parse error context for {agent_name}: {e}")
+
+                # Determine retry flags
                 is_retry = (retry_count > 0) or (agent_retry_count > 0)
+                has_error = error_context is not None
 
-                if execution_config.should_apply_steering(is_retry):
-                    steering_prompt = self._get_steering_prompt(
-                        agent,
-                        step_context,
-                        is_retry=is_retry
+                # Check if we should apply steering
+                if execution_config.should_apply_steering(is_retry, has_error):
+                    # Get available actions from topology
+                    available_actions = self._get_available_actions(agent, step_context)
+
+                    # Build steering context
+                    steering_ctx = SteeringContext(
+                        agent_name=agent_name,
+                        available_actions=available_actions,
+                        error_context=error_context,
+                        is_retry=is_retry,
+                        steering_mode=execution_config.steering_mode
                     )
-                    run_context["steering_prompt"] = steering_prompt
-                    logger.debug(f"Added steering for {agent_name} (exception_retry: {retry_count}, agent_retry: {agent_retry_count}, is_retry: {is_retry}, mode: {execution_config.steering_mode})")
+
+                    # Get steering prompt from manager
+                    steering_prompt = self.steering_manager.get_steering_prompt(steering_ctx)
+
+                    if steering_prompt:
+                        run_context["steering_prompt"] = steering_prompt
+                        category_str = error_context.category.value if error_context else "none"
+                        logger.debug(
+                            f"Injected steering for {agent_name} "
+                            f"(mode: {execution_config.steering_mode}, category: {category_str}, "
+                            f"retry: {agent_retry_count})"
+                        )
                 
                 agent_response = await agent.run_step(
                     request,
@@ -1169,6 +1207,43 @@ Detailed structure for the JSON object:
         Avoids duplication with system prompt to prevent repetition.
         """
         return f"""Respond with a single JSON object in a markdown block: ```json {{"thought": "...", "next_action": "...", "action_input": {{...}}}} ```"""
+
+    def _get_available_actions(self, agent: 'BaseAgent', step_context: 'StepContext') -> List[str]:
+        """
+        Extract available actions from topology for steering.
+
+        Args:
+            agent: The agent being executed
+            step_context: Current step execution context
+
+        Returns:
+            List of available action names
+        """
+        available = []
+
+        topology_graph = getattr(step_context, 'topology_graph', None)
+
+        if topology_graph:
+            current_agent = agent.name if hasattr(agent, 'name') else str(agent)
+
+            # Check for next agents
+            next_agents = topology_graph.get_next_agents(current_agent)
+            if next_agents and [a for a in next_agents if a != "User"]:
+                available.append("invoke_agent")
+
+            # Check for user access (final_response capability)
+            if topology_graph.has_user_access(current_agent):
+                available.append("final_response")
+
+        # Check for tools
+        if hasattr(agent, 'tools_schema') and agent.tools_schema:
+            available.append("tool_calls")
+
+        # Fallback
+        if not available:
+            available.append("final_response")
+
+        return available
 
     def _get_steering_prompt(self, agent: BaseAgent, context: StepContext,
                              is_retry: bool = False) -> str:
