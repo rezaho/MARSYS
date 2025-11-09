@@ -117,7 +117,7 @@ nav:
     
   - Concepts:
     - Overview: concepts/overview.md
-    - Core Components: 
+    - Core Components:
       - Overview: concepts/index.md
       - Agents: concepts/agents.md
       - Memory: concepts/memory.md
@@ -126,13 +126,17 @@ nav:
       - Registry: concepts/registry.md
       - Messages: concepts/messages.md
       - Communication: concepts/communication.md
+    - Specialized Agents:
+      - Overview: concepts/specialized-agents.md
+      - Browser Agent: concepts/browser-automation.md
+      - File Operation Agent: concepts/file-operation-agent.md
+      - Web Search Agent: concepts/web-search-agent.md
     - Advanced Topics:
       - Execution Flow: concepts/execution-flow.md
       - Branching: concepts/branching.md
       - Validation & Routing: concepts/validation-routing.md
       - State Management: concepts/state-management.md
       - Error Handling: concepts/error-handling.md
-      - Browser Automation: concepts/browser-automation.md
       - Learning Agents: concepts/learning-agents.md
       - Memory Patterns: concepts/memory-patterns.md
       - Custom Agents: concepts/custom-agents.md
@@ -168,6 +172,15 @@ nav:
   - Guides:
     - Overview: guides/overview.md
     - Built-in Tools: guides/built-in-tools.md
+    - Specialized Tools:
+      - Overview: guides/specialized-tools.md
+      - File Operation Tools: guides/file-operation-tools.md
+      - Bash Tools: guides/bash-tools.md
+      - Search Tools: guides/search-tools.md
+      - Browser Tools: guides/browser-tools.md
+    - File Operations: guides/file-operations.md
+    - Multimodal Agents: guides/multimodal-agents.md
+    - Steering and Error Recovery: guides/steering-and-error-recovery.md
 
   - Contributing:
     - contributing/index.md
