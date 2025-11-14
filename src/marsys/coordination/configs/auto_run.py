@@ -7,7 +7,10 @@ including user interaction settings, execution configuration, and status updates
 
 from dataclasses import dataclass, field
 from typing import Optional, Union
+import logging
 from ..config import ExecutionConfig, StatusConfig
+
+logger = logging.getLogger(__name__)
 
 
 @dataclass
