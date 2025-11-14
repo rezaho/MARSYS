@@ -263,7 +263,7 @@ class AsyncBaseAPIAdapter(APIProviderAdapter):
                     url,
                     headers=headers,
                     json=payload,
-                    timeout=aiohttp.ClientTimeout(total=180)
+                    timeout=aiohttp.ClientTimeout(total=360)
                 ) as response:
                     response_status = response.status
 
@@ -315,7 +315,7 @@ class AsyncBaseAPIAdapter(APIProviderAdapter):
 
                     # For other non-200 responses, raise immediately (client errors)
                     elif response_status != 200:
-                        response.raise_for_status()
+                       response.raise_for_status()
 
                     # Read JSON response
                     raw_response = await response.json()
