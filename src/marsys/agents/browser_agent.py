@@ -49,6 +49,9 @@ class ElementDetectionMode(Enum):
     """
     Element detection method for screenshots and interactive element highlighting.
 
+    NONE: No element detection - provides raw screenshots without bounding boxes.
+          Agent relies purely on visual observation without element highlighting.
+
     RULE_BASED: Fast DOM-based detection using HTML structure analysis.
                 No vision model required. Most accurate for standard HTML elements.
 
@@ -65,6 +68,7 @@ class ElementDetectionMode(Enum):
           - If vision_model_config provided: uses BOTH
           - If no vision_model_config: uses RULE_BASED
     """
+    NONE = "none"
     RULE_BASED = "rule_based"
     VISION = "vision"
     BOTH = "both"
@@ -621,14 +625,14 @@ class BrowserAgent(Agent):
         """
         # Validate input
         detection_mode_lower = element_detection_mode.lower()
-        if detection_mode_lower not in ["rule_based", "vision", "both", "auto"]:
+        if detection_mode_lower not in ["none", "rule_based", "vision", "both", "auto"]:
             raise AgentConfigurationError(
                 f"Invalid element_detection_mode: '{element_detection_mode}'. "
-                f"Must be one of: 'rule_based', 'vision', 'both', 'auto'",
+                f"Must be one of: 'none', 'rule_based', 'vision', 'both', 'auto'",
                 agent_name=agent_name,
                 config_field="element_detection_mode",
                 config_value=element_detection_mode,
-                suggestion="Use 'auto' for automatic selection, 'rule_based' for DOM-only, "
+                suggestion="Use 'auto' for automatic selection, 'none' for raw screenshots, 'rule_based' for DOM-only, "
                            "'vision' for AI-only, or 'both' for combined detection"
             )
 
@@ -674,7 +678,9 @@ class BrowserAgent(Agent):
         Returns:
             Dictionary with 'use_prediction' and 'use_rule_based' boolean flags
         """
-        if self.element_detection_mode == ElementDetectionMode.RULE_BASED:
+        if self.element_detection_mode == ElementDetectionMode.NONE:
+            return {"use_prediction": False, "use_rule_based": False}
+        elif self.element_detection_mode == ElementDetectionMode.RULE_BASED:
             return {"use_prediction": False, "use_rule_based": True}
         elif self.element_detection_mode == ElementDetectionMode.VISION:
             return {"use_prediction": True, "use_rule_based": False}
@@ -949,6 +955,7 @@ class BrowserAgent(Agent):
         auto_screenshot: bool = False,
         element_detection_mode: str = "auto",
         timeout: int = 5000,
+        memory_type: str = "conversation_history",
         memory_retention: str = "session",
         memory_storage_path: Optional[str] = None,
         show_mouse_helper: bool = True,
@@ -1130,6 +1137,7 @@ class BrowserAgent(Agent):
             allowed_peers=allowed_peers,
             input_schema=input_schema,
             output_schema=output_schema,
+            memory_type=memory_type,
             memory_retention=memory_retention,
             memory_storage_path=memory_storage_path,
         )
@@ -1218,6 +1226,7 @@ class BrowserAgent(Agent):
         auto_screenshot: bool = False,
         element_detection_mode: str = "auto",
         timeout: int = 5000,
+        memory_type: str = "conversation_history",
         memory_retention: str = "session",
         memory_storage_path: Optional[str] = None,
     ) -> "BrowserAgent":
@@ -1248,6 +1257,7 @@ class BrowserAgent(Agent):
             auto_screenshot=auto_screenshot,
             element_detection_mode=element_detection_mode,
             timeout=timeout,
+            memory_type=memory_type,
             memory_retention=memory_retention,
             memory_storage_path=memory_storage_path,
         )
@@ -1395,11 +1405,28 @@ class BrowserAgent(Agent):
     async def close(self) -> None:
         """Close the browser and clean up resources"""
         # Close vision agent if it exists
-        if self.vision_agent and hasattr(self.vision_agent, 'close'):
+        if self.vision_agent:
+            # Unregister vision agent from registry FIRST (before closing)
             try:
-                await self.vision_agent.close()
+                from .registry import AgentRegistry
+                if hasattr(self.vision_agent, 'name'):
+                    vision_name = self.vision_agent.name
+                    logger.info(f"Unregistering vision agent: {vision_name}")
+                    # Use identity-safe unregistration to prevent race conditions
+                    if hasattr(AgentRegistry, "unregister_if_same"):
+                        AgentRegistry.unregister_if_same(vision_name, self.vision_agent)
+                    else:
+                        AgentRegistry.unregister(vision_name)
+                    logger.info(f"Vision agent {vision_name} unregistered successfully")
             except Exception as e:
-                logger.warning(f"Error closing vision agent: {e}")
+                logger.error(f"Error unregistering vision agent: {e}", exc_info=True)
+
+            # Then close the vision agent
+            if hasattr(self.vision_agent, 'close'):
+                try:
+                    await self.vision_agent.close()
+                except Exception as e:
+                    logger.warning(f"Error closing vision agent: {e}")
 
         # Close browser resources using BrowserTool
         if self.browser_tool:
@@ -1650,14 +1677,30 @@ class BrowserAgent(Agent):
             - detection_methods: Dictionary showing which detection methods were used
 
         Raises:
-            ValueError: If both use_prediction and use_rule_based are False.
             Exception: If use_prediction=True but no vision agent is configured.
         """
         if not self.browser_tool:
             raise RuntimeError("Browser not initialized")
 
+        # Handle "none" mode: take raw screenshot without any element detection
         if not use_prediction and not use_rule_based:
-            raise ValueError("At least one detection method (use_prediction or use_rule_based) must be enabled")
+            # Take a plain screenshot without any element highlighting
+            screenshot_path = await self.browser_tool.screenshot(
+                filename=screenshot_filename,
+                reasoning="Raw screenshot without element detection",
+                highlight_bbox=False
+            )
+            return {
+                'screenshot_path': screenshot_path,
+                'elements': [],  # No elements detected
+                'total_elements': 0,
+                'detection_methods': {
+                    'rule_based_requested': False,
+                    'rule_based_succeeded': False,
+                    'ai_prediction_requested': False,
+                    'ai_prediction_succeeded': False
+                }
+            }
 
         elements = []
         rule_based_success = False
