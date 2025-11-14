@@ -41,6 +41,10 @@ ExecutionConfig(
     initial_user_msg: Optional[str] = None,
     user_interaction: str = "terminal",
 
+    # Agent lifecycle management
+    auto_cleanup_agents: bool = True,
+    cleanup_scope: Literal["topology_nodes", "used_agents"] = "topology_nodes",
+
     # Sub-configurations
     status: StatusConfig = field(default_factory=StatusConfig),
     error_handling: Optional[ErrorHandlingConfig] = None
@@ -63,6 +67,8 @@ ExecutionConfig(
 | `user_first` | `bool` | Show message to user before task | `False` |
 | `initial_user_msg` | `str` | Custom initial message for user | `None` |
 | `user_interaction` | `str` | User interaction type | `"terminal"` |
+| `auto_cleanup_agents` | `bool` | Automatically cleanup agents after run | `True` |
+| `cleanup_scope` | `str` | Which agents to cleanup | `"topology_nodes"` |
 | `status` | `StatusConfig` | Status configuration | `StatusConfig()` |
 
 **Methods:**
@@ -93,6 +99,12 @@ interactive_config = ExecutionConfig(
     user_first=True,
     initial_user_msg="Hello! How can I help?",
     user_interaction_timeout=300.0
+)
+
+# Long-running workflow (disable auto-cleanup)
+long_running_config = ExecutionConfig(
+    auto_cleanup_agents=False,  # Keep agents alive between runs
+    convergence_timeout=3600.0
 )
 ```
 
@@ -432,6 +444,77 @@ def create_interactive_config() -> ExecutionConfig:
 ---
 
 ## 🔧 Advanced Features
+
+### Agent Lifecycle Management
+
+The framework provides automatic agent cleanup to prevent resource leaks and registry collisions.
+
+**How It Works:**
+
+```python
+# Default behavior - auto-cleanup enabled
+result = await Orchestra.run(
+    task="Analyze data",
+    topology=topology,
+    execution_config=ExecutionConfig(
+        auto_cleanup_agents=True  # Default
+    )
+)
+# After run completes:
+# 1. Closes model resources (aiohttp sessions, etc.)
+# 2. Closes agent-specific resources (browsers, playwright, etc.)
+# 3. Unregisters agents from registry (frees names for reuse)
+```
+
+**Cleanup Scopes:**
+
+- `topology_nodes` (default): Cleanup all agents defined in the topology
+- `used_agents`: Cleanup only agents that were actually invoked during execution
+
+**When to Disable:**
+
+```python
+# Scenario 1: Multiple runs with same agents
+config = ExecutionConfig(auto_cleanup_agents=False)
+
+for task in tasks:
+    result = await Orchestra.run(task, topology, execution_config=config)
+    # Agents stay alive, registry intact
+
+# Scenario 2: Long-lived agent pools
+pool = await create_browser_agent_pool(num_instances=3)
+AgentRegistry.register_instance(pool, "BrowserPool")
+
+# Pool manages its own lifecycle
+result = await Orchestra.run(
+    task="Scrape websites",
+    topology=topology,
+    execution_config=ExecutionConfig(auto_cleanup_agents=False)
+)
+
+await pool.cleanup()  # Manual cleanup when done
+```
+
+**Benefits:**
+
+- **No Resource Leaks**: aiohttp sessions, browser instances closed deterministically
+- **No Registry Collisions**: Agent names freed for reuse in subsequent runs
+- **No Manual Cleanup**: Works "out of the box" without user intervention
+- **Identity-Safe**: Uses instance identity checks to prevent race conditions
+
+**Low-Level Control:**
+
+```python
+from marsys.agents.registry import AgentRegistry
+
+# Manual cleanup for specific agent
+agent = AgentRegistry.get("my_agent")
+if agent:
+    await agent.cleanup()  # Close resources
+    AgentRegistry.unregister_if_same("my_agent", agent)  # Identity-safe unregister
+```
+
+---
 
 ### Configuration Merging
 

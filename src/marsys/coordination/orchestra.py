@@ -20,6 +20,7 @@ from ..agents.exceptions import (
     SessionNotFoundError,
     CheckpointError
 )
+from ..utils.display import print_marsys_banner
 from .branches.types import (
     ExecutionBranch,
     BranchType,
@@ -281,7 +282,88 @@ class Orchestra:
         else:
             # Default to string notation if all values are strings
             return StringNotationConverter.convert(topology_dict)
-    
+
+    async def _auto_cleanup_agents(
+        self,
+        canonical_topology: 'Topology',
+        execution_config: Optional['ExecutionConfig'] = None
+    ) -> None:
+        """
+        Automatically cleanup agents after orchestration run completes.
+
+        For each agent node in the topology:
+        1. Close model resources (aiohttp sessions, etc.)
+        2. Close agent-specific resources (browser, playwright, etc.)
+        3. Unregister from registry (identity-safe) to free names
+
+        This ensures:
+        - No unclosed network sessions (eliminates "Unclosed client session" warnings)
+        - No registry name collisions on next run (frees names deterministically)
+        - External resources (browsers, files) properly released
+        - Deterministic cleanup (not reliant on GC timing)
+
+        Args:
+            canonical_topology: The analyzed topology with node information
+            execution_config: Configuration controlling cleanup behavior
+        """
+        from ..agents.registry import AgentRegistry
+        from ..coordination.topology.core import NodeType
+
+        if not execution_config or not getattr(execution_config, 'auto_cleanup_agents', True):
+            logger.debug("Auto-cleanup disabled by config")
+            return
+
+        cleanup_scope = getattr(execution_config, 'cleanup_scope', 'topology_nodes')
+
+        if cleanup_scope != 'topology_nodes':
+            logger.warning(f"Cleanup scope '{cleanup_scope}' not yet implemented, using 'topology_nodes'")
+
+        # Get all agent nodes from topology
+        agent_nodes = [
+            node for node in canonical_topology.nodes
+            if node.node_type == NodeType.AGENT
+        ]
+
+        logger.debug(f"Auto-cleanup: processing {len(agent_nodes)} agent nodes")
+
+        # Cleanup each agent
+        for node in agent_nodes:
+            agent_name = node.name
+
+            try:
+                # Get agent instance from registry
+                agent = AgentRegistry.get(agent_name)
+
+                if agent is None:
+                    logger.debug(f"Auto-cleanup: agent '{agent_name}' not in registry (already cleaned)")
+                    continue
+
+                # Skip pool objects (they're long-lived by design)
+                if AgentRegistry.is_pool(agent_name):
+                    logger.debug(f"Auto-cleanup: skipping pool '{agent_name}' (pools are long-lived)")
+                    continue
+
+                # 1. Call agent cleanup to close resources
+                if hasattr(agent, 'cleanup') and callable(agent.cleanup):
+                    try:
+                        await agent.cleanup()
+                        logger.debug(f"Auto-cleanup: cleaned resources for '{agent_name}'")
+                    except Exception as e:
+                        logger.warning(f"Auto-cleanup: resource cleanup failed for '{agent_name}': {e}")
+
+                # 2. Unregister from registry (identity-safe)
+                try:
+                    AgentRegistry.unregister_if_same(agent_name, agent)
+                    logger.debug(f"Auto-cleanup: unregistered '{agent_name}'")
+                except Exception as e:
+                    logger.warning(f"Auto-cleanup: unregister failed for '{agent_name}': {e}")
+
+            except Exception as e:
+                logger.error(f"Auto-cleanup: unexpected error for '{agent_name}': {e}")
+                # Continue with other agents
+
+        logger.info(f"✅ Auto-cleanup complete: processed {len(agent_nodes)} agents")
+
     @classmethod
     async def run(
         cls,
@@ -446,6 +528,18 @@ class Orchestra:
                 success=result.success
             ))
 
+        # Auto-cleanup agents (closes resources, unregisters from registry)
+        try:
+            if execution_config and getattr(execution_config, 'auto_cleanup_agents', True):
+                # Get canonical topology from orchestra
+                canonical_topology = orchestra.canonical_topology if hasattr(orchestra, 'canonical_topology') else None
+                if canonical_topology:
+                    await orchestra._auto_cleanup_agents(canonical_topology, execution_config)
+                else:
+                    logger.debug("Auto-cleanup skipped: canonical topology not available")
+        except Exception as e:
+            logger.warning(f"Auto-cleanup encountered error: {e}")
+
         # Cleanup status manager if exists
         if orchestra.status_manager:
             await orchestra.status_manager.shutdown()
@@ -461,30 +555,33 @@ class Orchestra:
     ) -> OrchestraResult:
         """
         Execute a multi-agent workflow.
-        
+
         Args:
             task: The task/prompt to execute
             topology: Definition of agent topology and rules
             context: Optional execution context
             max_steps: Maximum steps before timeout
-            
+
         Returns:
             OrchestraResult with execution details
         """
+        # Print MARSYS banner
+        print_marsys_banner()
+
         start_time = time.time()
         session_id = str(uuid.uuid4())
         context = context or {}
         context["session_id"] = session_id
-        
+
         logger.info(f"Starting orchestration session {session_id}")
         
         try:
             # Import ExecutionConfig here to avoid circular imports
             from .config import ExecutionConfig
             
-            # Convert to canonical Topology format
-            canonical_topology = self._ensure_topology(topology)
-            
+            # Convert to canonical Topology format and store for auto-cleanup
+            self.canonical_topology = self._ensure_topology(topology)
+
             # Use the execution config from initialization
             execution_config = self._execution_config
             if execution_config is None:
@@ -499,16 +596,16 @@ class Orchestra:
             context["execution_config"] = execution_config
 
             # Store ONLY what's needed in topology metadata for TopologyAnalyzer
-            canonical_topology.metadata = canonical_topology.metadata or {}
+            self.canonical_topology.metadata = self.canonical_topology.metadata or {}
             # auto_inject_user is read by TopologyAnalyzer (only for auto_run pattern)
-            canonical_topology.metadata['auto_inject_user'] = context.get('auto_inject_user', False)
-            
+            self.canonical_topology.metadata['auto_inject_user'] = context.get('auto_inject_user', False)
+
             # Analyze topology and create graph (will use config from metadata)
-            self.topology_graph = self.topology_analyzer.analyze(canonical_topology)
-            
+            self.topology_graph = self.topology_analyzer.analyze(self.canonical_topology)
+
             # Also store in graph metadata for runtime access
             self.topology_graph.metadata['execution_config'] = execution_config
-            
+
             # NEW: Set topology references in all agents
             for node_name in self.topology_graph.nodes:
                 if node_name == "User":  # Skip User node
@@ -517,11 +614,11 @@ class Orchestra:
                 if agent and hasattr(agent, 'set_topology_reference'):
                     agent.set_topology_reference(self.topology_graph)
                     logger.debug(f"Set topology reference for agent {node_name}")
-            
+
             # Create rules engine from topology
             self.rules_engine = self.rule_factory.create_rules_engine(
                 self.topology_graph,
-                canonical_topology
+                self.canonical_topology
             )
             
             # Create per-session components with the topology
@@ -575,8 +672,8 @@ class Orchestra:
                 metadata={
                     "session_id": session_id,
                     "max_steps": max_steps,
-                    "topology_nodes": len(canonical_topology.nodes),
-                    "topology_edges": len(canonical_topology.edges),
+                    "topology_nodes": len(self.canonical_topology.nodes),
+                    "topology_edges": len(self.canonical_topology.edges),
                     **result.get("metadata", {})
                 }
             )
@@ -849,10 +946,13 @@ class Orchestra:
 
                                             logger.info(f"Resuming waiting parent branch '{parent_branch_id}'")
 
+                                            # Convert to typed multimodal content for valid LLM message format
+                                            typed_parts = self._format_aggregated_as_typed_parts(child_results)
+
                                             resume_task = asyncio.create_task(
                                                 self.branch_executor.execute_branch(
                                                     parent_branch,
-                                                    child_results,  # Pass the responses array directly
+                                                    typed_parts,  # Pass typed multimodal content
                                                     context,
                                                     resume_with_results=aggregated_context.to_dict()  # Pass full context as dict
                                                 )
@@ -878,11 +978,13 @@ class Orchestra:
                                         state=BranchState(status=BranchStatus.PENDING)
                                     )
 
-                                    # Start with aggregated results - pass responses array
+                                    # Start with aggregated results - convert to typed multimodal content
+                                    typed_parts = self._format_aggregated_as_typed_parts(aggregated_context.responses)
+
                                     conv_task = asyncio.create_task(
                                         self.branch_executor.execute_branch(
                                             convergence_branch,
-                                            aggregated_context.responses,  # Pass responses array directly
+                                            typed_parts,  # Pass typed multimodal content
                                             context
                                         )
                                     )
@@ -1281,6 +1383,46 @@ class Orchestra:
             "summaries": aggregated_requests,
             "count": len(aggregated_requests)
         }
+
+    def _format_aggregated_as_typed_parts(self, responses: list) -> list:
+        """
+        Convert aggregated child responses into a typed multimodal content array.
+
+        Input format (typical):
+          responses = [
+            {"agent_name": "SomeAgent", "response": <str|dict|list>},
+            ...
+          ]
+
+        Output format:
+          [
+            {"type": "text", "text": "[Aggregated Result] SomeAgent ->"},
+            {"type": "text", "text": "<response (stringified/truncated)>"},
+            ...
+          ]
+        """
+        parts = []
+        if not responses:
+            return parts
+
+        for item in responses:
+            agent = (item or {}).get("agent_name") or (item or {}).get("agent") or "UnknownAgent"
+            resp = (item or {}).get("response")
+
+            # Convert response to readable string
+            if isinstance(resp, (dict, list)):
+                import json
+                resp_str = json.dumps(resp, ensure_ascii=False)
+            else:
+                resp_str = str(resp or "").strip()
+
+            if len(resp_str) > 5000:
+                resp_str = resp_str[:5000] + "…"
+
+            parts.append({"type": "text", "text": f"[Aggregated Result] {agent} ->"})
+            parts.append({"type": "text", "text": resp_str})
+
+        return parts
 
 
 class Session:

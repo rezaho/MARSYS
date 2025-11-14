@@ -135,6 +135,48 @@ print(f"Total agents: {count}")
 AgentRegistry.clear()  # Removes all registrations
 ```
 
+### Identity-Safe Unregistration
+
+To prevent race conditions during concurrent execution, use identity-safe unregistration methods:
+
+```python
+from marsys.agents.registry import AgentRegistry
+
+# Create agent
+agent = Agent(agent_name="worker", model_config=config)
+
+# Later: cleanup and unregister (identity-safe)
+await agent.cleanup()  # Close resources
+AgentRegistry.unregister_if_same("worker", agent)  # Only unregister if same instance
+
+# Or using convenience method
+AgentRegistry.unregister_instance(agent)  # Uses agent.name attribute
+```
+
+**Why Identity-Safe?**
+
+In concurrent workflows, an agent's `__del__` destructor might fire after a new agent with the same name is registered. Identity-safe methods use Python's `is` operator to verify the registry entry points to the exact same instance before unregistering.
+
+```python
+# Problem scenario (solved by identity-safe unregistration):
+# 1. Task 1 creates Agent "Coordinator" (instance A)
+# 2. Task 1 completes, A is queued for garbage collection
+# 3. Task 2 creates Agent "Coordinator" (instance B, registers successfully)
+# 4. Task 1's instance A gets garbage collected, __del__ fires
+# 5. OLD: A.__del__ calls unregister("Coordinator") → removes B! ❌
+# 6. NEW: A.__del__ calls unregister_if_same("Coordinator", A) → sees B, skips ✅
+```
+
+**Methods:**
+
+- `unregister_if_same(name, instance)`: Unregister only if registry entry matches instance
+- `unregister_instance(instance)`: Convenience method using `instance.name`
+- `unregister(name)`: Legacy method (not identity-safe, avoid in concurrent contexts)
+
+**Framework Integration:**
+
+Orchestra automatically uses identity-safe unregistration when `auto_cleanup_agents=True` (default), preventing race conditions in multi-task workflows.
+
 ## 🎯 Discovery Patterns
 
 ### Service Discovery
@@ -424,9 +466,18 @@ async def unsafe_delegate(agent_name: str, task: str):
 ### 3. **Resource Management**
 
 ```python
-# ✅ GOOD - Agents cleaned up automatically via weak refs
+# ✅ GOOD - Use auto-cleanup in Orchestra
+result = await Orchestra.run(
+    task="Process batch",
+    topology=topology,
+    execution_config=ExecutionConfig(
+        auto_cleanup_agents=True  # Default - cleans up after run
+    )
+)
+# All topology agents automatically cleaned up and unregistered
+
+# ✅ GOOD - Manual cleanup for standalone agents
 async def process_batch(items):
-    # Create temporary agent
     temp_agent = Agent(
         agent_name=f"batch_processor_{uuid.uuid4().hex[:8]}",
         model_config=config
@@ -437,13 +488,16 @@ async def process_batch(items):
         result = await temp_agent.run(f"Process: {item}")
         results.append(result)
 
-    return results
-    # temp_agent automatically removed from registry when GC'd
+    # Manual cleanup
+    await temp_agent.cleanup()
+    AgentRegistry.unregister_instance(temp_agent)
 
-# ❌ BAD - Creating agents without cleanup consideration
+    return results
+
+# ❌ BAD - Creating agents without cleanup
 for i in range(1000):
     Agent(agent_name=f"worker_{i}", model_config=config)
-    # Creates 1000 agents that stay in registry!
+    # Creates 1000 agents with open aiohttp sessions, registry entries!
 ```
 
 ### 4. **Monitoring**
