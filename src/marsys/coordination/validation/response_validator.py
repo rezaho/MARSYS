@@ -628,7 +628,7 @@ class ValidationProcessor:
             ErrorMessageProcessor(),  # Highest priority for API errors
             StructuredJSONProcessor(),
             # ToolCallProcessor(),  # REMOVED - used only by StepExecutor, not ValidationProcessor
-            NaturalLanguageProcessor()
+            # NaturalLanguageProcessor()
         ], key=lambda p: p.priority(), reverse=True)
         
         # Action validators
