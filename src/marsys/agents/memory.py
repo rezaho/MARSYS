@@ -28,6 +28,36 @@ from .exceptions import (
 # --- Structured Content Data Classes ---
 
 @dataclasses.dataclass
+class ManagedMemoryConfig:
+    """Configuration for ManagedMemory with active context management."""
+
+    # Trigger thresholds
+    max_total_tokens_trigger: int = 150_000  # When to engage ACM
+    target_total_tokens: int = 100_000        # Target after pruning
+
+    # Image handling
+    image_token_estimate: int = 800
+
+    # Cache invalidation
+    min_retrieval_gap_steps: int = 2  # Don't recompute until N new messages
+    min_retrieval_gap_tokens: int = 5000  # OR until N new tokens
+
+    # Strategy selection
+    trigger_events: List[str] = dataclasses.field(default_factory=lambda: ["add", "get_messages"])
+    cache_invalidation_events: List[str] = dataclasses.field(default_factory=lambda: ["add", "remove_by_id", "delete_memory"])
+
+    # Token counter
+    token_counter: Optional[Callable] = None  # Override with custom counter
+
+    # Reserved space
+    enable_headroom_percent: float = 0.1  # Reserve 10% for system/tools
+
+    # Processing strategy (for future)
+    processing_strategy: str = "none"  # "none", "summarize", "ace", "rag"
+
+# --- Structured Content Data Classes (continued) ---
+
+@dataclasses.dataclass
 class MessageContent:
     """Represents the structured content of a message."""
     thought: Optional[str] = None
@@ -276,6 +306,89 @@ class Message:
             # Return placeholder or empty string if image can't be read
             logging.warning(f"Failed to encode image {image_path}: {e}")
             return ""
+
+    def to_llm_dict(self) -> Dict[str, Any]:
+        """
+        Convert Message to dict in LLM API format.
+
+        This method handles all the conversion logic to ensure messages are properly
+        formatted for LLM API calls. Handles:
+        - Tool role with string content requirement (OpenAI API)
+        - Multimodal content (typed arrays, images)
+        - Tool calls serialization
+        - Base64 image encoding
+
+        Returns:
+            Dict in LLM API format
+        """
+        # Special handling for role="tool": content MUST be string
+        if self.role == "tool":
+            content = self.content
+            if isinstance(content, dict):
+                content = json.dumps(content, ensure_ascii=False, separators=(",", ":"))
+            elif content is None:
+                content = ""
+            else:
+                content = str(content)
+
+            result = {"role": "tool", "content": content}
+
+            if self.tool_call_id:
+                result["tool_call_id"] = self.tool_call_id
+            if self.name:
+                result["name"] = self.name
+
+            return result
+
+        # For other roles: handle multimodal and typed arrays
+
+        # If content is already a typed array, use it directly
+        if isinstance(self.content, list):
+            result = {"role": self.role, "content": self.content}
+        # Handle legacy images field (for backward compatibility)
+        elif self.images and len(self.images) > 0:
+            content_parts = []
+
+            # Add text content if present
+            if self.content is not None:
+                if isinstance(self.content, dict):
+                    content_text = json.dumps(
+                        self.content, ensure_ascii=False, separators=(",", ":")
+                    )
+                elif isinstance(self.content, list):
+                    content_text = json.dumps(
+                        self.content, ensure_ascii=False, separators=(",", ":")
+                    )
+                else:
+                    content_text = str(self.content)
+
+                if content_text.strip():
+                    content_parts.append({"type": "text", "text": content_text})
+
+            # Add image content with base64 encoding
+            for image_path in self.images:
+                encoded_image = self._encode_image_to_base64(image_path)
+                if encoded_image:
+                    content_parts.append(
+                        {"type": "image_url", "image_url": {"url": encoded_image}}
+                    )
+
+            result = {"role": self.role, "content": content_parts}
+        else:
+            # No images, simple content
+            content = self.content
+            if isinstance(content, dict):
+                content = json.dumps(content, ensure_ascii=False, separators=(",", ":"))
+
+            result = {"role": self.role, "content": content}
+
+        # Add optional fields (for non-tool roles)
+        if self.name and self.role != "tool":
+            result["name"] = self.name
+        if self.tool_calls:
+            result["tool_calls"] = [tc.to_dict() for tc in self.tool_calls]
+
+        return result
 
 
     # def to_action_dict(self) -> Optional[Dict[str, Any]]:
@@ -604,6 +717,18 @@ class BaseMemory(ABC):
         """Retrieves all messages as dictionaries."""
         raise NotImplementedError("retrieve_all must be implemented in subclasses.")
 
+    def get_messages(self) -> List[Dict[str, Any]]:
+        """
+        Retrieves messages for LLM (primary interface method).
+
+        Default implementation delegates to retrieve_all() for backward compatibility.
+        Subclasses with active context management should override this method.
+
+        Returns:
+            List of message dictionaries ready for LLM
+        """
+        return self.retrieve_all()
+
     @abstractmethod
     def retrieve_by_id(self, message_id: str) -> Optional[Dict[str, Any]]:
         """Retrieves a specific message as dictionary by its ID."""
@@ -623,6 +748,24 @@ class BaseMemory(ABC):
     def reset_memory(self) -> None:
         """Clears all entries from the memory."""
         raise NotImplementedError("reset_memory must be implemented in subclasses.")
+
+    # === Common Utility Methods (Non-Abstract) ===
+
+    def _message_to_dict(self, msg: Message) -> Dict[str, Any]:
+        """
+        Convert Message to dict in LLM API format.
+
+        This is a common utility method used across all memory types to ensure
+        consistent formatting. It delegates to the Message class's to_llm_dict()
+        method to maintain separation of concerns.
+
+        Args:
+            msg: Message object to convert
+
+        Returns:
+            Dict in LLM API format
+        """
+        return msg.to_llm_dict()
 
 
 class ConversationMemory(BaseMemory):
@@ -644,96 +787,6 @@ class ConversationMemory(BaseMemory):
         self.memory: List[Message] = []
         if description:
             self.memory.append(Message(role="system", content=description))
-
-    def _message_to_dict(self, msg: Message) -> Dict[str, Any]:
-        """Convert Message to standard dict format for AI models"""
-
-        # Special handling for role="tool": content MUST be string
-        if msg.role == "tool":
-            # Tool messages require string content (OpenAI API requirement)
-            content = msg.content
-            if isinstance(content, dict):
-                content = json.dumps(content, ensure_ascii=False, separators=(',', ':'))
-            elif content is None:
-                content = ""
-            else:
-                content = str(content)
-
-            result = {
-                "role": "tool",
-                "content": content
-            }
-            # Add tool-specific fields
-            if msg.tool_call_id:
-                result["tool_call_id"] = msg.tool_call_id
-            if msg.name:
-                result["name"] = msg.name
-
-            return result
-
-        # For other roles: handle multimodal and typed arrays
-
-        # If content is already a typed array, use it directly
-        if isinstance(msg.content, list):
-            result = {
-                "role": msg.role,
-                "content": msg.content  # Already formatted as typed array
-            }
-        # Handle legacy images field (for backward compatibility)
-        elif msg.images and len(msg.images) > 0:
-            # Create multimodal content with text and images
-            content_parts = []
-
-            # Add text content if present
-            if msg.content is not None:
-                if isinstance(msg.content, dict):
-                    content_text = json.dumps(msg.content, ensure_ascii=False, separators=(',', ':'))
-                elif isinstance(msg.content, list):
-                    # If content is already a list, it might be a typed array
-                    # In this case, skip adding it here since we'll add images separately
-                    # This shouldn't happen in practice (mixing typed arrays with images field)
-                    content_text = json.dumps(msg.content, ensure_ascii=False, separators=(',', ':'))
-                else:
-                    content_text = str(msg.content)
-
-                if content_text.strip():
-                    content_parts.append({
-                        "type": "text",
-                        "text": content_text
-                    })
-
-            # Add image content with base64 encoding
-            for image_path in msg.images:
-                encoded_image = msg._encode_image_to_base64(image_path)
-                if encoded_image:  # Only add if encoding succeeded
-                    content_parts.append({
-                        "type": "image_url",
-                        "image_url": {"url": encoded_image}
-                    })
-
-            result = {
-                "role": msg.role,
-                "content": content_parts
-            }
-        else:
-            # No images, simple content
-            content = msg.content
-            if isinstance(content, dict):
-                content = json.dumps(content, ensure_ascii=False, separators=(',', ':'))
-
-            result = {
-                "role": msg.role,
-                "content": content,
-            }
-
-        # Only include non-None optional fields (for non-tool roles)
-        if msg.name and msg.role != "tool":
-            result["name"] = msg.name
-        if msg.tool_calls:
-            result["tool_calls"] = [tc.to_dict() for tc in msg.tool_calls]
-
-        # Note: agent_calls and structured_data not included in standard AI format
-        return result
 
     def add(
         self,
@@ -1221,6 +1274,366 @@ class KGMemory(BaseMemory):
         return extracted_facts
 
 
+class ManagedConversationMemory(BaseMemory):
+    """
+    Conversation memory with active context management (ACM).
+
+    This memory implementation automatically manages context size by:
+    1. Tracking token usage across all messages
+    2. Triggering context management when thresholds are exceeded
+    3. Retrieving curated context for LLM using pluggable strategies
+    4. Caching curated context to avoid redundant computation
+
+    Features:
+    - Automatic token tracking (text + multimodal)
+    - Lazy trigger checking (on add/retrieve events)
+    - Cached curated context
+    - Pluggable strategies (trigger, process, retrieval)
+    - Full lossless raw message history (for future strategies)
+
+    The curated context is transparent to agents - they call get_messages()
+    and receive a token-budgeted subset without any code changes.
+    """
+
+    def __init__(
+        self,
+        config: Optional[ManagedMemoryConfig] = None,
+        trigger_strategy: Optional[Any] = None,  # TriggerStrategy
+        process_strategy: Optional[Any] = None,  # ProcessStrategy
+        retrieval_strategy: Optional[Any] = None,  # RetrievalStrategy
+        description: Optional[str] = None,
+    ):
+        """
+        Initialize ManagedConversationMemory with strategies.
+
+        Args:
+            config: Memory configuration (uses defaults if not provided)
+            trigger_strategy: When to engage ACM (defaults to SimpleThresholdTrigger)
+            process_strategy: How to process messages (defaults to NoOpProcessStrategy)
+            retrieval_strategy: How to retrieve curated context (defaults to BackwardPackingRetrieval)
+            description: Optional system description (not stored, Agent rebuilds it)
+        """
+        super().__init__(memory_type="managed_conversation")
+
+        # Import strategies lazily to avoid circular imports
+        from marsys.agents.memory_strategies import (
+            BackwardPackingRetrieval,
+            NoOpProcessStrategy,
+            SimpleThresholdTrigger,
+        )
+        from marsys.utils.tokens import DefaultTokenCounter
+
+        # Configuration
+        self.config = config or ManagedMemoryConfig()
+
+        # Strategies
+        self.trigger_strategy = trigger_strategy or SimpleThresholdTrigger()
+        self.process_strategy = process_strategy or NoOpProcessStrategy()
+        self.retrieval_strategy = retrieval_strategy or BackwardPackingRetrieval()
+
+        # Token counter
+        self.token_counter = self.config.token_counter or DefaultTokenCounter(
+            image_token_estimate=self.config.image_token_estimate
+        )
+
+        # Raw message storage (full, lossless history)
+        self.raw_messages: List[Message] = []
+
+        # Curated context cache
+        self._cached_context: Optional[List[Dict[str, Any]]] = None
+        self._cache_valid = False
+        self._last_retrieval_index = 0
+
+        # Token tracking
+        self._estimated_total_tokens = 0
+        self._tokens_since_last_retrieval = 0
+        self._messages_since_last_retrieval = 0
+
+        # Metadata
+        self.metadata: Dict[str, Any] = {}
+
+        # System message handling: not stored (Agent rebuilds it dynamically)
+        if description:
+            logging.debug(
+                "ManagedConversationMemory: description provided but not stored "
+                "(system prompts are rebuilt by Agent)"
+            )
+
+    # === Primary Methods (Framework Interface) ===
+
+    def add(
+        self,
+        message: Optional[Message] = None,
+        *,
+        role: Optional[str] = None,
+        content: Optional[Union[str, Dict[str, Any]]] = None,
+        name: Optional[str] = None,
+        tool_calls: Optional[List[Union[Dict, ToolCallMsg]]] = None,
+        agent_calls: Optional[List[Union[Dict, AgentCallMsg]]] = None,
+        images: Optional[List[str]] = None,
+        tool_call_id: Optional[str] = None,
+    ) -> str:
+        """Add message and update token tracking."""
+        # Create message
+        if message:
+            msg = message
+        elif role is not None:
+            msg = Message(
+                role=role,
+                content=content,
+                name=name,
+                tool_calls=tool_calls,
+                agent_calls=agent_calls,
+                images=images,
+                tool_call_id=tool_call_id,
+            )
+        else:
+            raise MessageError("Either message or role required")
+
+        # Add to raw storage
+        self.raw_messages.append(msg)
+
+        # Update token estimate
+        msg_dict = self._message_to_dict(msg)
+        msg_tokens = self.token_counter.count_message(msg_dict)
+        self._estimated_total_tokens += msg_tokens
+        self._tokens_since_last_retrieval += msg_tokens
+        self._messages_since_last_retrieval += 1
+
+        # Check cache invalidation
+        if "add" in self.config.cache_invalidation_events:
+            self._invalidate_cache()
+
+        # Check trigger (lazy - just set flag)
+        if "add" in self.config.trigger_events:
+            from marsys.agents.memory_strategies import MemoryState
+
+            state = self._get_memory_state()
+            if self.trigger_strategy.should_trigger_on_add(state, self.config):
+                self._cache_valid = False
+
+        return msg.message_id
+
+    def get_messages(self) -> List[Dict[str, Any]]:
+        """Retrieve curated context for LLM (PRIMARY method)."""
+        # Check trigger
+        if "get_messages" in self.config.trigger_events:
+            from marsys.agents.memory_strategies import MemoryState
+
+            state = self._get_memory_state()
+            if self.trigger_strategy.should_trigger_on_retrieve(state, self.config):
+                self._cache_valid = False
+
+        # Return cached if valid
+        if self._cache_valid and self._cached_context is not None:
+            new_messages = self.raw_messages[self._last_retrieval_index :]
+            new_dicts = [self._message_to_dict(msg) for msg in new_messages]
+            return self._cached_context + new_dicts
+
+        # Recompute curated context
+        return self._retrieve_curated_context()
+
+    def retrieve_all(self) -> List[Dict[str, Any]]:
+        """Retrieve all messages (delegates to get_messages for ACM)."""
+        return self.get_messages()
+
+    def retrieve_recent(self, n: int = 1) -> List[Dict[str, Any]]:
+        """Get N most recent messages from RAW storage."""
+        recent = self.raw_messages[-n:] if n > 0 else []
+        return [self._message_to_dict(msg) for msg in recent]
+
+    def update(
+        self,
+        message_id: str,
+        *,
+        role: Optional[str] = None,
+        content: Optional[Union[str, Dict[str, Any]]] = None,
+        name: Optional[str] = None,
+        tool_calls: Optional[List[Union[Dict, ToolCallMsg]]] = None,
+        agent_calls: Optional[List[Union[Dict, AgentCallMsg]]] = None,
+        images: Optional[List[str]] = None,
+    ) -> None:
+        """Update existing message and recalculate tokens."""
+        for i, msg in enumerate(self.raw_messages):
+            if msg.message_id == message_id:
+                updated = Message(
+                    role=role if role is not None else msg.role,
+                    content=content if content is not None else msg.content,
+                    message_id=message_id,
+                    name=name if name is not None else msg.name,
+                    tool_calls=tool_calls if tool_calls is not None else msg.tool_calls,
+                    agent_calls=(
+                        agent_calls if agent_calls is not None else msg.agent_calls
+                    ),
+                    images=images if images is not None else msg.images,
+                )
+
+                old_dict = self._message_to_dict(msg)
+                new_dict = self._message_to_dict(updated)
+                old_tokens = self.token_counter.count_message(old_dict)
+                new_tokens = self.token_counter.count_message(new_dict)
+
+                self._estimated_total_tokens += new_tokens - old_tokens
+                self.raw_messages[i] = updated
+                self._invalidate_cache()
+                return
+
+        raise MessageError(f"Message {message_id} not found")
+
+    def remove_by_id(self, message_id: str) -> bool:
+        """Remove message by ID and update token tracking."""
+        for i, msg in enumerate(self.raw_messages):
+            if msg.message_id == message_id:
+                msg_dict = self._message_to_dict(msg)
+                msg_tokens = self.token_counter.count_message(msg_dict)
+                self._estimated_total_tokens -= msg_tokens
+
+                del self.raw_messages[i]
+
+                if "remove_by_id" in self.config.cache_invalidation_events:
+                    self._invalidate_cache()
+
+                return True
+        return False
+
+    def replace_memory(
+        self,
+        idx: int,
+        message: Optional[Message] = None,
+        *,
+        role: Optional[str] = None,
+        content: Optional[str] = None,
+        message_id: Optional[str] = None,
+        name: Optional[str] = None,
+        tool_calls: Optional[List[ToolCallMsg]] = None,
+        agent_calls: Optional[List[AgentCallMsg]] = None,
+        images: Optional[List[str]] = None,
+    ) -> None:
+        """Replace message at index and update token tracking."""
+        if not (0 <= idx < len(self.raw_messages)):
+            raise IndexError("Index out of range")
+
+        old_msg = self.raw_messages[idx]
+
+        if message:
+            new_msg = message
+        elif role is not None:
+            new_msg = Message(
+                role=role,
+                content=content,
+                message_id=message_id or str(uuid.uuid4()),
+                name=name,
+                tool_calls=tool_calls,
+                agent_calls=agent_calls,
+                images=images,
+            )
+        else:
+            raise MessageError("Either message or role required")
+
+        old_dict = self._message_to_dict(old_msg)
+        new_dict = self._message_to_dict(new_msg)
+        old_tokens = self.token_counter.count_message(old_dict)
+        new_tokens = self.token_counter.count_message(new_dict)
+        self._estimated_total_tokens += new_tokens - old_tokens
+
+        self.raw_messages[idx] = new_msg
+        self._invalidate_cache()
+
+    def delete_memory(self, idx: int) -> None:
+        """Delete message at index and update token tracking."""
+        if 0 <= idx < len(self.raw_messages):
+            msg = self.raw_messages[idx]
+            msg_dict = self._message_to_dict(msg)
+            msg_tokens = self.token_counter.count_message(msg_dict)
+            self._estimated_total_tokens -= msg_tokens
+
+            del self.raw_messages[idx]
+
+            if "delete_memory" in self.config.cache_invalidation_events:
+                self._invalidate_cache()
+        else:
+            raise IndexError("Index out of range")
+
+    def retrieve_by_id(self, message_id: str) -> Optional[Dict[str, Any]]:
+        """Get message by ID from raw storage."""
+        for msg in self.raw_messages:
+            if msg.message_id == message_id:
+                return self._message_to_dict(msg)
+        return None
+
+    def retrieve_by_role(
+        self, role: str, n: Optional[int] = None
+    ) -> List[Dict[str, Any]]:
+        """Filter messages by role from raw storage."""
+        filtered = [msg for msg in self.raw_messages if msg.role == role]
+        if n:
+            filtered = filtered[-n:]
+        return [self._message_to_dict(msg) for msg in filtered]
+
+    def reset_memory(self) -> None:
+        """Clear all messages and reset state."""
+        self.raw_messages.clear()
+        self._cached_context = None
+        self._cache_valid = False
+        self._last_retrieval_index = 0
+        self._estimated_total_tokens = 0
+        self._tokens_since_last_retrieval = 0
+        self._messages_since_last_retrieval = 0
+        self.metadata.clear()
+
+    # === Secondary Methods (ACM-specific) ===
+
+    def _get_memory_state(self):
+        """Build current memory state snapshot."""
+        from marsys.agents.memory_strategies import MemoryState
+
+        return MemoryState(
+            raw_messages=self.raw_messages.copy(),
+            estimated_tokens=self._estimated_total_tokens,
+            messages_since_last_retrieval=self._messages_since_last_retrieval,
+            tokens_since_last_retrieval=self._tokens_since_last_retrieval,
+            last_retrieval_index=self._last_retrieval_index,
+            metadata=self.metadata.copy(),
+        )
+
+    def _retrieve_curated_context(self) -> List[Dict[str, Any]]:
+        """Execute retrieval strategy and cache result."""
+        state = self._get_memory_state()
+
+        curated = self.retrieval_strategy.retrieve(
+            state, self.config, self.token_counter
+        )
+
+        self._cached_context = curated
+        self._cache_valid = True
+        self._last_retrieval_index = len(self.raw_messages)
+        self._messages_since_last_retrieval = 0
+        self._tokens_since_last_retrieval = 0
+
+        return curated
+
+    def _invalidate_cache(self) -> None:
+        """Mark cache as invalid."""
+        self._cache_valid = False
+
+    # === Utility Methods ===
+
+    def get_raw_messages(self) -> List[Message]:
+        """Access full raw message history (for debugging/export)."""
+        return self.raw_messages.copy()
+
+    def get_cache_stats(self) -> Dict[str, Any]:
+        """Get cache statistics for monitoring/debugging."""
+        return {
+            "cache_valid": self._cache_valid,
+            "cached_count": len(self._cached_context) if self._cached_context else 0,
+            "raw_count": len(self.raw_messages),
+            "estimated_total_tokens": self._estimated_total_tokens,
+            "messages_since_last_retrieval": self._messages_since_last_retrieval,
+            "tokens_since_last_retrieval": self._tokens_since_last_retrieval,
+        }
+
+
 class MemoryManager:
     """
     Factory and manager for creating and interacting with memory modules.
@@ -1234,20 +1647,37 @@ class MemoryManager:
         memory_type: str = "conversation_history",
         description: Optional[str] = None,
         model: Optional[Union["BaseLLM", "BaseVLM"]] = None,
+        memory_config: Optional[ManagedMemoryConfig] = None,
+        token_counter: Optional[Callable] = None,
     ):
         """
         Initialize the MemoryManager with a specific memory strategy.
 
         Args:
-            memory_type: Type of memory to use ("conversation_history" or "kg").
-            description: Initial system description/prompt.
-            model: Language model instance (required for KG memory).
+            memory_type: Type of memory to use ("conversation_history", "managed_conversation", or "kg")
+            description: Initial system description/prompt
+            model: Language model instance (required for KG memory)
+            memory_config: Configuration for ManagedConversationMemory (optional, only used for "managed_conversation")
+            token_counter: Custom token counter (optional, only used for "managed_conversation")
         """
         self.memory_type = memory_type
         self.memory_module: BaseMemory
 
         if memory_type == "conversation_history":
             self.memory_module = ConversationMemory(
+                description=description,
+            )
+        elif memory_type == "managed_conversation":
+            # Create config if not provided
+            if memory_config is None:
+                memory_config = ManagedMemoryConfig()
+
+            # Override token counter if provided
+            if token_counter is not None:
+                memory_config.token_counter = token_counter
+
+            self.memory_module = ManagedConversationMemory(
+                config=memory_config,
                 description=description,
             )
         elif memory_type == "kg":
@@ -1262,7 +1692,7 @@ class MemoryManager:
         else:
             raise AgentConfigurationError(
                 f"Unknown memory_type: {memory_type}",
-                agent_name="MemoryManager", 
+                agent_name="MemoryManager",
                 config_key="memory_type",
                 config_value=memory_type
             )
@@ -1350,6 +1780,16 @@ class MemoryManager:
     def retrieve_all(self) -> List[Message]:
         """Delegates to the underlying memory module's retrieve_all."""
         return self.memory_module.retrieve_all()
+
+    def get_messages(self) -> List[Message]:
+        """
+        Delegates to the underlying memory module's get_messages.
+
+        This is the preferred method for retrieving messages for LLM consumption.
+        For ManagedConversationMemory, this returns curated context; for other
+        memory types, it delegates to retrieve_all().
+        """
+        return self.memory_module.get_messages()
 
     def retrieve_by_id(self, message_id: str) -> Optional[Message]:
         """Delegates to the underlying memory module's retrieve_by_id."""

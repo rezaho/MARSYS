@@ -451,7 +451,7 @@ class StepExecutor:
                 # Sync agent memory to context (agent is source of truth)
                 if step_result.success and hasattr(agent, 'memory') and hasattr(agent.memory, 'retrieve_all'):
                     # Get full agent memory state
-                    agent_memory_state = agent.memory.retrieve_all()
+                    agent_memory_state = agent.memory.get_messages()
                     
                     # Update step result with complete memory state
                     step_result.memory_updates = agent_memory_state
@@ -461,7 +461,7 @@ class StepExecutor:
                 
                 # FIX: Extract saved context for passing to next agent
                 if hasattr(agent, '_context_selector'):
-                    messages = agent.memory.retrieve_all() if hasattr(agent, 'memory') else []
+                    messages = agent.memory.get_messages() if hasattr(agent, 'memory') else []
                     saved_context = agent._context_selector.get_saved_context(messages)
                     if saved_context:
                         # Store in step result for passing to next agent
