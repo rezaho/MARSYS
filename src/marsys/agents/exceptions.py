@@ -398,18 +398,21 @@ class AgentConfigurationError(AgentError):
         self.config_field = config_field
         self.config_value = config_value
         
-        context = kwargs.get("context", {})
+        context = kwargs.pop("context", {})
         if config_field:
             context["config_field"] = config_field
         if config_value is not None:
             context["config_value"] = str(config_value)
-        
+
+        # Extract suggestion from kwargs if provided, otherwise use default
+        suggestion = kwargs.pop("suggestion", "Check agent configuration for missing or invalid fields.")
+
         super().__init__(
             message,
             error_code="AGENT_CONFIGURATION_ERROR",
             context=context,
             user_message="The agent configuration is invalid.",
-            suggestion="Check agent configuration for missing or invalid fields.",
+            suggestion=suggestion,
             **kwargs
         )
 
