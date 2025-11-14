@@ -5,17 +5,71 @@ This module implements content search, filename search, and structure search
 capabilities with pagination and filtering.
 """
 
+import asyncio
 import logging
+import os
+import platform
 import re
 import time
 from pathlib import Path
-from typing import List, Optional, Pattern
+from typing import List, Optional, Pattern, Set
 
 from .config import FileOperationConfig
 from .data_models import SearchResults, SearchMatch, SearchType
 from .handlers.base import FileHandler, SearchableHandler
 
 logger = logging.getLogger(__name__)
+
+# Default search limits
+DEFAULT_MAX_DEPTH = 3
+DEFAULT_SEARCH_TIMEOUT = 15.0  # seconds
+DEFAULT_MAX_FILES = 1000
+
+# Dangerous paths that should never be searched at root level
+# These are system directories that can cause performance issues
+DANGEROUS_ROOT_PATHS: Set[str] = {
+    # Linux/Unix
+    "/",
+    "/home",
+    "/usr",
+    "/etc",
+    "/var",
+    "/sys",
+    "/proc",
+    "/dev",
+    # macOS
+    "/System",
+    "/Library",
+    "/Applications",
+    "/Users",
+    # Windows
+    "C:\\",
+    "C:/",
+    "D:\\",
+    "D:/",
+    "E:\\",
+    "E:/",
+}
+
+# System directories that should always be blocked from search
+BLOCKED_SYSTEM_DIRS: Set[str] = {
+    # Linux/Unix
+    "/sys",
+    "/proc",
+    "/dev",
+    "/run",
+    "/tmp",
+    # macOS
+    "/System",
+    "/Library/Application Support",
+    "/private",
+    # Windows
+    "Windows",
+    "Program Files",
+    "Program Files (x86)",
+    "ProgramData",
+    "$Recycle.Bin",
+}
 
 
 class FileSearchEngine:
@@ -36,6 +90,119 @@ class FileSearchEngine:
         self.config = config
         self.handler_registry = handler_registry
 
+    def _is_dangerous_path(self, path: Path) -> tuple[bool, str]:
+        """
+        Check if path is dangerous for filesystem-wide search.
+
+        Args:
+            path: Path to check
+
+        Returns:
+            Tuple of (is_dangerous, reason)
+        """
+        try:
+            # Resolve to absolute path for comparison
+            resolved = path.resolve()
+            path_str = str(resolved)
+
+            # Normalize path separators for cross-platform comparison
+            path_normalized = path_str.replace('\\', '/')
+
+            # Check if exact match with dangerous root paths
+            if path_normalized in DANGEROUS_ROOT_PATHS or path_str in DANGEROUS_ROOT_PATHS:
+                return True, f"Searching from root directory '{path}' is not allowed. Please specify a subdirectory."
+
+            # Check if path starts with blocked system directory
+            for blocked_dir in BLOCKED_SYSTEM_DIRS:
+                blocked_normalized = blocked_dir.replace('\\', '/')
+                if path_normalized.startswith(blocked_normalized) or path_normalized.startswith(f"/{blocked_normalized}"):
+                    return True, f"Searching system directory '{blocked_dir}' is not allowed for safety and performance."
+
+            # Additional check: warn if searching from user home root on macOS/Linux
+            if platform.system() in ['Darwin', 'Linux']:
+                home = Path.home()
+                if resolved == home:
+                    return True, f"Searching entire home directory '{home}' is not recommended. Please specify a subdirectory (e.g., ~/Documents, ~/projects)."
+
+            return False, ""
+
+        except Exception as e:
+            logger.warning(f"Error checking path safety: {e}")
+            # Err on the side of caution
+            return True, f"Unable to validate path safety: {e}"
+
+    def _get_limited_file_iterator(
+        self,
+        path: Path,
+        pattern: str,
+        max_depth: int,
+        max_files: int,
+        timeout_seconds: float
+    ):
+        """
+        Get file iterator with depth, count, and timeout limits.
+
+        Args:
+            path: Root path to search
+            pattern: Glob pattern
+            max_depth: Maximum directory depth
+            max_files: Maximum number of files to return
+            timeout_seconds: Timeout in seconds
+
+        Yields:
+            Path objects for files that match criteria
+        """
+        start_time = time.time()
+        file_count = 0
+
+        # Use rglob for recursive patterns, glob for non-recursive
+        is_recursive = '**' in pattern
+
+        if is_recursive:
+            # Calculate max depth relative to base path
+            base_depth = len(path.parts)
+
+            for file_path in path.rglob(pattern.replace('**/', '')):
+                # Check timeout
+                if time.time() - start_time > timeout_seconds:
+                    logger.warning(f"Search timeout after {timeout_seconds}s, processed {file_count} files")
+                    break
+
+                # Check depth
+                file_depth = len(file_path.parts) - base_depth
+                if file_depth > max_depth:
+                    continue
+
+                # Skip if not a file
+                if not file_path.is_file():
+                    continue
+
+                # Check file count
+                file_count += 1
+                if file_count > max_files:
+                    logger.warning(f"Search file limit reached ({max_files} files)")
+                    break
+
+                # Log progress every 100 files
+                if file_count % 100 == 0:
+                    logger.info(f"Search progress: {file_count} files processed...")
+
+                yield file_path
+        else:
+            # Non-recursive glob
+            for file_path in path.glob(pattern):
+                # Check timeout
+                if time.time() - start_time > timeout_seconds:
+                    logger.warning(f"Search timeout after {timeout_seconds}s")
+                    break
+
+                if file_path.is_file():
+                    yield file_path
+                    file_count += 1
+
+                if file_count >= max_files:
+                    break
+
     async def search(
         self,
         query: str,
@@ -53,6 +220,9 @@ class FileSearchEngine:
             **kwargs: Additional search parameters:
                 - file_pattern: Glob pattern for files to search (default: **/**)
                 - max_results: Maximum results to return
+                - max_depth: Maximum directory depth (default: 3)
+                - max_files: Maximum files to process (default: 1000)
+                - timeout: Search timeout in seconds (default: 15)
                 - case_sensitive: Case-sensitive search (default: False)
                 - include_context: Include context lines (default: True)
                 - context_lines: Number of context lines (default: 3)
@@ -66,6 +236,10 @@ class FileSearchEngine:
         if path is None:
             path = self.config.base_directory or Path.cwd()
 
+        # Convert to Path if string
+        if isinstance(path, str):
+            path = Path(path)
+
         # Ensure path exists
         if not path.exists():
             return SearchResults(
@@ -77,6 +251,36 @@ class FileSearchEngine:
                 files_searched=0,
                 metadata={'error': f'Path does not exist: {path}'}
             )
+
+        # Safety check: Block dangerous paths
+        is_dangerous, danger_reason = self._is_dangerous_path(path)
+        if is_dangerous:
+            logger.warning(f"Blocked dangerous search path: {path}. Reason: {danger_reason}")
+            return SearchResults(
+                query=query,
+                search_type=search_type,
+                matches=[],
+                total_matches=0,
+                truncated=False,
+                files_searched=0,
+                metadata={
+                    'error': f'Search blocked for safety: {danger_reason}',
+                    'blocked_path': str(path),
+                    'suggestion': 'Please specify a more specific subdirectory to search within.'
+                }
+            )
+
+        # Get safety limits from kwargs or use defaults
+        max_depth = kwargs.get('max_depth', DEFAULT_MAX_DEPTH)
+        max_files = kwargs.get('max_files', DEFAULT_MAX_FILES)
+        timeout = kwargs.get('timeout', DEFAULT_SEARCH_TIMEOUT)
+
+        # Pass limits to search methods via kwargs
+        kwargs['max_depth'] = max_depth
+        kwargs['max_files'] = max_files
+        kwargs['timeout'] = timeout
+
+        logger.info(f"Starting {search_type.value} search: query='{query}', path='{path}', max_depth={max_depth}, max_files={max_files}, timeout={timeout}s")
 
         # Dispatch to appropriate search method
         if search_type == SearchType.CONTENT:
@@ -301,15 +505,23 @@ class FileSearchEngine:
             path: Root path to search
             **kwargs: Additional parameters
                 - recursive: Search subdirectories (default: True)
+                - max_depth: Maximum directory depth
+                - max_files: Maximum files to process
+                - timeout: Search timeout in seconds
 
         Returns:
             SearchResults
         """
         max_results = kwargs.get('max_results', self.config.max_search_results)
         recursive = kwargs.get('recursive', True)
+        max_depth = kwargs.get('max_depth', DEFAULT_MAX_DEPTH)
+        max_files = kwargs.get('max_files', DEFAULT_MAX_FILES)
+        timeout = kwargs.get('timeout', DEFAULT_SEARCH_TIMEOUT)
 
         matches = []
         files_searched = 0
+        timed_out = False
+        hit_file_limit = False
 
         try:
             # Determine if query is a glob pattern or substring
@@ -322,28 +534,26 @@ class FileSearchEngine:
                 else:
                     files = [path] if query.lower() in path.name.lower() else []
             else:
-                # Search directory
+                # Search directory with limits
                 if is_glob:
                     # Use glob pattern
                     if recursive and not query.startswith('**/'):
                         # Make glob recursive if not already
-                        if query.startswith('*'):
-                            # Already has wildcard at start, just add **/
-                            pattern = f"**/{query}"
-                        else:
-                            # No wildcard at start
-                            pattern = f"**/{query}"
+                        pattern = f"**/{query}"
                     else:
                         pattern = query
-                    files = list(path.glob(pattern))
                 else:
                     # Substring search - find all files containing the query
-                    glob_pattern = '**/*' if recursive else '*'
-                    all_files = path.glob(glob_pattern)
-                    files = [f for f in all_files if query.lower() in f.name.lower()]
+                    pattern = '**/*' if recursive else '*'
+
+                # Use limited iterator with safety guards
+                files = self._get_limited_file_iterator(
+                    path, pattern, max_depth, max_files, timeout
+                )
 
             for file_path in files:
-                if not file_path.is_file():
+                # For non-glob substring search, check if query matches
+                if not is_glob and query.lower() not in file_path.name.lower():
                     continue
 
                 # Skip blocked files
@@ -375,13 +585,22 @@ class FileSearchEngine:
         truncated = total_matches > max_results
         matches = matches[:max_results]
 
+        metadata = {}
+        if timed_out:
+            metadata['timeout'] = True
+            metadata['message'] = f'Search timed out after {timeout}s'
+        if hit_file_limit:
+            metadata['file_limit_reached'] = True
+            metadata['message'] = f'File limit reached ({max_files} files)'
+
         return SearchResults(
             query=query,
             search_type=SearchType.FILENAME,
             matches=matches,
             total_matches=total_matches,
             truncated=truncated,
-            files_searched=files_searched
+            files_searched=files_searched,
+            metadata=metadata
         )
 
     async def _structure_search(
