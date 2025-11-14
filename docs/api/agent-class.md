@@ -100,6 +100,52 @@ async def run(
     """
 ```
 
+#### `cleanup() -> None`
+
+Clean up agent resources (model sessions, tools, browser handles, etc.).
+
+```python
+async def cleanup(self) -> None:
+    """
+    Clean up agent resources.
+
+    Called automatically by Orchestra at end of run if auto_cleanup_agents=True.
+    Can be overridden by subclasses for custom cleanup logic.
+
+    Default implementation:
+    1. Closes model async resources (aiohttp sessions, etc.)
+    2. Calls agent-specific close() if available (e.g., BrowserAgent.close())
+
+    Example override:
+        async def cleanup(self):
+            # Custom cleanup
+            await self.custom_resource.close()
+            # Call parent cleanup
+            await super().cleanup()
+    """
+```
+
+**Automatic Cleanup:**
+
+The framework automatically calls `cleanup()` on all topology agents after `Orchestra.run()` completes (unless `auto_cleanup_agents=False`).
+
+**Manual Cleanup:**
+
+```python
+# Create agent
+agent = Agent(agent_name="my_agent", model_config=config)
+
+# Use agent
+result = await agent.run("Process data")
+
+# Manual cleanup when done
+await agent.cleanup()
+
+# Unregister from registry (identity-safe)
+from marsys.agents.registry import AgentRegistry
+AgentRegistry.unregister_if_same("my_agent", agent)
+```
+
 ## 🤖 Agent
 
 Standard agent implementation with built-in capabilities.

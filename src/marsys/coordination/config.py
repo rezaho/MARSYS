@@ -257,7 +257,11 @@ class ExecutionConfig:
     user_first: bool = False  # Enable user-first execution mode
     initial_user_msg: Optional[str] = None  # Message shown to user in user-first mode
     user_interaction: str = "terminal"  # Type of user interaction: "terminal", "none"
-    
+
+    # Agent lifecycle management
+    auto_cleanup_agents: bool = True  # Automatically cleanup agents after run (closes resources, unregisters)
+    cleanup_scope: Literal["topology_nodes", "used_agents"] = "topology_nodes"  # Which agents to cleanup
+
     def should_apply_steering(self, is_retry: bool = False, has_error: bool = False) -> bool:
         """
         Determine if steering should be applied.

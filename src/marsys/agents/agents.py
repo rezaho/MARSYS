@@ -273,31 +273,34 @@ class BaseAgent(ABC):
         self._allocation_stats = {"total_acquisitions": 0, "total_releases": 0, "total_wait_time": 0.0}
 
     def __del__(self) -> None:
-        """Safely unregister the agent, even during interpreter shutdown."""
-        agent_display_name = getattr(self, "name", "UnknownAgent")
+        """
+        Destructor - minimal cleanup during garbage collection.
 
+        With Orchestra auto-cleanup, registry unregistration is handled deterministically
+        via cleanup() and _auto_cleanup_agents(). This destructor only guards against
+        pool instance cleanup (pools manage their own lifecycle).
+
+        No registry unregistration is performed here to avoid:
+        - Race conditions during concurrent task execution
+        - "Skip unregister" noise in logs during shutdown
+        - Timing dependencies on garbage collector
+        """
         # Check internal flag first - most reliable during shutdown
         if getattr(self, "_is_pool_instance", False):
-            # This is a pool instance - skip individual unregistration
+            # This is a pool instance - skip individual cleanup
             # The pool's cleanup method will handle proper cleanup
             return
 
-        # All globals may already be None at shutdown – guard every access.
+        # No registry unregistration needed - Orchestra handles this deterministically
+        # Logging at DEBUG level to avoid shutdown noise
+        agent_display_name = getattr(self, "name", "UnknownAgent")
         try:
-            registry_cls = globals().get("AgentRegistry")  # type: ignore[arg-type]
-            unregister_fn = (
-                getattr(registry_cls, "unregister", None) if registry_cls else None
-            )
-            if agent_display_name and callable(unregister_fn):
-                try:
-                    unregister_fn(agent_display_name)
-                except Exception:  # pragma: no cover
-                    pass  # Silently ignore any error on final cleanup
-        except Exception as e:  # pragma: no cover
             logging.debug(
-                f"__del__ cleanup for agent '{agent_display_name}' failed: {e}",
-                extra={"agent_name": agent_display_name},
+                f"Agent '{agent_display_name}' being garbage collected",
+                extra={"agent_name": agent_display_name}
             )
+        except Exception:
+            pass  # Silently ignore logging errors during shutdown
     
     @property
     def allowed_peers(self) -> Set[str]:
@@ -562,7 +565,7 @@ class BaseAgent(ABC):
         # Check if the last message has orphaned tool_calls
         if hasattr(self.memory, 'memory') and len(self.memory.memory) > 0:
             # Get all messages to check for orphaned tool_calls
-            messages = self.memory.retrieve_all()
+            messages = self.memory.get_messages()
             
             # Find the last assistant message with tool_calls
             for i in range(len(messages) - 1, -1, -1):
@@ -1179,7 +1182,7 @@ Example for `final_response`:
                     LogLevel.DEBUG,
                     "Response Message details",  # Changed log message
                     data={
-                        "response_message": result_message.to_llm_dict()
+                        "response_message": dataclasses.asdict(result_message)
                     },  # Log Message content
                 )
             return result_message  # Return the Message object
@@ -1877,7 +1880,7 @@ Example for `final_response`:
         )
 
         # Get memory messages and prepare them for the model
-        memory_messages = self.memory.retrieve_all() if hasattr(self, "memory") else []
+        memory_messages = self.memory.get_messages() if hasattr(self, "memory") else []
 
         # Check if we need to rebuild the system prompt
         # Rebuild if: first call, mode changed, tools changed, or final_response permission changed
@@ -2006,7 +2009,7 @@ Example for `final_response`:
             if action in ["invoke_agent", "return_to_user", "final_response"]:
                 # Get saved context and prepare it
                 if hasattr(self, "memory"):
-                    all_messages = self.memory.retrieve_all()
+                    all_messages = self.memory.get_messages()
                     context_data = self._context_selector.get_saved_context(
                         all_messages
                     )
@@ -2370,6 +2373,44 @@ Example for `final_response`:
                     to_visit.update(agent._allowed_peers_init - visited)
 
         return False
+
+    async def cleanup(self) -> None:
+        """
+        Clean up agent resources (model sessions, tools, browser handles, etc.).
+
+        Called automatically by Orchestra at end of run if auto_cleanup_agents=True.
+        Can be overridden by subclasses for custom cleanup logic.
+
+        This method:
+        1. Closes model async resources (e.g., aiohttp ClientSession in BaseAPIModel)
+        2. Calls agent-specific close() hook (e.g., BrowserAgent.close() for playwright)
+
+        Ensures:
+        - No unclosed network sessions (eliminates "Unclosed client session" warnings)
+        - External resources (browsers, files) properly released
+        - Clean shutdown without resource leaks
+        """
+        agent_name = getattr(self, "name", "UnknownAgent")
+
+        # 1. Close model async resources (aiohttp sessions, etc.)
+        model = getattr(self, "model", None)
+        if model and hasattr(model, "cleanup") and callable(model.cleanup):
+            try:
+                await model.cleanup()
+                self.logger.debug(f"Closed model resources for {agent_name}")
+            except Exception as e:
+                self.logger.debug(f"Model cleanup failed for {agent_name}: {e}")
+
+        # 2. Agent-specific close hook (e.g., BrowserAgent.close() for playwright/browser)
+        close_fn = getattr(self, "close", None)
+        if close_fn and callable(close_fn):
+            try:
+                maybe_coro = close_fn()
+                if asyncio.iscoroutine(maybe_coro):
+                    await maybe_coro
+                    self.logger.debug(f"Closed agent-specific resources for {agent_name}")
+            except Exception as e:
+                self.logger.debug(f"Agent close() failed for {agent_name}: {e}")
 
     def _enhance_description_for_user_interaction(self):
         """Auto-enhance agent description with user interaction instructions."""
@@ -3724,7 +3765,7 @@ The user will provide their response, and you'll receive it to continue your tas
             and hasattr(self, "memory")
             and isinstance(self.memory.memory_module, ConversationMemory)
         ):
-            all_messages_in_memory = self.memory.retrieve_all()
+            all_messages_in_memory = self.memory.get_messages()
             target_message_id_to_update = raw_llm_response_message.message_id
             found_message_idx = -1
             for idx, msg_in_mem in enumerate(all_messages_in_memory):
@@ -3788,7 +3829,7 @@ The user will provide their response, and you'll receive it to continue your tas
             and hasattr(self, "memory")
             and isinstance(self.memory.memory_module, ConversationMemory)
         ):
-            all_messages_in_memory = self.memory.retrieve_all()
+            all_messages_in_memory = self.memory.get_messages()
             target_message_id_to_update = raw_llm_response_message.message_id
             found_message_idx = -1
             for idx, msg_in_mem in enumerate(all_messages_in_memory):
