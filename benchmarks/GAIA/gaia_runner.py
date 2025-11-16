@@ -34,7 +34,7 @@ from marsys.coordination.config import ExecutionConfig, StatusConfig
 from marsys.models.models import ModelConfig
 
 # Setup logging
-logging.basicConfig(level=logging.DEBUG, format="%(asctime)s - %(levelname)s - %(message)s")
+logging.basicConfig(level=logging.ERROR, format="%(asctime)s - %(levelname)s - %(message)s")
 logger = logging.getLogger(__name__)
 
 
@@ -104,7 +104,7 @@ Your role:
 2. Invoke Planner to analyze the task and create a plan
 3. Based on the plan, collect information by invoking either reading local files or searching online (or both if required).
 4. If you need to extract information from local files, you may call FileOps agent. Provide the specific file paths and information to extract
-5. If you need to retrieve information from the web, you may call WebSearch agent (two in parallel). Provide the specific context for the search.
+5. If you need to retrieve information from the web, you may call WebSearch agent. Provide the specific context for the search.
 6. Upon receiving information from WebSearch, if specific web pages need to be visited for detailed extraction, invoke BrowserAgent with:
    - URL that you received from WebSearch
    - Specific information to extract from the page
@@ -114,10 +114,16 @@ Your role:
 10. Once all information is collected, invoke Reasoner with:
    - The original task/question
    - All collected information
-11. Return the final answer that you received from Reasoner
+11. Return the final answer that you received from Reasoner exactly as it is.
 
-Important:
-Each question calls for an answer that is either a string (one or a few words), a number, or a comma separated list of strings or floats, unless specified otherwise. There is only one correct answer. Hence, evaluation is done via quasi exact match between a model’s answer and the ground truth.
+
+SEARCH POLICY:
+- ONLY use BrowserAgent with specific URLs obtained from WebSearch
+- If WebSearch returns no results, ask WebSearch to retry with different queries - do NOT fallback to BrowserAgent
+
+IMPORTANT:
+Each question calls for an answer that is either a string (one or a few words), a number, or a comma separated list of strings or floats, unless specified otherwise. There is only one correct answer. Hence, evaluation is done via quasi exact match between a model's answer and the ground truth.
+If you think that the answer that Reasoner provides is not in the expected format, you must ask Reasoner to retry and provide the answer in the correct format. You must NOT modify the answer yourself.
 
 You have NO tools - only coordinate agents.
 """
@@ -148,10 +154,26 @@ WEB_SEARCH_DESC = """You search for and retrieve information from the web.
 Your workflow:
 1. Receive a query about what information to find
 2. Use your search tools to find relevant URLs
-3. Identify the most relevant URL based on snippets and the initial request
-4. Return the URL and specific information (including the title and the description) to Coordinator.
+3. If initial search returns NO results or insufficient results:
+   - Try at least 2-3 different query formulations
+   - Use broader terms, synonyms, or alternative phrasings
+   - For academic searches, try both specific dates and date ranges
+   - For category-specific searches (e.g., arXiv categories), try searching without category first, then check results
+4. Identify the most relevant URLs based on snippets and the initial request
+5. Return the URLs and specific information (including titles and descriptions) to Coordinator
 
-Be selective - only send the most relevant URL to BrowserAgent. And if there are any errors during searching you are not to report them, just return no results.
+IMPORTANT RETRY STRATEGY:
+- If first search yields NO results: Try with broader/different keywords
+- If searching for papers by exact date fails: Try date ranges (e.g., month or year)
+- If searching with category filter fails: Try without filter, then manually check categories in results
+- Only return "no results found" after exhausting 3+ different query variations
+
+Example for arXiv papers from specific date:
+- Attempt 1: "site:arxiv.org physics.soc-ph submitted:2016-08-11"
+- Attempt 2: "site:arxiv.org Physics and Society August 2016"
+- Attempt 3: "arxiv physics society 2016-08"
+
+Be selective - return the most relevant URLs. If no results after multiple attempts, explain what queries were tried.
 """
 
 BROWSER_DESC = """You are a visual browser agent that extracts specific information from web pages.
@@ -161,6 +183,13 @@ You will receive:
 - Specific information to extract
 
 If the url leads to a file (PDF, image, etc.), download it and return the file path. You cannot view pdf files in browser session. Also, you don't have the tools to read the file.
+
+CRITICAL - AVOID GETTING STUCK:
+1. You may attempt the same action MAXIMUM 3 times without making progress.
+2. If you get stuck, STOP and reflect: Why is this not working.
+3. Then, Try a COMPLETELY DIFFERENT approach.
+
+Never repeat the exact same failed action more than 3 times. Adapt your strategy or report failure with details.
 """
 
 REASONER_DESC = """You are a reasoning agent that solves tasks using logical steps.
@@ -179,9 +208,13 @@ Your task:
 Return ONLY the final answer value, no explanations unless specifically asked. It is very important that you pay attention to the question to provide the final answer exactly as expected.
 Your final answer should be a number OR as few words as possible OR a comma separated list of numbers and/or strings. If you are asked for a number, don't use comma to write your number neither use units such as $ or percent sign unless specified otherwise. If you are asked for a string, don't use articles, neither abbreviations (e.g. for cities), and write the digits in plain text unless specified otherwise. If you are asked for a comma separated list, apply the above rules depending of whether the element to be put in the list is a number or a string.
 
+Remember that you must verify your final answer by reading the question carefully to ensure that you are answeing exactly how it is expected and if there is a trick in the question (e.g., unit conversion, specific format, etc.) you identify it and apply it.
+Remember that we care about the final answer. The reasoning steps are important only for you to reach the correct answer, but not to be send to the Coordinator.
+
 Examples:
 - Question "What is 2+2?" → Response: 4
 - Question "What city has most population?" → Response: Tokyo
+- Question "How many million people live in Tokyo, Japan?" → Response: 37.4 (do not write 37,400,000. Pay attention to these types of tricks in the question)
 """
 
 
@@ -191,60 +224,35 @@ Examples:
 
 
 async def run_single_task(
-    question_data: Dict[str, Any],
-    idx: int,
-    total_tasks: int,
-    logs_dir: Path,
+    question_text: str,
+    file_path: Optional[str],
     sonnet_config: ModelConfig,
     haiku_config: ModelConfig,
+    gpt5_config: ModelConfig,
     gemini_config: ModelConfig,
     gemini_vision_config: ModelConfig,
     topology: Dict,
 ) -> Dict[str, Any]:
     """
-    Run a single GAIA task with isolated agent instances.
+    Run a single attempt with fresh agent instances.
 
-    This function creates fresh agent instances for each task, runs the workflow,
-    and then allows all agents, memories, and execution context to be garbage collected
-    when the function returns.
+    This function creates brand new agents, runs the workflow once, and cleans up.
+    All agents are garbage collected when the function returns.
 
     Args:
-        question_data: GAIA question data
-        idx: Question index (0-based)
-        total_tasks: Total number of tasks
-        logs_dir: Directory for log files
+        question_text: The question to answer
+        file_path: Optional path to attached file
         sonnet_config: Model config for coordinator/planner/reasoner
         haiku_config: Model config for file ops/web search
+        gpt5_config: Model config for reasoner
         gemini_config: Model config for browser agent
         gemini_vision_config: Model config for vision analysis
         topology: Workflow topology definition
 
     Returns:
-        Dictionary with task results
+        Dictionary with attempt results (predicted_answer, total_steps, success, duration_seconds, error)
     """
-    task_id = question_data["task_id"]
-    question_text = question_data["Question"]
-    ground_truth = question_data["Final answer"]
-    file_name = question_data.get("file_name")
-    file_path = question_data.get("file_path")
-    level = question_data["Level"]
-
-    # Setup per-question logger
-    log_handler = setup_question_logger(task_id, logs_dir)
-    question_logger = logging.getLogger(f"gaia.{task_id}")
-
-    logger.info(f"\n{'='*80}")
-    logger.info(f"Question {idx+1}/{total_tasks} - {task_id} (Level {level})")
-    logger.info(f"{'='*80}")
-    logger.info(f"Q: {question_text}")
-    if file_name:
-        logger.info(f"📎 Attached file: {file_name}")
-
-    question_logger.info(f"Starting evaluation for {task_id}")
-    question_logger.info(f"Question: {question_text}")
-    question_logger.info(f"Level: {level}")
-    if file_name:
-        question_logger.info(f"Attached file: {file_name}")
+    start_time = datetime.now()
 
     # Create agents (fresh instances for this task only)
     logger.info("🔧 Creating agents for this task...")
@@ -255,6 +263,7 @@ async def run_single_task(
         name="Coordinator",
         goal="Coordinate the workflow to answer benchmark tasks.",
         instruction=COORDINATOR_DESC,
+        memory_type="managed_conversation",
     )
 
     # Planner
@@ -264,6 +273,7 @@ async def run_single_task(
         goal="Analyze tasks and create action plans",
         instruction=PLANNER_DESC,
         memory_retention="single_run",
+        memory_type="managed_conversation",
     )
 
     # FileOps
@@ -273,16 +283,19 @@ async def run_single_task(
         goal="Extract information from local files using the provided file path and a query.",
         instruction=FILE_OPS_DESC,
         memory_retention="single_run",
+        memory_type="managed_conversation",
     )
 
-    # WebSearch
+    # WebSearch - Enable both Google and Semantic Scholar for comprehensive search
+    # Google for general web + arXiv, Semantic Scholar for academic papers with metadata
     web_search = WebSearchAgent(
         model_config=haiku_config,
         name="WebSearch",
         goal="Search and retrieve web information on a specific topic using the provided query.",
         instruction=WEB_SEARCH_DESC,
-        enabled_tools=["google"],
+        enabled_tools=["google", "semantic_scholar"],
         memory_retention="single_run",
+        memory_type="managed_conversation",
     )
 
     # BrowserAgent
@@ -295,212 +308,102 @@ async def run_single_task(
         headless=False,
         mode="advanced",
         auto_screenshot=True,
-        element_detection_mode="rule_based",
+        element_detection_mode="none",
         memory_retention="single_run",
+        memory_type="managed_conversation",
         tools={"get_youtube_transcript": tool_get_youtube_transcript},
     )
 
     # Reasoner
     reasoner = Agent(
-        model_config=sonnet_config,
+        model_config=gpt5_config,
         name="Reasoner",
         goal="Solve tasks using logical reasoning using the provided context and a query.",
         instruction=REASONER_DESC,
         memory_retention="single_run",
+        memory_type="managed_conversation",
     )
 
-    # Prepare task
+    # Prepare task with absolute file path
+    # HuggingFace datasets store files in cache with full paths
+    # The file_path from dataset should already be absolute
     if file_path:
+        # Verify file exists and convert to absolute path if needed
+        file_path_obj = Path(file_path)
+        if not file_path_obj.is_absolute():
+            # If relative, it might be in the cache directory
+            # Try to find it in the GAIA cache
+            potential_paths = [Path(__file__).parent / ".cache" / file_path, Path(__file__).parent / file_path, file_path_obj]
+            for potential_path in potential_paths:
+                if potential_path.exists():
+                    file_path = str(potential_path.resolve())
+                    logger.info(f"✓ Found file at: {file_path}")
+                    break
+            else:
+                logger.warning(f"⚠️  File not found at expected locations. Using original path: {file_path}")
+                # Use the original path - agent will need to search for it
+
         task = f"File path: {file_path}\n\nQuestion: {question_text}\n\nProvide only the final answer."
     else:
         task = f"Question: {question_text}\n\nProvide only the final answer."
 
-    # Retry logic
-    max_attempts = 3
-    max_answer_length = 200  # Based on Reasoner instructions: answers should be concise
-    attempt = 0
-    predicted_answer = None
-    is_correct = False
-    all_attempts = []
-    start_time = datetime.now()
-
     try:
-        while attempt < max_attempts:
-            attempt += 1
-            attempt_start = datetime.now()
+        # Run Orchestra workflow
+        result = await Orchestra.run(
+            task=task,
+            topology=topology,
+            agent_registry=AgentRegistry,
+            execution_config=ExecutionConfig(
+                status=StatusConfig.from_verbosity(2),
+                step_timeout=400.0,
+                agent_acquisition_timeout=800.0,
+                tool_execution_timeout=60.0,
+            ),
+            max_steps=200,
+        )
 
-            logger.info(f"🔄 Attempt {attempt}/{max_attempts}")
-            question_logger.info(f"Starting attempt {attempt}/{max_attempts}")
+        duration = (datetime.now() - start_time).total_seconds()
 
-            # Update log file for attempts 2 and 3
-            if attempt > 1:
-                # Remove old log handler
-                try:
-                    root_logger = logging.getLogger()
-                    root_logger.removeHandler(log_handler)
-                    log_handler.close()
-                except Exception:
-                    pass
+        # Extract answer
+        predicted_answer = result.final_response
+        if isinstance(predicted_answer, dict):
+            predicted_answer = predicted_answer.get("content", str(predicted_answer))
+        predicted_answer = str(predicted_answer).strip() if predicted_answer else ""
 
-                # Create new log handler with attempt suffix
-                log_handler = setup_question_logger(f"{task_id}_attempt_{attempt}", logs_dir)
-                question_logger = logging.getLogger(f"gaia.{task_id}_attempt_{attempt}")
-                question_logger.info(f"Starting attempt {attempt}/{max_attempts}")
-
-            # Clear agent memories
-            logger.info("🧹 Resetting agent memories...")
-            for agent in [coordinator, planner, file_ops, web_search, browser_agent, reasoner]:
-                if hasattr(agent, "memory") and agent.memory:
-                    agent.memory.reset_memory()
-
-            try:
-                result = await Orchestra.run(
-                    task=task,
-                    topology=topology,
-                    agent_registry=AgentRegistry,
-                    execution_config=ExecutionConfig(
-                        status=StatusConfig.from_verbosity(2),
-                        step_timeout=400.0,
-                        agent_acquisition_timeout=800.0,
-                    ),
-                    max_steps=200,
-                )
-
-                attempt_duration = (datetime.now() - attempt_start).total_seconds()
-
-                # Extract answer
-                predicted_answer = result.final_response
-                if isinstance(predicted_answer, dict):
-                    predicted_answer = predicted_answer.get("content", str(predicted_answer))
-                predicted_answer = str(predicted_answer).strip() if predicted_answer else ""
-
-                # Evaluate
-                is_correct = evaluate_answer(predicted_answer, ground_truth)
-
-                # Store attempt info
-                attempt_info = {
-                    "attempt_number": attempt,
-                    "predicted_answer": predicted_answer,
-                    "predicted_normalized": normalize_answer(predicted_answer),
-                    "correct": is_correct,
-                    "duration_seconds": attempt_duration,
-                    "total_steps": result.total_steps,
-                    "success": result.success,
-                }
-                all_attempts.append(attempt_info)
-
-                logger.info(f"Attempt {attempt} - Predicted: {predicted_answer}")
-                logger.info(f"Attempt {attempt} - Expected: {ground_truth}")
-                logger.info(f"Attempt {attempt} - {'✅ CORRECT' if is_correct else '❌ INCORRECT'}")
-
-                question_logger.info(f"Attempt {attempt} - Predicted: {predicted_answer}")
-                question_logger.info(f"Attempt {attempt} - Correct: {is_correct}")
-
-                # Check if answer is valid
-                is_empty = not predicted_answer or predicted_answer.lower() in ["none", "null", ""]
-                is_too_long = len(predicted_answer) > max_answer_length
-                has_valid_answer = not is_empty and not is_too_long
-
-                if not has_valid_answer and attempt < max_attempts:
-                    if is_empty:
-                        attempt_info["retry_reason"] = "empty_or_none_answer"
-                        logger.warning("Empty or None answer, retrying...")
-                    elif is_too_long:
-                        attempt_info["retry_reason"] = "answer_too_long"
-                        logger.warning(f"Answer too long ({len(predicted_answer)} > {max_answer_length} chars), retrying...")
-                else:
-                    break
-
-            except Exception as attempt_error:
-                attempt_duration = (datetime.now() - attempt_start).total_seconds()
-                logger.error(f"❌ Attempt {attempt} failed: {attempt_error}")
-
-                all_attempts.append(
-                    {
-                        "attempt_number": attempt,
-                        "predicted_answer": "",
-                        "correct": False,
-                        "duration_seconds": attempt_duration,
-                        "error": str(attempt_error),
-                    }
-                )
-
-                if attempt < max_attempts:
-                    logger.info(f"🔄 Retrying...")
-
-        total_duration = (datetime.now() - start_time).total_seconds()
-
-        if not predicted_answer:
-            predicted_answer = ""
-
-        question_result = {
-            "task_id": task_id,
-            "question": question_text,
-            "file_name": file_name,
-            "has_attached_file": bool(file_name),
-            "level": level,
-            "predicted_answer_raw": predicted_answer,
-            "predicted_answer_normalized": normalize_answer(predicted_answer),
-            "ground_truth": ground_truth,
-            "ground_truth_normalized": normalize_answer(ground_truth),
-            "correct": is_correct,
-            "total_duration_seconds": total_duration,
-            "num_attempts": attempt,
-            "attempts": all_attempts,
-            "success": any(a.get("success", False) for a in all_attempts),
+        # Return attempt result
+        return {
+            "predicted_answer": predicted_answer,
+            "predicted_normalized": normalize_answer(predicted_answer),
+            "duration_seconds": duration,
+            "total_steps": result.total_steps,
+            "success": result.success,
             "error": None,
         }
 
     except Exception as e:
         duration = (datetime.now() - start_time).total_seconds()
-        logger.error(f"❌ Error processing question: {e}")
+        logger.error(f"❌ Task execution failed: {e}")
 
-        question_result = {
-            "task_id": task_id,
-            "question": question_text,
-            "file_name": file_name,
-            "has_attached_file": bool(file_name),
-            "level": level,
-            "predicted_answer_raw": "",
-            "predicted_answer_normalized": "",
-            "ground_truth": ground_truth,
-            "ground_truth_normalized": normalize_answer(ground_truth),
-            "correct": False,
+        return {
+            "predicted_answer": "",
+            "predicted_normalized": "",
+            "duration_seconds": duration,
+            "total_steps": 0,
             "success": False,
             "error": str(e),
-            "duration_seconds": duration,
         }
 
     finally:
         # Clean up browser
-        logger.info("🧹 Cleaning up BrowserAgent...")
         try:
-            if hasattr(browser_agent, "browser_tool") and browser_agent.browser_tool:
-                await browser_agent.browser_tool.close()
+            if "browser_agent" in locals() and hasattr(browser_agent, "close"):
+                await browser_agent.close()
         except Exception as e:
             logger.warning(f"Failed to clean up browser: {e}")
 
-        # Clean up log handler
-        try:
-            root_logger = logging.getLogger()
-            root_logger.removeHandler(log_handler)
-            log_handler.close()
-        except Exception:
-            pass
-
-        # Unregister agents from AgentRegistry before deletion
-        agent_names = ["Coordinator", "Planner", "FileOps", "WebSearch", "BrowserAgent", "Reasoner"]
-        for agent_name in agent_names:
-            try:
-                AgentRegistry.unregister(agent_name)
-            except Exception as e:
-                logger.warning(f"Failed to unregister {agent_name}: {e}")
-
         # Delete agent references for garbage collection
         del coordinator, planner, file_ops, web_search, browser_agent, reasoner
-        logger.info("✅ Agents unregistered and deleted - ready for GC")
-
-    return question_result
+        logger.info("✅ Agents deleted - ready for GC")
 
 
 # ============================================================================
@@ -515,7 +418,6 @@ async def run_gaia_benchmark(
     num_tasks: Optional[int] = None,
     level: Optional[int] = None,
     output_dir: str = "./tmp/gaia_results",
-    model_name: str = "anthropic/claude-sonnet-4.5",
     temperature: float = 0.2,
 ):
     """
@@ -653,6 +555,16 @@ async def run_gaia_benchmark(
         max_tokens=10000,
         api_key=OPENROUTER_API_KEY,
     )
+    # GPT-5 model config
+    gpt5_config = ModelConfig(
+        type="api",
+        provider="openrouter",
+        name="openai/gpt-5",
+        temperature=0,
+        reasoning_effort="medium",
+        max_tokens=10000,
+        api_key=OPENROUTER_API_KEY,
+    )
 
     logger.info(f"🤖 Coordinator/Planner/Reasoner: claude-sonnet-4.5 (temp={temperature})")
     logger.info(f"🤖 FileOps/WebSearch: claude-haiku-4.5 (temp={temperature})")
@@ -696,21 +608,162 @@ async def run_gaia_benchmark(
     logger.info("=" * 80 + "\n")
 
     for idx, question_data in enumerate(tqdm(dataset, desc="Evaluating")):
-        # Run single task with isolated agent instances
-        question_result = await run_single_task(
-            question_data=question_data,
-            idx=idx,
-            total_tasks=len(dataset),
-            logs_dir=logs_dir,
-            sonnet_config=sonnet_config,
-            haiku_config=haiku_config,
-            gemini_config=gemini_config,
-            gemini_vision_config=gemini_vision_config,
-            topology=topology,
-        )
+        # Extract question info
+        task_id = question_data["task_id"]
+        question_text = question_data["Question"]
+        ground_truth = question_data.get("Final answer")  # May be None for test set
+        file_name = question_data.get("file_name")
+        file_path = question_data.get("file_path")
+        level = question_data["Level"]
 
-        # Track correctness
-        if question_result.get("correct"):
+        # Display question header
+        logger.info(f"\n{'='*80}")
+        logger.info(f"Question {idx+1}/{len(dataset)} - {task_id} (Level {level})")
+        logger.info(f"{'='*80}")
+        logger.info(f"Q: {question_text}")
+        if file_name:
+            logger.info(f"📎 Attached file: {file_name}")
+
+        # Retry logic with fresh agents per attempt
+        max_attempts = 3
+        max_answer_length = 200
+        all_attempts = []
+        predicted_answer = None
+        is_correct = False
+        question_start_time = datetime.now()
+
+        for attempt in range(1, max_attempts + 1):
+            # Setup attempt-specific logging
+            if attempt == 1:
+                log_handler = setup_question_logger(task_id, logs_dir)
+                question_logger = logging.getLogger(f"gaia.{task_id}")
+            else:
+                # Remove previous handler and create new one with attempt suffix
+                try:
+                    root_logger = logging.getLogger()
+                    root_logger.removeHandler(log_handler)
+                    log_handler.close()
+                except Exception:
+                    pass
+                log_handler = setup_question_logger(f"{task_id}_attempt_{attempt}", logs_dir)
+                question_logger = logging.getLogger(f"gaia.{task_id}_attempt_{attempt}")
+
+            logger.info(f"🔄 Attempt {attempt}/{max_attempts}")
+            question_logger.info(f"Starting attempt {attempt}/{max_attempts}")
+            question_logger.info(f"Question: {question_text}")
+            question_logger.info(f"Level: {level}")
+            if file_name:
+                question_logger.info(f"Attached file: {file_name}")
+
+            # Run single attempt with fresh agents
+            attempt_result = await run_single_task(
+                question_text=question_text,
+                file_path=file_path,
+                sonnet_config=sonnet_config,
+                haiku_config=haiku_config,
+                gpt5_config=gpt5_config,
+                gemini_config=gemini_config,
+                gemini_vision_config=gemini_vision_config,
+                topology=topology,
+            )
+
+            # Extract answer
+            predicted_answer = attempt_result["predicted_answer"]
+
+            # Evaluate if ground truth available
+            if ground_truth:
+                is_correct = evaluate_answer(predicted_answer, ground_truth)
+            else:
+                is_correct = None  # Unknown for test set
+
+            # Store attempt info
+            attempt_info = {
+                "attempt_number": attempt,
+                "predicted_answer": predicted_answer,
+                "predicted_normalized": attempt_result["predicted_normalized"],
+                "correct": is_correct,
+                "duration_seconds": attempt_result["duration_seconds"],
+                "total_steps": attempt_result["total_steps"],
+                "success": attempt_result["success"],
+                "error": attempt_result.get("error"),
+            }
+            all_attempts.append(attempt_info)
+
+            # Log attempt result
+            logger.info(f"Attempt {attempt} - Predicted: {predicted_answer}")
+            if ground_truth:
+                logger.info(f"Attempt {attempt} - Expected: {ground_truth}")
+                logger.info(f"Attempt {attempt} - {'✅ CORRECT' if is_correct else '❌ INCORRECT'}")
+            logger.info(f"Attempt {attempt} - Steps: {attempt_result['total_steps']}, Success: {attempt_result['success']}")
+
+            question_logger.info(f"Attempt {attempt} - Predicted: {predicted_answer}")
+            if ground_truth:
+                question_logger.info(f"Attempt {attempt} - Correct: {is_correct}")
+            question_logger.info(f"Attempt {attempt} - Steps: {attempt_result['total_steps']}, Success: {attempt_result['success']}")
+
+            # Determine if retry is needed (based on answer quality, not correctness)
+            should_retry = False
+            retry_reason = None
+
+            if attempt < max_attempts:
+                is_empty = not predicted_answer or predicted_answer.lower() in ["none", "null", ""]
+                is_too_long = len(predicted_answer) > max_answer_length
+                hit_max_steps = attempt_result["total_steps"] >= 200
+
+                if is_empty:
+                    should_retry = True
+                    retry_reason = "empty_answer"
+                    logger.warning("⚠️  Empty or None answer, retrying with fresh agents...")
+                elif is_too_long:
+                    should_retry = True
+                    retry_reason = "answer_too_long"
+                    logger.warning(f"⚠️  Answer too long ({len(predicted_answer)} > {max_answer_length} chars), retrying with fresh agents...")
+                elif hit_max_steps:
+                    should_retry = True
+                    retry_reason = "hit_max_steps"
+                    logger.warning("⚠️  Hit max steps limit, retrying with fresh agents...")
+                elif not attempt_result["success"]:
+                    should_retry = True
+                    retry_reason = "workflow_failed"
+                    logger.warning("⚠️  Workflow failed, retrying with fresh agents...")
+
+                if should_retry:
+                    attempt_info["retry_reason"] = retry_reason
+
+            # If no retry needed, exit loop
+            if not should_retry:
+                break
+
+        # Clean up log handler
+        try:
+            root_logger = logging.getLogger()
+            root_logger.removeHandler(log_handler)
+            log_handler.close()
+        except Exception:
+            pass
+
+        # Compile final question result
+        total_duration = (datetime.now() - question_start_time).total_seconds()
+        question_result = {
+            "task_id": task_id,
+            "question": question_text,
+            "file_name": file_name,
+            "has_attached_file": bool(file_name),
+            "level": level,
+            "predicted_answer_raw": predicted_answer or "",
+            "predicted_answer_normalized": normalize_answer(predicted_answer) if predicted_answer else "",
+            "ground_truth": ground_truth,
+            "ground_truth_normalized": normalize_answer(ground_truth) if ground_truth else None,
+            "correct": is_correct,
+            "total_duration_seconds": total_duration,
+            "num_attempts": len(all_attempts),
+            "attempts": all_attempts,
+            "success": any(a.get("success", False) for a in all_attempts),
+            "error": None,
+        }
+
+        # Track correctness (only if ground truth available)
+        if is_correct:
             correct_count += 1
 
         # Save result
@@ -842,7 +895,7 @@ async def main():
         end_task=args.end_task,
         num_tasks=args.num_tasks,
         level=args.level,
-        output_dir=args.output_dir,
+        output_dir=Path(args.output_dir),
         temperature=args.temperature,
     )
 
