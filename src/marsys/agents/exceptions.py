@@ -398,18 +398,21 @@ class AgentConfigurationError(AgentError):
         self.config_field = config_field
         self.config_value = config_value
         
-        context = kwargs.get("context", {})
+        context = kwargs.pop("context", {})
         if config_field:
             context["config_field"] = config_field
         if config_value is not None:
             context["config_value"] = str(config_value)
-        
+
+        # Extract suggestion from kwargs if provided, otherwise use default
+        suggestion = kwargs.pop("suggestion", "Check agent configuration for missing or invalid fields.")
+
         super().__init__(
             message,
             error_code="AGENT_CONFIGURATION_ERROR",
             context=context,
             user_message="The agent configuration is invalid.",
-            suggestion="Check agent configuration for missing or invalid fields.",
+            suggestion=suggestion,
             **kwargs
         )
 
@@ -799,8 +802,34 @@ class ModelAPIError(ModelError):
                 if error_data:
                     message = error_data.get("message", message)
 
-                if status_code == 402:
+                if status_code == 400:
+                    # 400 Bad Request can be various issues - check message for hints
+                    # Some are transient (server overload), some are permanent (malformed request)
+                    message_lower = message.lower()
+                    if "context length" in message_lower or "too many tokens" in message_lower:
+                        classification = APIErrorClassification.INVALID_REQUEST.value
+                        # Context length errors are not retryable without changing the request
+                        is_retryable = False
+                    elif "invalid" in message_lower or "missing" in message_lower or "cors" in message_lower:
+                        classification = APIErrorClassification.INVALID_REQUEST.value
+                        is_retryable = False
+                    else:
+                        # Unknown 400 error - could be transient server issue
+                        # Mark as validation error but don't retry (handled by adapter retry logic)
+                        classification = APIErrorClassification.VALIDATION_ERROR.value
+                        is_retryable = False
+                elif status_code == 401:
+                    classification = APIErrorClassification.AUTHENTICATION_FAILED.value
+                elif status_code == 402:
                     classification = APIErrorClassification.INSUFFICIENT_CREDITS.value
+                elif status_code == 403:
+                    # Moderation flagged
+                    classification = APIErrorClassification.PERMISSION_DENIED.value
+                elif status_code == 408:
+                    # Request timeout - server-side issue, should be retried by adapter
+                    classification = APIErrorClassification.TIMEOUT.value
+                    is_retryable = True
+                    retry_after = 5
                 elif status_code == 429:
                     classification = APIErrorClassification.RATE_LIMIT.value
                     is_retryable = True
@@ -808,8 +837,21 @@ class ModelAPIError(ModelError):
                     if reset_time:
                         import time
                         retry_after = max(int(reset_time) - int(time.time()), 1)
-                elif status_code == 401:
-                    classification = APIErrorClassification.AUTHENTICATION_FAILED.value
+                elif status_code == 502:
+                    # Bad Gateway - provider error, should be retried by adapter
+                    classification = APIErrorClassification.SERVICE_UNAVAILABLE.value
+                    is_retryable = True
+                    retry_after = 5
+                elif status_code == 503:
+                    # Service Unavailable - no available provider, should be retried by adapter
+                    classification = APIErrorClassification.SERVICE_UNAVAILABLE.value
+                    is_retryable = True
+                    retry_after = 10
+                elif status_code >= 500:
+                    # Other server errors
+                    classification = APIErrorClassification.SERVICE_UNAVAILABLE.value
+                    is_retryable = True
+                    retry_after = 10
 
             elif provider == "xai":
                 if status_code == 429:
@@ -948,6 +990,47 @@ class BrowserConnectionError(BrowserError):
     def get_error_action(self) -> ErrorAction:
         """Browser connection errors are fixable - user can install/fix browser."""
         return ErrorAction.USER_FIXABLE
+
+
+class VisionAgentNotConfiguredError(BrowserError):
+    """
+    Raised when vision agent operations are attempted without proper configuration.
+
+    Examples:
+    - auto_screenshot=True but no vision-capable model configured
+    - Calling vision-based methods without vision_model_config
+    - Using prediction-based element detection without vision agent
+    """
+
+    def __init__(
+        self,
+        message: str,
+        operation: Optional[str] = None,
+        auto_screenshot: Optional[bool] = None,
+        **kwargs
+    ):
+        self.operation = operation
+        self.auto_screenshot = auto_screenshot
+
+        context = kwargs.get("context", {})
+        if operation:
+            context["attempted_operation"] = operation
+        if auto_screenshot is not None:
+            context["auto_screenshot"] = auto_screenshot
+
+        super().__init__(
+            message,
+            error_code="VISION_AGENT_NOT_CONFIGURED_ERROR",
+            context=context,
+            user_message="Vision agent not configured for this operation.",
+            suggestion="Provide vision_model_config parameter with a vision-capable model (VLM for local, or vision-enabled API model like gpt-4-vision, claude-3-opus), "
+                       "or ensure your main model_config is vision-capable when using auto_screenshot=True.",
+            **kwargs
+        )
+
+    def get_error_action(self) -> ErrorAction:
+        """Vision agent configuration errors are terminal - require code/config changes."""
+        return ErrorAction.TERMINAL
 
 
 class ToolExecutionError(AgentFrameworkError):

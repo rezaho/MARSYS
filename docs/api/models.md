@@ -2,6 +2,10 @@
 
 Complete API documentation for the MARSYS model system, providing unified interfaces for local and API-based language models.
 
+!!! tip "Model Selection Guide"
+    For guidance on choosing models and when to use VLM, see [Models Concept Guide](../concepts/models.md).
+
+
 ## 📦 ModelConfig
 
 Configuration schema for all model types using Pydantic validation.
@@ -17,78 +21,78 @@ class ModelConfig(BaseModel):
 
     # Core settings
     type: Literal["local", "api"] = Field(
-        description="Model type - local or API-based"
+        goal="Model type - local or API-based"
     )
     name: str = Field(
-        description="Model identifier or HuggingFace path"
+        goal="Model identifier or HuggingFace path"
     )
 
     # API settings
     provider: Optional[str] = Field(
         default=None,
-        description="API provider (openai, anthropic, google, groq)"
+        goal="API provider (openai, anthropic, google, groq)"
     )
     base_url: Optional[str] = Field(
         default=None,
-        description="Custom API endpoint URL"
+        goal="Custom API endpoint URL"
     )
     api_key: Optional[str] = Field(
         default=None,
-        description="API key (auto-loaded from env if None)"
+        goal="API key (auto-loaded from env if None)"
     )
 
     # Generation parameters
     max_tokens: int = Field(
         default=1024,
-        description="Maximum output tokens"
+        goal="Maximum output tokens"
     )
     temperature: float = Field(
         default=0.7,
         ge=0.0,
         le=2.0,
-        description="Sampling temperature"
+        goal="Sampling temperature"
     )
     top_p: float = Field(
         default=1.0,
         ge=0.0,
         le=1.0,
-        description="Nucleus sampling parameter"
+        goal="Nucleus sampling parameter"
     )
     frequency_penalty: float = Field(
         default=0.0,
         ge=-2.0,
         le=2.0,
-        description="Frequency penalty"
+        goal="Frequency penalty"
     )
     presence_penalty: float = Field(
         default=0.0,
         ge=-2.0,
         le=2.0,
-        description="Presence penalty"
+        goal="Presence penalty"
     )
 
     # Local model settings
     model_class: Optional[Literal["llm", "vlm"]] = Field(
         default=None,
-        description="Local model class"
+        goal="Local model class"
     )
     torch_dtype: str = Field(
         default="auto",
-        description="PyTorch dtype (auto, float16, bfloat16, float32)"
+        goal="PyTorch dtype (auto, float16, bfloat16, float32)"
     )
     device_map: str = Field(
         default="auto",
-        description="Device mapping strategy"
+        goal="Device mapping strategy"
     )
     quantization_config: Optional[Dict[str, Any]] = Field(
         default=None,
-        description="Quantization configuration"
+        goal="Quantization configuration"
     )
 
     # Additional parameters
     parameters: Dict[str, Any] = Field(
         default_factory=dict,
-        description="Provider-specific parameters"
+        goal="Provider-specific parameters"
     )
 ```
 
@@ -97,22 +101,22 @@ class ModelConfig(BaseModel):
 ```python
 from marsys.models import ModelConfig
 
-# OpenAI GPT-4
-gpt4_config = ModelConfig(
+# OpenAI GPT-5
+gpt5_config = ModelConfig(
     type="api",
-    provider="openai",
-    name="gpt-4",
+    provider="openrouter",
+    name="openai/gpt-5",
     temperature=0.7,
-    max_tokens=2000
+    max_tokens=12000
 )
 
-# Anthropic Claude
+# Anthropic Claude Sonnet 4.5
 claude_config = ModelConfig(
     type="api",
-    provider="anthropic",
-    name="claude-3-opus-20240229",
+    provider="openrouter",
+    name="anthropic/claude-sonnet-4.5",
     temperature=0.5,
-    max_tokens=4000
+    max_tokens=12000
 )
 
 # Local Llama 2
@@ -306,11 +310,11 @@ class BaseAPIModel:
 
 | Provider | Models | Environment Variable |
 |----------|--------|---------------------|
-| `openai` | gpt-4, gpt-3.5-turbo | `OPENAI_API_KEY` |
-| `anthropic` | claude-3-opus, claude-3-sonnet | `ANTHROPIC_API_KEY` |
-| `google` | gemini-pro, gemini-ultra | `GOOGLE_API_KEY` |
-| `groq` | mixtral-8x7b, llama2-70b | `GROQ_API_KEY` |
-| `openrouter` | Various models | `OPENROUTER_API_KEY` |
+| `openrouter` | All major models | `OPENROUTER_API_KEY` |
+| `openai` | gpt-5, gpt-5-mini, gpt-5-chat, etc. | `OPENAI_API_KEY` |
+| `anthropic` | claude-haiku-4.5, claude-sonnet-4.5, etc. | `ANTHROPIC_API_KEY` |
+| `google` | gemini-2.5-pro, gemini-2.5-flash, etc. | `GOOGLE_API_KEY` |
+| `xai` | grok-4, grok-4-fast, grok-3, etc. | `XAI_API_KEY` |
 
 #### Methods
 
@@ -330,9 +334,10 @@ Execute API model.
 from marsys.models import BaseAPIModel
 
 model = BaseAPIModel(
-    provider="openai",
-    model_name="gpt-4",
-    temperature=0.7
+    provider="openrouter",
+    model_name="anthropic/claude-haiku-4.5",
+    temperature=0.7,
+    max_tokens=12000
 )
 
 response = await model.run(
@@ -390,8 +395,9 @@ from marsys.models import create_model, ModelConfig
 # Create from config
 config = ModelConfig(
     type="api",
-    provider="openai",
-    name="gpt-4"
+    provider="openrouter",
+    name="anthropic/claude-haiku-4.5",
+    max_tokens=12000
 )
 
 model = create_model(config)
@@ -493,10 +499,59 @@ async for chunk in model.stream(
 
 ## 🛡️ Error Handling
 
-### Model Errors
+### Automatic Retry for Server Errors
+
+!!! success "Built-in Resilience"
+    API adapters **automatically retry** transient server errors with exponential backoff. No manual retry needed!
+
+**Automatic Retry Behavior:**
+
+- **Max Retries**: 3 (total 4 attempts)
+- **Backoff**: 1s → 2s → 4s (exponential)
+- **Retryable Status Codes**:
+    - `500` - Internal Server Error
+    - `502` - Bad Gateway
+    - `503` - Service Unavailable
+    - `504` - Gateway Timeout
+    - `529` - Overloaded (Anthropic)
+    - `408` - Request Timeout (OpenRouter)
+    - `429` - Rate Limit (respects `retry-after` header)
+
+**Example:**
+```python
+from marsys.models import BaseAPIModel
+
+model = BaseAPIModel(
+    provider="openrouter",
+    model_name="anthropic/claude-sonnet-4.5",
+    api_key=api_key
+)
+
+# API adapter automatically retries server errors (500, 502, 503, etc.)
+# No manual retry logic needed!
+response = await model.arun(messages)
+
+# Logs will show retry attempts:
+# WARNING - Server error 503 from claude-sonnet-4.5. Retry 1/3 after 1.0s
+# WARNING - Server error 503 from claude-sonnet-4.5. Retry 2/3 after 2.0s
+# INFO - Request successful after 2 retries
+```
+
+**What Gets Retried Automatically:**
+
+| Provider | Retryable Errors | Non-Retryable Errors |
+|----------|------------------|----------------------|
+| **OpenRouter** | 408, 429, 502, 503, 500+ | 400, 401, 402, 403 |
+| **OpenAI** | 429, 500, 502, 503 | 400, 401, 404 |
+| **Anthropic** | 429, 500, 529 | 400, 401, 403, 413 |
+| **Google** | 429, 500, 503, 504 | 400, 403, 404 |
+
+### Manual Error Handling
+
+For errors that aren't automatically retried (client errors, quota issues, etc.):
 
 ```python
-from marsys.models.exceptions import (
+from marsys.agents.exceptions import (
     ModelError,
     ModelAPIError,
     ModelTimeoutError,
@@ -508,21 +563,51 @@ try:
     response = await model.run(messages)
 
 except ModelRateLimitError as e:
-    # Handle rate limiting
-    wait_time = e.retry_after or 60
-    await asyncio.sleep(wait_time)
+    # Rate limits are auto-retried, but if exhausted:
+    logger.error(f"Rate limit exceeded after {e.context.get('max_retries', 3)} retries")
+    if e.retry_after:
+        logger.info(f"Retry after {e.retry_after}s")
 
 except ModelTokenLimitError as e:
-    # Reduce input size
+    # Token limit requires reducing input
+    logger.warning(f"Token limit exceeded: {e.message}")
     messages = truncate_messages(messages, e.limit)
-
-except ModelTimeoutError as e:
-    # Handle timeout
-    logger.error(f"Model timeout: {e}")
+    response = await model.run(messages)
 
 except ModelAPIError as e:
-    # Handle API errors
-    logger.error(f"API error: {e.status_code} - {e.message}")
+    # Check if it's a server error (already auto-retried)
+    if e.status_code and e.status_code >= 500:
+        logger.error(f"Server error persisted after retries: {e.message}")
+    else:
+        # Client error (400-level)
+        logger.error(f"Client error: {e.status_code} - {e.message}")
+        # Handle based on error classification
+        if e.classification == "invalid_request":
+            # Fix request and retry
+            pass
+        elif e.classification == "insufficient_credits":
+            # Handle quota
+            pass
+```
+
+### Error Classification
+
+All `ModelAPIError` instances include classification:
+
+```python
+except ModelAPIError as e:
+    print(f"Error Code: {e.error_code}")
+    print(f"Classification: {e.classification}")
+    print(f"Is Retryable: {e.is_retryable}")
+    print(f"Retry After: {e.retry_after}s")
+    print(f"Suggested Action: {e.suggested_action}")
+
+    # Example output for OpenRouter 503:
+    # Error Code: MODEL_API_SERVICE_UNAVAILABLE_ERROR
+    # Classification: service_unavailable
+    # Is Retryable: True
+    # Retry After: 10s
+    # Suggested Action: Service temporarily unavailable. Please try again later.
 ```
 
 ## 📊 Usage Tracking
@@ -559,17 +644,17 @@ from marsys.models import ModelConfig
 
 config = ModelConfig(
     type="api",
-    provider="openai",
-    name=os.getenv("MODEL_NAME", "gpt-4"),
+    provider="openrouter",
+    name=os.getenv("MODEL_NAME", "anthropic/claude-haiku-4.5"),
     temperature=float(os.getenv("MODEL_TEMPERATURE", "0.7")),
-    max_tokens=int(os.getenv("MAX_TOKENS", "2000"))
+    max_tokens=int(os.getenv("MAX_TOKENS", "12000"))
 )
 
 # ❌ BAD - Hardcoded values
 config = ModelConfig(
     type="api",
-    provider="openai",
-    name="gpt-4",
+    provider="openrouter",
+    name="anthropic/claude-haiku-4.5",
     api_key="sk-..."  # Never hardcode!
 )
 ```

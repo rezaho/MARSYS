@@ -436,7 +436,8 @@ class UserNodeHandler:
                     "interaction_id": interaction.interaction_id
                 },
                 next_agent=interaction.resume_agent,
-                success=True
+                success=True,
+                metadata={"clear_error_context": True}  # Signal to clear retry error context
             )
             
         except asyncio.TimeoutError:

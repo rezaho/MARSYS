@@ -517,7 +517,7 @@ def execute_preview_saved_context(
         return {"error": "Context preview not available"}
     
     try:
-        messages = agent.memory.retrieve_all()
+        messages = agent.memory.get_messages()
         preview = agent._context_selector.get_preview(messages)
         
         result = {"preview": preview}

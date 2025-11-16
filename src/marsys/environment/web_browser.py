@@ -1,5 +1,6 @@
 ## Description of function calling definitions for each method in the class
 import asyncio
+import functools
 import io
 import json
 import logging
@@ -10,7 +11,7 @@ import re
 import tempfile
 import time
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Tuple, TypedDict, Union
+from typing import TYPE_CHECKING, Any, Dict, List, Optional, Tuple, TypedDict, Union
 
 from PIL import Image as PILImage
 from PIL import ImageDraw, ImageFont
@@ -18,12 +19,16 @@ from playwright.async_api import BrowserContext, Page, async_playwright
 
 # Import framework exceptions
 from marsys.agents.exceptions import (
+    ActionValidationError,
+    BrowserConnectionError,
     BrowserError,
     BrowserNotInitializedError,
-    BrowserConnectionError,
     ToolExecutionError,
-    ActionValidationError
 )
+
+# Import ToolResponse for multimodal returns
+if TYPE_CHECKING:
+    from marsys.environment.tool_response import ToolResponse
 
 # Import BeautifulSoup and markdownify if available
 try:
@@ -41,14 +46,80 @@ import logging
 import re
 import tempfile
 from pathlib import Path
-from bs4 import BeautifulSoup, Comment
+
 import markdownify
+from bs4 import BeautifulSoup, Comment
 
 # Build the absolute path to the assets directory (assuming the repo structure provided)
 CURRENT_DIR = os.path.dirname(os.path.abspath(__file__))
 ASSETS_DIR = os.path.join(CURRENT_DIR, "..", "assets")
 
 logger = logging.getLogger(__name__)
+
+##############################################
+###   Download Detection Decorator        ###
+##############################################
+
+def check_download(timeout_ms: int = 500):
+    """
+    Decorator to check for downloads after browser action execution.
+
+    This decorator wraps BrowserTool methods to automatically detect if a file download
+    was triggered by the action (e.g., clicking a PDF link, pressing Enter on a download button).
+
+    If a download is detected within the timeout period:
+    - Returns a ToolResponse with the file path and download message
+    - Informs the agent that the action triggered a download
+
+    If no download occurs:
+    - Returns the original method result unchanged
+
+    Args:
+        timeout_ms: Milliseconds to wait for a download event (default: 500ms)
+
+    Usage:
+        @check_download(timeout_ms=500)
+        async def mouse_click(self, x, y, ...):
+            # Original implementation
+            ...
+    """
+    def decorator(func):
+        @functools.wraps(func)
+        async def wrapper(self, *args, **kwargs):
+            # Execute the original method
+            result = await func(self, *args, **kwargs)
+
+            # Check if download was triggered
+            download_info = await self._check_for_download(timeout_ms)
+
+            if download_info:
+                from marsys.environment.tool_response import ToolResponse, ToolResponseContent
+
+                # Build download message
+                action_name = func.__name__
+                download_msg = (
+                    f"Action '{action_name}' triggered a file download. "
+                    f"File '{download_info['filename']}' has been downloaded to: {download_info['path']}"
+                )
+
+                # Return ToolResponse with download info
+                return ToolResponse(
+                    content=[
+                        ToolResponseContent(text=download_msg)
+                    ],
+                    metadata={
+                        "download_triggered": True,
+                        "file_path": download_info['path'],
+                        "filename": download_info['filename'],
+                        "original_action": action_name
+                    }
+                )
+
+            # No download - return original result
+            return result
+        return wrapper
+    return decorator
+
 ##############################################
 ###   Helper Functions for Browser Tool   ###
 ##############################################
@@ -119,63 +190,74 @@ def find_label_position_with_masking(
     if global_mask.shape != (image_height, image_width):
         raise ActionValidationError(
             f"Mask shape {global_mask.shape} doesn't match image size ({image_height}, {image_width})",
-            action_name="apply_mask",
+            action="apply_mask",
             invalid_params={"mask_shape": global_mask.shape, "expected_shape": (image_height, image_width)}
         )
     
-    # Create hollow rectangle mask around the bbox with padding
-    # This represents the search area for label placement
-    search_x1 = max(0, x1 - padding)
-    search_y1 = max(0, y1 - padding)
-    search_x2 = min(image_width, x2 + padding)
-    search_y2 = min(image_height, y2 + padding)
-    
-    # Create the hollow rectangle mask (1=valid for label, 0=invalid)
-    hollow_mask = np.ones((image_height, image_width), dtype=np.uint8)
-    
-    # Set the bbox area to 0 (invalid for label placement)
-    hollow_mask[y1:y2, x1:x2] = 0
-    
-    # Only consider the search area around the bbox
-    search_mask = np.zeros((image_height, image_width), dtype=np.uint8)
-    search_mask[search_y1:search_y2, search_x1:search_x2] = 1
-    
-    # Combine hollow mask with search area
-    hollow_mask = hollow_mask & search_mask
-    
-    # Intersect with global occupancy mask to find actually available areas
-    available_mask = global_mask & hollow_mask
-    
-    # Define search priority order: above, below, left, right of bbox
+    # Create mask for collision detection:
+    # - global_mask tracks occupied areas (bboxes and previously placed labels)
+    # - We only need to exclude the current bbox itself from label placement
+    # - No need for search_mask restriction - let labels be placed anywhere that's free
+
+    # Create a mask that excludes only the current bbox
+    bbox_exclusion_mask = np.ones((image_height, image_width), dtype=np.uint8)
+    bbox_exclusion_mask[y1:y2, x1:x2] = 0  # Exclude current bbox
+
+    # Combine with global occupancy mask
+    available_mask = global_mask & bbox_exclusion_mask
+
+    # Simple priority order:
+    # 1. Top-left (above bbox, left-aligned)
+    # 2. Left-center (left of bbox, vertically centered)
+    # 3. Bottom-left (below bbox, left-aligned)
+    # 4. Top-right (above bbox, right-aligned)
+    # 5. Right-center (right of bbox, vertically centered)
+    # 6. Bottom-right (below bbox, right-aligned)
+    # 7. Fallback: center-top or center-left
+
     search_positions = []
-    
-    # Above the bbox (label bottom should be at least label_margin pixels above bbox top)
-    above_y_end = max(0, y1 - text_height - label_margin)
-    if above_y_end >= search_y1:
-        for y in range(above_y_end, max(0, y1 - text_height - padding), -1):
-            for x in range(max(0, x1 - padding), min(image_width - text_width, x2 + padding)):
-                search_positions.append((x, y, 'above'))
-    
-    # Below the bbox (label top should be at least label_margin pixels below bbox bottom)
-    below_y_start = min(image_height - text_height, y2 + label_margin)
-    if below_y_start < search_y2 - text_height:
-        for y in range(below_y_start, min(image_height - text_height, search_y2)):
-            for x in range(max(0, x1 - padding), min(image_width - text_width, x2 + padding)):
-                search_positions.append((x, y, 'below'))
-    
-    # Left of the bbox (label right should be at least label_margin pixels left of bbox left)
-    left_x_end = max(0, x1 - text_width - label_margin)
-    if left_x_end >= search_x1:
-        for x in range(left_x_end, max(0, x1 - text_width - padding), -1):
-            for y in range(max(0, y1 - padding), min(image_height - text_height, y2 + padding)):
-                search_positions.append((x, y, 'left'))
-    
-    # Right of the bbox (label left should be at least label_margin pixels right of bbox right)
-    right_x_start = min(image_width - text_width, x2 + label_margin)
-    if right_x_start < search_x2 - text_width:
-        for x in range(right_x_start, min(image_width - text_width, search_x2)):
-            for y in range(max(0, y1 - padding), min(image_height - text_height, y2 + padding)):
-                search_positions.append((x, y, 'right'))
+
+    # Calculate vertical center for centered positions
+    y_center = (y1 + y2) // 2 - text_height // 2
+    y_center = max(0, min(y_center, image_height - text_height))
+
+    # 1. Top-left: above bbox, aligned with left edge
+    top_left_y = y1 - text_height - label_margin
+    if top_left_y >= 0:
+        search_positions.append((x1, top_left_y, 'top_left'))
+
+    # 2. Left-center: left of bbox, vertically centered
+    left_center_x = x1 - text_width - label_margin
+    if left_center_x >= 0:
+        search_positions.append((left_center_x, y_center, 'left_center'))
+
+    # 3. Bottom-left: below bbox, aligned with left edge
+    bottom_left_y = y2 + label_margin
+    if bottom_left_y + text_height <= image_height:
+        search_positions.append((x1, bottom_left_y, 'bottom_left'))
+
+    # 4. Top-right: above bbox, aligned with right edge
+    if top_left_y >= 0 and x2 - text_width >= 0:
+        search_positions.append((x2 - text_width, top_left_y, 'top_right'))
+
+    # 5. Right-center: right of bbox, vertically centered
+    right_center_x = x2 + label_margin
+    if right_center_x + text_width <= image_width:
+        search_positions.append((right_center_x, y_center, 'right_center'))
+
+    # 6. Bottom-right: below bbox, aligned with right edge
+    if bottom_left_y + text_height <= image_height and x2 - text_width >= 0:
+        search_positions.append((x2 - text_width, bottom_left_y, 'bottom_right'))
+
+    # 7. Center-top: above bbox, horizontally centered
+    x_center = (x1 + x2) // 2 - text_width // 2
+    x_center = max(0, min(x_center, image_width - text_width))
+    if top_left_y >= 0:
+        search_positions.append((x_center, top_left_y, 'center_top'))
+
+    # 8. Center-left: left of bbox, at top of bbox
+    if left_center_x >= 0:
+        search_positions.append((left_center_x, y1, 'center_left'))
     
     # Find the best position where the label rectangle fits entirely in available area
     best_position = None
@@ -194,19 +276,10 @@ def find_label_position_with_masking(
             best_position = (label_x, label_y)
             break
     
-    # Fallback: if no perfect position found, use a position near the bbox
+    # Fallback: if no perfect position found, use first search position that fits in bounds
     if best_position is None:
-        # Try simple fallback positions with proper spacing
-        fallback_positions = [
-            (x1, max(0, y1 - text_height - label_margin)),  # Above with margin
-            (x1, min(image_height - text_height, y2 + label_margin)),  # Below with margin
-            (max(0, x1 - text_width - label_margin), y1),  # Left with margin
-            (min(image_width - text_width, x2 + label_margin), y1),  # Right with margin
-            (x1, y1)  # Last resort: overlap with bbox
-        ]
-        
-        for fallback_x, fallback_y in fallback_positions:
-            if (0 <= fallback_x <= image_width - text_width and 
+        for fallback_x, fallback_y, direction in search_positions:
+            if (0 <= fallback_x <= image_width - text_width and
                 0 <= fallback_y <= image_height - text_height):
                 best_position = (fallback_x, fallback_y)
                 break
@@ -609,7 +682,7 @@ async def highlight_interactive_elements(
     if not (output_image or output_details):
         raise ActionValidationError(
             "At least one of output_image or output_details must be True.",
-            action_name="highlight_elements",
+            action="highlight_elements",
             invalid_params={"output_image": output_image, "output_details": output_details}
         )
 
@@ -1049,7 +1122,7 @@ def resolve_color(color_name_or_hex: str) -> str:
         return color_name_or_hex
     raise ActionValidationError(
         f"Unknown color '{color_name_or_hex}'. Must be a valid hex code or one of {list(DEFAULT_COLOR_MAP.keys())}.",
-        action_name="get_color_hex",
+        action="get_color_hex",
         invalid_params={"color": color_name_or_hex, "valid_colors": list(DEFAULT_COLOR_MAP.keys())}
     )
 
@@ -1658,9 +1731,11 @@ FN_WEB_MOUSE_RIGHT_CLICK: ToolUseSchema = {
 FN_WEB_KEYBOARD_TYPE: ToolUseSchema = {
     "type": "function",
     "function": {
-        "name": "keyboard_type",
+        "name": "type",
         "description": (
-            "Uses the Playwright library's keyboard API to type the provided text into the element that currently has focus. "
+            "Type regular text (letters, numbers, punctuation) into the currently focused element. "
+            "Use this for typing words, sentences, URLs, or any text content. "
+            "For special keys like Enter, Escape, Tab, or arrow keys, use keyboard_press instead. "
             "An optional delay between keystrokes can be specified to simulate natural typing."
         ),
         "parameters": {
@@ -1690,9 +1765,12 @@ FN_WEB_KEYBOARD_PRESS: ToolUseSchema = {
     "function": {
         "name": "keyboard_press",
         "description": (
-            "Uses the Playwright keyboard API to press a specified special key (e.g., 'Enter', 'Escape', etc.) on the page. "
-            "Ensure that the key is one of the supported keys: 'Enter', 'Tab', 'Escape', 'ArrowUp', 'ArrowDown', 'ArrowLeft', "
-            "'ArrowRight', 'Backspace', 'Delete', 'Home', 'End', 'PageUp', 'PageDown', 'Insert', 'Meta', 'Shift', 'Control', 'Alt'."
+            "Press special keyboard keys (NOT for typing text). "
+            "Use this for control keys like Enter, Tab, Escape, arrow keys (ArrowUp, ArrowDown, ArrowLeft, ArrowRight), "
+            "Backspace, Delete, Home, End, PageUp, PageDown, and modifier keys (Shift, Control, Alt, Meta). "
+            "For typing regular text (letters, numbers, words), use the 'type' method instead. "
+            "Supported keys: 'Enter', 'Tab', 'Escape', 'ArrowUp', 'ArrowDown', 'ArrowLeft', 'ArrowRight', "
+            "'Backspace', 'Delete', 'Home', 'End', 'PageUp', 'PageDown', 'Insert', 'Meta', 'Shift', 'Control', 'Alt'."
         ),
         "parameters": {
             "type": "object",
@@ -2038,6 +2116,81 @@ class BrowserTool:
         # History to store the reasoning chains, actions, screenshots, and outputs
         self.history: List[Dict[str, Any]] = []
 
+        # Global download detection infrastructure
+        self._download_queue: asyncio.Queue = asyncio.Queue()
+        self._setup_global_download_listener()
+
+    def _setup_global_download_listener(self):
+        """
+        Set up a persistent global download listener that captures ALL downloads.
+
+        This listener is registered once during initialization and persists across
+        all browser actions. Downloads are queued for methods to consume.
+        """
+        async def on_download(download):
+            await self._download_queue.put(download)
+
+        # Register persistent download listener
+        self.page.on("download", on_download)
+
+    async def _check_for_download(self, timeout_ms: int = 500) -> Optional[Dict[str, str]]:
+        """
+        Check if a download was triggered by the last action.
+
+        This method waits for a download event for up to timeout_ms milliseconds.
+        If a download occurs, it saves the file and returns download information.
+
+        Args:
+            timeout_ms: Milliseconds to wait for a download event
+
+        Returns:
+            Dictionary with 'filename' and 'path' if download occurred, None otherwise
+        """
+        try:
+            # Wait for download event with timeout
+            download = await asyncio.wait_for(
+                self._download_queue.get(),
+                timeout=timeout_ms / 1000.0
+            )
+
+            # Save the download
+            filename = download.suggested_filename
+            file_path = os.path.join(self.download_path, filename)
+            await download.save_as(file_path)
+
+            return {"filename": filename, "path": file_path}
+
+        except asyncio.TimeoutError:
+            # No download triggered - this is normal for most actions
+            return None
+
+    async def _take_screenshot_without_blur(self) -> bytes:
+        """
+        Take a screenshot using Chrome DevTools Protocol (CDP) to avoid triggering blur events.
+
+        Standard page.screenshot() can trigger blur/focus events that close dropdowns, modals,
+        and other dynamic UI elements. Using CDP directly bypasses this issue.
+
+        Returns:
+            Screenshot bytes (PNG format)
+        """
+        try:
+            # Use CDP session to capture screenshot without affecting page state
+            client = await self.page.context.new_cdp_session(self.page)
+            result = await client.send('Page.captureScreenshot', {
+                'format': 'png',
+                'captureBeyondViewport': False
+            })
+            await client.detach()
+
+            # Decode base64 screenshot data
+            import base64
+            return base64.b64decode(result['data'])
+        except Exception as e:
+            # Fallback to standard screenshot if CDP fails
+            logger.warning(f"CDP screenshot failed, falling back to standard method: {e}")
+            return await self.page.screenshot()
+
     @classmethod
     async def create(
         cls,
@@ -2107,18 +2260,50 @@ class BrowserTool:
         Returns:
             BrowserTool: An instance with a page navigated to a default URL (https://google.com).
         """
+        # Set up directories: default to current working directory + tmp/
         if temp_dir is None:
-            temp_dir = tempfile.gettempdir()
-        
+            temp_dir = os.path.join(os.getcwd(), "tmp")
+        os.makedirs(temp_dir, exist_ok=True)
+
+        # Set up downloads directory
+        if downloads_path is None:
+            downloads_path = os.path.join(temp_dir, "downloads")
+        os.makedirs(downloads_path, exist_ok=True)
+
+        # Set up screenshots directory
+        if screenshot_dir is None:
+            screenshot_dir = os.path.join(temp_dir, "screenshots")
+        os.makedirs(screenshot_dir, exist_ok=True)
+
         # Use browser_channel if provided, otherwise use default_browser
         channel = browser_channel or default_browser
-        
+
         playwright = await async_playwright().start()
-        
-        # Set up launch options with enhanced configuration
-        launch_options = {
+
+        # Create temporary user data directory for persistent context
+        user_data_dir = Path(tempfile.mkdtemp(prefix="pw-user-data-"))
+
+        # Seed Chromium Preferences to force PDF downloads and set download path
+        prefs_path = user_data_dir / "Default" / "Preferences"
+        prefs_path.parent.mkdir(parents=True, exist_ok=True)
+        prefs = {
+            "plugins": {
+                "always_open_pdf_externally": True
+            },
+            "download": {
+                "default_directory": downloads_path,
+                "prompt_for_download": False
+            }
+        }
+        prefs_path.write_text(json.dumps(prefs))
+
+        # Set up persistent context options
+        context_kwargs = {
+            "user_data_dir": str(user_data_dir),
             "headless": headless,
-            # Add args to speed up browser and disable font loading
+            "accept_downloads": True,
+            "java_script_enabled": True,
+            "bypass_csp": True,  # Bypass Content Security Policy for better compatibility
             "args": [
                 "--disable-web-security",
                 "--disable-features=VizDisplayCompositor",
@@ -2131,83 +2316,99 @@ class BrowserTool:
                 "--disable-dev-shm-usage",
             ]
         }
+
+        # Add channel if specified
         if channel:
-            launch_options["channel"] = channel
-        
-        browser = await playwright.chromium.launch(**launch_options)
-        
-        # Set up context options
-        context_kwargs = {
-            "accept_downloads": True,
-            "java_script_enabled": True,
-            "bypass_csp": True,  # Bypass Content Security Policy for better compatibility
-        }
-        
+            context_kwargs["channel"] = channel
+
         # Handle viewport settings
         if viewport:
             context_kwargs["viewport"] = viewport
         else:
             context_kwargs["viewport"] = {"width": viewport_width, "height": viewport_height}
-        
-        # Enable downloads - Playwright handles downloads automatically to a temp directory
-        # We can't set a custom downloads path in context creation, but downloads are accessible via the Download API
-        context_kwargs["accept_downloads"] = True
-        
-        # Create downloads directory for manual file operations if needed
-        if downloads_path:
-            os.makedirs(downloads_path, exist_ok=True)
-        elif temp_dir:
-            downloads_dir = os.path.join(temp_dir, "downloads")
-            os.makedirs(downloads_dir, exist_ok=True)
-        
+
         for attempt in range(3):
             try:
+                # Use launch_persistent_context instead of launch + new_context
+                # This returns a context that acts as both browser and context
                 context = await asyncio.wait_for(
-                    browser.new_context(**context_kwargs), timeout=1.5
+                    playwright.chromium.launch_persistent_context(**context_kwargs), timeout=3.0
                 )
-                
+
                 # Set default timeouts for the context
                 if timeout:
                     context.set_default_navigation_timeout(timeout)
                     context.set_default_timeout(timeout)
-                
-                page = await asyncio.wait_for(context.new_page(), timeout=0.5)
+
+                # Persistent context often starts with a default page, use it instead of creating a new one
+                existing_pages = context.pages
+                if existing_pages:
+                    page = existing_pages[0]
+                else:
+                    page = await asyncio.wait_for(context.new_page(), timeout=0.5)
                 break
             except asyncio.TimeoutError:
                 if attempt == 2:
                     raise TimeoutError("BrowserTool creation timed out.")
-        
-        tool = cls(playwright, browser, context, page, temp_dir, screenshot_dir, downloads_path)
+
+        # For persistent context, browser is None (context acts as both)
+        tool = cls(playwright, None, context, page, temp_dir, screenshot_dir, downloads_path)
         
         # Don't navigate to default page automatically - let the caller decide
         return tool
 
+    @check_download(timeout_ms=1000)
     async def goto(
         self, url: str, reasoning: Optional[str] = None, timeout: Optional[int] = None
-    ) -> None:
+    ) -> str:
         """
         Navigate the page to a given URL.
+
+        If the URL points to a downloadable file (e.g., PDF), the file will be downloaded automatically
+        and the download path will be returned. Otherwise, navigates to the page normally.
 
         Parameters:
             url (str): The URL to navigate to.
             reasoning (Optional[str]): The reasoning chain for this navigation. Defaults to empty string.
             timeout (Optional[int]): Optional timeout in milliseconds.
+
+        Returns:
+            str: File path if download was triggered, otherwise success message.
         """
         r = reasoning or ""
-        await self.page.goto(url, timeout=timeout)
+
         try:
-            await self.page.wait_for_load_state("networkidle", timeout=5000)
-        except Exception:
-            await self.page.wait_for_timeout(3000)
-        title = await self.page.title()
-        self.history.append(
-            {
-                "action": "goto",
-                "reasoning": r,
-                "url": url,
-                "output": title,
-            }
-        )
+            # Navigate to URL
+            await self.page.goto(url, timeout=timeout)
+            try:
+                await self.page.wait_for_load_state("networkidle", timeout=5000)
+            except Exception:
+                await self.page.wait_for_timeout(3000)
+
+            # Regular navigation
+            await self._reinject_mouse_helper()
+
+            title = await self.page.title()
+            self.history.append(
+                {
+                    "action": "goto",
+                    "reasoning": r,
+                    "url": url,
+                    "output": title,
+                }
+            )
+            return f"Navigated to: {url}"
+
+        except Exception as e:
+            # Handle ERR_ABORTED (download triggered before page load)
+            if "ERR_ABORTED" in str(e):
+                # Wait a bit longer for download event to be captured by global listener
+                await self.page.wait_for_timeout(500)
+                # The decorator will check for download after this method returns
+                # Return a placeholder message - decorator will replace with download info if found
+                return "Navigation aborted (download may have been triggered)"
+            else:
+                raise
 
     async def go_back(
         self, reasoning: Optional[str] = None, timeout: Optional[int] = None
@@ -2221,6 +2422,10 @@ class BrowserTool:
         """
         r = reasoning or ""
         await self.page.go_back(timeout=timeout)
+
+        # Reinject mouse helper after navigation
+        await self._reinject_mouse_helper()
+
         title = await self.page.title()
         self.history.append(
             {
@@ -2274,6 +2479,8 @@ class BrowserTool:
         JavaScript's window.scrollBy() function. The scroll is immediate and does not simulate
         natural mouse wheel scrolling.
 
+        Note: Does NOT work with plugins (e.g., PDFs), embedded documents, or scrollable containers.
+
         Parameters:
             distance (int): The number of pixels to scroll up. Must be a positive integer.
             reasoning (Optional[str]): The reasoning chain for this action. Defaults to empty string.
@@ -2299,6 +2506,8 @@ class BrowserTool:
         JavaScript's window.scrollBy() function. The scroll is immediate and does not simulate
         natural mouse wheel scrolling.
 
+        Note: Does NOT work with plugins (e.g., PDFs), embedded documents, or scrollable containers.
+
         Parameters:
             distance (int): The number of pixels to scroll down. Must be a positive integer.
             reasoning (Optional[str]): The reasoning chain for this action. Defaults to empty string.
@@ -2318,81 +2527,46 @@ class BrowserTool:
 
     async def mouse_scroll(
         self,
-        x: int = 0,
-        y: int = 0,
+        delta_x: int = 0,
+        delta_y: int = 0,
         reasoning: Optional[str] = None,
     ) -> None:
         """
         Scroll the page horizontally and/or vertically using the mouse wheel.
 
-        This method accepts both horizontal (x) and vertical (y) scroll offsets. A positive y value scrolls
+        This method accepts both horizontal (x) and vertical (y) scroll offsets in PIXELS. A positive y value scrolls
         downwards while a negative y value scrolls upwards. Similarly, a positive x value scrolls to the right,
         and a negative x value scrolls to the left.
 
-        The method uses the mouse wheel action and waits until the page's scroll position reaches the expected
-        offsets based on the initial position and the provided x and y values.
+        IMPORTANT - Units and Typical Values:
+        - delta_x and delta_y are specified in PIXELS (not lines or other units)
+        - Recommended scroll amounts for typical use cases:
+          * Small scroll (1-2 scroll wheel clicks): 200-500 pixels
+          * Medium scroll (partial page): 600-1000 pixels
+          * Large scroll (near full page): 1200-2000 pixels
+        - Examples: delta_y=800 scrolls down moderately, delta_y=-1500 scrolls up substantially
 
         Parameters:
-            x (int): The horizontal scroll offset. Set to a negative value to scroll left, and positive to scroll right.
-            y (int): The vertical scroll offset. Set to a negative value to scroll up, and positive to scroll down.
-            reasoning (Optional[str]): A description of the reasoning for this scroll action. Defaults to an empty string.
+            delta_x (int): Pixels to scroll horizontally. Positive values scroll right,
+                          negative values scroll left. Typical values: 200-2000.
+            delta_y (int): Pixels to scroll vertically. Positive values scroll down,
+                          negative values scroll up. Typical values: 200-2000.
+            reasoning (Optional[str]): A description of the reasoning for this scroll action.
+                                      Defaults to an empty string.
 
         Returns:
             None
         """
         r = reasoning or ""
 
-        # Get the initial scroll positions.
-        initial_x = await self.page.evaluate("() => window.scrollX")
-        initial_y = await self.page.evaluate("() => window.scrollY")
-
-        # Calculate expected positions, clamping horizontal scroll to at least 0 and at most the maximum scrollable width.
-        max_x = await self.page.evaluate(
-            "() => document.body.scrollWidth - window.innerWidth"
-        )
-        expected_x = initial_x + x
-        if x < 0:
-            expected_x = max(0, expected_x)
-        else:
-            expected_x = min(expected_x, max_x)
-
-        # Calculate expected vertical position (similarly, clamp to a minimum of 0).
-        max_y = await self.page.evaluate(
-            "() => document.body.scrollHeight - window.innerHeight"
-        )
-        expected_y = initial_y + y
-        if y < 0:
-            expected_y = max(0, expected_y)
-        else:
-            expected_y = min(expected_y, max_y)
-
-        # Perform the scroll action.
-        await self.page.mouse.wheel(x, y)
-
-        # Poll until the scroll positions reach (or surpass) the expected positions.
-        while True:
-            current_x = await self.page.evaluate("() => window.scrollX")
-            current_y = await self.page.evaluate("() => window.scrollY")
-            x_done = (
-                (x >= 0 and current_x >= expected_x)
-                or (x < 0 and current_x <= expected_x)
-                or (x == 0)
-            )
-            y_done = (
-                (y >= 0 and current_y >= expected_y)
-                or (y < 0 and current_y <= expected_y)
-                or (y == 0)
-            )
-            if x_done and y_done:
-                break
-            await self.page.wait_for_timeout(100)  # wait 100ms before rechecking
+        await self.page.mouse.wheel(delta_x, delta_y)
 
         self.history.append(
             {
                 "action": "mouse_scroll",
                 "reasoning": r,
-                "x": x,
-                "y": y,
+                "delta_x": delta_x,
+                "delta_y": delta_y
             }
         )
 
@@ -2418,14 +2592,14 @@ class BrowserTool:
         if selector and role:
             raise ActionValidationError(
                 "Only one of 'selector' or 'role' should be provided, not both.",
-                action_name="click",
+                action="click",
                 invalid_params={"selector": selector, "role": role}
             )
 
         if not selector and not role:
             raise ActionValidationError(
                 "Either 'selector' or 'role' must be provided.",
-                action_name=self.name if hasattr(self, 'name') else 'browser_action',
+                action=self.name if hasattr(self, 'name') else 'browser_action',
                 invalid_params={"selector": None, "role": None}
             )
 
@@ -2443,6 +2617,7 @@ class BrowserTool:
             }
         )
 
+    @check_download(timeout_ms=500)
     async def mouse_click(
         self,
         x: int,
@@ -2465,15 +2640,22 @@ class BrowserTool:
             None
         """
         r = reasoning or ""
-        
+
         # Use smooth movement if requested
         if use_smooth_movement:
             await self.mouse_move_smooth(
                 target=(x, y),
                 reasoning=f"Smooth movement before click: {r}"
             )
-        
+
         await self.page.mouse.click(x, y)
+
+        # Update visual mouse helper
+        try:
+            await self.page.evaluate(f"window.__updateMouseHelper?.({x}, {y})")
+        except Exception:
+            pass
+
         self.history.append(
             {
                 "action": "mouse_click",
@@ -2484,6 +2666,7 @@ class BrowserTool:
             }
         )
 
+    @check_download(timeout_ms=500)
     async def mouse_dbclick(
         self,
         x: int,
@@ -2506,18 +2689,79 @@ class BrowserTool:
             None
         """
         r = reasoning or ""
-        
+
         # Use smooth movement if requested
         if use_smooth_movement:
             await self.mouse_move_smooth(
                 target=(x, y),
                 reasoning=f"Smooth movement before double click: {r}"
             )
-        
-        await self.page.mouse.dblclick(x, y, timeout=timeout)
+
+        # Note: page.mouse.dblclick() doesn't support timeout parameter
+        await self.page.mouse.dblclick(x, y)
+
+        # Update visual mouse helper
+        try:
+            await self.page.evaluate(f"window.__updateMouseHelper?.({x}, {y})")
+        except Exception:
+            pass
+
         self.history.append(
             {
                 "action": "mouse_dbclick",
+                "reasoning": r,
+                "x": x,
+                "y": y,
+                "use_smooth_movement": use_smooth_movement,
+            }
+        )
+
+    @check_download(timeout_ms=500)
+    async def mouse_triple_click(
+        self,
+        x: int,
+        y: int,
+        reasoning: Optional[str] = None,
+        timeout: Optional[int] = None,
+        use_smooth_movement: bool = False,
+    ) -> None:
+        """
+        Perform a triple click at the specified (x, y) coordinate on the page using the mouse.
+        Triple-clicking typically selects an entire paragraph or line of text, making it very
+        reliable for selecting all text in input fields.
+
+        Parameters:
+            x (int): The x-coordinate for the mouse triple click.
+            y (int): The y-coordinate for the mouse triple click.
+            reasoning (Optional[str]): The reasoning chain for this action. Defaults to empty string.
+            timeout (Optional[int]): Optional timeout in milliseconds for the triple click action.
+            use_smooth_movement (bool): If True, uses smooth human-like movement before triple clicking. Defaults to False.
+
+        Returns:
+            None
+        """
+        r = reasoning or ""
+
+        # Use smooth movement if requested
+        if use_smooth_movement:
+            await self.mouse_move_smooth(
+                target=(x, y),
+                reasoning=f"Smooth movement before triple click: {r}"
+            )
+
+        # Perform triple click using click_count parameter
+        # Note: page.mouse.click() doesn't support timeout parameter
+        await self.page.mouse.click(x, y, click_count=3)
+
+        # Update visual mouse helper
+        try:
+            await self.page.evaluate(f"window.__updateMouseHelper?.({x}, {y})")
+        except Exception:
+            pass
+
+        self.history.append(
+            {
+                "action": "mouse_triple_click",
                 "reasoning": r,
                 "x": x,
                 "y": y,
@@ -2547,15 +2791,23 @@ class BrowserTool:
             None
         """
         r = reasoning or ""
-        
+
         # Use smooth movement if requested
         if use_smooth_movement:
             await self.mouse_move_smooth(
                 target=(x, y),
                 reasoning=f"Smooth movement before right click: {r}"
             )
-        
-        await self.page.mouse.click(x, y, button="right", timeout=timeout)
+
+        # Note: page.mouse.click() doesn't support timeout parameter
+        await self.page.mouse.click(x, y, button="right")
+
+        # Update visual mouse helper
+        try:
+            await self.page.evaluate(f"window.__updateMouseHelper?.({x}, {y})")
+        except Exception:
+            pass
+
         self.history.append(
             {
                 "action": "mouse_right_click",
@@ -2566,6 +2818,84 @@ class BrowserTool:
             }
         )
 
+    async def mouse_down(
+        self,
+        x: int,
+        y: int,
+        reasoning: Optional[str] = None,
+        button: str = "left",
+    ) -> None:
+        """
+        Press mouse button down at the specified coordinates without releasing.
+
+        Used for drag operations: mouse_down → mouse_move → mouse_up.
+
+        Parameters:
+            x (int): The x-coordinate to press the mouse button.
+            y (int): The y-coordinate to press the mouse button.
+            reasoning (Optional[str]): The reasoning chain for this action.
+            button (str): Mouse button to press ("left", "right", "middle"). Defaults to "left".
+        """
+        r = reasoning or ""
+        await self.page.mouse.move(x, y, steps=5)
+        await self.page.mouse.down(button=button)
+
+        # Update visual mouse helper
+        try:
+            await self.page.evaluate(f"window.__updateMouseHelper?.({x}, {y}, true)")
+        except Exception:
+            pass
+
+        self.history.append(
+            {
+                "action": "mouse_down",
+                "reasoning": r,
+                "x": x,
+                "y": y,
+                "button": button,
+            }
+        )
+
+    async def mouse_up(
+        self,
+        x: int,
+        y: int,
+        reasoning: Optional[str] = None,
+        button: str = "left",
+    ) -> None:
+        """
+        Release mouse button at the specified coordinates.
+
+        Completes drag operations: mouse_down → mouse_move → mouse_up.
+        Automatically moves to (x, y) before releasing.
+
+        Parameters:
+            x (int): The x-coordinate to release the mouse button.
+            y (int): The y-coordinate to release the mouse button.
+            reasoning (Optional[str]): The reasoning chain for this action.
+            button (str): Mouse button to release ("left", "right", "middle"). Defaults to "left".
+        """
+        r = reasoning or ""
+        await self.page.mouse.move(x, y, steps=5)
+        await self.page.mouse.up(button=button)
+
+        # Update visual mouse helper
+        try:
+            await self.page.evaluate(f"window.__updateMouseHelper?.({x}, {y}, false)")
+        except Exception:
+            pass
+
+        self.history.append(
+            {
+                "action": "mouse_up",
+                "reasoning": r,
+                "x": x,
+                "y": y,
+                "button": button,
+            }
+        )
+
+    @check_download(timeout_ms=500)
     async def click(
         self,
         selector: Optional[str] = None,
@@ -2590,14 +2920,14 @@ class BrowserTool:
         if selector and role:
             raise ActionValidationError(
                 "Only one of 'selector' or 'role' should be provided, not both.",
-                action_name="click",
+                action="click",
                 invalid_params={"selector": selector, "role": role}
             )
 
         if not selector and not role:
             raise ActionValidationError(
                 "Either 'selector' or 'role' must be provided.",
-                action_name=self.name if hasattr(self, 'name') else 'browser_action',
+                action=self.name if hasattr(self, 'name') else 'browser_action',
                 invalid_params={"selector": None, "role": None}
             )
 
@@ -2618,7 +2948,7 @@ class BrowserTool:
         x: int,
         y: int,
         reasoning: Optional[str] = None,
-        timeout: Optional[int] = None,
+        steps: Optional[int] = None,
     ) -> None:
         """
         Move the mouse to the specified (x, y) coordinate on the page.
@@ -2629,21 +2959,201 @@ class BrowserTool:
             x (int): The x-coordinate to move the mouse to.
             y (int): The y-coordinate to move the mouse to.
             reasoning (Optional[str]): A description of the reasoning for this action.
-            timeout (Optional[int]): Optional timeout in milliseconds for the move action.
+            steps (Optional[int]): Number of intermediate mousemove events to send. Defaults to 1.
 
         Returns:
             None
         """
         r = reasoning or ""
-        await self.page.mouse.move(x, y, timeout=timeout)
+        if steps is not None:
+            await self.page.mouse.move(x, y, steps=steps)
+        else:
+            await self.page.mouse.move(x, y)
+
+        # Update visual mouse helper if enabled
+        try:
+            await self.page.evaluate(f"window.__updateMouseHelper?.({x}, {y})")
+        except Exception:
+            pass
+
         self.history.append(
             {
                 "action": "mouse_move",
                 "reasoning": r,
                 "x": x,
                 "y": y,
+                "steps": steps,
             }
         )
+
+    async def show_mouse_helper(self) -> None:
+        """
+        Enable visual mouse cursor overlay for debugging mouse movements.
+
+        This injects a realistic cursor icon that follows the mouse pointer,
+        switching between pointer and hand icons when the mouse button is pressed.
+        The helper automatically updates when using Playwright mouse methods (move, down, up, click).
+        """
+        # Load cursor images as base64
+        import base64
+
+        assets_dir = Path(__file__).parent.parent / "agents" / "custom_agents" / "assets"
+        cursor_path = assets_dir / "cursor.png"
+        hand_path = assets_dir / "hand-pointer.png"
+
+        # Read and encode images
+        with open(cursor_path, "rb") as f:
+            cursor_b64 = base64.b64encode(f.read()).decode("utf-8")
+        with open(hand_path, "rb") as f:
+            hand_b64 = base64.b64encode(f.read()).decode("utf-8")
+
+        mouse_helper_script = f"""
+        (() => {{
+            // Don't add multiple helpers
+            if (window.__playwrightMouseHelper) {{
+                return;
+            }}
+
+            const box = document.createElement('div');
+            box.classList.add('playwright-mouse-helper');
+
+            const cursorImg = 'data:image/png;base64,{cursor_b64}';
+            const handImg = 'data:image/png;base64,{hand_b64}';
+
+            // Create coordinate label
+            const coordLabel = document.createElement('div');
+            coordLabel.classList.add('playwright-mouse-coords');
+
+            const styleElement = document.createElement('style');
+            styleElement.innerHTML = `
+                .playwright-mouse-helper {{
+                    pointer-events: none;
+                    position: fixed;
+                    width: 23px;
+                    height: 23px;
+                    background-image: url('${{cursorImg}}');
+                    background-size: contain;
+                    background-repeat: no-repeat;
+                    z-index: 999999;
+                    transition: left 0.1s, top 0.1s, margin-left 0.1s;
+                    display: block;
+                    visibility: visible;
+                    margin-left: -3.5px;
+                }}
+                .playwright-mouse-helper.button-down {{
+                    background-image: url('${{handImg}}');
+                    margin-left: -7px;
+                }}
+                .playwright-mouse-coords {{
+                    pointer-events: none;
+                    position: fixed;
+                    font-family: monospace;
+                    font-size: 13px;
+                    background: rgba(0, 0, 0, 0.6);
+                    color: white;
+                    padding: 2px 6px;
+                    border-radius: 3px;
+                    z-index: 999999;
+                    white-space: nowrap;
+                    transition: left 0.1s, top 0.1s;
+                }}
+            `;
+            document.head.appendChild(styleElement);
+
+            // Initialize at center of viewport using pixel values
+            const centerX = window.innerWidth / 2;
+            const centerY = window.innerHeight / 2;
+            box.style.left = centerX + 'px';
+            box.style.top = centerY + 'px';
+            coordLabel.textContent = `(${{Math.round(centerX)}}, ${{Math.round(centerY)}})`;
+
+            document.body.appendChild(box);
+            document.body.appendChild(coordLabel);
+
+            // Position label after adding to DOM so we can measure it
+            const labelWidth = coordLabel.offsetWidth;
+            const rightEdgeThreshold = window.innerWidth - labelWidth - 30;
+            if (centerX > rightEdgeThreshold) {{
+                coordLabel.style.left = (centerX - labelWidth - 10) + 'px';
+            }} else {{
+                coordLabel.style.left = (centerX + 25) + 'px';
+            }}
+            coordLabel.style.top = (centerY - 5) + 'px';
+
+            // Store reference globally for programmatic updates
+            window.__playwrightMouseHelper = box;
+            window.__playwrightMouseCoords = coordLabel;
+
+            // Update helper function for programmatic use
+            window.__updateMouseHelper = (x, y, buttonDown) => {{
+                if (x !== undefined && y !== undefined) {{
+                    box.style.left = x + 'px';
+                    box.style.top = y + 'px';
+                    coordLabel.textContent = `(${{Math.round(x)}}, ${{Math.round(y)}})`;
+
+                    // Get actual label width after updating text
+                    const labelWidth = coordLabel.offsetWidth;
+                    const rightEdgeThreshold = window.innerWidth - labelWidth - 30;
+
+                    if (x > rightEdgeThreshold) {{
+                        // Position to the left of cursor (account for actual width + small gap)
+                        coordLabel.style.left = (x - labelWidth - 10) + 'px';
+                    }} else {{
+                        // Position to the right of cursor
+                        coordLabel.style.left = (x + 25) + 'px';
+                    }}
+                    coordLabel.style.top = (y - 5) + 'px';
+                }}
+                if (buttonDown === true) {{
+                    box.classList.add('button-down');
+                }} else if (buttonDown === false) {{
+                    box.classList.remove('button-down');
+                }}
+            }};
+
+            console.log('Mouse helper initialized at:', centerX, centerY);
+        }})();
+        """
+        await self.page.evaluate(mouse_helper_script)
+        print("✓ Mouse helper enabled - cursor should be visible in browser window")
+
+        # Store that helper is enabled and cache the script for reinjection
+        self._mouse_helper_enabled = True
+        self._mouse_helper_script = mouse_helper_script
+
+        # Set up automatic reinjection on page navigation events
+        if not hasattr(self, '_mouse_helper_listener_attached'):
+            def on_load_handler_sync(frame):
+                # Create task to handle async reinjection
+                import asyncio
+                if frame == self.page.main_frame:
+                    async def reinject():
+                        await self.page.wait_for_timeout(100)
+                        await self._reinject_mouse_helper()
+                        print("✓ Mouse helper reinjected after navigation")
+
+                    # Schedule the coroutine
+                    try:
+                        asyncio.create_task(reinject())
+                    except RuntimeError:
+                        # If no event loop, run in current context
+                        asyncio.ensure_future(reinject())
+
+            self.page.on("domcontentloaded", on_load_handler_sync)
+            self._mouse_helper_listener_attached = True
+            print("✓ Mouse helper event listener attached")
+
+    async def _reinject_mouse_helper(self) -> None:
+        """
+        Reinject mouse helper after page navigation if it was previously enabled.
+        Called automatically after goto, reload, go_back, go_forward.
+        """
+        if getattr(self, '_mouse_helper_enabled', False):
+            try:
+                await self.page.evaluate(self._mouse_helper_script)
+            except Exception:
+                # Silently fail - page might not be ready yet
+                pass
 
     async def mouse_move_smooth(
         self,
@@ -2699,17 +3209,20 @@ class BrowserTool:
         )
         return result
 
-    async def keyboard_type(
+    async def type(
         self,
         text: str,
         reasoning: Optional[str] = None,
         delay: Optional[int] = None,
     ) -> None:
         """
-        Type the provided text using the keyboard, sending the input to the element that currently has focus.
+        Type regular text (letters, numbers, punctuation) into the currently focused element.
+
+        Use this method for typing words, sentences, URLs, or any text content. For special keys like
+        Enter, Escape, Tab, or arrow keys, use keyboard_press instead.
 
         Parameters:
-            text (str): The text to type using the keyboard.
+            text (str): The text to type using the keyboard (letters, numbers, punctuation, etc.).
             reasoning (Optional[str]): A description of the reasoning behind this action. Defaults to an empty string.
             delay (Optional[int]): Optional delay (in milliseconds) between keystrokes for a more natural typing simulation.
 
@@ -2720,13 +3233,14 @@ class BrowserTool:
         await self.page.keyboard.type(text, delay=delay)
         self.history.append(
             {
-                "action": "keyboard_type",
+                "action": "type",
                 "reasoning": r,
                 "text": text,
                 "delay": delay,
             }
         )
 
+    @check_download(timeout_ms=500)
     async def keyboard_press(
         self,
         key: str,
@@ -2734,18 +3248,23 @@ class BrowserTool:
         delay: Optional[int] = None,
     ) -> None:
         """
-        Press a special keyboard key (such as 'Enter', 'Escape', etc.) on the page using the Playwright keyboard API.
+        Press special keyboard keys (NOT for typing text).
+
+        Use this method for control keys like Enter, Tab, Escape, arrow keys, Backspace, Delete, etc.
+        For typing regular text (letters, numbers, words), use the 'type' method instead.
 
         This method sends a key press event to the element that currently has focus (or globally if no specific element is focused).
         It validates that the provided key is one of the recognized special keys.
 
         Parameters:
-            key (str): The special key to press (e.g., "Enter", "Escape", "ArrowUp", etc.). Must be one of the allowed keys.
+            key (str): The special key to press (e.g., "Enter", "Escape", "ArrowUp", "PageDown", etc.).
+                      Must be one of: Enter, Tab, Escape, ArrowUp, ArrowDown, ArrowLeft, ArrowRight,
+                      Backspace, Delete, Home, End, PageUp, PageDown, Insert, Meta, Shift, Control, Alt.
             reasoning (Optional[str]): A description of the reasoning for this action. Defaults to an empty string.
             delay (Optional[int]): Optional delay (in milliseconds) before releasing the key, for a more natural simulation.
 
         Raises:
-            ValueError: If the provided key is not one of the recognized special keys.
+            ActionValidationError: If the provided key is not one of the recognized special keys.
 
         Returns:
             None
@@ -2773,7 +3292,7 @@ class BrowserTool:
         if key not in allowed_keys:
             raise ActionValidationError(
                 f"Special key '{key}' is not recognized. Allowed keys: {sorted(allowed_keys)}",
-                action_name="press_key",
+                action="press_key",
                 invalid_params={"key": key, "allowed_keys": sorted(allowed_keys)}
             )
 
@@ -2788,6 +3307,189 @@ class BrowserTool:
             }
         )
 
+    async def search_page(
+        self,
+        search_term: str,
+        reasoning: Optional[str] = None,
+    ) -> str:
+        """
+        Search for text on the current page and scroll to the first match.
+
+        Uses browser-specific search APIs to find text on the page:
+        - Chromium: Uses CDP (Chrome DevTools Protocol) to search including shadow DOM
+        - Firefox/WebKit: Uses JavaScript window.find() API
+
+        The first match will be scrolled into view. Call this method again to navigate to the next match.
+        Works for regular web pages and shadow DOM content.
+
+        Note: Does NOT work with PDF files. PDFs are automatically downloaded instead of displayed in browser.
+        Use file operation tools to search within downloaded PDF files.
+
+        Parameters:
+            search_term (str): The text to search for on the page (case-insensitive).
+            reasoning (Optional[str]): A description of why you're searching for this term.
+
+        Returns:
+            str: Confirmation message with search results (found/not found and match count for Chromium).
+        """
+        r = reasoning or ""
+
+        # Check if this is a continuation of previous search (same term)
+        is_same_search = (
+            hasattr(self, '_last_search_term') and
+            self._last_search_term == search_term
+        )
+
+        # Use JavaScript-based search with custom highlighting (works on all browsers)
+        result = await self.page.evaluate(
+            """(args) => {
+                const { query, isNext } = args;
+                const regex = new RegExp(query.replace(/[.*+?^${}()|[\\]\\\\]/g, '\\\\$&'), 'gi');
+
+                // If this is a new search, remove previous highlights and create new ones
+                if (!isNext) {
+                    // Remove previous highlights
+                    const existingHighlights = document.querySelectorAll('mark[data-pw-search]');
+                    existingHighlights.forEach(mark => {
+                        const parent = mark.parentNode;
+                        parent.replaceChild(document.createTextNode(mark.textContent), mark);
+                        parent.normalize();
+                    });
+
+                    // Find all text nodes containing the query
+                    const matches = [];
+                    const walker = document.createTreeWalker(
+                        document.body,
+                        NodeFilter.SHOW_TEXT,
+                        {
+                            acceptNode: (node) => {
+                                // Skip script, style, and already highlighted nodes
+                                if (node.parentElement.closest('script, style, noscript, mark[data-pw-search]')) {
+                                    return NodeFilter.FILTER_REJECT;
+                                }
+                                return regex.test(node.textContent) ? NodeFilter.FILTER_ACCEPT : NodeFilter.FILTER_REJECT;
+                            }
+                        },
+                        false
+                    );
+
+                    let node;
+                    while (node = walker.nextNode()) {
+                        matches.push(node);
+                    }
+
+                    if (matches.length === 0) {
+                        return { found: 0, current: 0 };
+                    }
+
+                    // Highlight all matches
+                    let markCounter = 0;
+                    matches.forEach((textNode) => {
+                        const text = textNode.textContent;
+                        const parent = textNode.parentNode;
+                        const fragment = document.createDocumentFragment();
+
+                        let lastIndex = 0;
+                        text.replace(regex, (match, offset) => {
+                            // Add text before match
+                            if (offset > lastIndex) {
+                                fragment.appendChild(document.createTextNode(text.substring(lastIndex, offset)));
+                            }
+
+                            // Create highlighted mark
+                            const mark = document.createElement('mark');
+                            mark.textContent = match;
+                            mark.setAttribute('data-pw-search', 'true');
+                            mark.setAttribute('data-pw-index', markCounter.toString());
+
+                            // Chrome-like colors: yellow for all, orange for current (index 0)
+                            if (markCounter === 0) {
+                                mark.style.backgroundColor = '#ff9632';  // Orange for current
+                                mark.style.color = 'black';
+                            } else {
+                                mark.style.backgroundColor = '#ffff00';  // Yellow for others
+                                mark.style.color = 'black';
+                            }
+                            mark.style.padding = '0';
+                            mark.style.margin = '0';
+
+                            fragment.appendChild(mark);
+
+                            lastIndex = offset + match.length;
+                            markCounter++;
+                            return match;
+                        });
+
+                        // Add remaining text
+                        if (lastIndex < text.length) {
+                            fragment.appendChild(document.createTextNode(text.substring(lastIndex)));
+                        }
+
+                        parent.replaceChild(fragment, textNode);
+                    });
+
+                    // Scroll to first match
+                    const firstMark = document.querySelector('mark[data-pw-index="0"]');
+                    if (firstMark) {
+                        firstMark.scrollIntoView({ block: 'center', inline: 'nearest', behavior: 'smooth' });
+                    }
+
+                    const totalMarks = document.querySelectorAll('mark[data-pw-search]').length;
+                    return { found: totalMarks, current: 1 };
+                } else {
+                    // Navigate to next match
+                    const allMarks = Array.from(document.querySelectorAll('mark[data-pw-search]'));
+                    if (allMarks.length === 0) {
+                        return { found: 0, current: 0 };
+                    }
+
+                    // Find current orange mark
+                    let currentIndex = -1;
+                    allMarks.forEach((mark, idx) => {
+                        if (mark.style.backgroundColor === 'rgb(255, 150, 50)') {  // #ff9632 in rgb
+                            currentIndex = idx;
+                            // Change to yellow
+                            mark.style.backgroundColor = '#ffff00';
+                        }
+                    });
+
+                    // Move to next (wrap around)
+                    const nextIndex = (currentIndex + 1) % allMarks.length;
+                    const nextMark = allMarks[nextIndex];
+                    nextMark.style.backgroundColor = '#ff9632';  // Orange
+                    nextMark.scrollIntoView({ block: 'center', inline: 'nearest', behavior: 'smooth' });
+
+                    return { found: allMarks.length, current: nextIndex + 1 };
+                }
+            }""",
+            {"query": search_term, "isNext": is_same_search}
+        )
+
+        total_found = result.get("found", 0) if isinstance(result, dict) else 0
+        current_index = result.get("current", 1) if isinstance(result, dict) else 1
+
+        # Store search term for next call
+        self._last_search_term = search_term
+
+        self.history.append({
+            "action": "search_page",
+            "reasoning": r,
+            "search_term": search_term,
+            "matches_found": total_found,
+            "current_match": current_index,
+        })
+
+        if total_found == 0:
+            return f"No matches found for '{search_term}' on the page."
+        elif total_found == 1:
+            return f"Found 1 match for '{search_term}'. The match is highlighted in orange and scrolled into view."
+        else:
+            return (
+                f"Match {current_index}/{total_found} for '{search_term}' is highlighted in orange. "
+                f"Call search_page('{search_term}') again to navigate to the next match."
+            )
+
+    @check_download(timeout_ms=500)
     async def dbclick(
         self,
         selector: Optional[str] = None,
@@ -2811,13 +3513,13 @@ class BrowserTool:
         if selector and role:
             raise ActionValidationError(
                 "Only one of 'selector' or 'role' should be provided, not both.",
-                action_name="click",
+                action="click",
                 invalid_params={"selector": selector, "role": role}
             )
         if not selector and not role:
             raise ActionValidationError(
                 "Either 'selector' or 'role' must be provided.",
-                action_name=self.name if hasattr(self, 'name') else 'browser_action',
+                action=self.name if hasattr(self, 'name') else 'browser_action',
                 invalid_params={"selector": None, "role": None}
             )
         actual_selector = selector if selector else f'[role="{role}"]'
@@ -2857,14 +3559,14 @@ class BrowserTool:
         if selector and role:
             raise ActionValidationError(
                 "Only one of 'selector' or 'role' should be provided, not both.",
-                action_name="click",
+                action="click",
                 invalid_params={"selector": selector, "role": role}
             )
 
         if not selector and not role:
             raise ActionValidationError(
                 "Either 'selector' or 'role' must be provided.",
-                action_name=self.name if hasattr(self, 'name') else 'browser_action',
+                action=self.name if hasattr(self, 'name') else 'browser_action',
                 invalid_params={"selector": None, "role": None}
             )
 
@@ -2905,14 +3607,14 @@ class BrowserTool:
         if selector and role:
             raise ActionValidationError(
                 "Only one of 'selector' or 'role' should be provided, not both.",
-                action_name="click",
+                action="click",
                 invalid_params={"selector": selector, "role": role}
             )
 
         if not selector and not role:
             raise ActionValidationError(
                 "Either 'selector' or 'role' must be provided.",
-                action_name=self.name if hasattr(self, 'name') else 'browser_action',
+                action=self.name if hasattr(self, 'name') else 'browser_action',
                 invalid_params={"selector": None, "role": None}
             )
 
@@ -2959,7 +3661,7 @@ class BrowserTool:
         ):
             raise ActionValidationError(
                 "Provide either 'source_selector' or 'source_role' (but not both) for the source element.",
-                action_name="drag_and_drop",
+                action="drag_and_drop",
                 invalid_params={"source_selector": source_selector, "source_role": source_role}
             )
 
@@ -2968,7 +3670,7 @@ class BrowserTool:
         ):
             raise ActionValidationError(
                 "Provide either 'target_selector' or 'target_role' (but not both) for the target element.",
-                action_name="drag_and_drop",
+                action="drag_and_drop",
                 invalid_params={"target_selector": target_selector, "target_role": target_role}
             )
 
@@ -2995,43 +3697,125 @@ class BrowserTool:
         reasoning: Optional[str] = None,
         highlight_bbox: bool = True,
         save_dir: Optional[str] = None,
-    ) -> Union[str, PILImage.Image]:
+    ) -> "ToolResponse":
         """
-        Take a screenshot of the current page.
+        Take a screenshot of the current page with interactive element highlighting.
 
-        If a filename is provided, the screenshot is saved to that file in the screenshot directory and the full file path is returned.
-        If no filename is provided (i.e. filename is None), the screenshot is returned as a PIL Image object.
+        Returns a multimodal ToolResponse containing:
+        - Text description of detected interactive elements
+        - Screenshot image with numbered bounding boxes
 
-        Additionally, if 'highlight_bbox' is True, interactive elements on the page are highlighted with bounding boxes.
+        This format matches the auto-screenshot behavior used in ADVANCED mode,
+        allowing the LLM to see both the visual context and element references.
 
         Parameters:
             filename (Optional[str]): The filename to save the screenshot.
-                                      If None, the screenshot is not saved to disk but returned as a PIL Image.
+                                      If None, uses timestamp-based naming.
             reasoning (Optional[str]): A description of the reasoning for taking this screenshot.
             highlight_bbox (bool): Whether to highlight interactive elements in the screenshot. Defaults to True.
             save_dir (Optional[str]): Override the default screenshot directory for this screenshot.
 
         Returns:
-            Union[str, PILImage.Image]: The full file path where the screenshot is saved, or the PIL Image object if no filename is provided.
+            ToolResponse: Multimodal response with:
+                - content: List of [text block, image block] for LLM consumption
+                - metadata: Element count, screenshot path, detection method
         """
+        from marsys.environment.tool_response import ToolResponse, ToolResponseContent
+
         r = reasoning or ""
+
         if highlight_bbox:
-            result = await highlight_interactive_elements(
-                self.page,
+            # Step 1: Detect interactive elements using rule-based approach
+            elements = await self.detect_interactive_elements_rule_based(
                 visible_only=True,
-                output_image=True,
-                draw_center_dot=False,
-                output_details=False,
-                save_path=None,
+                reasoning=r
             )
-            image = result.get("image", None)
-            if not image and filename:
-                image = PILImage.open(filename)
+
+            # Step 2: Add numbering to elements (1-indexed)
+            numbered_elements = []
+            for i, element in enumerate(elements):
+                numbered_element = element.copy()
+                numbered_element['number'] = i + 1
+                numbered_elements.append(numbered_element)
+
+            # Step 3: Generate filename
+            if not filename:
+                import time
+                timestamp = int(time.time() * 1000)
+                filename = f"screenshot_{timestamp}"
+
+            # Step 4: Render screenshot with highlighted bounding boxes
+            screenshot_path = await self.highlight_bbox(
+                elements=numbered_elements,
+                reasoning=r,
+                filename=filename
+            )
+
+            # Step 5: Build text description with JSON-formatted elements
+            if numbered_elements:
+                # Build JSON list of elements
+                elements_json = []
+                for element in numbered_elements:
+                    label = element.get('label', 'Unknown')
+                    number = element.get('number', '?')
+                    center = element.get('center', [0, 0])
+                    center_x = int(round(center[0]))
+                    center_y = int(round(center[1]))
+
+                    elements_json.append({
+                        "number": number,
+                        "label": label,
+                        "center": {"x": center_x, "y": center_y}
+                    })
+
+                # Create text with JSON-formatted elements
+                import json
+                elements_json_str = json.dumps(elements_json, indent=2)
+                screenshot_content = (
+                    f"[VISUAL CONTEXT] Page screenshot with {len(numbered_elements)} clickable elements detected.\n\n"
+                    f"Use element numbers for interaction. Elements:\n{elements_json_str}\n\n"
+                    f"IMPORTANT: These elements are FOR your reference to interact with the page. "
+                    f"Do NOT output element lists in your response - just use the numbers when clicking."
+                )
+            else:
+                screenshot_content = "[VISUAL CONTEXT] Current page screenshot (no interactive elements detected)."
+
+            # Step 6: Create multimodal ToolResponse
+            tool_response = ToolResponse(
+                content=[
+                    ToolResponseContent(type="text", text=screenshot_content),
+                    ToolResponseContent(type="image", image_path=screenshot_path)
+                ],
+                metadata={
+                    "screenshot_path": screenshot_path,
+                    "elements_count": len(numbered_elements),
+                    "detection_method": "rule_based"
+                }
+            )
+
+            # Update history
+            self.history.append({
+                "action": "screenshot",
+                "reasoning": r,
+                "filename": filename,
+                "path": screenshot_path,
+                "elements_count": len(numbered_elements)
+            })
+
+            return tool_response
+
         else:
-            screenshot_bytes = await self.page.screenshot()
+            # No highlighting - just return screenshot
+            # Use CDP to avoid triggering blur events that would close dropdowns/modals
+            screenshot_bytes = await self._take_screenshot_without_blur()
             image = PILImage.open(io.BytesIO(screenshot_bytes))
 
-        if filename:
+            # Generate filename and save
+            if not filename:
+                import time
+                timestamp = int(time.time() * 1000)
+                filename = f"screenshot_{timestamp}"
+
             # Use provided save_dir or default to self.screenshot_path
             screenshot_dir = save_dir or self.screenshot_path
             os.makedirs(screenshot_dir, exist_ok=True)
@@ -3042,24 +3826,24 @@ class BrowserTool:
 
             full_path = os.path.join(screenshot_dir, filename)
             image.save(full_path)
-            self.history.append(
-                {
-                    "action": "screenshot",
-                    "reasoning": r,
-                    "filename": filename,
-                    "path": full_path,
-                }
-            )
-            return full_path
 
-        self.history.append(
-            {
+            # Create simple ToolResponse with just image
+            tool_response = ToolResponse(
+                content=[
+                    ToolResponseContent(type="text", text="[VISUAL CONTEXT] Current page screenshot (no element highlighting)."),
+                    ToolResponseContent(type="image", image_path=full_path)
+                ],
+                metadata={"screenshot_path": full_path}
+            )
+
+            self.history.append({
                 "action": "screenshot",
                 "reasoning": r,
-                "output": "PIL Image object returned",
-            }
-        )
-        return image
+                "filename": filename,
+                "path": full_path,
+            })
+
+            return tool_response
 
     async def on_download(self, filename: str, reasoning: Optional[str] = None) -> None:
         """
@@ -3220,6 +4004,10 @@ class BrowserTool:
         """
         r = reasoning or ""
         await self.page.go_forward(timeout=timeout)
+
+        # Reinject mouse helper after navigation
+        await self._reinject_mouse_helper()
+
         title = await self.page.title()
         self.history.append(
             {
@@ -3239,6 +4027,10 @@ class BrowserTool:
         """
         r = reasoning or ""
         await self.page.reload(timeout=timeout)
+
+        # Reinject mouse helper after navigation
+        await self._reinject_mouse_helper()
+
         title = await self.page.title()
         self.history.append(
             {
@@ -3319,6 +4111,69 @@ class BrowserTool:
             }
         )
         return links
+
+    async def get_page_metadata(self, url: str, reasoning: Optional[str] = None) -> Dict[str, Any]:
+        """
+        Get comprehensive page metadata (title, URL, links).
+
+        Multi-step tool that:
+        1. Navigates to URL
+        2. Gets page title
+        3. Gets current URL (may have redirected)
+        4. Extracts all links from the page
+
+        Parameters:
+            url: URL to get metadata from
+            reasoning: Optional reasoning for this action
+
+        Returns:
+            Dictionary with page metadata
+        """
+        r = reasoning or ""
+
+        try:
+            await self.goto(url, reasoning=r)
+            title = await self.get_title(reasoning=r)
+            final_url = await self.get_url(reasoning=r)
+            links = await self.extract_links(reasoning=r)
+
+            result = {
+                "success": True,
+                "url": final_url,
+                "original_url": url,
+                "title": title,
+                "links": links,
+                "link_count": len(links)
+            }
+
+            self.history.append({
+                "action": "get_page_metadata",
+                "reasoning": r,
+                "url": url,
+                "final_url": final_url,
+                "link_count": len(links),
+                "success": True
+            })
+
+            return result
+
+        except Exception as e:
+            logger.error(f"Failed to get page metadata for {url}: {e}")
+            error_msg = f"Failed to get metadata: {str(e)}"
+
+            self.history.append({
+                "action": "get_page_metadata",
+                "reasoning": r,
+                "url": url,
+                "success": False,
+                "error": error_msg
+            })
+
+            return {
+                "success": False,
+                "error": error_msg,
+                "url": url
+            }
 
     async def fill_form(self, form_data: Dict[str, str], reasoning: Optional[str] = None) -> None:
         """
@@ -3422,243 +4277,6 @@ class BrowserTool:
                 tool_args={"selector": selector},
                 execution_error=str(e)
             )
-
-    async def get_attribute(self, selector: str, attribute: str, timeout: Optional[int] = None) -> str:
-        """
-        Get an attribute value from an element.
-
-        Args:
-            selector: CSS selector for the element
-            attribute: Name of the attribute to get
-            timeout: Maximum time to wait for element in milliseconds
-
-        Returns:
-            Attribute value or empty string if not found
-        """
-        try:
-            element = await self.page.wait_for_selector(selector, timeout=timeout)
-            if element:
-                value = await element.get_attribute(attribute)
-                return value or ""
-            return ""
-        except Exception as e:
-            raise ToolExecutionError(
-                f"Failed to get attribute '{attribute}' from selector '{selector}': {e}",
-                tool_name="get_attribute",
-                tool_args={"selector": selector, "attribute": attribute},
-                execution_error=str(e)
-            )
-
-    async def wait_for_selector(self, selector: str, timeout: Optional[int] = None, state: str = "visible") -> str:
-        """
-        Wait for an element to appear.
-
-        Args:
-            selector: CSS selector to wait for
-            timeout: Maximum time to wait in milliseconds
-            state: State to wait for ('visible', 'hidden', 'attached', 'detached')
-
-        Returns:
-            Success message
-        """
-        try:
-            await self.page.wait_for_selector(selector, timeout=timeout, state=state)
-            return f"Element matching '{selector}' is now {state}"
-        except Exception as e:
-            raise ToolExecutionError(
-                f"Timeout waiting for selector '{selector}' to be {state}: {e}",
-                tool_name="wait_for_element",
-                tool_args={"selector": selector, "state": state},
-                execution_error=str(e)
-            )
-
-    async def go_forward(self, reasoning: Optional[str] = None, timeout: Optional[int] = None) -> None:
-        """
-        Navigate forward in the browser history.
-
-        Parameters:
-            reasoning (Optional[str]): The reasoning chain for this action. Defaults to empty string.
-            timeout (Optional[int]): Optional timeout in milliseconds.
-        """
-        r = reasoning or ""
-        await self.page.go_forward(timeout=timeout)
-        title = await self.page.title()
-        self.history.append(
-            {
-                "action": "go_forward",
-                "reasoning": r,
-                "output": title,
-            }
-        )
-
-    async def reload(self, reasoning: Optional[str] = None, timeout: Optional[int] = None) -> None:
-        """
-        Reload the current page.
-
-        Parameters:
-            reasoning (Optional[str]): The reasoning chain for this action.
-            timeout (Optional[int]): Optional timeout in milliseconds.
-        """
-        r = reasoning or ""
-        await self.page.reload(timeout=timeout)
-        title = await self.page.title()
-        self.history.append(
-            {
-                "action": "reload",
-                "reasoning": r,
-                "output": title,
-            }
-        )
-
-    async def get_url(self, reasoning: Optional[str] = None) -> str:
-        """
-        Get the current page URL.
-
-        Parameters:
-            reasoning (Optional[str]): The reasoning chain for this action.
-
-        Returns:
-            str: Current page URL
-        """
-        r = reasoning or ""
-        url = self.page.url
-        self.history.append(
-            {
-                "action": "get_url",
-                "reasoning": r,
-                "output": url,
-            }
-        )
-        return url
-
-    async def get_title(self, reasoning: Optional[str] = None) -> str:
-        """
-        Get the current page title.
-
-        Parameters:
-            reasoning (Optional[str]): The reasoning chain for this action.
-
-        Returns:
-            str: Current page title
-        """
-        r = reasoning or ""
-        title = await self.page.title()
-        self.history.append(
-            {
-                "action": "get_title",
-                "reasoning": r,
-                "output": title,
-            }
-        )
-        return title
-
-    async def extract_links(self, reasoning: Optional[str] = None) -> List[Dict[str, str]]:
-        """
-        Extract all links from the current page.
-
-        Parameters:
-            reasoning (Optional[str]): The reasoning chain for this action.
-
-        Returns:
-            List of dictionaries containing link information
-        """
-        r = reasoning or ""
-        links = await self.page.evaluate("""
-            () => {
-                const links = Array.from(document.querySelectorAll('a[href]'));
-                return links.map(link => ({
-                    text: link.textContent.trim(),
-                    href: link.href,
-                    title: link.title || ''
-                }));
-            }
-        """)
-        self.history.append(
-            {
-                "action": "extract_links",
-                "reasoning": r,
-                "output": f"Found {len(links)} links",
-            }
-        )
-        return links
-
-    async def fill_form(self, form_data: Dict[str, str], reasoning: Optional[str] = None) -> None:
-        """
-        Fill out a form with the provided data.
-
-        Parameters:
-            form_data: Dictionary mapping field names/selectors to values
-            reasoning (Optional[str]): The reasoning chain for this action.
-        """
-        r = reasoning or ""
-        for selector, value in form_data.items():
-            await self.page.fill(selector, value)
-        self.history.append(
-            {
-                "action": "fill_form",
-                "reasoning": r,
-                "form_data": form_data,
-            }
-        )
-
-    async def select_option(self, selector: str, value: str, reasoning: Optional[str] = None, timeout: Optional[int] = None) -> None:
-        """
-        Select an option from a dropdown.
-
-        Parameters:
-            selector: CSS selector for the select element
-            value: Value to select
-            reasoning (Optional[str]): The reasoning chain for this action.
-            timeout (Optional[int]): Optional timeout in milliseconds.
-        """
-        r = reasoning or ""
-        await self.page.select_option(selector, value, timeout=timeout)
-        self.history.append(
-            {
-                "action": "select_option",
-                "reasoning": r,
-                "selector": selector,
-                "value": value,
-            }
-        )
-
-    async def check_checkbox(self, selector: str, reasoning: Optional[str] = None, timeout: Optional[int] = None) -> None:
-        """
-        Check a checkbox.
-
-        Parameters:
-            selector: CSS selector for the checkbox
-            reasoning (Optional[str]): The reasoning chain for this action.
-            timeout (Optional[int]): Optional timeout in milliseconds.
-        """
-        r = reasoning or ""
-        await self.page.check(selector, timeout=timeout)
-        self.history.append(
-            {
-                "action": "check_checkbox",
-                "reasoning": r,
-                "selector": selector,
-            }
-        )
-
-    async def uncheck_checkbox(self, selector: str, reasoning: Optional[str] = None, timeout: Optional[int] = None) -> None:
-        """
-        Uncheck a checkbox.
-
-        Parameters:
-            selector: CSS selector for the checkbox
-            reasoning (Optional[str]): The reasoning chain for this action.
-            timeout (Optional[int]): Optional timeout in milliseconds.
-        """
-        r = reasoning or ""
-        await self.page.uncheck(selector, timeout=timeout)
-        self.history.append(
-            {
-                "action": "uncheck_checkbox",
-                "reasoning": r,
-                "selector": selector,
-            }
-        )
 
     async def press_key(self, key: str, reasoning: Optional[str] = None, delay: Optional[int] = None) -> None:
         """
@@ -3853,32 +4471,79 @@ class BrowserTool:
             Path to the downloaded file
         """
         r = reasoning or ""
-        
-        # Start waiting for download before clicking
-        async with self.page.expect_download() as download_info:
-            # Navigate to the URL to trigger download
-            await self.page.goto(url)
-        
-        download = await download_info.value
-        
-        # Determine filename
-        if not filename:
-            filename = download.suggested_filename or "downloaded_file"
-        
-        # Save the file
-        file_path = os.path.join(self.download_path, filename)
-        await download.save_as(file_path)
-        
-        self.history.append(
-            {
-                "action": "download_file",
-                "reasoning": r,
-                "url": url,
-                "filename": filename,
-                "path": file_path,
-            }
-        )
-        return file_path
+
+        # Use CDP session to fetch the file directly instead of waiting for download event
+        # This works better for PDFs that open in browser viewer
+        try:
+            import urllib.parse
+
+            import aiohttp
+
+            # Determine filename from URL if not provided
+            if not filename:
+                parsed_url = urllib.parse.urlparse(url)
+                filename = os.path.basename(parsed_url.path) or "downloaded_file"
+                # If no extension, try to get from content-type later
+
+            file_path = os.path.join(self.download_path, filename)
+
+            # Use aiohttp to download the file
+            async with aiohttp.ClientSession() as session:
+                async with session.get(url) as response:
+                    response.raise_for_status()
+
+                    # Get content-type to determine file extension if needed
+                    if '.' not in filename:
+                        content_type = response.headers.get('content-type', '')
+                        if 'pdf' in content_type:
+                            filename += '.pdf'
+                        elif 'image' in content_type:
+                            ext = content_type.split('/')[-1]
+                            filename += f'.{ext}'
+                        file_path = os.path.join(self.download_path, filename)
+
+                    # Write the file
+                    with open(file_path, 'wb') as f:
+                        f.write(await response.read())
+
+            self.history.append(
+                {
+                    "action": "download_file",
+                    "reasoning": r,
+                    "url": url,
+                    "filename": filename,
+                    "path": file_path,
+                }
+            )
+            return file_path
+
+        except ImportError:
+            # Fallback to old method if aiohttp not available
+            # Start waiting for download before clicking
+            async with self.page.expect_download() as download_info:
+                # Navigate to the URL to trigger download
+                await self.page.goto(url)
+
+            download = await download_info.value
+
+            # Determine filename
+            if not filename:
+                filename = download.suggested_filename or "downloaded_file"
+
+            # Save the file
+            file_path = os.path.join(self.download_path, filename)
+            await download.save_as(file_path)
+
+            self.history.append(
+                {
+                    "action": "download_file",
+                    "reasoning": r,
+                    "url": url,
+                    "filename": filename,
+                    "path": file_path,
+                }
+            )
+            return file_path
 
     async def get_clean_html(
         self, 
@@ -4139,192 +4804,301 @@ class BrowserTool:
         else:
             raise IndexError(f"Tab index {index} out of range. Available tabs: 0-{len(pages)-1}")
 
-    async def extract_content_from_url(
-        self, 
-        url: str, 
+    async def fetch_url(
+        self,
+        url: str,
         selector: str = "main, article, .content, .post, .entry",
         max_text_length: Optional[int] = 5000,
         return_markdown: bool = True,
         reasoning: Optional[str] = None
     ) -> Dict[str, Any]:
         """
-        Enhanced version with anti-bot evasion and retry strategies.
+        Fetch and extract content from a URL in one step.
+
+        High-level primitive tool that navigates to URL and extracts content.
+        Steps:
+        1. Check if URL is a PDF
+        2. If PDF: delegate to PDF extraction
+        3. If HTML: navigate, wait for content, extract text/markdown
 
         Parameters:
-            url: URL to extract content from
-            selector: CSS selector for main content area
-            max_text_length: Maximum length of extracted text
-            return_markdown: Whether to return content as markdown
-            reasoning (Optional[str]): The reasoning chain for this action.
+            url: URL to fetch content from
+            selector: CSS selector for main content area (default: main, article, .content, .post, .entry)
+            max_text_length: Maximum length of extracted text (default: 5000)
+            return_markdown: Whether to return content as markdown (default: True)
+            reasoning: Optional reasoning for this action
 
         Returns:
-            Dictionary with extracted content information
-        """
-        import random
-        import asyncio
-        
-        r = reasoning or ""
-        
-        # Save current URL to return to later
-        original_url = self.page.url
-        
-        # Define retry strategies with different user agents and settings
-        strategies = [
+            Dictionary with extraction results:
             {
-                'name': 'standard_desktop',
-                'user_agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36',
-                'viewport': {'width': 1920, 'height': 1080},
-                'headers': {
-                    'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8',
-                    'Accept-Language': 'en-US,en;q=0.5',
-                    'Accept-Encoding': 'gzip, deflate, br',
-                    'DNT': '1',
-                    'Connection': 'keep-alive',
-                    'Upgrade-Insecure-Requests': '1'
-                }
-            },
-            {
-                'name': 'mobile_safari',
-                'user_agent': 'Mozilla/5.0 (iPhone; CPU iPhone OS 16_6 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/16.6 Mobile/15E148 Safari/604.1',
-                'viewport': {'width': 390, 'height': 844},
-                'headers': {
-                    'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
-                    'Accept-Language': 'en-US,en;q=0.9'
-                }
-            },
-            {
-                'name': 'googlebot',  # Some sites allow Googlebot
-                'user_agent': 'Mozilla/5.0 (compatible; Googlebot/2.1; +http://www.google.com/bot.html)',
-                'viewport': {'width': 1024, 'height': 768}
+                "success": bool,
+                "url": str,
+                "title": str,
+                "content": str,
+                "content_length": int,
+                "format": str,  # "markdown" or "text"
+                "type": str     # "html" or "pdf"
             }
-        ]
-        
-        for i, strategy in enumerate(strategies):
-            context = None
-            try:
-                logger.info(f"Attempting extraction with strategy: {strategy['name']} (attempt {i+1}/{len(strategies)})")
-                
-                # Create new context with user agent
-                context = await self.browser.new_context(
-                    user_agent=strategy['user_agent'],
-                    viewport=strategy['viewport'],
-                    extra_http_headers=strategy.get('headers', {})
-                )
-                page = await context.new_page()
-                
-                # Add random delay to appear more human
-                await asyncio.sleep(random.uniform(0.5, 2.0))
-                
-                # First, check if it's a PDF
-                try:
-                    head_response = await page.request.head(url)
-                    content_type = head_response.headers.get('content-type', '').lower()
-                except:
-                    content_type = ''
-                
-                is_pdf = (
-                    'application/pdf' in content_type or
-                    url.lower().endswith('.pdf') or
-                    '/pdf/' in url.lower()
-                )
-                
-                if is_pdf:
-                    # Use dedicated PDF extraction
-                    result = await self.extract_pdf_content_from_url(
-                        url,
-                        output_format="markdown" if return_markdown else "json",
-                        max_text_length=max_text_length,
-                        reasoning=reasoning
-                    )
-                    await context.close()
-                    return result
-                
-                # Navigate with timeout
-                response = await page.goto(url, wait_until='domcontentloaded', timeout=5000)
-                
-                # Check HTTP status
-                if response and response.status >= 400:
-                    logger.warning(f"HTTP {response.status} for {url}")
-                    await context.close()
-                    continue
-                
-                # Wait for content with shorter timeout
-                try:
-                    await page.wait_for_selector(selector, timeout=5000)
-                except:
-                    # Try body as fallback
-                    await page.wait_for_selector('body', timeout=2000)
-                
-                # Check for bot detection
-                content = await page.content()
-                if self._is_bot_blocked(content):
-                    logger.warning(f"Bot detection triggered with strategy {strategy['name']}")
-                    await context.close()
-                    continue
-                
-                # Extract and validate content
-                extracted = await self._extract_with_validation(page, selector, max_text_length, return_markdown)
-                
-                if extracted and len(extracted.get('content', '')) > 100:
-                    logger.info(f"Successfully extracted content with strategy: {strategy['name']}")
-                    
-                    result = {
-                        "success": True,
-                        "url": url,
-                        "title": extracted['title'],
-                        "content": extracted['content'],
-                        "content_length": extracted['length'],
-                        "format": "markdown" if return_markdown else "text",
-                        "type": "html",
-                        "strategy_used": strategy['name']
-                    }
-                    
-                    self.history.append(
-                        {
-                            "action": "extract_content_from_url",
-                            "reasoning": r,
-                            "url": url,
-                            "title": extracted['title'],
-                            "content_length": extracted['length'],
-                            "type": "html",
-                            "success": True,
-                            "strategy": strategy['name']
-                        }
-                    )
-                    
-                    await context.close()
-                    return result
-                
-                await context.close()
-                
-            except Exception as e:
-                logger.warning(f"Strategy {strategy['name']} failed: {str(e)[:100]}")
-                if context:
-                    await context.close()
-                continue
-        
-        # All strategies failed
-        logger.error(f"All extraction strategies failed for {url}")
-        error_msg = f"Unable to extract content from {url} after {len(strategies)} attempts"
-        
-        self.history.append(
+
+            On failure:
             {
-                "action": "extract_content_from_url",
+                "success": False,
+                "error": str,
+                "url": str
+            }
+        """
+        r = reasoning or ""
+
+        try:
+            # Check if PDF
+            is_pdf = False
+            try:
+                head_response = await self.page.request.head(url)
+                content_type = head_response.headers.get('content-type', '').lower()
+                is_pdf = 'application/pdf' in content_type or url.lower().endswith('.pdf')
+            except:
+                is_pdf = url.lower().endswith('.pdf')
+
+            if is_pdf:
+                # Delegate to PDF extraction
+                result = await self.extract_pdf_content_from_url(
+                    url,
+                    output_format="markdown" if return_markdown else "json",
+                    max_text_length=max_text_length,
+                    reasoning=reasoning
+                )
+                return result
+
+            # Navigate to page
+            await self.goto(url, reasoning=r)
+
+            # Wait for content with fallback
+            try:
+                await self.page.wait_for_selector(selector, timeout=5000)
+                element = await self.page.query_selector(selector)
+            except:
+                # Fallback to body
+                try:
+                    await self.page.wait_for_selector('body', timeout=2000)
+                    element = await self.page.query_selector('body')
+                except:
+                    element = None
+
+            if not element:
+                error_msg = "No content found on page"
+                self.history.append({
+                    "action": "fetch_url",
+                    "reasoning": r,
+                    "url": url,
+                    "success": False,
+                    "error": error_msg
+                })
+                return {
+                    "success": False,
+                    "error": error_msg,
+                    "url": url
+                }
+
+            # Extract content
+            if return_markdown:
+                html = await element.inner_html()
+                try:
+                    import markdownify
+                    content = markdownify.markdownify(html, strip=['script', 'style'])
+                except ImportError:
+                    logger.warning("markdownify not installed, falling back to text extraction")
+                    content = await element.text_content()
+            else:
+                content = await element.text_content()
+
+            if not content or len(content.strip()) == 0:
+                error_msg = "Extracted content is empty"
+                self.history.append({
+                    "action": "fetch_url",
+                    "reasoning": r,
+                    "url": url,
+                    "success": False,
+                    "error": error_msg
+                })
+                return {
+                    "success": False,
+                    "error": error_msg,
+                    "url": url
+                }
+
+            # Truncate if needed
+            if max_text_length and len(content) > max_text_length:
+                content = content[:max_text_length] + "..."
+
+            # Get title
+            title = await self.page.title()
+
+            result = {
+                "success": True,
+                "url": url,
+                "title": title,
+                "content": content,
+                "content_length": len(content),
+                "format": "markdown" if return_markdown else "text",
+                "type": "html"
+            }
+
+            self.history.append({
+                "action": "fetch_url",
+                "reasoning": r,
+                "url": url,
+                "title": title,
+                "content_length": len(content),
+                "type": "html",
+                "success": True
+            })
+
+            return result
+
+        except Exception as e:
+            logger.error(f"Content extraction failed for {url}: {e}")
+            error_msg = f"Failed to fetch content: {str(e)}"
+
+            self.history.append({
+                "action": "fetch_url",
                 "reasoning": r,
                 "url": url,
                 "success": False,
                 "error": error_msg
+            })
+
+            return {
+                "success": False,
+                "error": error_msg,
+                "url": url
             }
-        )
-        
-        return {
-            "success": False,
-            "error": error_msg,
-            "url": url,
-            "message": error_msg
-        }
-        
-        # Note: removed finally block since we're not navigating with self.page anymore
+
+    async def extract_text_content(
+        self,
+        selector: Optional[str] = None,
+        max_length: Optional[int] = 5000,
+        reasoning: Optional[str] = None
+    ) -> Dict[str, Any]:
+        """
+        Extract text content from the current page without navigation.
+
+        This is a PRIMITIVE mode tool that extracts content from the already-loaded page.
+        Use this when you're already on the page and want to extract specific content.
+
+        Parameters:
+            selector: CSS selector for content extraction (default: main content areas)
+            max_length: Maximum text length to return (default: 5000)
+            reasoning: Optional reasoning for this action
+
+        Returns:
+            On success:
+            {
+                "success": True,
+                "url": str,
+                "title": str,
+                "content": str,  # Plain text extracted from the page
+                "content_length": int,
+                "format": "text",
+                "selector_used": str
+            }
+
+            On failure:
+            {
+                "success": False,
+                "error": str,
+                "url": str
+            }
+        """
+        r = reasoning or ""
+        default_selector = "main, article, .content, .post, .entry, body"
+        selector_used = selector or default_selector
+
+        try:
+            # Get current URL and title
+            url = self.page.url
+            title = await self.page.title()
+
+            # Wait for content to be available
+            await self.page.wait_for_load_state("domcontentloaded", timeout=5000)
+
+            # Extract content using selector
+            content_script = f"""
+            () => {{
+                const selectors = '{selector_used}'.split(',').map(s => s.trim());
+                let content = '';
+
+                for (const sel of selectors) {{
+                    const elements = document.querySelectorAll(sel);
+                    if (elements.length > 0) {{
+                        for (const elem of elements) {{
+                            if (elem.innerText || elem.textContent) {{
+                                content += (elem.innerText || elem.textContent) + '\\n\\n';
+                            }}
+                        }}
+                        if (content.trim()) break;
+                    }}
+                }}
+
+                return content.trim();
+            }}
+            """
+
+            text_content = await self.page.evaluate(content_script)
+
+            if not text_content:
+                return {
+                    "success": False,
+                    "error": f"No content found with selector: {selector_used}",
+                    "url": url
+                }
+
+            # Text content is already extracted, no markdown conversion needed
+            # (JavaScript already extracted innerText/textContent which is plain text)
+            content = text_content
+
+            # Truncate if needed
+            if max_length and len(content) > max_length:
+                content = content[:max_length] + "..."
+
+            result = {
+                "success": True,
+                "url": url,
+                "title": title,
+                "content": content,
+                "content_length": len(content),
+                "format": "text",
+                "selector_used": selector_used
+            }
+
+            self.history.append({
+                "action": "extract_text_content",
+                "reasoning": r,
+                "url": url,
+                "title": title,
+                "content_length": len(content),
+                "selector": selector_used,
+                "success": True
+            })
+
+            return result
+
+        except Exception as e:
+            logger.error(f"Text content extraction failed: {e}")
+            error_msg = f"Failed to extract text content: {str(e)}"
+
+            self.history.append({
+                "action": "extract_text_content",
+                "reasoning": r,
+                "url": self.page.url if self.page else "unknown",
+                "success": False,
+                "error": error_msg
+            })
+
+            return {
+                "success": False,
+                "error": error_msg,
+                "url": self.page.url if self.page else "unknown"
+            }
 
     def _is_bot_blocked(self, content: str) -> bool:
         """Check for common bot detection/blocking indicators."""
@@ -4668,186 +5442,6 @@ class BrowserTool:
                     "message": f"Failed to extract PDF content"
                 }
 
-    async def press_key(self, key: str, reasoning: Optional[str] = None, delay: Optional[int] = None) -> None:
-        """
-        Press a key.
-
-        Parameters:
-            key: Key to press (e.g., 'Enter', 'Escape', 'ArrowDown')
-            reasoning (Optional[str]): The reasoning chain for this action.
-            delay (Optional[int]): Delay between key presses in milliseconds.
-        """
-        r = reasoning or ""
-        await self.page.keyboard.press(key, delay=delay)
-        self.history.append(
-            {
-                "action": "press_key",
-                "reasoning": r,
-                "key": key,
-            }
-        )
-
-    async def wait_for_navigation(self, timeout: Optional[int] = None, reasoning: Optional[str] = None) -> None:
-        """
-        Wait for navigation to complete.
-
-        Parameters:
-            timeout (Optional[int]): Optional timeout in milliseconds.
-            reasoning (Optional[str]): The reasoning chain for this action.
-        """
-        r = reasoning or ""
-        await self.page.wait_for_load_state("networkidle", timeout=timeout)
-        self.history.append(
-            {
-                "action": "wait_for_navigation",
-                "reasoning": r,
-            }
-        )
-
-    async def evaluate_javascript(self, script: str, reasoning: Optional[str] = None) -> Any:
-        """
-        Execute JavaScript in the page context.
-
-        Parameters:
-            script: JavaScript code to execute
-            reasoning (Optional[str]): The reasoning chain for this action.
-
-        Returns:
-            Result of the JavaScript execution
-        """
-        r = reasoning or ""
-        result = await self.page.evaluate(script)
-        self.history.append(
-            {
-                "action": "evaluate_javascript",
-                "reasoning": r,
-                "script": script[:100] + "..." if len(script) > 100 else script,
-                "output": str(result)[:200] + "..." if len(str(result)) > 200 else str(result),
-            }
-        )
-        return result
-
-    async def get_cookies(self, reasoning: Optional[str] = None) -> List[Dict[str, Any]]:
-        """
-        Get all cookies for the current page.
-
-        Parameters:
-            reasoning (Optional[str]): The reasoning chain for this action.
-
-        Returns:
-            List of cookie dictionaries
-        """
-        r = reasoning or ""
-        cookies = await self.context.cookies()
-        self.history.append(
-            {
-                "action": "get_cookies",
-                "reasoning": r,
-                "output": f"Found {len(cookies)} cookies",
-            }
-        )
-        return cookies
-
-    async def set_cookie(self, cookie: Dict[str, Any], reasoning: Optional[str] = None) -> None:
-        """
-        Set a cookie.
-
-        Parameters:
-            cookie: Cookie dictionary with name, value, domain, etc.
-            reasoning (Optional[str]): The reasoning chain for this action.
-        """
-        r = reasoning or ""
-        await self.context.add_cookies([cookie])
-        self.history.append(
-            {
-                "action": "set_cookie",
-                "reasoning": r,
-                "cookie": cookie,
-            }
-        )
-
-    async def delete_cookies(self, reasoning: Optional[str] = None) -> None:
-        """
-        Delete all cookies.
-
-        Parameters:
-            reasoning (Optional[str]): The reasoning chain for this action.
-        """
-        r = reasoning or ""
-        await self.context.clear_cookies()
-        self.history.append(
-            {
-                "action": "delete_cookies",
-                "reasoning": r,
-            }
-        )
-
-    async def get_local_storage(self, reasoning: Optional[str] = None) -> Dict[str, str]:
-        """
-        Get all local storage items.
-
-        Parameters:
-            reasoning (Optional[str]): The reasoning chain for this action.
-
-        Returns:
-            Dictionary of local storage key-value pairs
-        """
-        r = reasoning or ""
-        storage = await self.page.evaluate("""
-            () => {
-                const storage = {};
-                for (let i = 0; i < localStorage.length; i++) {
-                    const key = localStorage.key(i);
-                    storage[key] = localStorage.getItem(key);
-                }
-                return storage;
-            }
-        """)
-        self.history.append(
-            {
-                "action": "get_local_storage",
-                "reasoning": r,
-                "output": f"Found {len(storage)} items",
-            }
-        )
-        return storage
-
-    async def set_local_storage(self, key: str, value: str, reasoning: Optional[str] = None) -> None:
-        """
-        Set a local storage item.
-
-        Parameters:
-            key: Storage key
-            value: Storage value
-            reasoning (Optional[str]): The reasoning chain for this action.
-        """
-        r = reasoning or ""
-        await self.page.evaluate(f"localStorage.setItem('{key}', '{value}')")
-        self.history.append(
-            {
-                "action": "set_local_storage",
-                "reasoning": r,
-                "key": key,
-                "value": value,
-            }
-        )
-
-    async def clear_local_storage(self, reasoning: Optional[str] = None) -> None:
-        """
-        Clear all local storage.
-
-        Parameters:
-            reasoning (Optional[str]): The reasoning chain for this action.
-        """
-        r = reasoning or ""
-        await self.page.evaluate("localStorage.clear()")
-        self.history.append(
-            {
-                "action": "clear_local_storage",
-                "reasoning": r,
-            }
-        )
-
     async def close(self) -> None:
         """
         Close the browser and stop the Playwright instance.
@@ -4879,26 +5473,6 @@ class BrowserTool:
 
     # Add missing methods to BrowserTool class
 
-    async def type_text(self, selector: str, text: str, delay: int = 0, reasoning: Optional[str] = None, timeout: Optional[int] = None) -> str:
-        """
-        Type text into an element specified by selector.
-        
-        Args:
-            selector: CSS selector for the target element
-            text: Text to type
-            delay: Delay between keystrokes in milliseconds
-            reasoning: Optional reasoning for this action
-            timeout: Optional timeout in milliseconds
-            
-        Returns:
-            Success message
-        """
-        if reasoning:
-            logging.info(f"BrowserTool Type Text: {reasoning}")
-        
-        await self.page.type(selector, text, delay=delay, timeout=timeout)
-        return f"Successfully typed text into element: {selector}"
-
     async def detect_interactive_elements_rule_based(self, visible_only: bool = True, reasoning: Optional[str] = None) -> List[Dict[str, Any]]:
         """
         Detect interactive elements on the page using rule-based approach.
@@ -4920,7 +5494,7 @@ class BrowserTool:
         interactive_selectors = [
             'button',
             'input[type="button"]',
-            'input[type="submit"]', 
+            'input[type="submit"]',
             'input[type="reset"]',
             'input[type="image"]',
             'input[type="checkbox"]',
@@ -4938,6 +5512,7 @@ class BrowserTool:
             'input[type="file"]',
             'textarea',
             'select',
+            'option',  # Individual dropdown options (visible when select is opened)
             'a[href]',
             '[onclick]',
             '[role="button"]',
@@ -5034,6 +5609,7 @@ class BrowserTool:
                                 'input[type="text"]': 5,
                                 'input[type="password"]': 5,
                                 'select': 5,
+                                'option': 4,  # Dropdown options (lower priority than select itself)
                                 'textarea': 5,
                                 '[tabindex]': 3,
                                 '.btn': 2,
@@ -5133,11 +5709,17 @@ class BrowserTool:
         
         if reasoning:
             logging.info(f"BrowserTool Highlight Bbox: {reasoning}")
-        
+
         # Take a fresh screenshot for annotation
-        screenshot_bytes = await self.page.screenshot()
+        # Use CDP to avoid triggering blur events that would close dropdowns/modals
+        screenshot_bytes = await self._take_screenshot_without_blur()
         image = PILImage.open(io.BytesIO(screenshot_bytes))
-        draw = ImageDraw.Draw(image)
+        # Convert to RGBA for transparency support
+        if image.mode != 'RGBA':
+            image = image.convert('RGBA')
+        # Create a transparent overlay for labels
+        overlay = PILImage.new('RGBA', image.size, (0, 0, 0, 0))
+        draw = ImageDraw.Draw(overlay)
         image_width, image_height = image.size
         
         # Use the same font as highlight_interactive_elements
@@ -5170,42 +5752,66 @@ class BrowserTool:
             if x2 > x1 and y2 > y1:
                 global_mask[y1:y2, x1:x2] = 0
         
+        # 12 high-contrast colors optimized for visibility on both light and dark backgrounds
+        # Based on Paul Tol's color-blind safe schemes + additional vibrant colors
+        # All colors tested for high contrast and distinguishability
+        DISTINCT_COLORS = [
+            '#EE6677',  # Bright Red - high contrast
+            '#228833',  # Bright Green - high contrast
+            '#4477AA',  # Bright Blue - high contrast
+            '#CCBB44',  # Bright Yellow - high contrast
+            '#EE7733',  # Bright Orange - high contrast
+            '#AA3377',  # Bright Purple - high contrast
+            '#66CCEE',  # Bright Cyan - high contrast
+            '#CC3311',  # Vivid Red - high contrast
+            '#009988',  # Teal - high contrast
+            '#EE3377',  # Magenta - high contrast
+            '#0077BB',  # Deep Blue - high contrast
+            '#33BBEE',  # Sky Blue - high contrast
+        ]
+
+        # Create separate draw context for bboxes on base image
+        bbox_draw = ImageDraw.Draw(image)
+
         # Draw bounding boxes and labels using masking algorithm
         for i, element in enumerate(elements):
             bbox = element.get('bbox', [0, 0, 0, 0])
             if len(bbox) != 4:
                 continue
-                
+
             x1, y1, x2, y2 = bbox
-            
+
             # Ensure coordinates are valid
             if x2 <= x1 or y2 <= y1:
                 continue
-            
+
             # Convert to integers for drawing
             x, y, x2, y2 = int(x1), int(y1), int(x2), int(y2)
-            
+
             # Ensure coordinates are within image bounds
             x = max(0, min(x, image_width))
             y = max(0, min(y, image_height))
             x2 = max(x, min(x2, image_width))
             y2 = max(y, min(y2, image_height))
-            
+
             # Skip if bbox is invalid after bounds checking
             if x2 <= x or y2 <= y:
                 continue
-            
-            # Draw the bounding box in Imperial Red (#ED2939) - same as highlight_interactive_elements
-            draw.rectangle([(x, y), (x2, y2)], outline="#ED2939", width=2)
-            
+
+            # Rotate through colors based on element index
+            color = DISTINCT_COLORS[i % len(DISTINCT_COLORS)]
+
+            # Draw the bounding box with the assigned color on base image
+            bbox_draw.rectangle([(x, y), (x2, y2)], outline=color, width=2)
+
             # Use only the element number as label (simple and clean)
             label = f"{i+1}"
-            
+
             # Calculate text dimensions
             bbox_text = font.getbbox(label)
             text_width = bbox_text[2] - bbox_text[0]
             text_height = bbox_text[3] - bbox_text[1]
-            
+
             # Find optimal label position using masking algorithm
             try:
                 label_x, label_y, global_mask = find_label_position_with_masking(
@@ -5216,39 +5822,42 @@ class BrowserTool:
                     image_height=image_height,
                     global_mask=global_mask,
                     padding=10,
-                    label_margin=5
+                    label_margin=5  # Reduced to 5 for tighter spacing
                 )
-                
-                # Draw white background with alpha 200 for the label
+
+                # Draw semi-transparent white background on overlay (alpha 179 for 30% transparency)
                 bg_padding = 2
                 draw.rectangle([
                     label_x - bg_padding,
                     label_y - bg_padding,
                     label_x + text_width + bg_padding,
                     label_y + text_height + bg_padding
-                ], fill=(255, 255, 255, 200))
-                
-                # Draw the text in Imperial Red (#ED2939) - same color as the bounding box borders
-                draw.text((label_x, label_y), label, fill="#ED2939", font=font)
-                
+                ], fill=(255, 255, 255, 179))  # 30% transparency (reduced by 15% from previous)
+
+                # Draw the text in the same color as the bounding box
+                draw.text((label_x, label_y), label, fill=color, font=font)
+
             except Exception as e:
                 logging.warning(f"Error positioning label for element {i+1}: {e}")
                 # Fallback to simple positioning with proper spacing
                 fallback_x = max(0, min(x, image_width - text_width))
                 margin = 5  # Consistent margin for fallback
                 fallback_y = max(0, y - text_height - margin) if y - text_height - margin >= 0 else min(y2 + margin, image_height - text_height)
-            
-                # Draw white background with alpha 200 for the fallback label
+
+                # Draw semi-transparent white background on overlay
                 bg_padding = 2
                 draw.rectangle([
                     fallback_x - bg_padding,
                     fallback_y - bg_padding,
                     fallback_x + text_width + bg_padding,
                     fallback_y + text_height + bg_padding
-                ], fill=(255, 255, 255, 200))
-                
-                draw.text((fallback_x, fallback_y), label, fill="#ED2939", font=font)
-        
+                ], fill=(255, 255, 255, 179))  # 30% transparency (reduced by 15% from previous)
+
+                draw.text((fallback_x, fallback_y), label, fill=color, font=font)
+
+        # Composite the overlay onto the base image for transparency
+        image = PILImage.alpha_composite(image, overlay)
+
         # Save the annotated screenshot with custom or timestamp-based filename
         timestamp = int(time.time() * 1000)
         if filename:
@@ -5407,44 +6016,48 @@ class BrowserTool:
         self,
         text: str,
         reasoning: Optional[str] = None,
-        min_delay: int = 50,
-        max_delay: int = 150,
-        variation_factor: float = 0.3,
+        min_delay: Optional[int] = 50,
+        max_delay: Optional[int] = 150,
+        variation_factor: Optional[float] = 0.3,
     ) -> None:
         """
-        Type text with realistic human-like behavior including random delays and typing variations.
+        Type regular text (letters, numbers, punctuation) with realistic human-like behavior.
+
+        Use this method for typing words, sentences, URLs, or any text content into the currently focused element.
+        For special keys like Enter, Escape, Tab, or arrow keys, use keyboard_press instead.
 
         This method simulates natural human typing patterns by introducing random delays between
         keystrokes and slight variations in typing speed to make the interaction appear more
         human-like and less detectable as automated input.
 
         Parameters:
-            text (str): The text to type. Each character will be typed individually with realistic delays.
+            text (str): The text to type (letters, numbers, punctuation, etc.). Each character will be typed
+                       individually with realistic delays.
             reasoning (Optional[str]): The reasoning chain for this action. Defaults to empty string.
-            min_delay (int): Minimum delay between keystrokes in milliseconds. Defaults to 50ms.
-            max_delay (int): Maximum delay between keystrokes in milliseconds. Defaults to 150ms.
-            variation_factor (float): Factor to add randomness to delays (0.0 = no variation, 1.0 = high variation). 
-                                    Defaults to 0.3 for natural variation.
+            min_delay (Optional[int]): Minimum delay between keystrokes in milliseconds. Defaults to 50ms.
+            max_delay (Optional[int]): Maximum delay between keystrokes in milliseconds. Defaults to 150ms.
+            variation_factor (Optional[float]): Factor to add randomness to delays (0.0 = no variation, 1.0 = high variation).
+                                               Defaults to 0.3 for natural variation.
 
         Returns:
             None
 
         Raises:
-            ValueError: If min_delay >= max_delay or variation_factor is negative.
+            ActionValidationError: If min_delay >= max_delay or variation_factor is negative.
         """
-        import random
         import asyncio
+        import random
 
         if min_delay >= max_delay:
             raise ActionValidationError(
                 "min_delay must be less than max_delay",
-                action_name="wait",
+                action="wait",
                 invalid_params={"min_delay": min_delay, "max_delay": max_delay}
             )
         if variation_factor < 0:
             raise ActionValidationError(
                 "variation_factor must be non-negative",
-                action_name="wait",
+                action="wait",
                 invalid_params={"variation_factor": variation_factor}
             )
 
@@ -5485,394 +6098,281 @@ class BrowserTool:
             }
         )
 
-    async def get_accessibility_tree(
+    async def get_page_elements(
         self,
         reasoning: Optional[str] = None,
         include_hidden: bool = False,
-        max_depth: Optional[int] = None,
-        simplify: bool = True,
     ) -> Dict[str, Any]:
         """
-        Get and return a clean accessibility tree of the current page for AI agent consumption.
+        Get interactive elements and page structure in a flat, easy-to-parse format.
 
-        This method retrieves the accessibility tree that assistive technologies use to understand
-        the page structure, then formats it in a clean, simplified format that's optimized for
-        AI agents to understand page content and structure without complex HTML parsing.
+        Returns all interactive elements (buttons, links, inputs, etc.) with their
+        selectors, positions, and states. Optimized for AI agents to quickly find
+        and interact with page elements.
 
         Parameters:
-            reasoning (Optional[str]): The reasoning chain for this action. Defaults to empty string.
-            include_hidden (bool): Whether to include hidden/invisible elements. Defaults to False.
-            max_depth (Optional[int]): Maximum depth to traverse in the tree. None for no limit.
-            simplify (bool): Whether to simplify the tree by removing redundant information. Defaults to True.
+            reasoning: Optional reasoning for this action
+            include_hidden: Whether to include hidden/invisible elements (default: False)
 
         Returns:
-            Dict[str, Any]: A dictionary containing the cleaned accessibility tree with metadata.
-                Structure:
-                {
-                    "url": "current_page_url",
-                    "title": "page_title", 
-                    "tree": {...}, # The accessibility tree structure with href information
-                    "summary": {
-                        "total_nodes": int,
-                        "interactive_elements": int,
-                        "text_nodes": int,
-                        "links_with_href": int,
-                        "depth": int
-                    }
+            Dictionary with flat structure:
+            {
+                "url": str,
+                "title": str,
+                "interactive_elements": [
+                    {
+                        "id": str,              # Unique ID for this element
+                        "type": str,            # button, link, input, select, etc.
+                        "text": str,            # Visible text or label
+                        "selector": str,        # CSS selector to target this element
+                        "position": {           # Coordinates for clicking
+                            "x": int,
+                            "y": int,
+                            "width": int,
+                            "height": int
+                        },
+                        "href": str,            # For links/buttons (if applicable)
+                        "value": str,           # Current value (for inputs)
+                        "state": {              # Interactive states
+                            "disabled": bool,
+                            "checked": bool,
+                            "selected": bool,
+                            "required": bool,
+                            "readonly": bool
+                        }
+                    },
+                    ...
+                ],
+                "headings": [
+                    {"level": int, "text": str, "selector": str},
+                    ...
+                ],
+                "summary": {
+                    "total_interactive": int,
+                    "buttons": int,
+                    "links": int,
+                    "inputs": int,
+                    "selects": int
                 }
-                
-                Each node in the tree may include:
-                - role: Element's ARIA role
-                - name: Element's accessible name/text
-                - value: Element's value (for inputs)
-                - href: URL destination for links and buttons (newly added)
-                - position: Bounding box coordinates for clicking
-                - disabled/checked/selected/expanded: Interactive states
+            }
         """
         r = reasoning or ""
-        
+
         try:
-            # Get the accessibility tree snapshot
-            snapshot = await self.page.accessibility.snapshot()
-            
-            if not snapshot:
+            # JavaScript to extract all interactive elements with selectors
+            extract_script = """
+            (includeHidden) => {
+                // Helper function to generate unique CSS selector for an element
+                function generateSelector(element) {
+                    // Try ID first (most specific)
+                    if (element.id) {
+                        return `#${element.id}`;
+                    }
+
+                    // Try name attribute for inputs
+                    if (element.name && ['INPUT', 'SELECT', 'TEXTAREA'].includes(element.tagName)) {
+                        const nameMatch = document.querySelectorAll(`${element.tagName.toLowerCase()}[name="${element.name}"]`);
+                        if (nameMatch.length === 1) {
+                            return `${element.tagName.toLowerCase()}[name="${element.name}"]`;
+                        }
+                    }
+
+                    // Try unique class combination
+                    if (element.className && typeof element.className === 'string') {
+                        const classes = element.className.trim().split(/\\s+/).filter(c => c);
+                        if (classes.length > 0) {
+                            const classSelector = element.tagName.toLowerCase() + '.' + classes.join('.');
+                            const classMatches = document.querySelectorAll(classSelector);
+                            if (classMatches.length === 1) {
+                                return classSelector;
+                            }
+                        }
+                    }
+
+                    // Build path from root
+                    const path = [];
+                    let current = element;
+
+                    while (current && current !== document.body) {
+                        let selector = current.tagName.toLowerCase();
+
+                        // Add nth-child if there are siblings with same tag
+                        if (current.parentElement) {
+                            const siblings = Array.from(current.parentElement.children)
+                                .filter(el => el.tagName === current.tagName);
+                            if (siblings.length > 1) {
+                                const index = siblings.indexOf(current) + 1;
+                                selector += `:nth-of-type(${index})`;
+                            }
+                        }
+
+                        path.unshift(selector);
+                        current = current.parentElement;
+
+                        // Stop if we have enough specificity (max 4 levels)
+                        if (path.length >= 4) break;
+                    }
+
+                    return path.join(' > ');
+                }
+
+                // Helper to check visibility
+                function isVisible(element) {
+                    if (includeHidden) return true;
+
+                    const style = window.getComputedStyle(element);
+                    return style.display !== 'none' &&
+                           style.visibility !== 'hidden' &&
+                           style.opacity !== '0' &&
+                           element.offsetWidth > 0 &&
+                           element.offsetHeight > 0;
+                }
+
+                // Helper to get element position
+                function getPosition(element) {
+                    const rect = element.getBoundingClientRect();
+                    return {
+                        x: Math.round(rect.left + window.scrollX),
+                        y: Math.round(rect.top + window.scrollY),
+                        width: Math.round(rect.width),
+                        height: Math.round(rect.height)
+                    };
+                }
+
+                // Helper to get text content
+                function getText(element) {
+                    // Try various text sources
+                    let text = element.getAttribute('aria-label') ||
+                               element.getAttribute('title') ||
+                               element.getAttribute('alt') ||
+                               element.getAttribute('placeholder') ||
+                               element.textContent ||
+                               element.innerText ||
+                               '';
+
+                    return text.trim().replace(/\\s+/g, ' ');
+                }
+
+                const interactive = [];
+                const headings = [];
+
+                // Extract interactive elements
+                const interactiveSelectors = [
+                    'a[href]',
+                    'button',
+                    'input:not([type="hidden"])',
+                    'select',
+                    'textarea',
+                    '[role="button"]',
+                    '[role="link"]',
+                    '[role="menuitem"]',
+                    '[role="tab"]',
+                    '[onclick]'
+                ];
+
+                const elements = document.querySelectorAll(interactiveSelectors.join(', '));
+
+                elements.forEach((element, index) => {
+                    if (!isVisible(element)) return;
+
+                    const tagName = element.tagName.toLowerCase();
+                    let type = tagName;
+
+                    // Determine element type
+                    if (tagName === 'input') {
+                        type = element.type || 'text';
+                    } else if (tagName === 'a') {
+                        type = 'link';
+                    } else if (element.getAttribute('role')) {
+                        type = element.getAttribute('role');
+                    }
+
+                    const item = {
+                        id: `elem_${index}`,
+                        type: type,
+                        text: getText(element),
+                        selector: generateSelector(element),
+                        position: getPosition(element),
+                        href: element.href || element.getAttribute('href') || null,
+                        value: element.value || '',
+                        state: {
+                            disabled: element.disabled || false,
+                            checked: element.checked || false,
+                            selected: element.selected || false,
+                            required: element.required || false,
+                            readonly: element.readOnly || false
+                        }
+                    };
+
+                    interactive.push(item);
+                });
+
+                // Extract headings
+                const headingElements = document.querySelectorAll('h1, h2, h3, h4, h5, h6');
+                headingElements.forEach(heading => {
+                    if (!isVisible(heading)) return;
+
+                    headings.push({
+                        level: parseInt(heading.tagName[1]),
+                        text: heading.textContent.trim().replace(/\\s+/g, ' '),
+                        selector: generateSelector(heading)
+                    });
+                });
+
+                // Generate summary
+                const summary = {
+                    total_interactive: interactive.length,
+                    buttons: interactive.filter(el => el.type === 'button' || el.type === 'submit').length,
+                    links: interactive.filter(el => el.type === 'link').length,
+                    inputs: interactive.filter(el => ['text', 'email', 'password', 'search', 'tel', 'url', 'number'].includes(el.type)).length,
+                    selects: interactive.filter(el => el.type === 'select').length
+                };
+
                 return {
-                    "url": self.page.url,
-                    "title": await self.page.title(),
-                    "tree": None,
-                    "summary": {
-                        "total_nodes": 0,
-                        "interactive_elements": 0,
-                        "text_nodes": 0,
-                        "links_with_href": 0,
-                        "depth": 0
-                    },
-                    "error": "No accessibility tree available"
-                }
-
-            # Extract href information for links and buttons
-            href_info = await self._extract_href_information()
-
-            # Clean and process the tree
-            cleaned_tree = self._clean_accessibility_node(
-                snapshot, 
-                include_hidden=include_hidden,
-                current_depth=0,
-                max_depth=max_depth,
-                simplify=simplify,
-                href_info=href_info
-            )
-            
-            # Generate summary statistics
-            summary = self._analyze_accessibility_tree(cleaned_tree)
-            
-            result = {
-                "url": self.page.url,
-                "title": await self.page.title(),
-                "tree": cleaned_tree,
-                "summary": summary
+                    interactive_elements: interactive,
+                    headings: headings,
+                    summary: summary
+                };
             }
-            
-            self.history.append(
-                {
-                    "action": "get_accessibility_tree",
-                    "reasoning": r,
-                    "include_hidden": include_hidden,
-                    "max_depth": max_depth,
-                    "simplify": simplify,
-                    "summary": summary,
-                }
-            )
-            
+            """
+
+            # Execute JavaScript to extract elements
+            result = await self.page.evaluate(extract_script, include_hidden)
+
+            # Add URL and title
+            result['url'] = self.page.url
+            result['title'] = await self.page.title()
+
+            # Log action
+            self.history.append({
+                "action": "get_page_elements",
+                "reasoning": r,
+                "include_hidden": include_hidden,
+                "summary": result['summary']
+            })
+
             return result
-            
+
         except Exception as e:
             error_result = {
                 "url": self.page.url,
                 "title": await self.page.title(),
-                "tree": None,
+                "interactive_elements": [],
+                "headings": [],
                 "summary": {
-                    "total_nodes": 0,
-                    "interactive_elements": 0,
-                    "text_nodes": 0,
-                    "links_with_href": 0,
-                    "depth": 0
+                    "total_interactive": 0,
+                    "buttons": 0,
+                    "links": 0,
+                    "inputs": 0,
+                    "selects": 0
                 },
                 "error": f"Failed to get accessibility tree: {str(e)}"
             }
-            
-            self.history.append(
-                {
-                    "action": "get_accessibility_tree",
-                    "reasoning": r,
-                    "error": str(e),
-                }
-            )
-            
+
+            self.history.append({
+                "action": "get_page_elements",
+                "reasoning": r,
+                "error": str(e)
+            })
+
             return error_result
-
-    async def _extract_href_information(self) -> Dict[str, str]:
-        """
-        Extract href information for all links and buttons on the page.
-        
-        Returns:
-            Dictionary mapping element text content to href values
-        """
-        try:
-            # JavaScript to extract href information with element text content for matching
-            href_script = """
-            () => {
-                const hrefMap = {};
-                
-                // Get all elements with href attributes (links, buttons with href, etc.)
-                const elementsWithHref = document.querySelectorAll('a[href], button[href], area[href]');
-                
-                elementsWithHref.forEach(element => {
-                    const href = element.getAttribute('href');
-                    if (href && href.trim()) {
-                        // Get text content for matching
-                        let textContent = element.textContent || element.innerText || '';
-                        textContent = textContent.trim().replace(/\\s+/g, ' ');
-                        
-                        // Also try aria-label, title, or alt attributes
-                        if (!textContent) {
-                            textContent = element.getAttribute('aria-label') || 
-                                         element.getAttribute('title') || 
-                                         element.getAttribute('alt') || '';
-                            textContent = textContent.trim();
-                        }
-                        
-                        if (textContent) {
-                            // Use text content as key for matching
-                            hrefMap[textContent] = href.trim();
-                        }
-                    }
-                });
-                
-                // Also check for buttons with formaction or data-href
-                const buttonsWithAction = document.querySelectorAll('button[formaction], button[data-href], input[formaction]');
-                buttonsWithAction.forEach(element => {
-                    const action = element.getAttribute('formaction') || element.getAttribute('data-href');
-                    if (action && action.trim()) {
-                        let textContent = element.textContent || element.innerText || '';
-                        textContent = textContent.trim().replace(/\\s+/g, ' ');
-                        
-                        if (!textContent) {
-                            textContent = element.getAttribute('aria-label') || 
-                                         element.getAttribute('title') || 
-                                         element.getAttribute('value') || '';
-                            textContent = textContent.trim();
-                        }
-                        
-                        if (textContent) {
-                            hrefMap[textContent] = action.trim();
-                        }
-                    }
-                });
-                
-                return hrefMap;
-            }
-            """
-            
-            return await self.page.evaluate(href_script)
-            
-        except Exception as e:
-            # If href extraction fails, return empty dict and continue with tree building
-            return {}
-
-    def _clean_accessibility_node(
-        self, 
-        node: Dict[str, Any], 
-        include_hidden: bool = False,
-        current_depth: int = 0,
-        max_depth: Optional[int] = None,
-        simplify: bool = True,
-        href_info: Optional[Dict[str, str]] = None
-    ) -> Optional[Dict[str, Any]]:
-        """
-        Clean and simplify an accessibility tree node for AI consumption.
-        
-        Args:
-            node: The accessibility tree node to clean
-            include_hidden: Whether to include hidden elements
-            current_depth: Current depth in the tree
-            max_depth: Maximum depth to process
-            simplify: Whether to simplify the output
-            href_info: Dictionary mapping element text to href values for link matching
-            
-        Returns:
-            Cleaned node dictionary or None if node should be filtered out
-        """
-        if not node:
-            return None
-            
-        # Check depth limit
-        if max_depth is not None and current_depth > max_depth:
-            return None
-        
-        # Filter out hidden elements if requested
-        if not include_hidden and node.get('hidden', False):
-            return None
-            
-        # Start with a clean node
-        cleaned = {}
-        
-        # Essential properties
-        if 'role' in node:
-            cleaned['role'] = node['role']
-        if 'name' in node and node['name']:
-            cleaned['name'] = node['name'].strip()
-        if 'value' in node and node['value']:
-            cleaned['value'] = str(node['value']).strip()
-        
-        # Interactive properties
-        if node.get('disabled'):
-            cleaned['disabled'] = True
-        if node.get('checked') is not None:
-            cleaned['checked'] = node['checked']
-        if node.get('selected') is not None:
-            cleaned['selected'] = node['selected']
-        if node.get('expanded') is not None:
-            cleaned['expanded'] = node['expanded']
-            
-        # Only include level if it's meaningful
-        if 'level' in node and node['level'] > 0:
-            cleaned['level'] = node['level']
-            
-        # Include coordinates if available (useful for clicking)
-        if 'boundingBox' in node:
-            bbox = node['boundingBox']
-            position = {
-                'x': int(bbox.get('x', 0)),
-                'y': int(bbox.get('y', 0)),
-                'width': int(bbox.get('width', 0)),
-                'height': int(bbox.get('height', 0))
-            }
-            cleaned['position'] = position
-        
-        # Try to find href information for this element using text matching
-        if href_info and cleaned.get('role') in {'link', 'button'}:
-            element_text = cleaned.get('name', '').strip()
-            if element_text and element_text in href_info:
-                cleaned['href'] = href_info[element_text]
-        
-        # Process children recursively
-        if 'children' in node and node['children']:
-            children = []
-            for child in node['children']:
-                cleaned_child = self._clean_accessibility_node(
-                    child, 
-                    include_hidden=include_hidden,
-                    current_depth=current_depth + 1,
-                    max_depth=max_depth,
-                    simplify=simplify,
-                    href_info=href_info
-                )
-                if cleaned_child:
-                    children.append(cleaned_child)
-            
-            if children:
-                cleaned['children'] = children
-        
-        # If simplifying, filter out nodes with no meaningful content
-        if simplify:
-            # Keep nodes that have:
-            # - A role that indicates interactivity or content
-            # - Text content (name or value)
-            # - Children
-            # - Position information
-            # - Href information (links/buttons with destinations)
-            interactive_roles = {
-                'button', 'link', 'textbox', 'combobox', 'listbox', 'menuitem',
-                'tab', 'tabpanel', 'slider', 'spinbutton', 'checkbox', 'radio'
-            }
-            content_roles = {
-                'heading', 'text', 'paragraph', 'article', 'main', 'navigation',
-                'banner', 'contentinfo', 'complementary', 'region'
-            }
-            
-            has_role = cleaned.get('role') in (interactive_roles | content_roles)
-            has_content = bool(cleaned.get('name') or cleaned.get('value'))
-            has_children = bool(cleaned.get('children'))
-            has_position = bool(cleaned.get('position'))
-            has_href = bool(cleaned.get('href'))
-            
-            if not (has_role or has_content or has_children or has_position or has_href):
-                return None
-        
-        return cleaned if cleaned else None
-
-    def _analyze_accessibility_tree(self, tree: Optional[Dict[str, Any]]) -> Dict[str, int]:
-        """
-        Analyze the accessibility tree and generate summary statistics.
-        
-        Args:
-            tree: The cleaned accessibility tree
-            
-        Returns:
-            Dictionary with summary statistics
-        """
-        if not tree:
-            return {
-                "total_nodes": 0,
-                "interactive_elements": 0,
-                "text_nodes": 0,
-                "links_with_href": 0,
-                "depth": 0
-            }
-        
-        interactive_roles = {
-            'button', 'link', 'textbox', 'combobox', 'listbox', 'menuitem',
-            'tab', 'tabpanel', 'slider', 'spinbutton', 'checkbox', 'radio'
-        }
-        
-        def count_nodes(node, current_depth=0):
-            if not node:
-                return {
-                    "total_nodes": 0,
-                    "interactive_elements": 0, 
-                    "text_nodes": 0,
-                    "links_with_href": 0,
-                    "max_depth": current_depth
-                }
-            
-            stats = {
-                "total_nodes": 1,
-                "interactive_elements": 0,
-                "text_nodes": 0,
-                "links_with_href": 0,
-                "max_depth": current_depth
-            }
-            
-            # Check if this node is interactive
-            if node.get('role') in interactive_roles:
-                stats["interactive_elements"] = 1
-                
-            # Check if this node has text content
-            if node.get('name') or node.get('value'):
-                stats["text_nodes"] = 1
-            
-            # Check if this node has href information
-            if node.get('href'):
-                stats["links_with_href"] = 1
-            
-            # Process children
-            if 'children' in node:
-                for child in node['children']:
-                    child_stats = count_nodes(child, current_depth + 1)
-                    stats["total_nodes"] += child_stats["total_nodes"]
-                    stats["interactive_elements"] += child_stats["interactive_elements"]
-                    stats["text_nodes"] += child_stats["text_nodes"]
-                    stats["links_with_href"] += child_stats["links_with_href"]
-                    stats["max_depth"] = max(stats["max_depth"], child_stats["max_depth"])
-            
-            return stats
-        
-        stats = count_nodes(tree)
-        return {
-            "total_nodes": stats["total_nodes"],
-            "interactive_elements": stats["interactive_elements"],
-            "text_nodes": stats["text_nodes"],
-            "links_with_href": stats["links_with_href"],
-            "depth": stats["max_depth"]
-        }

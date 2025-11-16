@@ -5,9 +5,26 @@ This module provides strongly-typed data structures for validating
 agent invocation requests, especially for parallel execution scenarios.
 """
 
-from pydantic import BaseModel, Field, field_validator
+from pydantic import BaseModel, Field, field_validator, ConfigDict
 from typing import Any, List, Optional, Literal
+from enum import Enum
 import uuid
+
+
+class ValidationErrorCategory(Enum):
+    """
+    Categories of validation errors for targeted steering prompts.
+
+    This enum is shared between ValidationProcessor (which categorizes errors)
+    and SteeringManager (which generates category-specific prompts).
+    """
+    FORMAT_ERROR = "format_error"              # JSON structure, parsing errors
+    PERMISSION_ERROR = "permission_error"      # Agent permission denied
+    ACTION_ERROR = "action_error"              # Invalid action type
+    API_TRANSIENT = "api_transient"            # Rate limit, timeout, network
+    API_TERMINAL = "api_terminal"              # Auth failure, invalid model
+    TOOL_ERROR = "tool_error"                  # Tool execution failure
+    UNKNOWN = "unknown"
 
 
 class AgentInvocation(BaseModel):
@@ -59,9 +76,8 @@ class AgentInvocation(BaseModel):
             "request": self.request,
             "instance_id": self.instance_id
         }
-    
-    class Config:
-        extra = "allow"  # Allow additional fields for extensibility
+
+    model_config = ConfigDict(extra="allow")  # Allow additional fields for extensibility
 
 
 class ValidationError(BaseModel):

@@ -109,6 +109,9 @@ def _parse_docstring(docstring: str) -> Dict[str, Any]:
 
 def _map_type_to_json_schema(py_type: Any) -> Dict[str, Any]:
     """Maps Python types to JSON schema type definitions."""
+    from pathlib import Path
+    from enum import Enum
+
     if py_type == str:
         return {"type": "string"}
     if py_type == int:
@@ -117,6 +120,25 @@ def _map_type_to_json_schema(py_type: Any) -> Dict[str, Any]:
         return {"type": "number"}
     if py_type == bool:
         return {"type": "boolean"}
+
+    # Handle Path (convert to string)
+    if py_type == Path:
+        return {"type": "string", "description": "File system path"}
+
+    # Handle Enum types
+    try:
+        if inspect.isclass(py_type) and issubclass(py_type, Enum):
+            enum_values = [member.value for member in py_type]
+            # Determine type from first value
+            enum_type = "string"
+            if enum_values and isinstance(enum_values[0], int):
+                enum_type = "integer"
+            elif enum_values and isinstance(enum_values[0], float):
+                enum_type = "number"
+            return {"type": enum_type, "enum": enum_values}
+    except TypeError:
+        pass  # Not a class or not an Enum
+
     if py_type == list or getattr(py_type, "__origin__", None) == list:
         args = getattr(py_type, "__args__", ())
         if args and len(args) == 1: # For List[T]
@@ -129,7 +151,7 @@ def _map_type_to_json_schema(py_type: Any) -> Dict[str, Any]:
         # It expects "object" and you can describe typical properties if known,
         # or use additionalProperties. For generic dict, just "object".
         return {"type": "object", "additionalProperties": True} # Allows any properties
-    
+
     # Handle typing.Literal
     if getattr(py_type, "__origin__", None) == Literal:
         args = getattr(py_type, "__args__", ())
@@ -152,12 +174,29 @@ def _map_type_to_json_schema(py_type: Any) -> Dict[str, Any]:
             return _map_type_to_json_schema(non_none_types[0])
         else:
             # For Union of multiple types (e.g., Union[str, int]), OpenAI schema doesn't directly support 'anyOf'.
-            # Default to string or the first type.
-            logger.warning(f"Complex Union type {py_type} encountered. Defaulting to schema of first type or string.")
-            if non_none_types:
+            # Check if it's a common pattern like Union[str, Path] or Union[str, Enum]
+            # These are acceptable as they all map to string
+            type_names = {getattr(t, "__name__", str(t)) for t in non_none_types}
+
+            # Check if all types in the union can be represented as strings
+            all_string_compatible = all(
+                t == str or t == Path or (inspect.isclass(t) and issubclass(t, Enum))
+                for t in non_none_types
+                if t is not type(None)
+            )
+
+            if all_string_compatible:
+                # All types are string-compatible, use the first type's schema without warning
                 return _map_type_to_json_schema(non_none_types[0])
-            
-    logger.warning(f"Unsupported type {py_type} for JSON schema mapping. Defaulting to 'string'.")
+            else:
+                # Truly complex union, log warning
+                logger.warning(f"Complex Union type {py_type} encountered. Defaulting to schema of first type.")
+                if non_none_types:
+                    return _map_type_to_json_schema(non_none_types[0])
+
+    # Fallback: check if it's an unknown type we can describe
+    type_name = getattr(py_type, "__name__", str(py_type))
+    logger.debug(f"Unmapped type {type_name} for JSON schema. Defaulting to 'string'.")
     return {"type": "string"} 
 
 
@@ -193,11 +232,15 @@ def generate_openai_tool_schema(func: Callable, func_name: str) -> Dict[str, Any
             continue
 
         param_type_hint = type_hints.get(name, param.annotation)
-        
+
         # If no type hint is available (param.annotation is inspect.Parameter.empty)
         # and not found in type_hints (e.g. due to parsing error or it's truly missing)
         if param_type_hint == inspect.Parameter.empty:
-            logger.warning(f"No type hint found for parameter '{name}' in function '{func_name}'. Defaulting to 'string'.")
+            # Use debug level for common catch-all parameters like kwargs
+            if name in ("kwargs", "args", "kw", "options"):
+                logger.debug(f"No type hint for catch-all parameter '{name}' in '{func_name}'. Defaulting to 'string'.")
+            else:
+                logger.warning(f"No type hint found for parameter '{name}' in function '{func_name}'. Defaulting to 'string'.")
             param_type_hint = str 
 
         json_type_def = _map_type_to_json_schema(param_type_hint)

@@ -151,6 +151,52 @@ class AgentRegistry:
             )
 
     @classmethod
+    def unregister_if_same(cls, name: str, instance: "BaseAgent") -> None:
+        """
+        Unregister an agent only if the current registry entry matches the instance.
+
+        This is an identity-safe version of unregister() that prevents race conditions
+        where an old agent's __del__ might try to unregister a newly registered agent
+        with the same name.
+
+        Args:
+            name: The name of the agent to unregister.
+            instance: The specific agent instance that should be unregistered.
+                     Only unregisters if the registry currently maps 'name' to this instance.
+        """
+        with cls._lock:
+            # Do not allow unregistering pool instances directly
+            if name in cls._pool_instance_map:
+                logging.debug(f"Skip unregister_if_same for pool instance '{name}'")
+                return
+
+            current = cls._agents.get(name)
+            if current is instance:
+                cls._agents.pop(name, None)
+                logging.info(f"Agent '{name}' unregistered", extra={"agent_name": name})
+            else:
+                logging.debug(
+                    f"Skip unregister '{name}': registry points to a different instance",
+                    extra={"agent_name": name}
+                )
+
+    @classmethod
+    def unregister_instance(cls, instance: "BaseAgent") -> None:
+        """
+        Convenience method to unregister an agent instance using its name attribute.
+
+        This is a wrapper around unregister_if_same that extracts the name from
+        the instance itself.
+
+        Args:
+            instance: The agent instance to unregister.
+        """
+        name = getattr(instance, "name", None)
+        if not name:
+            return
+        cls.unregister_if_same(name, instance)
+
+    @classmethod
     def get(cls, name: str) -> Optional["BaseAgent"]:
         """
         Retrieves an agent instance by name.

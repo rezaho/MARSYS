@@ -186,7 +186,7 @@ step_executor = StepExecutor(
 )
 
 result = await step_executor.execute_step(
-    agent_name="Analyzer",
+    name="Analyzer",
     request="Analyze sales data",
     context={"session": "123"},
     branch=current_branch,
@@ -342,7 +342,7 @@ results = await tool_executor.execute_tool_calls(
         ToolCall(name="search", arguments={"query": "AI news"}),
         ToolCall(name="summarize", arguments={"text": "..."})
     ],
-    agent_name="Researcher",
+    name="Researcher",
     context={}
 )
 ```

@@ -117,8 +117,7 @@ nav:
     
   - Concepts:
     - Overview: concepts/overview.md
-    - Core Components: 
-      - Overview: concepts/index.md
+    - Core Components:
       - Agents: concepts/agents.md
       - Memory: concepts/memory.md
       - Tools: concepts/tools.md
@@ -126,17 +125,16 @@ nav:
       - Registry: concepts/registry.md
       - Messages: concepts/messages.md
       - Communication: concepts/communication.md
+    - Specialized Agents:
+      - Overview: concepts/specialized-agents.md
+      - Browser Agent: concepts/browser-automation.md
     - Advanced Topics:
-      - Execution Flow: concepts/execution-flow.md
-      - Branching: concepts/branching.md
-      - Validation & Routing: concepts/validation-routing.md
+      - Topology: concepts/advanced/topology.md
       - State Management: concepts/state-management.md
       - Error Handling: concepts/error-handling.md
-      - Browser Automation: concepts/browser-automation.md
       - Learning Agents: concepts/learning-agents.md
       - Memory Patterns: concepts/memory-patterns.md
       - Custom Agents: concepts/custom-agents.md
-      - Topology: concepts/advanced/topology.md
     
   - API Reference:
     - Overview: api/overview.md
@@ -157,21 +155,16 @@ nav:
       - Communication: api/communication.md
       - Tools: api/tools.md
 
-  - Tutorials:
-    - tutorials/overview.md
-    - Basic Usage: tutorials/basic-usage.md
-
-  - Use Cases:
-    - use-cases/index.md
-    - Overview: use-cases/overview.md
+  - Use Cases: use-cases/index.md
 
   - Guides:
-    - Overview: guides/overview.md
     - Built-in Tools: guides/built-in-tools.md
+    - Specialized Tools: guides/specialized-tools.md
+    - File Operations: guides/file-operations.md
+    - Multimodal Agents: guides/multimodal-agents.md
+    - Steering and Error Recovery: guides/steering-and-error-recovery.md
 
-  - Contributing:
-    - contributing/index.md
-    - Overview: contributing/overview.md
+  - Contributing: contributing/index.md
 
   - Project:
     - project/overview.md

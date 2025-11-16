@@ -302,7 +302,11 @@ class CLIChannel(ChannelAdapter):
         from ..config import VerbosityLevel
         c = self.colors
 
-        print(f"\n{c['bold']}{c['green']}═══ Workflow Complete ═══{c['reset']}")
+        # Show different header based on success/failure
+        if event.success:
+            print(f"\n{c['bold']}{c['green']}═══ Workflow Complete ═══{c['reset']}")
+        else:
+            print(f"\n{c['bold']}{c['red']}═══ Workflow Failed ═══{c['reset']}")
 
         if verbosity >= VerbosityLevel.NORMAL:
             status = "Success" if event.success else "Failed"
@@ -644,7 +648,11 @@ class PrefixedCLIChannel(ChannelAdapter):
         # Final response doesn't belong to a specific agent
         prefix = self._format_prefix("System")
 
-        print(f"\n{prefix}{c['bold']}{c['green']}═══ Workflow Complete ═══{c['reset']}")
+        # Show different header based on success/failure
+        if event.success:
+            print(f"\n{prefix}{c['bold']}{c['green']}═══ Workflow Complete ═══{c['reset']}")
+        else:
+            print(f"\n{prefix}{c['bold']}{c['red']}═══ Workflow Failed ═══{c['reset']}")
 
         if verbosity >= VerbosityLevel.NORMAL:
             status = "Success" if event.success else "Failed"

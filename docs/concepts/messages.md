@@ -196,6 +196,10 @@ agent_response = Message(
 
 ### Multimodal Messages
 
+MARSYS supports multimodal messages with images for vision models like GPT-4V, Gemini, and Claude.
+
+#### User Messages with Images
+
 ```python
 # Message with images (for vision models)
 vision_msg = Message(
@@ -216,6 +220,59 @@ mixed_msg = Message(
         {"type": "image_url", "image_url": {"url": "data:image/png;base64,..."}}
     ]
 )
+```
+
+#### Tool Results with Images
+
+Tools can return images alongside text results. The framework automatically handles image injection into agent memory:
+
+```python
+# Tool that extracts images from a PDF
+def extract_pdf_content(pdf_path: str) -> Dict[str, Any]:
+    """
+    Extract text and images from a PDF file.
+
+    Returns:
+        Dictionary with 'result' (text) and 'images' (list of paths)
+    """
+    text = extract_text(pdf_path)
+    image_paths = extract_images_to_temp(pdf_path)
+
+    return {
+        "result": f"Extracted {len(image_paths)} pages from PDF",
+        "images": image_paths  # List of file paths
+    }
+
+# The tool result message created automatically:
+tool_result_msg = Message(
+    role="tool",
+    content="Extracted 3 pages from PDF",
+    name="extract_pdf_content",
+    tool_call_id="call_123",
+    images=[
+        "/tmp/pdf_page_1.png",
+        "/tmp/pdf_page_2.png",
+        "/tmp/pdf_page_3.png"
+    ]
+)
+```
+
+#### Task Descriptions with Images
+
+You can include images directly in task descriptions:
+
+```python
+# Task with images
+task = {
+    "content": "What is shown in these screenshots? Provide a detailed analysis.",
+    "images": [
+        "/path/to/screenshot1.png",
+        "/path/to/screenshot2.png"
+    ]
+}
+
+# Images are automatically added to the first agent's memory
+result = await Orchestra.run(task=task, topology=topology)
 ```
 
 ## 🔄 Message Conversion

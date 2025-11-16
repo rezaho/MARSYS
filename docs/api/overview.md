@@ -27,7 +27,7 @@ The MARSYS API is organized into several key modules:
 
     ```python
     from marsys.agents import Agent, BaseAgent
-    agent = Agent(model_config, agent_name="Helper")
+    agent = Agent(model_config, name="Helper")
     ```
 
 - :material-brain:{ .lg .middle } **[Model System](models/)**
@@ -105,17 +105,18 @@ from marsys.models import ModelConfig
 agent = Agent(
     model_config=ModelConfig(
         type="api",
-        name="gpt-4",
-        provider="openai"
+        name="anthropic/claude-haiku-4.5",
+        provider="openrouter",
+        max_tokens=12000
     ),
-    agent_name="Assistant",
-    description="A helpful assistant"
+    name="Assistant",
+    goal="A helpful assistant"
 )
 
 # Agent with tools
 agent = Agent(
     model_config=config,
-    agent_name="Researcher",
+    name="Researcher",
     tools=[search_tool, analyze_tool]
 )
 
@@ -124,7 +125,7 @@ from marsys.agents import BrowserAgent
 
 browser = BrowserAgent(
     model_config=config,
-    agent_name="WebScraper",
+    name="WebScraper",
     headless=True
 )
 ```
@@ -296,9 +297,9 @@ class OrchestraResult:
 
 ```python
 # Create specialized agents
-researcher = Agent(config, agent_name="Researcher")
-analyst = Agent(config, agent_name="Analyst")
-writer = Agent(config, agent_name="Writer")
+researcher = Agent(config, name="Researcher")
+analyst = Agent(config, name="Analyst")
+writer = Agent(config, name="Writer")
 
 # Define topology
 topology = PatternConfig.hub_and_spoke(
