@@ -346,26 +346,21 @@ class TopologyGraph:
     
     def find_entry_points(self) -> List[str]:
         """
-        Find the single entry point of the topology.
+        Determine the entry point for the topology.
         
-        Rules:
-        1. If a User node exists, it is always the entry point
-        2. Otherwise, find nodes with no incoming edges
-        3. Only one entry point is allowed
-        
-        Returns:
-            List with single entry point
-            
-        Raises:
-            ValueError: If topology violates entry point rules
+        Priority order:
+            1. User node (if present)
+            2. Manually specified entry (stored in metadata)
+            3. Structurally detected node with no incoming edges
         """
         from .core import NodeType
-        
-        # First, check for User nodes
-        user_nodes = []
-        for node_name, node in self.nodes.items():
-            if node.node_type == NodeType.USER:
-                user_nodes.append(node_name)
+
+        # 1. User node always acts as the workflow boundary
+        user_nodes = [
+            node_name
+            for node_name, node in self.nodes.items()
+            if node.node_type == NodeType.USER
+        ]
         
         if user_nodes:
             if len(user_nodes) > 1:
@@ -376,14 +371,29 @@ class TopologyGraph:
                     affected_nodes=user_nodes
                 )
             return user_nodes
+
+        # 2. Respect manual overrides captured during analysis
+        if self.metadata:
+            entry_override = (
+                self.metadata.get("specified_entry_point")
+                or self.metadata.get("resolved_entry_point")
+            )
+            if entry_override:
+                if entry_override not in self.nodes:
+                    raise TopologyError(
+                        f"Resolved entry point '{entry_override}' not found in topology nodes.",
+                        topology_issue="invalid_entry_point",
+                        affected_nodes=[entry_override]
+                    )
+                return [entry_override]
+
+        # 3. Fall back to structural detection
+        entry_points = [
+            node_name
+            for node_name, node in self.nodes.items()
+            if not node.incoming_edges
+        ]
         
-        # No User node - find nodes with no incoming edges
-        entry_points = []
-        for node_name, node in self.nodes.items():
-            if not node.incoming_edges:
-                entry_points.append(node_name)
-        
-        # Validate single entry point
         if not entry_points:
             raise TopologyError(
                 "No entry point found. Topology must have exactly one node "
@@ -422,9 +432,12 @@ class TopologyGraph:
         """
         from .core import NodeType
         
-        # Check for User nodes
-        user_nodes = [name for name, node in self.nodes.items() 
-                      if node.node_type == NodeType.USER]
+        user_nodes = [
+            name for name, node in self.nodes.items()
+            if node.node_type == NodeType.USER
+        ]
+        user_node: Optional[str] = None
+        entry_agent: Optional[str] = None
         
         if user_nodes:
             user_node = user_nodes[0]
@@ -452,25 +465,25 @@ class TopologyGraph:
                         topology_issue="invalid_user_edge",
                         affected_nodes=[user_node, manual_entry]
                     )
-                return (user_node, manual_entry)
-            
-            # No manual entry - check User's outgoing edges
-            user_targets = self.get_next_agents(user_node)
-            if not user_targets:
-                raise TopologyError(
-                    "User node has no outgoing edges",
-                    topology_issue="user_no_edges",
-                    affected_nodes=[user_node]
-                )
-            elif len(user_targets) == 1:
-                return (user_node, user_targets[0])
+                entry_agent = manual_entry
             else:
-                raise TopologyError(
-                    f"User has multiple outgoing edges to {user_targets}. "
-                    "Please specify entry_point in topology.",
-                    topology_issue="user_multiple_edges",
-                    affected_nodes=[user_node] + user_targets
-                )
+                # No manual entry - check User's outgoing edges
+                user_targets = self.get_next_agents(user_node)
+                if not user_targets:
+                    raise TopologyError(
+                        "User node has no outgoing edges",
+                        topology_issue="user_no_edges",
+                        affected_nodes=[user_node]
+                    )
+                elif len(user_targets) == 1:
+                    entry_agent = user_targets[0]
+                else:
+                    raise TopologyError(
+                        f"User has multiple outgoing edges to {user_targets}. "
+                        "Please specify entry_point in topology.",
+                        topology_issue="user_multiple_edges",
+                        affected_nodes=[user_node] + user_targets
+                    )
         
         else:
             # No User node - entry_point is the starting node
@@ -481,28 +494,72 @@ class TopologyGraph:
                         topology_issue="invalid_entry_point",
                         affected_nodes=[manual_entry]
                     )
-                return (None, manual_entry)
-            
-            # Find nodes with no incoming edges
-            candidates = [name for name, node in self.nodes.items() 
-                         if not node.incoming_edges]
-            
-            if not candidates:
-                raise TopologyError(
-                    "No entry point found. Graph has cycles without clear start. "
-                    "Please specify entry_point in topology.",
-                    topology_issue="no_entry_cycles",
-                    affected_nodes=list(self.nodes.keys())
-                )
-            elif len(candidates) == 1:
-                return (None, candidates[0])
+                entry_agent = manual_entry
             else:
-                raise TopologyError(
-                    f"Multiple entry candidates found: {candidates}. "
-                    "Please specify entry_point in topology.",
-                    topology_issue="multiple_entry_candidates",
-                    affected_nodes=candidates
-                )
+                # Find nodes with no incoming edges
+                candidates = [
+                    name for name, node in self.nodes.items()
+                    if not node.incoming_edges
+                ]
+                
+                if not candidates:
+                    raise TopologyError(
+                        "No entry point found. Graph has cycles without clear start. "
+                        "Please specify entry_point in topology.",
+                        topology_issue="no_entry_cycles",
+                        affected_nodes=list(self.nodes.keys())
+                    )
+                elif len(candidates) == 1:
+                    entry_agent = candidates[0]
+                else:
+                    raise TopologyError(
+                        f"Multiple entry candidates found: {candidates}. "
+                        "Please specify entry_point in topology.",
+                        topology_issue="multiple_entry_candidates",
+                        affected_nodes=candidates
+                    )
+        
+        if entry_agent is None:
+            raise TopologyError(
+                "Unable to determine entry point for topology.",
+                topology_issue="entry_point_resolution_failed",
+                affected_nodes=list(self.nodes.keys())
+            )
+        
+        self._update_entry_point_metadata(manual_entry, user_node, entry_agent)
+        return (user_node, entry_agent)
+
+    def _update_entry_point_metadata(
+        self,
+        manual_entry: Optional[str],
+        user_node: Optional[str],
+        entry_agent: Optional[str]
+    ) -> None:
+        """Store resolved entry point details for downstream components."""
+        if not hasattr(self, "metadata") or self.metadata is None:
+            self.metadata = {}
+        
+        if manual_entry:
+            self.metadata["specified_entry_point"] = manual_entry
+        else:
+            self.metadata.pop("specified_entry_point", None)
+        
+        if user_node:
+            self.metadata["entry_user_node"] = user_node
+        else:
+            self.metadata.pop("entry_user_node", None)
+        
+        if entry_agent:
+            self.metadata["resolved_entry_point"] = entry_agent
+            if user_node:
+                # Needed so orchestration knows which agent follows the User node
+                self.metadata["agent_after_user"] = entry_agent
+        else:
+            self.metadata.pop("resolved_entry_point", None)
+            self.metadata.pop("agent_after_user", None)
+        
+        if not user_node:
+            self.metadata.pop("agent_after_user", None)
     
     def find_exit_points_with_manual(
         self,

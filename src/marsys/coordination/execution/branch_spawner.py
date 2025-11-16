@@ -351,7 +351,7 @@ class DynamicBranchSpawner:
         # Store convergence policy
         if convergence_policy is None:
             from ..config import ConvergencePolicyConfig
-            convergence_policy = ConvergencePolicyConfig.from_value(0.67)
+            convergence_policy = ConvergencePolicyConfig.from_value(1.0)
         self.convergence_policy = convergence_policy
 
         # Identify convergence points from topology
@@ -2109,11 +2109,18 @@ class DynamicBranchSpawner:
                 last_step = result.execution_trace[-1]
 
                 # Truncate large responses
-                content = last_step.response
+                # Extract content from Message object to avoid JSON serialization issues
+                from ...agents.memory import Message
+                if isinstance(last_step.response, Message):
+                    content = last_step.response.content
+                else:
+                    content = last_step.response
+
                 if isinstance(content, str) and len(content) > self.DEFAULT_MAX_RESULT_SIZE:
+                    original_len = len(content)
                     content = content[:self.DEFAULT_MAX_RESULT_SIZE] + "... [truncated]"
-                    logger.warning(f"Truncated large response from branch {branch.id} (was {len(last_step.response)} chars)")
-                
+                    logger.warning(f"Truncated large response from branch {branch.id} (was {original_len} chars)")
+
                 group.aggregated_results[branch.id] = {
                     'branch_id': branch.id,
                     'content': content,

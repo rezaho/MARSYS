@@ -43,6 +43,7 @@ from ..validation.response_validator import (
     ValidationProcessor,
     ValidationResult,
 )
+from ..validation.types import ValidationErrorCategory
 
 logger = logging.getLogger(__name__)
 
@@ -234,10 +235,13 @@ class BranchExecutor:
         
         # Start with the entry agent
         current_agent = branch.topology.entry_agent
-        
+
         # Track retry attempts per agent (stored on branch for persistence across pause/resume)
         if not hasattr(branch, 'retry_counts'):
             branch.retry_counts = defaultdict(int)
+        if not hasattr(branch, 'agent_retry_info'):
+            branch.agent_retry_info = {}  # {agent_name: error_context_dict}
+
         retry_counts = branch.retry_counts
         
         while True:
@@ -245,8 +249,12 @@ class BranchExecutor:
             if await self._should_complete(branch, context, execution_trace):
                 break
 
-            # Pass actual retry count in context metadata (for future use)
+            # Pass retry context to StepExecutor for steering
+            agent_retry_info = branch.agent_retry_info.get(current_agent)
             context.metadata["agent_retry_count"] = retry_counts.get(current_agent, 0)
+            if agent_retry_info:
+                context.metadata["agent_error_context"] = agent_retry_info
+                logger.debug(f"Passing error context for {current_agent}: {agent_retry_info['category']}")
 
             # Execute current agent
             step_result = await self._execute_agent_step(
@@ -255,7 +263,14 @@ class BranchExecutor:
                 context,
                 branch
             )
-            
+
+            # Check if User node signaled to clear error context (user provided feedback)
+            if step_result.metadata and step_result.metadata.get("clear_error_context"):
+                # Clear all agent retry info (user feedback supersedes previous errors)
+                if hasattr(branch, 'agent_retry_info'):
+                    branch.agent_retry_info.clear()
+                    logger.info("Cleared all error context after user feedback")
+
             execution_trace.append(step_result)
             branch.state.current_step += 1
             
@@ -269,6 +284,7 @@ class BranchExecutor:
                 if step_result.requires_retry and retry_counts[current_agent] < self.max_retries:
                     retry_counts[current_agent] += 1
                     logger.warning(f"Retrying agent '{current_agent}' after failure (attempt {retry_counts[current_agent]}/{self.max_retries})")
+                    current_request = None  # Use None for retry to let agent continue with memory
                     continue
                 else:
                     if retry_counts[current_agent] >= self.max_retries:
@@ -276,7 +292,7 @@ class BranchExecutor:
                     return BranchResult(
                         branch_id=branch.id,
                         success=False,
-                        final_response=step_result.response,
+                        final_response=self._extract_content_from_response(step_result.response),
                         total_steps=branch.state.current_step,
                         execution_trace=execution_trace,
                         branch_memory=context.branch_memory,
@@ -306,7 +322,7 @@ class BranchExecutor:
                 return BranchResult(
                     branch_id=branch.id,
                     success=True,
-                    final_response=step_result.response,
+                    final_response=self._extract_content_from_response(step_result.response),
                     total_steps=branch.state.current_step,
                     execution_trace=execution_trace,
                     branch_memory=context.branch_memory,
@@ -366,12 +382,14 @@ class BranchExecutor:
                             group = self.branch_spawner.parallel_groups.get(group_id)
                             if group:
                                 # Record convergence with response for aggregation
+                                # Extract content from Message object to avoid JSON serialization issues
+                                response_content = self._extract_content_from_response(step_result.response)
                                 group.record_branch_convergence(
                                     branch.id,
                                     convergence_target,
                                     {
                                         'branch_id': branch.id,
-                                        'response': step_result.response,
+                                        'response': response_content,
                                         'timestamp': time.time(),
                                         'agent': current_agent
                                     }
@@ -396,13 +414,39 @@ class BranchExecutor:
                     return BranchResult(
                         branch_id=branch.id,
                         success=True,
-                        final_response=step_result.response,
+                        final_response=self._extract_content_from_response(step_result.response),
                         total_steps=branch.state.current_step,
                         execution_trace=execution_trace,
                         branch_memory=context.branch_memory,
                         metadata=result_metadata
                     )
-                
+
+                # Check if this was an error recovery attempt that failed due to no User node
+                if step_result.metadata and step_result.metadata.get('needs_error_display'):
+                    # User node was attempted but not available - log error and fail gracefully
+                    error_details = step_result.metadata.get('error_details', {})
+                    error_type = step_result.metadata.get('error_action_type', 'error')
+                    error_message = error_details.get('message', 'Unknown error')
+                    error_classification = error_details.get('classification', 'unknown')
+
+                    # Log error (following existing pattern from line 716)
+                    logger.error(
+                        f"[{error_type.upper()}] {error_classification}: {error_message}. "
+                        f"User node not available in topology. Terminating workflow."
+                    )
+
+                    # Return failed branch result with error details
+                    return BranchResult(
+                        branch_id=branch.id,
+                        success=False,
+                        final_response=None,
+                        total_steps=branch.state.current_step,
+                        execution_trace=execution_trace,
+                        branch_memory=context.branch_memory,
+                        error=f"[{error_type}] {error_classification}: {error_message}",
+                        metadata=step_result.metadata
+                    )
+
                 # No next agent - branch completes
                 # Extract the actual content from parsed response if available
                 final_content = step_result.response
@@ -438,7 +482,7 @@ class BranchExecutor:
         return BranchResult(
             branch_id=branch.id,
             success=True,
-            final_response=execution_trace[-1].response if execution_trace else None,
+            final_response=self._extract_content_from_response(execution_trace[-1].response) if execution_trace else None,
             total_steps=branch.state.current_step,
             execution_trace=execution_trace,
             branch_memory=context.branch_memory,
@@ -511,7 +555,7 @@ class BranchExecutor:
                 return BranchResult(
                     branch_id=branch.id,
                     success=False,
-                    final_response=step_result.response,
+                    final_response=self._extract_content_from_response(step_result.response),
                     total_steps=branch.state.current_step,
                     execution_trace=execution_trace,
                     branch_memory=context.branch_memory,
@@ -543,7 +587,7 @@ class BranchExecutor:
                 return BranchResult(
                     branch_id=branch.id,
                     success=True,
-                    final_response=step_result.response,
+                    final_response=self._extract_content_from_response(step_result.response),
                     total_steps=branch.state.current_step,
                     execution_trace=execution_trace,
                     branch_memory=context.branch_memory,
@@ -563,7 +607,7 @@ class BranchExecutor:
         return BranchResult(
             branch_id=branch.id,
             success=True,
-            final_response=execution_trace[-1].response if execution_trace else None,
+            final_response=self._extract_content_from_response(execution_trace[-1].response) if execution_trace else None,
             total_steps=branch.state.current_step,
             execution_trace=execution_trace,
             branch_memory=context.branch_memory,
@@ -792,9 +836,34 @@ class BranchExecutor:
                         "conversation": conversation_context,
                         "tool_continuation": is_tool_continuation,
                         "branch": branch,  # CRITICAL: Pass branch for reflexive metadata
-                        "topology_graph": self.topology_graph  # CRITICAL: Pass topology for next agents
+                        "topology_graph": self.topology_graph,  # CRITICAL: Pass topology for next agents
+                        "metadata": context.metadata  # CRITICAL: Pass metadata for retry tracking
                     }
                 )
+
+                # VALIDATION: Ensure StepExecutor didn't set routing fields inappropriately
+                # StepExecutor should NEVER set these fields
+                if result.next_agent is not None:
+                    logger.warning(f"StepExecutor set next_agent='{result.next_agent}' - this should only be set by BranchExecutor - clearing it")
+                    result.next_agent = None
+                if result.action_type is not None:
+                    logger.warning(f"StepExecutor set action_type='{result.action_type}' - this should only be set by BranchExecutor - clearing it")
+                    result.action_type = None
+                if result.parsed_response is not None:
+                    logger.warning("StepExecutor set parsed_response - this should only be set by BranchExecutor - clearing it")
+                    result.parsed_response = None
+                if result.should_end_branch:
+                    logger.warning("StepExecutor set should_end_branch=True - this should only be set by BranchExecutor - clearing it")
+                    result.should_end_branch = False
+                if result.waiting_for_children:
+                    logger.warning("StepExecutor set waiting_for_children=True - this should only be set by BranchExecutor - clearing it")
+                    result.waiting_for_children = False
+                if result.child_branch_ids:
+                    logger.warning("StepExecutor set child_branch_ids - this should only be set by BranchExecutor - clearing it")
+                    result.child_branch_ids = []
+                if result.convergence_target is not None:
+                    logger.warning("StepExecutor set convergence_target - this should only be set by BranchExecutor - clearing it")
+                    result.convergence_target = None
             else:
                 # Direct execution (fallback)
                 response = await agent.run_step(
@@ -833,9 +902,15 @@ class BranchExecutor:
                     },
                 )
 
-            # Validate response if validator available
-            # Skip validation if this is a tool continuation (tools already executed)
-            if self.response_validator and result.success and not (result.tool_results and result.metadata.get('tool_continuation')):
+            # Handle tool continuation specially - skip validation but set required attributes
+            if result.tool_results and result.metadata and result.metadata.get('tool_continuation'):
+                # Tool continuation - set routing attributes for agent to continue processing tool results
+                result.action_type = "invoke_agent"  # Self-invocation to continue after tools
+                result.next_agent = agent_name  # Continue with same agent
+                # Don't set parsed_response - it's not needed for tool continuation flow
+                logger.debug(f"Tool continuation for {agent_name} - skipping validation, agent will process tool results")
+            elif self.response_validator and result.success:
+                # Normal validation path
                 # Create a mock ExecutionState for validation
                 from ..branches.types import ExecutionState
                 exec_state = ExecutionState(
@@ -844,8 +919,9 @@ class BranchExecutor:
                     status="running"
                 )
                 
+                # Pass Message object directly to validator (result.response is now a Message)
                 validation = await self.response_validator.process_response(
-                    raw_response=result.parsed_response if result.response is None and result.parsed_response else result.response,
+                    raw_response=result.response,
                     agent=agent,
                     branch=branch,
                     exec_state=exec_state
@@ -855,20 +931,29 @@ class BranchExecutor:
                     result.action_type = validation.action_type.value if validation.action_type else "continue"
                     result.parsed_response = validation.parsed_response
 
+                    # Clear error context on successful validation
+                    if agent_name in branch.agent_retry_info:
+                        logger.debug(f"Clearing error context for {agent_name} after successful validation")
+                        del branch.agent_retry_info[agent_name]
+
                     # Handle error recovery routing - transfer error details to metadata
                     if validation.action_type in [ActionType.ERROR_RECOVERY, ActionType.TERMINAL_ERROR]:
+                        # Extract error details
+                        error_details = {}
                         if validation.invocations and len(validation.invocations) > 0:
-                            # Get the User invocation with error details
                             user_invocation = validation.invocations[0]
                             if hasattr(user_invocation, 'request'):
-                                # Transfer error details to step result metadata
-                                if not result.metadata:
-                                    result.metadata = {}
-                                result.metadata['error_details'] = user_invocation.request.get('error_details', {})
-                                result.metadata['retry_context'] = user_invocation.request.get('retry_context', {})
-                                result.metadata['failed_agent'] = user_invocation.request.get('retry_context', {}).get('agent_name')
-                                logger.debug(f"Transferring error details to StepResult metadata: {result.metadata['error_details']}")
-                        result.next_agent = "User"  # Route to User node
+                                error_details = user_invocation.request.get('error_details', {})
+
+                        # Transfer error details to result metadata
+                        if not result.metadata:
+                            result.metadata = {}
+                        result.metadata['error_details'] = error_details
+                        result.metadata['error_action_type'] = validation.action_type.value
+
+                        # Mark for error recovery routing - _execute_simple_branch will handle User node availability check
+                        result.next_agent = "User"  # Attempt to route to User
+                        result.metadata['needs_error_display'] = True  # Flag for graceful fallback if User not available
 
                     # Handle auto-retry for timeout/network errors
                     elif validation.action_type == ActionType.AUTO_RETRY:
@@ -879,6 +964,17 @@ class BranchExecutor:
                         result.success = False
                         result.requires_retry = True  # Trigger retry logic
                         result.error = error_info.get('message', 'API error - retrying')
+
+                        # Store error context for steering (minimal for API errors)
+                        retry_count = branch.retry_counts.get(agent_name, 0) if hasattr(branch, 'retry_counts') else 0
+                        branch.agent_retry_info[agent_name] = {
+                            "category": ValidationErrorCategory.API_TRANSIENT.value,
+                            "error_message": error_info.get('message', 'API error'),
+                            "retry_suggestion": None,  # No format suggestions for API errors
+                            "retry_count": retry_count + 1,
+                            "classification": error_info.get('classification')
+                        }
+
                         if not result.metadata:
                             result.metadata = {}
                         result.metadata.update({
@@ -899,22 +995,23 @@ class BranchExecutor:
                     if validation.next_agents and len(validation.next_agents) > 0:
                         result.next_agent = validation.next_agents[0]
                 else:
+                    # Validation failed
                     result.success = False
                     result.error = validation.error_message
                     result.requires_retry = True
 
-                    # FIX: Send validation error back to agent as user message
-                    if hasattr(agent, 'memory') and validation.error_message:
-                        error_message = f"Your response format was invalid. {validation.error_message}"
-                        if validation.retry_suggestion:
-                            error_message += f"\n{validation.retry_suggestion}"
-
-                        # Add error message to agent's memory
-                        agent.memory.add(
-                            role="user",
-                            content=error_message
-                        )
-                        logger.debug(f"Added validation error to {agent_name}'s memory for retry")
+                    # Store error context for SteeringManager (replaces memory injection)
+                    retry_count = branch.retry_counts.get(agent_name, 0) if hasattr(branch, 'retry_counts') else 0
+                    # Use category from ValidationProcessor (it knows the exact error type)
+                    error_category = validation.error_category or ValidationErrorCategory.FORMAT_ERROR.value
+                    branch.agent_retry_info[agent_name] = {
+                        "category": error_category,
+                        "error_message": validation.error_message,
+                        "retry_suggestion": validation.retry_suggestion,
+                        "retry_count": retry_count + 1,
+                        "failed_action": validation.parsed_response.get("next_action") if validation.parsed_response else None
+                    }
+                    logger.debug(f"Stored validation error context for {agent_name} (category: {error_category})")
             
             # Apply FLOW_CONTROL rules if we have a rules engine
             if self.rules_engine and result.success:
@@ -1054,7 +1151,7 @@ class BranchExecutor:
                     return True
         
         # Check max steps as safety
-        max_steps = branch.topology.metadata.get("max_steps", 30)
+        max_steps = branch.topology.metadata.get("max_steps", 100)
         return branch.state.current_step >= max_steps
     
     async def _should_hold_for_convergence(
@@ -1097,9 +1194,9 @@ class BranchExecutor:
                             # NEW: Check convergence policy
                             policy = getattr(self.branch_spawner, 'convergence_policy', None)
                             if policy is None:
-                                # Fallback to old behavior for backward compatibility
+                                # Fallback to strict convergence when no policy provided
                                 from ...coordination.config import ConvergencePolicyConfig
-                                policy = ConvergencePolicyConfig.from_value(0.67)
+                                policy = ConvergencePolicyConfig.from_value(1.0)
 
                             # Count how many branches reached THIS convergence point
                             arrived_at_target = group.get_arrived_at_convergence(next_agent)
@@ -1535,31 +1632,30 @@ class BranchExecutor:
                 "suggested_actions": step_result.metadata.get("error_details", {}).get("suggested_actions", [])
             }
 
-        # CASE 1: Error from previous step - don't propagate
-        if not step_result.success and step_result.error:
-            # Special handling for invalid response errors
-            if hasattr(step_result, 'metadata') and step_result.metadata.get('invalid_response'):
-                # Return the error which contains format instructions
-                return step_result.error
-            # Regular error - return clean message
-            error_msg = f"Previous agent '{step_result.agent_name}' encountered an error. Please proceed with your task."
-            logger.warning(f"Preventing error propagation from {step_result.agent_name}: {step_result.error}")
-            return error_msg
-        
-        # CASE 2: Tool continuation - no additional message needed
+        # DEFENSIVE CHECK: This should be impossible to reach with failed step_result
+        # If step_result.success=False, _execute_simple_branch should have either:
+        # - Retried with same agent (line 273 continue)
+        # - Failed the branch (line 277 return)
+        # This check catches bugs in future code modifications
+        if not step_result.success:
+            raise RuntimeError(
+                f"BUG: _prepare_next_request called with failed step_result from agent '{step_result.agent_name}'. "
+                f"This should be impossible - check _execute_simple_branch flow. "
+                f"Error was: {step_result.error}, requires_retry: {step_result.requires_retry}"
+            )
+
+        # CASE 1: Tool continuation - no additional message needed
         if hasattr(step_result, 'metadata') and step_result.metadata.get('tool_continuation'):
             # Tool results are already in memory from step_executor
             # No additional continuation message needed
             return None
-        
-        # CASE 3: Invalid response retry - return format error
-        if hasattr(step_result, 'metadata') and step_result.metadata.get('invalid_response'):
-            if step_result.error:
-                return step_result.error  # This already contains format instructions
-            else:
-                return "Your previous response was not in the expected format. Please provide a valid JSON response."
-        
-        # CASE 4: Normal continuation
+
+        # Note: Removed obsolete 'invalid_response' checks
+        # - StepExecutor no longer sets this metadata (doesn't parse responses)
+        # - ValidationProcessor handles all parsing, sets result.success=False on errors
+        # - Validation errors are added to agent memory and retried
+
+        # CASE 2: Normal continuation
         base_request = self._get_base_request(step_result)
 
         # Validation logging for debugging
@@ -1583,30 +1679,55 @@ class BranchExecutor:
         )
     
     def _get_base_request(self, step_result: StepResult) -> Any:
-        """Extract base request from step result (existing logic)."""
+        """Extract base request from step result."""
+        from ...agents.memory import Message
+
         if step_result.action_type == "final_response":
             if step_result.parsed_response:
-                return (step_result.parsed_response.get("content") or 
-                       step_result.parsed_response.get("final_response") or 
-                       step_result.response)
-            return step_result.response
+                return (step_result.parsed_response.get("content") or
+                       step_result.parsed_response.get("final_response") or
+                       self._extract_content_from_response(step_result.response))
+            return self._extract_content_from_response(step_result.response)
 
-        # Handle invoke_agent with invocation array
+        # Handle NEW format: invocations array from ValidationProcessor
+        if step_result.parsed_response and "invocations" in step_result.parsed_response:
+            invocations = step_result.parsed_response["invocations"]
+            if invocations and len(invocations) > 0:
+                # DEFENSIVE CHECK: Multiple invocations should be handled by _handle_parallel_invocation
+                # If we have multiple here, it's a bug
+                if len(invocations) > 1:
+                    raise RuntimeError(
+                        f"BUG: _get_base_request received {len(invocations)} invocations. "
+                        f"Multiple invocations should be handled by parallel invocation handler. "
+                        f"Agent: {step_result.agent_name}, action_type: {step_result.action_type}"
+                    )
+
+                first_inv = invocations[0]
+                # Handle AgentInvocation object
+                if hasattr(first_inv, 'request'):
+                    return first_inv.request
+                # Handle dict format (defensive)
+                elif isinstance(first_inv, dict) and "request" in first_inv:
+                    return first_inv.get("request", "")
+
+        # action_input format is no longer supported
         if step_result.parsed_response and "action_input" in step_result.parsed_response:
+            raise RuntimeError(
+                f"BUG: Unexpected 'action_input' in parsed_response. "
+                f"Agent invocations must use 'invocations' array format. "
+                f"Agent: {step_result.agent_name}, keys: {list(step_result.parsed_response.keys())}"
+            )
 
-            action_input = step_result.parsed_response["action_input"]
+        # Fallback: extract content from response
+        return self._extract_content_from_response(step_result.response)
 
-            # Check if action_input is an invocation array (reflexive case)
-            if isinstance(action_input, list) and len(action_input) > 0:
-                first_item = action_input[0]
-                if isinstance(first_item, dict) and "request" in first_item:
-                    # This is an invocation array - extract the request
-                    return first_item.get("request", "")
+    def _extract_content_from_response(self, response: Any) -> Any:
+        """Helper to extract content from Message or other response types."""
+        from ...agents.memory import Message
 
-            # Normal case - action_input is the direct request
-            return action_input
-
-        return step_result.response
+        if isinstance(response, Message):
+            return response.content
+        return response
 
     def _prepend_caller_name(self, request: Any, caller_name: str) -> Any:
         """
@@ -1987,8 +2108,12 @@ class BranchExecutor:
             if await self._should_complete(branch, context, execution_trace):
                 break
 
-            # Pass actual retry count in context metadata (same as _execute_simple_branch)
+            # Pass retry context to StepExecutor for steering (same as _execute_simple_branch)
+            agent_retry_info = branch.agent_retry_info.get(current_agent)
             context.metadata["agent_retry_count"] = retry_counts.get(current_agent, 0)
+            if agent_retry_info:
+                context.metadata["agent_error_context"] = agent_retry_info
+                logger.debug(f"Passing error context for {current_agent}: {agent_retry_info['category']}")
 
             # Determine next agent (might be the same agent continuing)
             step_result = await self._execute_agent_step(
@@ -2019,7 +2144,7 @@ class BranchExecutor:
                     return BranchResult(
                         branch_id=branch.id,
                         success=False,
-                        final_response=step_result.response,
+                        final_response=self._extract_content_from_response(step_result.response),
                         total_steps=branch.state.current_step,
                         execution_trace=execution_trace,
                         branch_memory=context.branch_memory,
@@ -2093,13 +2218,39 @@ class BranchExecutor:
                     return BranchResult(
                         branch_id=branch.id,
                         success=True,
-                        final_response=step_result.response,
+                        final_response=self._extract_content_from_response(step_result.response),
                         total_steps=branch.state.current_step,
                         execution_trace=execution_trace,
                         branch_memory=context.branch_memory,
                         metadata=result_metadata
                     )
-                
+
+                # Check if this was an error recovery attempt that failed due to no User node
+                if step_result.metadata and step_result.metadata.get('needs_error_display'):
+                    # User node was attempted but not available - log error and fail gracefully
+                    error_details = step_result.metadata.get('error_details', {})
+                    error_type = step_result.metadata.get('error_action_type', 'error')
+                    error_message = error_details.get('message', 'Unknown error')
+                    error_classification = error_details.get('classification', 'unknown')
+
+                    # Log error (following existing pattern from line 716)
+                    logger.error(
+                        f"[{error_type.upper()}] {error_classification}: {error_message}. "
+                        f"User node not available in topology. Terminating workflow."
+                    )
+
+                    # Return failed branch result with error details
+                    return BranchResult(
+                        branch_id=branch.id,
+                        success=False,
+                        final_response=None,
+                        total_steps=branch.state.current_step,
+                        execution_trace=execution_trace,
+                        branch_memory=context.branch_memory,
+                        error=f"[{error_type}] {error_classification}: {error_message}",
+                        metadata=step_result.metadata
+                    )
+
                 # No next agent - branch completes
                 # Extract the actual content from parsed response if available
                 final_content = step_result.response
@@ -2133,7 +2284,7 @@ class BranchExecutor:
         return BranchResult(
             branch_id=branch.id,
             success=True,
-            final_response=execution_trace[-1].response if execution_trace else None,
+            final_response=self._extract_content_from_response(execution_trace[-1].response) if execution_trace else None,
             total_steps=branch.state.current_step,
             execution_trace=execution_trace,
             branch_memory=context.branch_memory,

@@ -26,8 +26,10 @@ core_deps = [
     "pyyaml>=6.0.2",
     # Browser automation
     "playwright>=1.55.0",
-    "pillow>=11.3.0",
+    "pillow>=12.0.0",  # Updated for file operations image handling
     "beautifulsoup4>=4.14.2",
+    "lxml>=6.0.2",  # Fast HTML parsing for search tools
+    "brotli>=1.1.0",  # Compression support for HTTP requests
     "markdownify>=1.2.0",
     # UI/Terminal
     "rich>=14.1.0",
@@ -35,8 +37,10 @@ core_deps = [
     "python-dateutil>=2.9.0",
     # Tools
     "pypdf>=3.0.0",  # Compatible with PyPDF2 API
-    "pdfminer.six>=20250506",
     "googlesearch-python>=1.3.0",
+    # File operations (moved from optional to core)
+    "PyMuPDF>=1.26.0",     # PDF text/image extraction and layout analysis
+    "chardet>=5.2.0",      # Character encoding detection
     # Logging
     "structlog>=25.4.0",
     "python-json-logger>=2.0.7",  # v2.x (v3 requires testing)

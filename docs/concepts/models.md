@@ -2,6 +2,10 @@
 
 Models are the AI backends that power agent intelligence, providing a unified interface for different providers and model types.
 
+!!! info "See Also"
+    For ModelConfig class definition and provider-specific parameters, see [Models API Reference](../api/models.md).
+
+
 ## 🎯 Overview
 
 MARSYS provides a flexible model abstraction layer that:
@@ -95,44 +99,54 @@ class ModelConfig(BaseModel):
 ### Provider Configurations
 
 ```python
-# OpenAI GPT-4
-gpt4_config = ModelConfig(
+# OpenRouter (Recommended - unified access to all models)
+openrouter_config = ModelConfig(
     type="api",
-    provider="openai",
-    name="gpt-4",
+    provider="openrouter",
+    name="anthropic/claude-haiku-4.5",
     temperature=0.7,
-    max_tokens=2000,
-    # api_key loaded from OPENAI_API_KEY env var
+    max_tokens=12000,
+    # api_key loaded from OPENROUTER_API_KEY env var
 )
 
-# Anthropic Claude
-claude_config = ModelConfig(
+# OpenAI GPT-5
+gpt5_config = ModelConfig(
     type="api",
-    provider="anthropic",
-    name="claude-3-opus-20240229",
-    temperature=0.5,
-    max_tokens=4000,
-    # api_key loaded from ANTHROPIC_API_KEY env var
+    provider="openrouter",
+    name="openai/gpt-5",
+    temperature=0.7,
+    max_tokens=12000,
+    # api_key loaded from OPENROUTER_API_KEY env var
 )
 
-# Google Gemini
+# Anthropic Claude Sonnet 4.5
+claude_sonnet_config = ModelConfig(
+    type="api",
+    provider="openrouter",
+    name="anthropic/claude-sonnet-4.5",
+    temperature=0.5,
+    max_tokens=12000,
+    # api_key loaded from OPENROUTER_API_KEY env var
+)
+
+# Anthropic Claude Haiku 4.5
+claude_haiku_config = ModelConfig(
+    type="api",
+    provider="openrouter",
+    name="anthropic/claude-haiku-4.5",
+    temperature=0.7,
+    max_tokens=12000,
+    # api_key loaded from OPENROUTER_API_KEY env var
+)
+
+# Google Gemini 2.5 Pro
 gemini_config = ModelConfig(
     type="api",
-    provider="google",
-    name="gemini-pro",
+    provider="openrouter",
+    name="google/gemini-2.5-pro",
     temperature=0.8,
-    max_tokens=2048,
-    # api_key loaded from GOOGLE_API_KEY env var
-)
-
-# Groq (Fast Inference)
-groq_config = ModelConfig(
-    type="api",
-    provider="groq",
-    name="mixtral-8x7b-32768",
-    temperature=0.7,
-    max_tokens=32768,
-    # api_key loaded from GROQ_API_KEY env var
+    max_tokens=12000,
+    # api_key loaded from OPENROUTER_API_KEY env var
 )
 
 # Local Model
@@ -143,7 +157,7 @@ local_config = ModelConfig(
     model_path="/models/llama-2-7b",
     device="cuda",
     torch_dtype="float16",
-    max_tokens=1024
+    max_tokens=12000
 )
 ```
 
@@ -161,12 +175,12 @@ from marsys.models import ModelConfig
 agent = Agent(
     model_config=ModelConfig(
         type="api",
-        provider="openai",
-        name="gpt-4",
+        provider="openrouter",
+        name="anthropic/claude-haiku-4.5",
         temperature=0.7
     ),
-    agent_name="Assistant",
-    description="A helpful assistant"
+    name="Assistant",
+    goal="A helpful assistant"
 )
 
 # Agent uses model internally
@@ -181,17 +195,16 @@ Multimodal models that process text and images:
 # Configure vision model
 vlm_config = ModelConfig(
     type="api",
-    provider="openai",
-    name="gpt-4-vision-preview",
-    max_tokens=4096,
-    parameters={"detail": "high"}  # Image detail level
+    provider="openrouter",
+    name="google/gemini-2.5-pro",
+    max_tokens=12000
 )
 
 # Create vision-capable agent
 vision_agent = Agent(
     model_config=vlm_config,
-    agent_name="ImageAnalyzer",
-    description="I analyze images and answer questions about them"
+    name="ImageAnalyzer",
+    goal="I analyze images and answer questions about them"
 )
 
 # Process image
@@ -205,6 +218,48 @@ message = Message(
 
 response = await vision_agent.run(message)
 ```
+
+#### BrowserAgent Vision Models
+
+For browser automation with visual interaction, use separate models for the main agent (planning/decision-making) and vision analysis (screenshot understanding):
+
+```python
+from marsys.agents import BrowserAgent
+from marsys.models import ModelConfig
+
+# Create BrowserAgent with vision capabilities
+browser_agent = await BrowserAgent.create_safe(
+    name="WebNavigator",
+    # Main model: Any text-based model for planning and decision-making
+    model_config=ModelConfig(
+        type="api",
+        provider="openrouter",
+        name="anthropic/claude-haiku-4.5",  # or claude-sonnet-4.5
+        temperature=0.3
+    ),
+    mode="advanced",
+    auto_screenshot=True,
+    # Vision model: Use Gemini for screenshot analysis
+    vision_model_config=ModelConfig(
+        type="api",
+        provider="openrouter",
+        name="google/gemini-2.5-flash",  # Recommended: fast and cost-effective
+        # For complex UI tasks, use: "google/gemini-2.5-pro"
+        temperature=0,
+        thinking_budget=0  # Disable thinking for faster vision responses
+    ),
+    headless_browser=True
+)
+```
+
+**Vision Model Recommendations for BrowserAgent**:
+
+| Task Complexity | Recommended Model | Characteristics |
+|-----------------|-------------------|-----------------|
+| **Standard browsing** | `google/gemini-2.5-flash` | Fast, cost-effective, handles most UI detection tasks |
+| **Complex UIs** | `google/gemini-2.5-pro` | Higher accuracy for complex layouts, anti-bot challenges |
+
+**Note**: While Claude (Sonnet/Haiku 4.5) and other models work well for the main BrowserAgent planning logic, **Gemini models are specifically recommended for the vision component** due to superior performance in browser control and UI element detection tasks.
 
 ### Custom API Models
 
@@ -275,7 +330,7 @@ def calculate(expression: str) -> float:
 # Agent with tools
 agent = Agent(
     model_config=gpt4_config,
-    agent_name="ToolUser",
+    name="ToolUser",
     tools=[search_web, calculate]
 )
 
@@ -298,12 +353,12 @@ Force structured output:
 agent = Agent(
     model_config=ModelConfig(
         type="api",
-        provider="openai",
-        name="gpt-4",
+        provider="openrouter",
+        name="openai/gpt-5",
         parameters={"response_format": {"type": "json_object"}}
     ),
-    agent_name="StructuredAgent",
-    system_prompt="""
+    name="StructuredAgent",
+    instruction="""
     Always respond in JSON format:
     {
         "analysis": "...",
@@ -325,8 +380,8 @@ For real-time output (when supported):
 # Streaming configuration
 stream_config = ModelConfig(
     type="api",
-    provider="openai",
-    name="gpt-4",
+    provider="openrouter",
+    name="anthropic/claude-haiku-4.5",
     parameters={"stream": True}
 )
 
@@ -340,13 +395,16 @@ stream_config = ModelConfig(
 
 | Use Case | Recommended Model | Why |
 |----------|-------------------|-----|
-| **General Chat** | GPT-4 | Best overall understanding |
-| **Code Generation** | Claude 3 Opus | Superior coding ability |
-| **Fast Responses** | GPT-3.5-Turbo | Low latency, cost-effective |
-| **Long Context** | Claude 3 (100k) | Extended context window |
-| **Image Analysis** | GPT-4 Vision | Multimodal capabilities |
+| **General Chat** | Claude Sonnet 4.5 | Best overall understanding |
+| **Code Generation** | Claude Sonnet 4.5 | Superior coding ability |
+| **Fast Responses** | Claude Haiku 4.5 | Low latency, cost-effective |
+| **Long Context** | Claude Sonnet 4.5 | Extended context window |
+| **Image Analysis** | Gemini 2.5 Pro | Multimodal capabilities |
+| **Browser Vision** | Gemini 2.5 Flash | Fast screenshot analysis for BrowserAgent |
+| **Complex Browser Vision** | Gemini 2.5 Pro | Advanced UI understanding for BrowserAgent |
+| **Critical Reasoning** | GPT-5 | Advanced reasoning |
+| **Writing & Analysis** | Claude Sonnet 4.5, GPT-5-Chat | High-quality content generation |
 | **Local/Private** | Llama 2, Mistral | Data privacy, no API costs |
-| **Bulk Processing** | Groq Mixtral | Fast inference at scale |
 
 ### By Requirements
 
@@ -354,28 +412,29 @@ stream_config = ModelConfig(
 # High accuracy, cost not a concern
 premium_config = ModelConfig(
     type="api",
-    provider="openai",
-    name="gpt-4",
-    temperature=0.3,  # Lower for consistency
-    max_tokens=4000
+    provider="openrouter",
+    name="openai/gpt-5",
+    temperature=0.3,
+    max_tokens=12000,
+    parameters={"reasoning_effort": "high"}
 )
 
 # Balance of cost and performance
 balanced_config = ModelConfig(
     type="api",
-    provider="openai",
-    name="gpt-3.5-turbo-16k",
+    provider="openrouter",
+    name="anthropic/claude-sonnet-4.5",
     temperature=0.5,
-    max_tokens=2000
+    max_tokens=12000
 )
 
 # Maximum speed
 speed_config = ModelConfig(
     type="api",
-    provider="groq",
-    name="mixtral-8x7b-32768",
+    provider="openrouter",
+    name="anthropic/claude-haiku-4.5",
     temperature=0.7,
-    max_tokens=1000
+    max_tokens=12000
 )
 
 # Data privacy
@@ -431,22 +490,23 @@ error_config = ErrorHandlingConfig(
 # ✅ GOOD - Use environment variables
 import os
 
+os.environ["OPENROUTER_API_KEY"] = "sk-or-..."
 os.environ["OPENAI_API_KEY"] = "sk-..."
 os.environ["ANTHROPIC_API_KEY"] = "sk-ant-..."
 
 config = ModelConfig(
     type="api",
-    provider="openai",
-    name="gpt-4"
+    provider="openrouter",
+    name="anthropic/claude-haiku-4.5"
     # api_key automatically loaded
 )
 
 # ❌ BAD - Hardcoded keys
 config = ModelConfig(
     type="api",
-    provider="openai",
-    name="gpt-4",
-    api_key="sk-..."  # Don't hardcode!
+    provider="openrouter",
+    name="anthropic/claude-haiku-4.5",
+    api_key="sk-or-..."  # Don't hardcode!
 )
 ```
 
@@ -456,19 +516,22 @@ config = ModelConfig(
 # ✅ GOOD - Match temperature to task
 # Creative tasks
 creative_config = ModelConfig(
-    name="gpt-4",
+    provider="openrouter",
+    name="anthropic/claude-sonnet-4.5",
     temperature=0.8  # Higher for creativity
 )
 
 # Analytical tasks
 analytical_config = ModelConfig(
-    name="gpt-4",
+    provider="openrouter",
+    name="openai/gpt-5",
     temperature=0.2  # Lower for consistency
 )
 
 # ❌ BAD - Same temperature for all tasks
 config = ModelConfig(
-    name="gpt-4",
+    provider="openrouter",
+    name="anthropic/claude-haiku-4.5",
     temperature=1.5  # Too high for most tasks
 )
 ```
@@ -478,16 +541,26 @@ config = ModelConfig(
 ```python
 # ✅ GOOD - Appropriate token limits
 config = ModelConfig(
-    name="gpt-4",
-    max_tokens=2000  # Reasonable for most responses
+    provider="openrouter",
+    name="anthropic/claude-sonnet-4.5",
+    max_tokens=12000
 )
 
 # Consider context window
-# GPT-4: 8k/32k tokens total
-# Claude 3: 200k tokens total
+# GPT-5: 128k tokens total
+# Claude 4.5: 200k tokens total
+# Gemini 2.5: 1M tokens total
 # Plan accordingly:
-short_context = ModelConfig(name="gpt-3.5-turbo", max_tokens=1000)
-long_context = ModelConfig(name="claude-3-opus", max_tokens=4000)
+short_context = ModelConfig(
+    provider="openrouter",
+    name="anthropic/claude-haiku-4.5",
+    max_tokens=12000
+)
+long_context = ModelConfig(
+    provider="openrouter",
+    name="anthropic/claude-sonnet-4.5",
+    max_tokens=12000
+)
 ```
 
 ### 4. **Fallback Models**
@@ -497,13 +570,13 @@ class ModelWithFallback:
     def __init__(self):
         self.primary = ModelConfig(
             type="api",
-            provider="openai",
-            name="gpt-4"
+            provider="openrouter",
+            name="openai/gpt-5"
         )
         self.fallback = ModelConfig(
             type="api",
-            provider="openai",
-            name="gpt-3.5-turbo"
+            provider="openrouter",
+            name="anthropic/claude-haiku-4.5"
         )
 
     async def run(self, prompt):
@@ -524,7 +597,7 @@ class ModelPool:
 
     def __init__(self, configs: List[ModelConfig]):
         self.agents = [
-            Agent(model_config=config, agent_name=f"pool_{i}")
+            Agent(model_config=config, name=f"pool_{i}")
             for i, config in enumerate(configs)
         ]
         self.current = 0
@@ -537,9 +610,9 @@ class ModelPool:
 
 # Create pool
 pool = ModelPool([
-    ModelConfig(provider="openai", name="gpt-4"),
-    ModelConfig(provider="anthropic", name="claude-3-opus"),
-    ModelConfig(provider="google", name="gemini-pro")
+    ModelConfig(provider="openrouter", name="openai/gpt-5", max_tokens=12000),
+    ModelConfig(provider="openrouter", name="anthropic/claude-sonnet-4.5", max_tokens=12000),
+    ModelConfig(provider="openrouter", name="google/gemini-2.5-pro", max_tokens=12000)
 ])
 ```
 
@@ -551,7 +624,7 @@ from functools import lru_cache
 
 class CachedModel:
     def __init__(self, model_config: ModelConfig, cache_size: int = 100):
-        self.agent = Agent(model_config=model_config, agent_name="cached")
+        self.agent = Agent(model_config=model_config, name="cached")
         self.cache = {}
 
     def _cache_key(self, prompt: str) -> str:

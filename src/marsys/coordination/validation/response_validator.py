@@ -18,7 +18,7 @@ from typing import TYPE_CHECKING, Any, Dict, List, Optional, Type
 
 from ..branches.types import ExecutionBranch, ExecutionState, StepResult
 from ..topology.graph import TopologyGraph
-from .types import AgentInvocation, ValidationError
+from .types import AgentInvocation, ValidationErrorCategory, ValidationError
 
 if TYPE_CHECKING:
     from ...agents import BaseAgent
@@ -41,21 +41,33 @@ class ActionType(Enum):
 
 @dataclass
 class ValidationResult:
-    """Result of response validation."""
+    """Result of response validation with all routing decisions."""
+    # Existing validation fields
     is_valid: bool
     action_type: Optional[ActionType] = None
     parsed_response: Optional[Dict[str, Any]] = None
     error_message: Optional[str] = None
     retry_suggestion: Optional[str] = None
+    error_category: Optional[str] = None  # NEW: Error category for steering (from ErrorCategory enum)
     invocations: List['AgentInvocation'] = None  # Complete invocation data for invoke/parallel_invoke
     tool_calls: List[Dict[str, Any]] = None
-    
+
+    # NEW decision fields (moved from StepResult)
+    next_agent: Optional[str] = None  # Single next agent for sequential flow
+    should_end_branch: bool = False  # Branch should complete
+    requires_tool_continuation: bool = False  # Agent continues after tools
+    final_response: Optional[Any] = None  # Final response content
+
     def __post_init__(self):
         if self.invocations is None:
             self.invocations = []
         if self.tool_calls is None:
             self.tool_calls = []
-    
+
+        # Auto-populate next_agent for single invocation
+        if not self.next_agent and self.invocations and len(self.invocations) == 1:
+            self.next_agent = self.invocations[0].agent_name
+
     @property
     def next_agents(self) -> List[str]:
         """Backward compatibility property to get agent names from invocations."""
@@ -85,13 +97,23 @@ class StructuredJSONProcessor(ResponseProcessor):
     """Handles JSON responses with next_action/action_input structure."""
     
     def _extract_json_from_code_block(self, text: str) -> Optional[str]:
-        """Extract JSON from markdown code blocks or plain JSON."""
-        # Try markdown blocks first (```json {...}``` or ```{...}```)
-        code_block_pattern = r'```(?:json)?\s*\n?(.*?)```'
+        """
+        Extract JSON from markdown code blocks or plain JSON.
+
+        Handles nested code blocks inside JSON string values by using greedy matching
+        to find the LAST closing delimiter.
+        """
+        # Try markdown blocks with greedy matching (```json {...}``` or ```{...}```)
+        # Use greedy .* instead of non-greedy .*? to match until the LAST ```
+        # This handles cases where JSON contains nested code blocks like:
+        #   ```json
+        #   {"response": "text with ```python\ncode\n``` inside"}
+        #   ```
+        code_block_pattern = r'```(?:json)?\s*\n?(.*)```'
         match = re.search(code_block_pattern, text, re.DOTALL)
         if match:
             return match.group(1).strip()
-        
+
         # If no markdown blocks found, check if the entire text is valid JSON
         # This handles plain JSON responses without markdown formatting
         text_stripped = text.strip()
@@ -102,7 +124,7 @@ class StructuredJSONProcessor(ResponseProcessor):
                 return text_stripped
             except json.JSONDecodeError:
                 pass
-        
+
         return None
     
     def _extract_first_json(self, text: str) -> Optional[str]:
@@ -151,24 +173,31 @@ class StructuredJSONProcessor(ResponseProcessor):
             if json_str:
                 try:
                     data = json.loads(json_str)
-                    return isinstance(data, dict) and "next_action" in data
+                    if isinstance(data, dict) and "next_action" in data:
+                        return True
+                    # If parsed but no next_action, continue to next method
                 except json.JSONDecodeError:
-                    return False
-            
+                    # Parsing failed, continue to next method
+                    pass
+
             # Try to extract first JSON if multiple JSONs present
             json_str = self._extract_first_json(response)
             if json_str:
                 try:
                     data = json.loads(json_str)
-                    return isinstance(data, dict) and "next_action" in data
+                    if isinstance(data, dict) and "next_action" in data:
+                        return True
+                    # If parsed but no next_action, continue to next method
                 except json.JSONDecodeError:
-                    return False
-            
+                    # Parsing failed, continue to next method
+                    pass
+
             # Finally try direct JSON parsing
             try:
                 data = json.loads(response)
                 return isinstance(data, dict) and "next_action" in data
             except json.JSONDecodeError:
+                # All methods failed
                 return False
         return False
     
@@ -290,26 +319,27 @@ class StructuredJSONProcessor(ResponseProcessor):
                         if agent in action_input:
                             result["agent_requests"][agent] = action_input[agent]
             elif data.get("next_action") == "call_tool":
-                # Extract tool calls from action_input if needed
+                # IMPORTANT: Tool calls should ONLY come through native Message.tool_calls,
+                # NOT through content with next_action="call_tool".
+                # If LLM puts tool calls in content, it's a mistake - send error back.
+
+                # Extract what they tried to do for error message
                 action_input = data.get("action_input", {})
-                if "tool_calls" in action_input:
-                    tool_calls = action_input["tool_calls"]
-                else:
+                tool_calls = action_input.get("tool_calls") if isinstance(action_input, dict) else []
+                if not tool_calls:
                     tool_calls = data.get("tool_calls", [])
-                
-                # Clean up tool names - remove "functions." prefix if present
-                cleaned_tool_calls = []
-                for tool_call in tool_calls:
-                    if isinstance(tool_call, dict) and "function" in tool_call:
-                        func_data = tool_call["function"]
-                        if isinstance(func_data, dict) and "name" in func_data:
-                            # Strip "functions." prefix if present
-                            tool_name = func_data["name"]
-                            if isinstance(tool_name, str) and tool_name.startswith("functions."):
-                                func_data["name"] = tool_name.replace("functions.", "", 1)
-                    cleaned_tool_calls.append(tool_call)
-                
-                result["tool_calls"] = cleaned_tool_calls
+
+                return {
+                    "next_action": "validation_error",
+                    "error": "Tool calls must use native tool_calls format, not content with next_action='call_tool'",
+                    "details": [
+                        "Your model should return tool calls using the native tool_calls field in the response",
+                        "Do NOT manually construct tool calls in the content field",
+                        f"You attempted to call {len(tool_calls)} tool(s) incorrectly"
+                    ],
+                    "retry_suggestion": "Use the model's native tool calling format. Tool calls will be automatically detected and executed.",
+                    "raw_response": data
+                }
             elif data.get("next_action") == "final_response":
                 # Check for response in action_input first (new format)
                 action_input = data.get("action_input", {})
@@ -361,29 +391,48 @@ class StructuredJSONProcessor(ResponseProcessor):
 
 
 class ToolCallProcessor(ResponseProcessor):
-    """Handles responses with tool_calls array."""
-    
+    """
+    Handles responses with native tool_calls.
+
+    IMPORTANT: This processor is used by StepExecutor for native tool call extraction.
+    It should NOT be registered in ValidationProcessor.processors list.
+    ValidationProcessor should NEVER validate tool_calls - they are pre-processed by StepExecutor.
+    """
+
     def can_process(self, response: Any) -> bool:
-        """Check for tool_calls in response."""
+        """Check for tool_calls in Message or dict response."""
+        # Support Message objects (primary use case for StepExecutor)
+        if hasattr(response, 'tool_calls') and response.tool_calls:
+            return True
+        # Support dict responses (backward compatibility)
         if isinstance(response, dict):
             return "tool_calls" in response and isinstance(response["tool_calls"], list)
         return False
-    
+
     def process(self, response: Any) -> Optional[Dict[str, Any]]:
-        """Convert to standard action format."""
+        """Extract tool_calls from Message or dict response."""
         try:
-            tool_calls = response.get("tool_calls", [])
-            
+            # Extract tool_calls from Message object
+            if hasattr(response, 'tool_calls'):
+                tool_calls = response.tool_calls
+                content = response.content if hasattr(response, 'content') else ""
+            # Extract from dict (backward compatibility)
+            elif isinstance(response, dict):
+                tool_calls = response.get("tool_calls", [])
+                content = response.get("content", "")
+            else:
+                return None
+
             return {
                 "next_action": "call_tool",
                 "tool_calls": tool_calls,
-                "content": response.get("content", ""),
+                "content": content,
                 "raw_response": response
             }
         except Exception as e:
             logger.error(f"Failed to process tool calls: {e}")
             return None
-    
+
     def priority(self) -> int:
         return 90
 
@@ -573,11 +622,13 @@ class ValidationProcessor:
         self.topology_graph = topology_graph
         
         # Initialize processors in priority order
+        # NOTE: ToolCallProcessor is NOT included - it's used only by StepExecutor
+        # for native tool call extraction, NOT for response validation
         self.processors: List[ResponseProcessor] = sorted([
-            ErrorMessageProcessor(),  # NEW - highest priority
+            ErrorMessageProcessor(),  # Highest priority for API errors
             StructuredJSONProcessor(),
-            ToolCallProcessor(),
-            NaturalLanguageProcessor()
+            # ToolCallProcessor(),  # REMOVED - used only by StepExecutor, not ValidationProcessor
+            # NaturalLanguageProcessor()
         ], key=lambda p: p.priority(), reverse=True)
         
         # Action validators
@@ -588,8 +639,8 @@ class ValidationProcessor:
             ActionType.FINAL_RESPONSE: self._validate_final_response,
             ActionType.END_CONVERSATION: self._validate_end_conversation,
             ActionType.WAIT_AND_AGGREGATE: self._validate_wait_aggregate,
-            ActionType.ERROR_RECOVERY: self._validate_error_recovery,  # NEW
-            ActionType.TERMINAL_ERROR: self._validate_terminal_error   # NEW
+            ActionType.ERROR_RECOVERY: self._validate_error_recovery,
+            ActionType.TERMINAL_ERROR: self._validate_terminal_error
         }
     
     def _get_allowed_actions(self, agent: BaseAgent, branch: ExecutionBranch = None) -> List[str]:
@@ -600,11 +651,12 @@ class ValidationProcessor:
         next_agents = self.topology_graph.get_next_agents(agent.name)
         if next_agents:
             allowed.append("invoke_agent")
-        
+
         # Check if agent has tools
+        # NOTE: We use "tool_calls" (not "call_tool") to match native model API terminology
         if hasattr(agent, 'tools') and agent.tools:
-            allowed.append("call_tool")
-        
+            allowed.append("tool_calls")
+
         # Check if agent can return final response
         # CHANGED: Only allow final_response for User access
         # REMOVED: is_child_branch check - child branches must flow to convergence points
@@ -626,71 +678,163 @@ class ValidationProcessor:
     ) -> ValidationResult:
         """
         Main entry point for response processing.
-        
+
         This method:
-        1. Tries each processor to parse the response
-        2. Validates the extracted action
-        3. Checks topology permissions
-        4. Returns structured validation result
+        1. Extracts content from Message objects
+        2. Tries each processor to parse the response content
+        3. Validates the extracted action
+        4. Checks topology permissions
+        5. Returns structured validation result
+
+        Args:
+            raw_response: Agent response (MUST be Message object)
+            agent: The agent that generated the response
+            branch: Current execution branch
+            exec_state: Current execution state
+
+        Returns:
+            ValidationResult with routing decisions
+
+        Raises:
+            TypeError: If raw_response is not a Message object
         """
-        
-        # Handle empty responses
-        if raw_response is None:
+        from ...agents.memory import Message
+
+        # CRITICAL: Only accept Message objects
+        # This enforces the standardized interface throughout the system
+        if not isinstance(raw_response, Message):
+            raise TypeError(
+                f"ValidationProcessor requires Message object from agent {agent.name}, "
+                f"got {type(raw_response).__name__}. "
+                f"All agents must return Message objects from their _run() methods."
+            )
+
+        # Extract content for parsing
+        # NOTE: If Message has tool_calls, BranchExecutor should skip validation (line 866)
+        # We only validate content for next_action decisions (invoke_agent, final_response)
+        content_to_parse = raw_response.content
+
+        # Handle empty responses - provide clear guidance based on available actions
+        allowed_actions = self._get_allowed_actions(agent, branch)
+
+        # Build guidance message based on what's available
+        guidance_parts = []
+
+        # Tool calls (native format)
+        if "tool_calls" in allowed_actions:
+            guidance_parts.append("use native tool_calls format to call tools")
+
+        # Agent invocations or final response (content field with next_action)
+        content_actions = []
+        if "invoke_agent" in allowed_actions:
+            content_actions.append('"invoke_agent"')
+        if "final_response" in allowed_actions:
+            content_actions.append('"final_response"')
+
+        if content_actions:
+            actions_str = " or ".join(content_actions)
+            guidance_parts.append(f'return content with "next_action" set to {actions_str} and proper "action_input"')
+
+        # Combine into format hint
+        if len(guidance_parts) == 2:
+            format_hint = f"You can either: {guidance_parts[0]}, OR {guidance_parts[1]}"
+        elif len(guidance_parts) == 1:
+            format_hint = f"You must: {guidance_parts[0]}"
+        else:
+            format_hint = "Provide a valid response"
+
+        # Check for empty content
+        if content_to_parse is None:
             return ValidationResult(
                 is_valid=False,
-                error_message="Response is None",
-                retry_suggestion="Your response was empty. You must provide content for your next action."
+                error_message="Response content is None",
+                retry_suggestion=f"Your response was empty. {format_hint}",
+                error_category=ValidationErrorCategory.FORMAT_ERROR.value
             )
-        
-        if isinstance(raw_response, str) and not raw_response.strip():
+
+        if isinstance(content_to_parse, str) and not content_to_parse.strip():
             return ValidationResult(
                 is_valid=False,
-                error_message="Response is empty string",
-                retry_suggestion="Your response was an empty string. You need to provide actual content."
+                error_message="Response content is empty string",
+                retry_suggestion=f"Your response was an empty string. {format_hint}",
+                error_category=ValidationErrorCategory.FORMAT_ERROR.value
             )
-        
-        if isinstance(raw_response, dict) and not raw_response:
+
+        if isinstance(content_to_parse, dict) and not content_to_parse:
             return ValidationResult(
                 is_valid=False,
-                error_message="Response is empty dictionary",
-                retry_suggestion="Your response was an empty dictionary. You need to include the required fields."
+                error_message="Response content is empty dictionary",
+                retry_suggestion=f"Your response was an empty dictionary. {format_hint}",
+                error_category=ValidationErrorCategory.FORMAT_ERROR.value
             )
-        
-        # 1. Try each processor to parse response
+
+        # 1. Try each processor to parse response content
         parsed = None
         for processor in self.processors:
-            if processor.can_process(raw_response):
-                parsed = processor.process(raw_response)
+            if processor.can_process(content_to_parse):
+                parsed = processor.process(content_to_parse)
                 if parsed:
                     logger.debug(f"Response processed by {processor.__class__.__name__}")
                     break
         
         if not parsed:
             # Try to detect if this looks like a successful response that couldn't be parsed
-            response_str = str(raw_response)
-            
+            response_str = str(content_to_parse)
+            # allowed_actions already retrieved above
+
             # Check if it looks like an agent trying to invoke another agent
             if "invoke_agent" in response_str and "summarizer_agent" in response_str:
                 logger.warning("Response appears to invoke an agent but couldn't be parsed - likely JSON escaping issue")
                 return ValidationResult(
                     is_valid=False,
                     error_message="JSON parsing failed - likely due to unescaped special characters in content",
-                    retry_suggestion="Your JSON had unescaped special characters. Please ensure all quotes, newlines, and special characters are properly escaped."
+                    retry_suggestion=f"Your JSON had unescaped special characters. Please ensure all quotes, newlines, and special characters are properly escaped. Valid actions: {', '.join(allowed_actions)}",
+                    error_category=ValidationErrorCategory.FORMAT_ERROR.value
                 )
-            
+
             # Check if it's a tool response that needs processing
             elif "tool_calls" in response_str:
                 return ValidationResult(
                     is_valid=False,
                     error_message="Tool response detected but couldn't be parsed",
-                    retry_suggestion="Your tool response format was incorrect. Please ensure it follows proper JSON structure."
+                    retry_suggestion=f"Your tool response format was incorrect. Please ensure it follows proper JSON structure. Valid actions: {', '.join(allowed_actions)}",
+                    error_category=ValidationErrorCategory.FORMAT_ERROR.value
                 )
             
-            # Generic fallback
+            # Generic fallback - provide dynamic format instructions based on allowed actions
+            # Note: allowed_actions already retrieved above
+
+            # Build clear guidance based on what's available
+            guidance_parts = []
+
+            # Tool calls (native format)
+            if "tool_calls" in allowed_actions:
+                guidance_parts.append("use native tool_calls format to call tools")
+
+            # Agent invocations or final response (content field with next_action)
+            content_actions = []
+            if "invoke_agent" in allowed_actions:
+                content_actions.append('"invoke_agent"')
+            if "final_response" in allowed_actions:
+                content_actions.append('"final_response"')
+
+            if content_actions:
+                actions_str = " or ".join(content_actions)
+                guidance_parts.append(f'return content with "next_action" set to {actions_str} and proper "action_input"')
+
+            # Combine into format hint
+            if len(guidance_parts) == 2:
+                format_hint = f"You can either: {guidance_parts[0]}, OR {guidance_parts[1]}"
+            elif len(guidance_parts) == 1:
+                format_hint = f"You must: {guidance_parts[0]}"
+            else:
+                format_hint = "Provide a valid response"
+
             return ValidationResult(
                 is_valid=False,
                 error_message="Could not parse response format - no processor could handle it",
-                retry_suggestion='Your response format was not recognized. Use this structure: {"next_action": "invoke_agent", "action_input": [{"agent_name": "agent_name", "request": "your request"}]}'
+                retry_suggestion=f'Your response format was not recognized. {format_hint}',
+                error_category=ValidationErrorCategory.FORMAT_ERROR.value
             )
         
         # 2. Determine action type
@@ -701,7 +845,8 @@ class ValidationProcessor:
             return ValidationResult(
                 is_valid=False,
                 error_message="No action specified in response",
-                retry_suggestion=f"You didn't specify 'next_action'. You must choose one of: {', '.join(allowed_actions)}"
+                retry_suggestion=f"You didn't specify 'next_action'. You must choose one of: {', '.join(allowed_actions)}",
+                error_category=ValidationErrorCategory.ACTION_ERROR.value
             )
         
         try:
@@ -710,17 +855,30 @@ class ValidationProcessor:
         except ValueError:
             allowed_actions = self._get_allowed_actions(agent, branch)
             valid_action_types = []
+            tool_calls_available = False
+
             for action in allowed_actions:
                 if action == "invoke_agent":
                     valid_action_types.append(ActionType.INVOKE_AGENT.value)
-                elif action == "call_tool":
-                    valid_action_types.append(ActionType.CALL_TOOL.value)
+                elif action == "tool_calls":
+                    # Don't add "call_tool" to valid actions - tools are called via native response.tool_calls
+                    # Just track that tools are available for the hint message
+                    tool_calls_available = True
                 elif action == "final_response":
                     valid_action_types.append(ActionType.FINAL_RESPONSE.value)
+
+            # Build helpful error message
+            error_msg = f"'{action_str}' is not a valid action."
+            if valid_action_types:
+                error_msg += f" Valid next_action values are: {valid_action_types}."
+            if tool_calls_available:
+                error_msg += " To use tools, return them in the native tool_calls field (not as next_action)."
+
             return ValidationResult(
                 is_valid=False,
                 error_message=f"Unknown action type: {action_str}",
-                retry_suggestion=f"'{action_str}' is not a valid action. Your valid actions are: {valid_action_types}"
+                retry_suggestion=error_msg,
+                error_category=ValidationErrorCategory.ACTION_ERROR.value
             )
         
         # 3. Validate specific action
@@ -760,7 +918,8 @@ class ValidationProcessor:
             return ValidationResult(
                 is_valid=False,
                 error_message="Missing invocations for agent invocation",
-                retry_suggestion="You indicated 'invoke_agent' but didn't specify which agent. You must provide the agent_name and request."
+                retry_suggestion="You indicated 'invoke_agent' but didn't specify which agent. You must provide the agent_name and request.",
+                error_category=ValidationErrorCategory.FORMAT_ERROR.value
             )
         
         # Extract agent names from invocations for validation
@@ -777,7 +936,8 @@ class ValidationProcessor:
             return ValidationResult(
                 is_valid=False,
                 error_message=f"Agent {agent.name} cannot invoke: {invalid_targets}",
-                retry_suggestion=f"You cannot invoke {invalid_targets}. Your available agents are: {next_agents}"
+                retry_suggestion=f"You cannot invoke {invalid_targets}. Your available agents are: {next_agents}",
+                error_category=ValidationErrorCategory.PERMISSION_ERROR.value
             )
         
         # Determine action type based on number of invocations
@@ -907,7 +1067,8 @@ class ValidationProcessor:
                     ),
                     retry_suggestion=(
                         f"You cannot use 'final_response' from this agent. You must invoke one of: {next_agents}"
-                    )
+                    ),
+                    error_category=ValidationErrorCategory.PERMISSION_ERROR.value
                 )
         else:
             logger.debug(f"Agent '{agent.name}' is allowed to use final_response (has User access)")

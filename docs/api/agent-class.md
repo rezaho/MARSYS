@@ -2,6 +2,9 @@
 
 Complete API documentation for the Agent classes in MARSYS, including BaseAgent, Agent, BrowserAgent, and AgentPool.
 
+!!! tip "Architecture & Patterns"
+    For architectural overview, design patterns, and best practices, see [Agents Concept Guide](../concepts/agents.md).
+
 ## 📦 BaseAgent
 
 Abstract base class that all agents must inherit from.
@@ -20,15 +23,18 @@ class BaseAgent(ABC):
     def __init__(
         self,
         model: Union[BaseVLM, BaseLLM, BaseAPIModel],
+        name: str,
         goal: str,
         instruction: str,
         tools: Optional[Dict[str, Callable]] = None,
-        max_tokens: int = 512,
-        name: Optional[str] = None,
+        max_tokens: Optional[int] = 10000,
         allowed_peers: Optional[List[str]] = None,
-        memory_retention: str = "session",
+        bidirectional_peers: bool = False,
+        is_convergence_point: Optional[bool] = None,
         input_schema: Optional[Any] = None,
-        output_schema: Optional[Any] = None
+        output_schema: Optional[Any] = None,
+        memory_retention: str = "session",
+        memory_storage_path: Optional[str] = None
     ):
         """
         Initialize base agent.
@@ -98,6 +104,52 @@ async def run(
     Returns:
         Message with agent response
     """
+```
+
+#### `cleanup() -> None`
+
+Clean up agent resources (model sessions, tools, browser handles, etc.).
+
+```python
+async def cleanup(self) -> None:
+    """
+    Clean up agent resources.
+
+    Called automatically by Orchestra at end of run if auto_cleanup_agents=True.
+    Can be overridden by subclasses for custom cleanup logic.
+
+    Default implementation:
+    1. Closes model async resources (aiohttp sessions, etc.)
+    2. Calls agent-specific close() if available (e.g., BrowserAgent.close())
+
+    Example override:
+        async def cleanup(self):
+            # Custom cleanup
+            await self.custom_resource.close()
+            # Call parent cleanup
+            await super().cleanup()
+    """
+```
+
+**Automatic Cleanup:**
+
+The framework automatically calls `cleanup()` on all topology agents after `Orchestra.run()` completes (unless `auto_cleanup_agents=False`).
+
+**Manual Cleanup:**
+
+```python
+# Create agent
+agent = Agent(name="my_agent", model_config=config)
+
+# Use agent
+result = await agent.run("Process data")
+
+# Manual cleanup when done
+await agent.cleanup()
+
+# Unregister from registry (identity-safe)
+from marsys.agents.registry import AgentRegistry
+AgentRegistry.unregister_if_same("my_agent", agent)
 ```
 
 ## 🤖 Agent
@@ -227,9 +279,10 @@ from marsys.models import ModelConfig
 assistant = Agent(
     model_config=ModelConfig(
         type="api",
-        provider="openai",
-        name="gpt-4",
-        temperature=0.7
+        provider="openrouter",
+        name="anthropic/claude-haiku-4.5",
+        temperature=0.7,
+        max_tokens=12000
     ),
     name="assistant",
     goal="Provide helpful assistance to users",
@@ -247,7 +300,7 @@ calculator = Agent(
     goal="Perform mathematical calculations accurately",
     instruction="Mathematical calculation specialist who uses tools for precise computations",
     tools=[calculate],
-    system_prompt="You are a precise calculator. Always use the calculate tool for math."
+    instruction="You are a precise calculator. Always use the calculate tool for math."
 )
 
 # Multi-agent coordinator

@@ -239,11 +239,11 @@ async def test():
     agent = Agent(
         model_config=ModelConfig(
             type="api",
-            name="gpt-4",
-            provider="openai"
+            name="anthropic/claude-haiku-4.5",
+            provider="openrouter"
         ),
-        agent_name="TestAgent",
-        description="Test agent for verification"
+        name="TestAgent",
+        goal="Test agent for verification"
     )
 
     # Run a simple task
@@ -346,13 +346,24 @@ marsys/
 
 ### Model Providers Setup
 
+=== "OpenRouter (Recommended)"
+    ```python
+    ModelConfig(
+        type="api",
+        name="anthropic/claude-haiku-4.5",
+        provider="openrouter",
+        api_key=os.getenv("OPENROUTER_API_KEY")
+    )
+    ```
+
 === "OpenAI"
     ```python
     ModelConfig(
         type="api",
-        name="gpt-4",
-        provider="openai",
-        api_key=os.getenv("OPENAI_API_KEY")
+        name="openai/gpt-5",
+        provider="openrouter",
+        api_key=os.getenv("OPENROUTER_API_KEY"),
+        max_tokens=12000
     )
     ```
 
@@ -360,9 +371,10 @@ marsys/
     ```python
     ModelConfig(
         type="api",
-        name="claude-3-sonnet",
-        provider="anthropic",
-        api_key=os.getenv("ANTHROPIC_API_KEY")
+        name="anthropic/claude-sonnet-4.5",
+        provider="openrouter",
+        api_key=os.getenv("OPENROUTER_API_KEY"),
+        max_tokens=12000
     )
     ```
 

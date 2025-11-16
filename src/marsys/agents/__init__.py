@@ -5,8 +5,10 @@ This package provides the core agent infrastructure for the Multi-Agent Reasonin
 from .agents import Agent, BaseAgent
 from .agent_pool import AgentPool
 from .browser_agent import BrowserAgent
+from .file_operation_agent import FileOperationAgent
 from .learnable_agents import BaseLearnableAgent, LearnableAgent
 from .memory import ConversationMemory, KGMemory, MemoryManager, Message
+from .web_search_agent import WebSearchAgent
 from .pool_factory import (
     create_agent_pool,
     create_agent_pool_sync,
@@ -24,6 +26,8 @@ __all__ = [
     "Agent",
     "AgentPool",
     "BrowserAgent",
+    "FileOperationAgent",
+    "WebSearchAgent",
     "BaseLearnableAgent",
     "LearnableAgent",
     # Pool factory functions

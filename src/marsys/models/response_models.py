@@ -6,7 +6,7 @@ Provides validation and structure for all provider responses.
 from datetime import datetime
 from typing import Any, Dict, List, Optional, Union
 
-from pydantic import BaseModel, Field, field_validator, model_validator
+from pydantic import BaseModel, Field, field_validator, model_validator, ConfigDict
 
 
 class ToolCall(BaseModel):
@@ -62,10 +62,8 @@ class ResponseMetadata(BaseModel):
     reasoning_effort: Optional[str] = None  # OpenRouter
     thinking_budget: Optional[int] = None  # OpenRouter/Google
     site_info: Optional[Dict[str, Any]] = None  # OpenRouter
-    
-    class Config:
-        # Allow extra fields for provider-specific metadata
-        extra = "allow"
+
+    model_config = ConfigDict(extra="allow")  # Allow extra fields for provider-specific metadata
 
 
 class HarmonizedResponse(BaseModel):
@@ -125,12 +123,11 @@ class HarmonizedResponse(BaseModel):
         if self.content:
             parts.append(self.content)
         return "\n\n".join(parts)
-    
-    class Config:
-        # Allow extra fields for extensibility
-        extra = "allow"
-        # Use enum values for validation
-        use_enum_values = True
+
+    model_config = ConfigDict(
+        extra="allow",  # Allow extra fields for extensibility
+        use_enum_values=True  # Use enum values for validation
+    )
 
 
 class ErrorResponse(BaseModel):
@@ -143,5 +140,4 @@ class ErrorResponse(BaseModel):
     request_id: Optional[str] = None
     classification: Optional[Dict[str, Any]] = None  # New field for error classification
 
-    class Config:
-        extra = "allow" 
+    model_config = ConfigDict(extra="allow") 

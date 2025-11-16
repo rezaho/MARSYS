@@ -149,12 +149,12 @@ class BaseAgent(ABC):
     def __init__(
         self,
         model: Union["BaseVLM", "BaseLLM", BaseAPIModel],
+        name: str,
         goal: str,
         instruction: str,
         tools: Optional[Dict[str, Callable[..., Any]]] = None,
         # tools_schema: Optional[List[Dict[str, Any]]] = None, # Removed parameter
-        max_tokens: Optional[int] = 512,
-        name: Optional[str] = None,
+        max_tokens: Optional[int] = 10000,
         allowed_peers: Optional[List[str]] = None,
         bidirectional_peers: bool = False,  # NEW: Control edge directionality
         is_convergence_point: Optional[bool] = None,  # NEW: Optional convergence flag
@@ -273,31 +273,34 @@ class BaseAgent(ABC):
         self._allocation_stats = {"total_acquisitions": 0, "total_releases": 0, "total_wait_time": 0.0}
 
     def __del__(self) -> None:
-        """Safely unregister the agent, even during interpreter shutdown."""
-        agent_display_name = getattr(self, "name", "UnknownAgent")
+        """
+        Destructor - minimal cleanup during garbage collection.
 
+        With Orchestra auto-cleanup, registry unregistration is handled deterministically
+        via cleanup() and _auto_cleanup_agents(). This destructor only guards against
+        pool instance cleanup (pools manage their own lifecycle).
+
+        No registry unregistration is performed here to avoid:
+        - Race conditions during concurrent task execution
+        - "Skip unregister" noise in logs during shutdown
+        - Timing dependencies on garbage collector
+        """
         # Check internal flag first - most reliable during shutdown
         if getattr(self, "_is_pool_instance", False):
-            # This is a pool instance - skip individual unregistration
+            # This is a pool instance - skip individual cleanup
             # The pool's cleanup method will handle proper cleanup
             return
 
-        # All globals may already be None at shutdown – guard every access.
+        # No registry unregistration needed - Orchestra handles this deterministically
+        # Logging at DEBUG level to avoid shutdown noise
+        agent_display_name = getattr(self, "name", "UnknownAgent")
         try:
-            registry_cls = globals().get("AgentRegistry")  # type: ignore[arg-type]
-            unregister_fn = (
-                getattr(registry_cls, "unregister", None) if registry_cls else None
-            )
-            if agent_display_name and callable(unregister_fn):
-                try:
-                    unregister_fn(agent_display_name)
-                except Exception:  # pragma: no cover
-                    pass  # Silently ignore any error on final cleanup
-        except Exception as e:  # pragma: no cover
             logging.debug(
-                f"__del__ cleanup for agent '{agent_display_name}' failed: {e}",
-                extra={"agent_name": agent_display_name},
+                f"Agent '{agent_display_name}' being garbage collected",
+                extra={"agent_name": agent_display_name}
             )
+        except Exception:
+            pass  # Silently ignore logging errors during shutdown
     
     @property
     def allowed_peers(self) -> Set[str]:
@@ -562,7 +565,7 @@ class BaseAgent(ABC):
         # Check if the last message has orphaned tool_calls
         if hasattr(self.memory, 'memory') and len(self.memory.memory) > 0:
             # Get all messages to check for orphaned tool_calls
-            messages = self.memory.retrieve_all()
+            messages = self.memory.get_messages()
             
             # Find the last assistant message with tool_calls
             for i in range(len(messages) - 1, -1, -1):
@@ -1179,7 +1182,7 @@ Example for `final_response`:
                     LogLevel.DEBUG,
                     "Response Message details",  # Changed log message
                     data={
-                        "response_message": result_message.to_llm_dict()
+                        "response_message": dataclasses.asdict(result_message)
                     },  # Log Message content
                 )
             return result_message  # Return the Message object
@@ -1831,6 +1834,7 @@ Example for `final_response`:
         role = "user"  # Default role
         content = actual_request
         name = None
+        images = None  # NEW: Extract images from request
 
         # Handle Message objects
         if hasattr(actual_request, 'content'):
@@ -1838,6 +1842,7 @@ Example for `final_response`:
             content = actual_request.content or ""
             role = getattr(actual_request, 'role', 'user')
             name = getattr(actual_request, 'name', None)
+            images = getattr(actual_request, 'images', None)  # NEW: Extract images from Message
         # Handle different request types
         elif isinstance(actual_request, dict):
             # Check if this is a tool result
@@ -1852,14 +1857,30 @@ Example for `final_response`:
             # Otherwise extract prompt content
             elif "prompt" in actual_request:
                 content = actual_request["prompt"]
+            # NEW: Extract content field if present (for multimodal tasks)
+            elif "content" in actual_request:
+                content = actual_request["content"]
+
+            # NEW: Extract images from dict request (for multimodal tasks)
+            if "images" in actual_request:
+                images = actual_request["images"]
 
         # Add request to memory (skip if None or empty - e.g., tool continuation)
         # FIX: Don't add empty continuation signals to memory
         if hasattr(self, "memory") and content is not None and content != "":
-            request_msg_id = self.memory.add(role=role, content=content, name=name)
+            request_msg_id = self.memory.add(role=role, content=content, name=name, images=images)
+
+        # Call pre-step hook BEFORE retrieving memory and preparing messages
+        # This allows hooks to add context (like screenshots) after tool responses but before LLM call
+        # This ensures proper message ordering: [tool_call, tool_response, context_from_hook]
+        step_number = context.get("step_number", 0)
+        await self._pre_step_hook(
+            step_number=step_number,
+            request_context=request_context,
+        )
 
         # Get memory messages and prepare them for the model
-        memory_messages = self.memory.retrieve_all() if hasattr(self, "memory") else []
+        memory_messages = self.memory.get_messages() if hasattr(self, "memory") else []
 
         # Check if we need to rebuild the system prompt
         # Rebuild if: first call, mode changed, tools changed, or final_response permission changed
@@ -1988,7 +2009,7 @@ Example for `final_response`:
             if action in ["invoke_agent", "return_to_user", "final_response"]:
                 # Get saved context and prepare it
                 if hasattr(self, "memory"):
-                    all_messages = self.memory.retrieve_all()
+                    all_messages = self.memory.get_messages()
                     context_data = self._context_selector.get_saved_context(
                         all_messages
                     )
@@ -1999,6 +2020,21 @@ Example for `final_response`:
                         raw_response = self._apply_context_template(
                             raw_response, context_data
                         )
+
+        # Call post-step hook (allows subclasses to perform custom actions)
+        step_number = context.get("step_number", 0)
+        action_type = (
+            raw_response.content.get("next_action")
+            if isinstance(raw_response.content, dict)
+            else "unknown"
+        )
+        await self._post_step_hook(
+            step_number=step_number,
+            action_type=action_type,
+            request_context=request_context,
+            raw_response_message=raw_response,
+            context=context
+        )
 
         # Return response with context information
         return {"response": raw_response, "context_selection": context_for_next}
@@ -2197,6 +2233,38 @@ Example for `final_response`:
         """
         raise NotImplementedError("_run must be implemented in subclasses.")
 
+    async def _pre_step_hook(
+        self,
+        step_number: int,
+        request_context: RequestContext,
+        **kwargs: Any,
+    ) -> None:
+        """
+        Pre-step hook that runs BEFORE each LLM call in run_step.
+
+        This method is called after the previous step's tool/agent responses have been
+        added to memory, but before the next LLM call is made. This is the correct
+        place to add contextual information (like screenshots) that should appear
+        AFTER tool responses in the message history.
+
+        This ensures proper message ordering for LLM APIs that require tool responses
+        to immediately follow tool calls (e.g., OpenAI API).
+
+        Use cases:
+        - Add screenshots after tool execution completes
+        - Add context summaries before next reasoning step
+        - Inject dynamic information based on current state
+        - Add observability data for the agent's next decision
+
+        Args:
+            step_number: The current step number (1-indexed, represents the step about to execute)
+            request_context: The current request context
+            **kwargs: Additional keyword arguments
+        """
+        # Default implementation does nothing
+        # Subclasses can override to add custom behavior
+        pass
+
     async def _post_step_hook(
         self,
         step_number: int,
@@ -2305,6 +2373,44 @@ Example for `final_response`:
                     to_visit.update(agent._allowed_peers_init - visited)
 
         return False
+
+    async def cleanup(self) -> None:
+        """
+        Clean up agent resources (model sessions, tools, browser handles, etc.).
+
+        Called automatically by Orchestra at end of run if auto_cleanup_agents=True.
+        Can be overridden by subclasses for custom cleanup logic.
+
+        This method:
+        1. Closes model async resources (e.g., aiohttp ClientSession in BaseAPIModel)
+        2. Calls agent-specific close() hook (e.g., BrowserAgent.close() for playwright)
+
+        Ensures:
+        - No unclosed network sessions (eliminates "Unclosed client session" warnings)
+        - External resources (browsers, files) properly released
+        - Clean shutdown without resource leaks
+        """
+        agent_name = getattr(self, "name", "UnknownAgent")
+
+        # 1. Close model async resources (aiohttp sessions, etc.)
+        model = getattr(self, "model", None)
+        if model and hasattr(model, "cleanup") and callable(model.cleanup):
+            try:
+                await model.cleanup()
+                self.logger.debug(f"Closed model resources for {agent_name}")
+            except Exception as e:
+                self.logger.debug(f"Model cleanup failed for {agent_name}: {e}")
+
+        # 2. Agent-specific close hook (e.g., BrowserAgent.close() for playwright/browser)
+        close_fn = getattr(self, "close", None)
+        if close_fn and callable(close_fn):
+            try:
+                maybe_coro = close_fn()
+                if asyncio.iscoroutine(maybe_coro):
+                    await maybe_coro
+                    self.logger.debug(f"Closed agent-specific resources for {agent_name}")
+            except Exception as e:
+                self.logger.debug(f"Agent close() failed for {agent_name}: {e}")
 
     def _enhance_description_for_user_interaction(self):
         """Auto-enhance agent description with user interaction instructions."""
@@ -3659,7 +3765,7 @@ The user will provide their response, and you'll receive it to continue your tas
             and hasattr(self, "memory")
             and isinstance(self.memory.memory_module, ConversationMemory)
         ):
-            all_messages_in_memory = self.memory.retrieve_all()
+            all_messages_in_memory = self.memory.get_messages()
             target_message_id_to_update = raw_llm_response_message.message_id
             found_message_idx = -1
             for idx, msg_in_mem in enumerate(all_messages_in_memory):
@@ -3723,7 +3829,7 @@ The user will provide their response, and you'll receive it to continue your tas
             and hasattr(self, "memory")
             and isinstance(self.memory.memory_module, ConversationMemory)
         ):
-            all_messages_in_memory = self.memory.retrieve_all()
+            all_messages_in_memory = self.memory.get_messages()
             target_message_id_to_update = raw_llm_response_message.message_id
             found_message_idx = -1
             for idx, msg_in_mem in enumerate(all_messages_in_memory):
@@ -3956,6 +4062,7 @@ class Agent(BaseAgent):
                 temperature=temperature_cfg,
                 provider=provider,  # Pass the provider parameter
                 thinking_budget=config.thinking_budget,  # Pass the thinking budget
+                reasoning_effort=config.reasoning_effort,  # Pass the reasoning effort
                 **extra_kwargs,
             )
         else:
@@ -3986,6 +4093,7 @@ class Agent(BaseAgent):
                 "max_tokens",  # Handled by Agent init and run override
                 "temperature",  # Handled by Agent init and run override
                 "thinking_budget",  # Passed to BaseAPIModel init
+                "reasoning_effort",  # Passed to BaseAPIModel init
                 "model_class",  # Local model specific
                 "torch_dtype",  # Local model specific
                 "device_map",  # Local model specific
@@ -4143,17 +4251,22 @@ class Agent(BaseAgent):
         json_mode_for_llm_native = False  # Default: disabled for compatibility
 
         if self._compiled_output_schema:
+            # Use structured output with response_schema for schema enforcement
+            # This provides much more reliable JSON than json_mode alone
+            api_model_kwargs["response_schema"] = self.output_schema
+            # Also set json_mode as fallback for providers that don't support response_schema
             api_model_kwargs["json_mode"] = True
         elif run_mode == "auto_step" and isinstance(self.model, BaseAPIModel):
             # For auto_step mode with API models, we might need JSON mode
             # but keep it disabled by default for markdown-wrapped JSON compatibility
             api_model_kwargs["json_mode"] = json_mode_for_llm_native
 
-        # Only request native JSON format when explicitly needed
+        # Only request native JSON format when explicitly needed (fallback for old code)
         if (
             json_mode_for_llm_native
             and isinstance(self.model, BaseAPIModel)
             and getattr(self._model_config, "provider", "") == "openai"
+            and "response_schema" not in api_model_kwargs  # Don't override response_schema
         ):
             api_model_kwargs["response_format"] = {"type": "json_object"}
 

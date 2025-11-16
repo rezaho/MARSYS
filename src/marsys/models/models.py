@@ -11,12 +11,16 @@ from typing import Any, Callable, Dict, List, Literal, Optional, Union
 
 import requests
 
+# Setup logger
+logger = logging.getLogger(__name__)
+
 # Ensure other necessary imports are present
 from PIL import Image
 
 # Ensure necessary Pydantic imports are present
 from pydantic import (  # root_validator, # Ensure root_validator is removed or commented out
     BaseModel,
+    ConfigDict,
     Field,
     ValidationError,
     ValidationInfo,
@@ -53,50 +57,101 @@ class APIProviderAdapter(ABC):
         # Each adapter handles its own config in __init__
 
     def run(self, messages: List[Dict], **kwargs) -> HarmonizedResponse:
-        """Common orchestration flow - calls abstract methods"""
-        response = None
-        try:
-            # Record start time for response time calculation
-            request_start_time = time.time()
+        """Common orchestration flow with exponential backoff retry for server errors"""
+        max_retries = 3
+        base_delay = 1.0  # Start with 1 second
 
-            # 1. Build request components using abstract methods
-            headers = self.get_headers()
-            payload = self.format_request_payload(messages, **kwargs)
-            url = self.get_endpoint_url()
-
-            # 2. Make request (common logic)
-            response = requests.post(url, headers=headers, json=payload, timeout=180)
-
-            # # Debug: Print the actual response for debugging
-            if response.status_code != 200:
-                response.raise_for_status()
-
-            # 3. Get raw response and harmonize
-            raw_response = response.json()
-
-            # 4. Always use harmonize_response - it's the only method now
-            return self.harmonize_response(raw_response, request_start_time)
-
-        except requests.exceptions.RequestException as e:
+        for attempt in range(max_retries + 1):  # 0, 1, 2, 3 = 4 total attempts
+            response = None
             try:
-                return self.handle_api_error(e, response)
-            except Exception as api_error:
-                # Re-raise ModelAPIError that was raised by handle_api_error
-                raise api_error
-        except Exception as e:
-            # Catch any other exceptions (like Pydantic validation errors)
+                # Record start time for response time calculation
+                request_start_time = time.time()
 
-            if response is not None:
-                print(f"  Response status code: {response.status_code}")
-                print(f"  Response text: {response.text}")
+                # 1. Build request components using abstract methods
+                headers = self.get_headers()
+                payload = self.format_request_payload(messages, **kwargs)
+                url = self.get_endpoint_url()
 
-            # Convert unexpected exceptions to ErrorResponse
-            return ErrorResponse(
-                error=f"Unexpected error: {str(e)}",
-                error_type=type(e).__name__,
-                provider=getattr(self, "provider", "unknown"),
-                model=getattr(self, "model_name", "unknown"),
-            )
+                # 2. Make request (common logic)
+                response = requests.post(url, headers=headers, json=payload, timeout=180)
+
+                # Check for server errors that should trigger retry
+                if response.status_code in [500, 502, 503, 504, 529, 408]:
+                    # Server-side error - should retry
+                    if attempt < max_retries:
+                        # Calculate exponential backoff delay
+                        delay = base_delay * (2 ** attempt)
+                        logger.warning(
+                            f"Server error {response.status_code} from {self.model_name}. "
+                            f"Retry {attempt + 1}/{max_retries} after {delay:.1f}s"
+                        )
+                        time.sleep(delay)
+                        continue  # Retry
+                    else:
+                        # Max retries exhausted - raise error to be handled below
+                        logger.error(
+                            f"Max retries ({max_retries}) exhausted for server error {response.status_code}"
+                        )
+                        response.raise_for_status()
+
+                # Check for rate limit with retry-after header
+                elif response.status_code == 429:
+                    if attempt < max_retries:
+                        # Try to get retry-after from header
+                        retry_after = response.headers.get("retry-after")
+                        retry_after = response.headers.get("x-ratelimit-reset-after", retry_after)
+
+                        if retry_after:
+                            try:
+                                delay = float(retry_after)
+                            except ValueError:
+                                delay = base_delay * (2 ** attempt)
+                        else:
+                            delay = base_delay * (2 ** attempt)
+
+                        logger.warning(
+                            f"Rate limit (429) from {self.model_name}. "
+                            f"Retry {attempt + 1}/{max_retries} after {delay:.1f}s"
+                        )
+                        time.sleep(delay)
+                        continue  # Retry
+                    else:
+                        # Max retries exhausted - raise error to be handled below
+                        logger.error(f"Max retries ({max_retries}) exhausted for rate limit (429)")
+                        response.raise_for_status()
+
+                # For other non-200 responses, raise immediately (client errors)
+                elif response.status_code != 200:
+                    response.raise_for_status()
+
+                # 3. Get raw response and harmonize
+                raw_response = response.json()
+
+                # 4. Always use harmonize_response - it's the only method now
+                return self.harmonize_response(raw_response, request_start_time)
+
+            except requests.exceptions.RequestException as e:
+                # Error occurred - handle it via provider-specific error handler
+                try:
+                    return self.handle_api_error(e, response)
+                except Exception as api_error:
+                    # Re-raise ModelAPIError that was raised by handle_api_error
+                    raise api_error
+
+            except Exception as e:
+                # Catch any other exceptions (like Pydantic validation errors)
+
+                if response is not None:
+                    print(f"  Response status code: {response.status_code}")
+                    print(f"  Response text: {response.text}")
+
+                # Convert unexpected exceptions to ErrorResponse
+                return ErrorResponse(
+                    error=f"Unexpected error: {str(e)}",
+                    error_type=type(e).__name__,
+                    provider=getattr(self, "provider", "unknown"),
+                    model=getattr(self, "model_name", "unknown"),
+                )
 
     # Abstract methods that each provider must implement
     @abstractmethod
@@ -167,7 +222,7 @@ class AsyncBaseAPIAdapter(APIProviderAdapter):
 
     async def arun(self, messages: List[Dict], **kwargs) -> HarmonizedResponse:
         """
-        Async orchestration flow with aiohttp.
+        Async orchestration flow with aiohttp and exponential backoff retry for server errors.
 
         This method provides true async HTTP calls, allowing the event loop
         to handle other branches while waiting for API responses.
@@ -183,53 +238,106 @@ class AsyncBaseAPIAdapter(APIProviderAdapter):
             ModelError: For any API or network errors
         """
         import aiohttp
+        import asyncio
 
-        try:
-            # Record start time for response time calculation
-            request_start_time = time.time()
+        max_retries = 3
+        base_delay = 1.0  # Start with 1 second
 
-            # Build request components using parent's abstract methods
-            headers = self.get_headers()
-            payload = self.format_request_payload(messages, **kwargs)
-            url = self.get_endpoint_url()
-
-            # Get or create session
-            session = await self._ensure_session()
-
-            # Make async HTTP request
-            # While waiting for response, event loop can handle other branches
-            async with session.post(
-                url,
-                headers=headers,
-                json=payload,
-                timeout=aiohttp.ClientTimeout(total=180)
-            ) as response:
-                # Check status before reading body
-                if response.status != 200:
-                    # Raise aiohttp exception
-                    response.raise_for_status()
-
-                # Read JSON response
-                raw_response = await response.json()
-
-            # Reuse parent's harmonization logic
-            return self.harmonize_response(raw_response, request_start_time)
-
-        except aiohttp.ClientError as e:
-            # Call handle_api_error like sync adapter does
-            # This ensures proper error classification for async requests
+        for attempt in range(max_retries + 1):  # 0, 1, 2, 3 = 4 total attempts
+            response = None
             try:
-                return self.handle_api_error(e, response=None)
-            except Exception as api_error:
-                # Re-raise ModelAPIError that was raised by handle_api_error
-                raise api_error
-        except Exception as e:
-            # For unexpected errors, also use handle_api_error for consistency
-            try:
-                return self.handle_api_error(e, response=None)
-            except Exception as api_error:
-                # Re-raise ModelAPIError that was raised by handle_api_error
-                raise api_error
+                # Record start time for response time calculation
+                request_start_time = time.time()
+
+                # Build request components using parent's abstract methods
+                headers = self.get_headers()
+                payload = self.format_request_payload(messages, **kwargs)
+                url = self.get_endpoint_url()
+
+                # Get or create session
+                session = await self._ensure_session()
+
+                # Make async HTTP request
+                # While waiting for response, event loop can handle other branches
+                async with session.post(
+                    url,
+                    headers=headers,
+                    json=payload,
+                    timeout=aiohttp.ClientTimeout(total=360)
+                ) as response:
+                    response_status = response.status
+
+                    # Check for server errors that should trigger retry
+                    if response_status in [500, 502, 503, 504, 529, 408]:
+                        # Server-side error - should retry
+                        if attempt < max_retries:
+                            # Calculate exponential backoff delay
+                            delay = base_delay * (2 ** attempt)
+                            logger.warning(
+                                f"Server error {response_status} from {self.model_name}. "
+                                f"Retry {attempt + 1}/{max_retries} after {delay:.1f}s"
+                            )
+                            await asyncio.sleep(delay)
+                            continue  # Retry
+
+                        else:
+                            # Max retries exhausted - raise error to be handled below
+                            logger.error(
+                                f"Max retries ({max_retries}) exhausted for server error {response_status}"
+                            )
+                            response.raise_for_status()
+
+                    # Check for rate limit with retry-after header
+                    elif response_status == 429:
+                        if attempt < max_retries:
+                            # Try to get retry-after from header
+                            retry_after = response.headers.get("retry-after")
+                            retry_after = response.headers.get("x-ratelimit-reset-after", retry_after)
+
+                            if retry_after:
+                                try:
+                                    delay = float(retry_after)
+                                except ValueError:
+                                    delay = base_delay * (2 ** attempt)
+                            else:
+                                delay = base_delay * (2 ** attempt)
+
+                            logger.warning(
+                                f"Rate limit (429) from {self.model_name}. "
+                                f"Retry {attempt + 1}/{max_retries} after {delay:.1f}s"
+                            )
+                            await asyncio.sleep(delay)
+                            continue  # Retry
+                        else:
+                            # Max retries exhausted - raise error to be handled below
+                            logger.error(f"Max retries ({max_retries}) exhausted for rate limit (429)")
+                            response.raise_for_status()
+
+                    # For other non-200 responses, raise immediately (client errors)
+                    elif response_status != 200:
+                       response.raise_for_status()
+
+                    # Read JSON response
+                    raw_response = await response.json()
+
+                # Reuse parent's harmonization logic
+                return self.harmonize_response(raw_response, request_start_time)
+
+            except aiohttp.ClientError as e:
+                # Error occurred - handle it via provider-specific error handler
+                try:
+                    return self.handle_api_error(e, response=None)
+                except Exception as api_error:
+                    # Re-raise ModelAPIError that was raised by handle_api_error
+                    raise api_error
+
+            except Exception as e:
+                # For unexpected errors, also use handle_api_error for consistency
+                try:
+                    return self.handle_api_error(e, response=None)
+                except Exception as api_error:
+                    # Re-raise ModelAPIError that was raised by handle_api_error
+                    raise api_error
 
     async def cleanup(self):
         """
@@ -320,7 +428,20 @@ class OpenAIAdapter(APIProviderAdapter):
             payload["top_p"] = self.top_p
 
         # Handle structured output (takes precedence over simple json_mode)
-        if kwargs.get("response_format"):
+        # Priority: response_schema > response_format > json_mode
+        response_schema = kwargs.get("response_schema")
+        if response_schema:
+            # Convert unified response_schema to OpenAI's response_format
+            payload["response_format"] = {
+                "type": "json_schema",
+                "json_schema": {
+                    "name": "response_schema",
+                    "strict": True,
+                    "schema": response_schema
+                }
+            }
+        elif kwargs.get("response_format"):
+            # Allow direct response_format for advanced use cases
             payload["response_format"] = kwargs["response_format"]
         elif kwargs.get("json_mode"):
             payload["response_format"] = {"type": "json_object"}
@@ -481,6 +602,15 @@ class OpenRouterAdapter(APIProviderAdapter):
         self.thinking_budget = thinking_budget
         self.reasoning_effort = reasoning_effort  # "high", "medium", "low"
 
+        # Store additional OpenRouter sampling parameters from kwargs
+        self.frequency_penalty = kwargs.get("frequency_penalty")
+        self.presence_penalty = kwargs.get("presence_penalty")
+        self.repetition_penalty = kwargs.get("repetition_penalty")
+        self.top_k = kwargs.get("top_k")
+        self.min_p = kwargs.get("min_p")
+        self.top_a = kwargs.get("top_a")
+        self.seed = kwargs.get("seed")
+
     def get_headers(self) -> Dict[str, str]:
         headers = {
             "Authorization": f"Bearer {self.api_key}",
@@ -503,9 +633,22 @@ class OpenRouterAdapter(APIProviderAdapter):
             content = cleaned_msg.get("content")
             
             # Gemini-specific fix when using OpenRouter
-            # Serialize arrays/dicts to JSON strings for Gemini compatibility
+            # Only serialize non-multimodal content to JSON strings for Gemini compatibility
+            # Skip serialization if content is a multimodal array with image_url parts
             if self.model_name and "gemini" in self.model_name.lower():
-                if isinstance(content, (list, dict)):
+                if isinstance(content, list):
+                    # Check if this is a multimodal content array with images
+                    has_images = any(
+                        isinstance(part, dict) and part.get("type") == "image_url"
+                        for part in content
+                    )
+                    # Only stringify if NO images are present (plain structured data)
+                    if not has_images:
+                        import json
+                        cleaned_msg["content"] = json.dumps(content)
+                        content = cleaned_msg["content"]
+                elif isinstance(content, dict):
+                    # Stringify dict content (structured data, not multimodal)
                     import json
                     cleaned_msg["content"] = json.dumps(content)
                     content = cleaned_msg["content"]
@@ -526,6 +669,22 @@ class OpenRouterAdapter(APIProviderAdapter):
         elif self.top_p is not None:
             payload["top_p"] = self.top_p
 
+        # Add other OpenRouter sampling parameters (only if they have values)
+        sampling_params = {
+            "frequency_penalty": kwargs.get("frequency_penalty", self.frequency_penalty),
+            "presence_penalty": kwargs.get("presence_penalty", self.presence_penalty),
+            "repetition_penalty": kwargs.get("repetition_penalty", self.repetition_penalty),
+            "top_k": kwargs.get("top_k", self.top_k),
+            "min_p": kwargs.get("min_p", self.min_p),
+            "top_a": kwargs.get("top_a", self.top_a),
+            "seed": kwargs.get("seed", self.seed),
+        }
+
+        # Only add non-None parameters to payload
+        for param_name, param_value in sampling_params.items():
+            if param_value is not None:
+                payload[param_name] = param_value
+
         # OpenRouter + Gemini fix: Can't combine tools with json_mode
         # Force json_mode=False when tools are present to avoid API errors
         has_tools = bool(kwargs.get("tools"))
@@ -542,7 +701,20 @@ class OpenRouterAdapter(APIProviderAdapter):
             wants_json_mode = False
 
         # Handle structured output (takes precedence over simple json_mode)
-        if kwargs.get("response_format"):
+        # Priority: response_schema > response_format > json_mode
+        response_schema = kwargs.get("response_schema")
+        if response_schema:
+            # Convert unified response_schema to OpenRouter's response_format (same as OpenAI)
+            payload["response_format"] = {
+                "type": "json_schema",
+                "json_schema": {
+                    "name": "response_schema",
+                    "strict": True,
+                    "schema": response_schema
+                }
+            }
+        elif kwargs.get("response_format"):
+            # Allow direct response_format for advanced use cases
             payload["response_format"] = kwargs["response_format"]
         elif wants_json_mode:
             payload["response_format"] = {"type": "json_object"}
@@ -610,14 +782,20 @@ class OpenRouterAdapter(APIProviderAdapter):
             "max_tokens",
             "temperature",
             "top_p",
+            "top_k",
             "json_mode",
             "tools",
+            "tool_choice",
             "response_format",
+            "response_schema",  # For structured output
             "thinking_budget",
             "reasoning_effort",
             "exclude_reasoning",
             "frequency_penalty",
             "presence_penalty",
+            "repetition_penalty",
+            "min_p",
+            "top_a",
             "logit_bias",
             "logprobs",
             "top_logprobs",
@@ -663,40 +841,17 @@ class OpenRouterAdapter(APIProviderAdapter):
             classification={"category": api_error.classification, "is_retryable": api_error.is_retryable, "retry_after": api_error.retry_after, "suggested_action": api_error.suggested_action},
         )
 
-    def _extract_json_from_content(self, content: str) -> dict:
-        """Extract JSON from content using robust parsing utilities."""
-        import json
-
-        from marsys.utils.parsing import robust_json_loads
-
-        if not content or not isinstance(content, str):
-            return content
-
-        try:
-            # Use the robust JSON parser from utils
-            parsed = robust_json_loads(content)
-            return parsed
-        except (json.JSONDecodeError, ValueError):
-            # If parsing fails, return original content
-            return content
-
     def harmonize_response(
         self, raw_response: Dict[str, Any], request_start_time: float
     ) -> HarmonizedResponse:
         """Convert OpenRouter response to standardized Pydantic model"""
-        import json
 
         # Extract message content
         message = raw_response.get("choices", [{}])[0].get("message", {})
         choice = raw_response.get("choices", [{}])[0]
 
-        # Enhanced content parsing: try to parse JSON from content
+        # Get raw content without any parsing
         content = message.get("content")
-        if content and content.strip():
-            content = self._extract_json_from_content(content)
-            # If it's a dict, convert back to JSON string for consistency
-            if isinstance(content, dict):
-                content = json.dumps(content)
 
         # Build tool calls
         tool_calls = []
@@ -788,6 +943,77 @@ class AnthropicAdapter(APIProviderAdapter):
             "anthropic-version": "2023-06-01",
         }
 
+    def _convert_content_to_anthropic_format(self, content: Any) -> Any:
+        """
+        Convert OpenAI-style image content to Anthropic format.
+
+        OpenAI format:
+        [
+            {"type": "text", "text": "..."},
+            {"type": "image_url", "image_url": {"url": "data:image/png;base64,..."}}
+        ]
+
+        Anthropic format:
+        [
+            {"type": "text", "text": "..."},
+            {"type": "image", "source": {"type": "base64", "media_type": "image/png", "data": "..."}}
+        ]
+
+        Args:
+            content: Content in OpenAI format (string, dict, or list)
+
+        Returns:
+            Content in Anthropic format
+        """
+        # If content is not a list, return as-is
+        if not isinstance(content, list):
+            return content
+
+        converted_content = []
+        for part in content:
+            if not isinstance(part, dict):
+                converted_content.append(part)
+                continue
+
+            # Handle text parts (pass through)
+            if part.get("type") == "text":
+                converted_content.append(part)
+
+            # Convert image_url to Anthropic image format
+            elif part.get("type") == "image_url":
+                image_url_obj = part.get("image_url", {})
+                image_url = image_url_obj.get("url", "")
+
+                # Parse data URL: data:image/{format};base64,{data}
+                if image_url.startswith("data:"):
+                    try:
+                        # Split on comma to separate header from data
+                        header, base64_data = image_url.split(",", 1)
+                        # Extract media type from header
+                        media_type = header.split(";")[0].replace("data:", "")
+
+                        # Create Anthropic format
+                        converted_content.append({
+                            "type": "image",
+                            "source": {
+                                "type": "base64",
+                                "media_type": media_type,
+                                "data": base64_data
+                            }
+                        })
+                    except Exception:
+                        # If parsing fails, skip this image
+                        pass
+                else:
+                    # Non-base64 URL, skip (Anthropic doesn't support URL references in older API versions)
+                    pass
+
+            # Other types: pass through
+            else:
+                converted_content.append(part)
+
+        return converted_content
+
     def format_request_payload(self, messages: List[Dict], **kwargs) -> Dict[str, Any]:
         # Extract system message if present (Claude handles it differently)
         system_message = None
@@ -801,6 +1027,9 @@ class AnthropicAdapter(APIProviderAdapter):
                 cleaned_msg = msg.copy()
                 if cleaned_msg.get("content") is None:
                     cleaned_msg["content"] = ""
+                else:
+                    # Convert OpenAI image format to Anthropic format
+                    cleaned_msg["content"] = self._convert_content_to_anthropic_format(cleaned_msg.get("content"))
                 user_messages.append(cleaned_msg)
 
         # Build base payload with required fields
@@ -819,8 +1048,22 @@ class AnthropicAdapter(APIProviderAdapter):
         if system_message:
             payload["system"] = system_message
 
-        # Claude doesn't support OpenAI's response_format, handle JSON mode differently
-        if kwargs.get("json_mode") and user_messages:
+        # Claude doesn't support OpenAI's response_format or native structured output
+        # Handle response_schema by falling back to json_mode with schema in prompt
+        response_schema = kwargs.get("response_schema")
+        if response_schema and user_messages:
+            import warnings
+            import json
+            warnings.warn(
+                "Anthropic/Claude does not natively support structured outputs with schema enforcement. "
+                "Falling back to json_mode with schema description in prompt. "
+                "Consider using tool_use pattern for more reliable structured output with Claude."
+            )
+            last_msg = user_messages[-1]
+            if last_msg.get("role") == "user":
+                schema_str = json.dumps(response_schema, indent=2)
+                last_msg["content"] += f"\n\nPlease respond with valid JSON that follows this schema:\n```json\n{schema_str}\n```"
+        elif kwargs.get("json_mode") and user_messages:
             last_msg = user_messages[-1]
             if last_msg.get("role") == "user":
                 last_msg["content"] += "\n\nPlease respond with valid JSON only."
@@ -1456,9 +1699,7 @@ class ModelConfig(BaseModel):
         None, description="Quantization config dict for local models"
     )
 
-    # Allow extra fields for flexibility with different APIs/models
-    class Config:
-        extra = "allow"
+    model_config = ConfigDict(extra="allow")  # Allow extra fields for flexibility with different APIs/models
 
     @model_validator(mode="before")
     @classmethod
@@ -1962,6 +2203,7 @@ class BaseAPIModel:
         self,
         messages: List[Dict[str, str]],
         json_mode: bool = False,
+        response_schema: Optional[Dict[str, Any]] = None,
         max_tokens: Optional[int] = None,
         temperature: Optional[float] = None,
         top_p: Optional[float] = None,
@@ -1974,7 +2216,17 @@ class BaseAPIModel:
 
         Args:
             messages: A list of message dictionaries, following the OpenAI format.
-            json_mode: If True, requests JSON output from the model.
+            json_mode: If True, requests that the model output valid JSON (without enforcing a specific schema).
+                      The model will return JSON but the structure is not guaranteed.
+            response_schema: Optional JSON schema for structured output. When provided, enforces that the response
+                           follows this exact schema (strict mode). This is the recommended way to get reliable
+                           structured JSON. Format: Standard JSON Schema dict with "type", "properties", "required".
+                           The adapter will convert this to provider-specific format:
+                           - OpenAI/OpenRouter: response_format with json_schema
+                           - Google/Gemini: responseSchema in generationConfig
+                           - Anthropic/Claude: Not natively supported (falls back to json_mode)
+                           Note: Requires compatible models (e.g., gpt-4o-2024-08-06+, gemini-1.5+).
+                           response_schema takes precedence over json_mode if both are provided.
             max_tokens: Overrides the default max_tokens for this specific call.
             temperature: Overrides the default temperature for this specific call.
             top_p: Overrides the default top_p for this specific call.
@@ -2009,12 +2261,16 @@ class BaseAPIModel:
             adapter_response = self.adapter.run(
                 messages=messages,
                 json_mode=json_mode,
+                response_schema=response_schema,
                 max_tokens=max_tokens,
                 temperature=temperature,
                 top_p=top_p,
                 tools=tools,
                 **kwargs,
             )
+
+            # Log model output for debugging/analysis
+            logger.debug(f"Model {self.adapter.model_name} response: {adapter_response}")
 
             # Check if response is an ErrorResponse and convert to exception
             if isinstance(adapter_response, ErrorResponse):
@@ -2063,6 +2319,7 @@ class BaseAPIModel:
         self,
         messages: List[Dict[str, str]],
         json_mode: bool = False,
+        response_schema: Optional[Dict[str, Any]] = None,
         max_tokens: Optional[int] = None,
         temperature: Optional[float] = None,
         top_p: Optional[float] = None,
@@ -2077,7 +2334,8 @@ class BaseAPIModel:
 
         Args:
             messages: A list of message dictionaries, following the OpenAI format.
-            json_mode: If True, requests JSON output from the model.
+            json_mode: If True, requests that the model output valid JSON (without enforcing a specific schema).
+            response_schema: Optional JSON schema for structured output (same as run() method).
             max_tokens: Overrides the default max_tokens for this specific call.
             temperature: Overrides the default temperature for this specific call.
             top_p: Overrides the default top_p for this specific call.
@@ -2108,12 +2366,16 @@ class BaseAPIModel:
             adapter_response = await self.async_adapter.arun(
                 messages=messages,
                 json_mode=json_mode,
+                response_schema=response_schema,
                 max_tokens=max_tokens,
                 temperature=temperature,
                 top_p=top_p,
                 tools=tools,
                 **kwargs
             )
+
+            # Log model output for debugging/analysis
+            logger.debug(f"Model {self.async_adapter.model_name} response: {adapter_response}")
 
             # Check if response is an ErrorResponse
             if isinstance(adapter_response, ErrorResponse):
@@ -2160,6 +2422,7 @@ class BaseAPIModel:
                 return self.run(
                     messages=messages,
                     json_mode=json_mode,
+                    response_schema=response_schema,
                     max_tokens=max_tokens,
                     temperature=temperature,
                     top_p=top_p,

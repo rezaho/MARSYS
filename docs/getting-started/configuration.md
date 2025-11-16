@@ -68,8 +68,8 @@ from marsys.models import ModelConfig
 
 config = ModelConfig(
     type="api",                    # "api" or "local"
-    provider="openai",             # Provider name
-    name="gpt-4",                  # Model name
+    provider="openrouter",         # Provider name
+    name="anthropic/claude-haiku-4.5",  # Model name
     api_key=None,                  # Auto-loads from env
     base_url=None,                 # Custom endpoint
     parameters={                   # Model parameters
@@ -84,102 +84,31 @@ config = ModelConfig(
 
 ### Provider-Specific Configurations
 
-=== "OpenAI"
-    ```python
-    config = ModelConfig(
-        type="api",
-        provider="openai",
-        name="gpt-4-turbo-preview",
-        api_key=os.getenv("OPENAI_API_KEY"),
-        parameters={
-            "temperature": 0.7,
-            "max_tokens": 4096,
-            "top_p": 1.0,
-            "frequency_penalty": 0,
-            "presence_penalty": 0,
-            "response_format": {"type": "json_object"},  # JSON mode
-            "seed": 42,  # Deterministic output
-            "tools": [...],  # Function calling
-            "tool_choice": "auto"
-        }
-    )
-    ```
+Common provider examples:
 
-=== "Anthropic"
-    ```python
-    config = ModelConfig(
-        type="api",
-        provider="anthropic",
-        name="claude-3-opus-20240229",
-        api_key=os.getenv("ANTHROPIC_API_KEY"),
-        parameters={
-            "temperature": 0.5,
-            "max_tokens": 4096,
-            "top_p": 0.9,
-            "top_k": 0,
-            "stop_sequences": ["Human:", "Assistant:"],
-            "metadata": {
-                "user_id": "user123"
-            }
-        }
-    )
-    ```
+```python
+# OpenRouter (recommended - access to all models)
+config = ModelConfig(
+    type="api",
+    provider="openrouter",
+    name="anthropic/claude-haiku-4.5",  # or gpt-5, gemini-2.5-pro, etc.
+    api_key=os.getenv("OPENROUTER_API_KEY"),
+    temperature=0.7,
+    max_tokens=12000
+)
 
-=== "Google"
-    ```python
-    config = ModelConfig(
-        type="api",
-        provider="google",
-        name="gemini-1.5-pro",
-        api_key=os.getenv("GOOGLE_API_KEY"),
-        parameters={
-            "temperature": 0.9,
-            "max_output_tokens": 2048,
-            "top_p": 0.95,
-            "top_k": 40,
-            "candidate_count": 1,
-            "stop_sequences": [],
-            "safety_settings": [
-                {
-                    "category": "HARM_CATEGORY_DANGEROUS",
-                    "threshold": "BLOCK_MEDIUM_AND_ABOVE"
-                }
-            ]
-        }
-    )
-    ```
+# Local Ollama
+config = ModelConfig(
+    type="local",
+    provider="ollama",
+    name="llama2:13b",
+    base_url="http://localhost:11434"
+)
+```
 
-=== "Local Models"
-    ```python
-    # Ollama
-    config = ModelConfig(
-        type="local",
-        provider="ollama",
-        name="llama2:13b",
-        base_url="http://localhost:11434",
-        parameters={
-            "temperature": 0.8,
-            "num_predict": 2048,
-            "top_k": 40,
-            "top_p": 0.9,
-            "repeat_penalty": 1.1
-        }
-    )
-
-    # Hugging Face
-    config = ModelConfig(
-        type="local",
-        provider="huggingface",
-        name="meta-llama/Llama-2-7b-chat-hf",
-        parameters={
-            "temperature": 0.7,
-            "max_new_tokens": 512,
-            "do_sample": True,
-            "device_map": "auto",
-            "load_in_8bit": True
-        }
-    )
-    ```
+!!! info "Provider-Specific Parameters"
+    Each provider supports unique parameters (reasoning_effort, thinking_budget, safety_settings, etc.).
+    See [Models API Reference](../api/models.md) for complete provider-specific documentation.
 
 ## ⚙️ Execution Configuration
 
@@ -379,13 +308,13 @@ error_config = ErrorHandlingConfig(
             "max_retries": 3,
             "base_retry_delay": 60,
             "insufficient_quota_action": "raise",  # or "fallback"
-            "fallback_model": "gpt-3.5-turbo"
+            "fallback_model": "gpt-5-mini"
         },
         "anthropic": {
             "max_retries": 2,
             "base_retry_delay": 30,
             "insufficient_quota_action": "fallback",
-            "fallback_model": "claude-3-haiku"
+            "fallback_model": "anthropic/claude-haiku-4.5"
         },
         "google": {
             "max_retries": 3,
@@ -479,7 +408,7 @@ def create_production_config():
                 "max_retries": 3,
                 "base_retry_delay": 60,
                 "insufficient_quota_action": "fallback",
-                "fallback_model": "gpt-3.5-turbo"
+                "fallback_model": "gpt-5-mini"
             }
         }
     )
@@ -553,112 +482,11 @@ long_config = ExecutionConfig(
 )
 ```
 
-## 📊 Monitoring Configuration
+!!! tip "Advanced Configuration Topics"
+    For production deployment, monitoring, security, and advanced features, see:
 
-### Metrics and Logging
-
-```python
-import logging
-
-# Configure logging
-logging.basicConfig(
-    level=logging.INFO,
-    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
-    handlers=[
-        logging.FileHandler('marsys.log'),
-        logging.StreamHandler()
-    ]
-)
-
-# Enable specific loggers
-logging.getLogger('marsys.orchestra').setLevel(logging.DEBUG)
-logging.getLogger('marsys.agents').setLevel(logging.INFO)
-logging.getLogger('marsys.models').setLevel(logging.WARNING)
-```
-
-### Performance Monitoring
-
-```python
-from marsys.coordination.monitoring import MetricsCollector
-
-metrics = MetricsCollector(
-    enabled=True,
-    export_interval=60,  # Export every minute
-    exporters=["prometheus", "console"],
-    prometheus_port=9090
-)
-
-# Use with Orchestra
-result = await Orchestra.run(
-    task=task,
-    topology=topology,
-    metrics_collector=metrics
-)
-
-# Access metrics
-print(f"Total API calls: {metrics.get_metric('api_calls')}")
-print(f"Average latency: {metrics.get_metric('avg_latency')}ms")
-```
-
-## 🔒 Security Configuration
-
-### API Key Management
-
-```python
-from marsys.utils.security import SecureConfig
-
-# Secure configuration
-secure_config = SecureConfig(
-    # Encryption for sensitive data
-    encrypt_api_keys=True,
-    encryption_key=os.getenv("ENCRYPTION_KEY"),
-
-    # Key rotation
-    enable_key_rotation=True,
-    rotation_interval_days=30,
-
-    # Access control
-    restrict_agent_access=True,
-    allowed_agents=["Researcher", "Writer"],
-
-    # Audit logging
-    enable_audit_log=True,
-    audit_log_path="audit.log"
-)
-```
-
-## 🎮 Advanced Features
-
-### Dynamic Configuration
-
-Adjust configuration at runtime:
-
-```python
-from marsys.coordination import OrchestraInstance
-
-orchestra = OrchestraInstance(initial_config=config)
-
-# Adjust timeout for specific task
-orchestra.update_config({
-    "step_timeout": 60.0  # Reduce timeout
-})
-
-# Run with updated config
-result = await orchestra.execute(task, topology)
-```
-
-### Configuration Validation
-
-```python
-from marsys.coordination.config import validate_config
-
-# Validate configuration
-errors = validate_config(exec_config)
-if errors:
-    print(f"Configuration errors: {errors}")
-else:
-    print("Configuration valid!")
-```
+    - [Configuration API Reference](../api/configuration.md) - Complete parameter documentation
+    - [Guides](../guides/overview.md) - Production deployment patterns
 
 ## 🚦 Next Steps
 

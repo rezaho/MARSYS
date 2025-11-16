@@ -135,7 +135,7 @@ class ConvergencePolicyConfig:
 
     Attributes:
         min_ratio: Minimum fraction of branches that must reach convergence (0.0-1.0)
-                   Example: 0.67 means at least 2/3 branches must converge
+                   Example: 1.0 means every branch must converge (default)
         on_insufficient: Action when min_ratio not met
                         - "proceed": Continue anyway (risky, may have incomplete data)
                         - "fail": Raise WorkflowTimeoutError
@@ -145,7 +145,7 @@ class ConvergencePolicyConfig:
         log_level: Logging level for timeout events ("info", "warning", "error")
     """
 
-    min_ratio: float = 0.67  # Require 2/3 of branches by default
+    min_ratio: float = 1.0  # Require all branches by default
     on_insufficient: Literal["proceed", "fail", "user"] = "fail"
     terminate_orphans: bool = True
     log_level: Literal["info", "warning", "error"] = "warning"
@@ -165,8 +165,8 @@ class ConvergencePolicyConfig:
             ConvergencePolicyConfig object
 
         Examples:
-            >>> ConvergencePolicyConfig.from_value(0.67)
-            ConvergencePolicyConfig(min_ratio=0.67, on_insufficient="fail", ...)
+            >>> ConvergencePolicyConfig.from_value(1.0)
+            ConvergencePolicyConfig(min_ratio=1.0, on_insufficient="fail", ...)
 
             >>> ConvergencePolicyConfig.from_value("strict")
             ConvergencePolicyConfig(min_ratio=1.0, on_insufficient="fail", ...)
@@ -231,7 +231,10 @@ class ExecutionConfig:
     """Configuration for multi-agent system execution."""
 
     # Steering configuration
-    steering_mode: Literal["auto", "always", "never"] = "never"
+    # "error" = inject only when error occurred (minimum interference)
+    # "auto" = inject on any retry
+    # "always" = inject on every step
+    steering_mode: Literal["auto", "always", "error"] = "error"
 
     # Convergence behavior
     dynamic_convergence_enabled: bool = True
@@ -240,7 +243,7 @@ class ExecutionConfig:
 
     # Timeouts (in seconds)
     convergence_timeout: float = 300.0  # Waiting for children branches to complete
-    convergence_policy: Union[float, str, ConvergencePolicyConfig] = 0.67  # What to do on timeout
+    convergence_policy: Union[float, str, ConvergencePolicyConfig] = 1.0  # Require full convergence by default
     branch_timeout: float = 600.0  # Overall branch execution timeout
     agent_acquisition_timeout: float = 240.0  # Acquiring agent from pool
     step_timeout: float = 600.0  # Individual step execution timeout (10 minutes)
@@ -254,23 +257,30 @@ class ExecutionConfig:
     user_first: bool = False  # Enable user-first execution mode
     initial_user_msg: Optional[str] = None  # Message shown to user in user-first mode
     user_interaction: str = "terminal"  # Type of user interaction: "terminal", "none"
-    
-    def should_apply_steering(self, is_retry: bool = False) -> bool:
+
+    # Agent lifecycle management
+    auto_cleanup_agents: bool = True  # Automatically cleanup agents after run (closes resources, unregisters)
+    cleanup_scope: Literal["topology_nodes", "used_agents"] = "topology_nodes"  # Which agents to cleanup
+
+    def should_apply_steering(self, is_retry: bool = False, has_error: bool = False) -> bool:
         """
         Determine if steering should be applied.
-        
+
         Args:
             is_retry: Whether this is a retry attempt
+            has_error: Whether an error occurred in previous attempt
 
         Returns:
             True if steering should be applied, False otherwise
         """
-        if self.steering_mode == "never":
-            return False
+        if self.steering_mode == "error":
+            return has_error
+        elif self.steering_mode == "auto":
+            return is_retry
         elif self.steering_mode == "always":
             return True
-        else:  # auto mode - only on retries
-            return is_retry
+
+        return False
 
 
 @dataclass

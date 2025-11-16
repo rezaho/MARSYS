@@ -18,6 +18,8 @@ pyyaml>=6.0.2
 playwright>=1.55.0
 pillow>=11.3.0
 beautifulsoup4>=4.14.2
+lxml>=6.0.2
+brotli>=1.1.0
 markdownify>=1.2.0
 
 # ============================================================================
@@ -31,8 +33,10 @@ python-dateutil>=2.9.0
 # TOOLS
 # ============================================================================
 pypdf>=3.0.0
-pdfminer.six>=20250506
 googlesearch-python>=1.3.0
+# PyMuPDF for PDF text/image extraction and layout analysis (core dependency)
+PyMuPDF>=1.26.0
+chardet>=5.2.0
 
 # ============================================================================
 # LOGGING

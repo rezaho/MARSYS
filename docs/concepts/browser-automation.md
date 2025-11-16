@@ -6,10 +6,12 @@ MARSYS provides powerful browser automation capabilities through the BrowserAgen
 
 The browser automation system provides:
 
+- **Dual Operation Modes**: PRIMITIVE for fast content extraction, ADVANCED for complex multi-step scenarios with visual interaction
 - **Web Navigation**: Navigate, scrape, and interact with websites
 - **Intelligent Automation**: LLM-guided browser control and decision making
 - **Dynamic Content Handling**: JavaScript execution and async content loading
 - **Form Automation**: Fill forms, click elements, and handle interactions
+- **Multimodal Capabilities**: Screenshot-based visual understanding with element detection (ADVANCED mode)
 - **Robust Error Handling**: Retry mechanisms and resilient operations
 
 ## 🏗️ Architecture
@@ -18,7 +20,7 @@ The browser automation system provides:
 graph TB
     subgraph "Browser System"
         BA[BrowserAgent<br/>High-level Interface]
-        BT[BrowserTool<br/>Low-level Operations]
+        BT[BrowserTool<br/>Low-level Operations]over
         PW[Playwright<br/>Browser Control]
     end
 
@@ -46,6 +48,104 @@ graph TB
     style PW fill:#e1f5fe
 ```
 
+## 🎭 Operation Modes
+
+BrowserAgent supports two distinct operation modes optimized for different use cases:
+
+### PRIMITIVE Mode
+
+**Purpose**: Fast, efficient content extraction without visual interaction
+
+**Characteristics**:
+- High-level tools for quick content retrieval
+- No visual feedback or screenshots
+- No vision model required
+- Optimized for speed and simplicity
+- Single-step operations
+
+**Available Tools** (5):
+- `fetch_url` - Navigate and extract content in one step
+- `get_page_elements` - Get interactive elements with CSS selectors
+- `extract_text_content` - Extract text from specific selectors
+- `get_page_metadata` - Get page title, URL, and links
+- `download_file` - Download files from URLs
+
+**Best For**:
+- Web scraping and data extraction
+- Content aggregation
+- Simple information retrieval
+- API-like web interactions
+
+### ADVANCED Mode
+
+**Purpose**: Complex multi-step scenarios requiring visual interaction and coordinate-based control
+
+**Characteristics**:
+- Low-level coordinate-based tools
+- Visual feedback with auto-screenshot support
+- Vision model integration for visual understanding
+- Multi-step navigation and interaction
+- Form filling and complex workflows
+
+**Available Tools** (15):
+- All PRIMITIVE mode tools, plus:
+- `goto` - Navigate to URL (auto-detects downloads)
+- `scroll_up` / `scroll_down` - Scroll the page
+- `mouse_click` - Click at specific coordinates (auto-detects downloads)
+- `type` - Type regular text into focused elements (letters, numbers, words)
+- `keyboard_press` - Press special keys (Enter, Tab, arrows, etc.) (auto-detects downloads)
+- `search_page` - **NEW!** Find text on page with Chrome-like highlighting
+- `go_back` - Navigate back
+- `reload` - Reload current page
+- `get_url` / `get_title` - Get page information
+- `screenshot` - Take screenshot with element highlighting (returns multimodal ToolResponse)
+
+**Best For**:
+- Form automation with complex interactions
+- Multi-step workflows requiring visual confirmation
+- Handling cookie popups and modals
+- Sites with anti-bot protections
+- Tasks requiring precise element interaction
+
+### Choosing the Right Mode
+
+```python
+from marsys.agents import BrowserAgent, BrowserAgentMode
+
+# Mode selection with enum (type-safe)
+browser_agent = await BrowserAgent.create_safe(
+    agent_name="scraper",
+    model_config=config,
+    mode=BrowserAgentMode.PRIMITIVE,  # Using enum
+    goal="Efficiently fetch and extract content from web pages"
+)
+
+# Mode selection with string (convenient)
+browser_agent = await BrowserAgent.create_safe(
+    agent_name="scraper",
+    model_config=config,
+    mode="primitive",  # Using string
+    goal="Efficiently fetch and extract content from web pages"
+)
+
+# ADVANCED mode - Visual interaction
+browser_agent = await BrowserAgent.create_safe(
+    agent_name="navigator",
+    model_config=config,  # Main agent model (Claude Haiku/Sonnet recommended)
+    mode=BrowserAgentMode.ADVANCED,  # or mode="advanced"
+    auto_screenshot=True,  # Enable visual feedback
+    vision_model_config=ModelConfig(  # Vision model for screenshot analysis
+        type="api",
+        provider="openrouter",
+        name="google/gemini-2.5-flash",  # Recommended: fast and cost-effective
+        # For complex tasks, use: "google/gemini-2.5-pro"
+        temperature=0,
+        thinking_budget=0  # Disable thinking for faster vision responses
+    ),
+    goal="Navigate and interact with web pages like a human"
+)
+```
+
 ## 📦 BrowserAgent
 
 ### Creating a BrowserAgent
@@ -54,18 +154,43 @@ graph TB
 from marsys.agents import BrowserAgent
 from marsys.models import ModelConfig
 
-# Create browser agent
+# PRIMITIVE Mode - Fast content extraction
 browser_agent = await BrowserAgent.create_safe(
+    agent_name="web_scraper",
+    model_config=ModelConfig(
+        type="api",
+        provider="openrouter",
+        name="anthropic/claude-haiku-4.5",
+        temperature=0.3
+    ),
+    mode="primitive",  # Simple string mode selection
+    description="Fast web scraping agent for content extraction",
+    headless_browser=True,
+    temp_dir="./tmp/browser"
+)
+
+# ADVANCED Mode - Visual interaction with auto-screenshot
+browser_agent_advanced = await BrowserAgent.create_safe(
     agent_name="web_navigator",
     model_config=ModelConfig(
         type="api",
-        provider="openai",
-        name="gpt-4",  # Use capable model for planning
-        temperature=0.3  # Lower temperature for consistent behavior
+        provider="openrouter",
+        name="anthropic/claude-haiku-4.5",  # Main agent for decision-making and planning
+        temperature=0.3
     ),
-    description="Expert web automation agent for scraping and interaction",
-    headless_browser=True,  # Run without visible window
-    temp_dir="./tmp/screenshots",  # Directory for screenshots
+    mode="advanced",  # Simple string mode selection
+    description="Expert web automation agent for complex interactions",
+    auto_screenshot=True,  # Enable visual feedback
+    vision_model_config=ModelConfig(  # Required for auto-screenshot
+        type="api",
+        provider="openrouter",
+        name="google/gemini-2.5-flash",  # Recommended: fast and cost-effective for browser vision
+        # For complex tasks, use: "google/gemini-2.5-pro"
+        temperature=0,
+        thinking_budget=0  # Disable thinking for faster vision responses
+    ),
+    headless_browser=False,
+    temp_dir="./tmp/screenshots",
     playwright_browser_launch_options={
         "args": ["--disable-blink-features=AutomationControlled"],
         "ignore_default_args": ["--enable-automation"]
@@ -78,7 +203,7 @@ try:
     result = await browser_agent.run("Navigate to example.com and extract the main heading")
 finally:
     if browser_agent.browser_tool:
-        await browser_agent.browser_tool.close_browser()
+        await browser_agent.browser_tool.close()
 ```
 
 ### Using AgentPool for Parallel Browsing
@@ -111,6 +236,25 @@ await browser_pool.cleanup()
 ```
 
 ## 🔧 Browser Tools
+
+### Tool Overview by Mode
+
+**PRIMITIVE Mode Tools** (Fast content extraction):
+- `fetch_url` - Navigate and extract content in one step (returns Dict with markdown/text)
+- `get_page_elements` - Get interactive elements with CSS selectors in flat structure
+- `extract_text_content` - Extract text from selectors without navigation
+- `get_page_metadata` - Get title, URL, and links quickly
+- `download_file` - Download files from URLs
+
+**ADVANCED Mode Additional Tools** (Visual interaction):
+- `goto`, `go_back`, `reload` - Navigation control
+- `scroll_up`, `scroll_down` - Page scrolling
+- `mouse_click` - Click at coordinates
+- `type` - Type regular text into focused elements (letters, numbers, sentences)
+- `keyboard_press` - Press special keys (Enter, Tab, Escape, arrows, etc.)
+- `search_page` - Search for text on page with visual highlighting (Chrome-like find)
+- `screenshot` - Multimodal response with numbered element detection (ToolResponse format)
+- `get_url`, `get_title` - Current page information
 
 ### Navigation Tools
 
@@ -197,6 +341,109 @@ class InteractionAgent(BrowserAgent):
                 find(el => el.textContent.includes('{text}'))?.click()
             """
             await self.browser_tool.evaluate_javascript_in_page(script)
+```
+
+### Text Search on Page
+
+!!! success "New Feature: search_page()"
+    Find text on web pages with Chrome-like visual highlighting and navigation!
+
+```python
+# Search for text on the current page
+result = await browser_tool.search_page("quantum computing")
+# Returns: "Match 1/5 found and highlighted"
+# All matches highlighted in YELLOW, current match in ORANGE
+
+# Navigate to next match - call again with SAME term
+result = await browser_tool.search_page("quantum computing")
+# Returns: "Match 2/5"
+# Scrolls to and highlights next occurrence
+
+# Continue navigating
+result = await browser_tool.search_page("quantum computing")
+# Returns: "Match 3/5"
+# Wraps around after last match back to first
+```
+
+**Features:**
+- **Visual Highlighting**: All matches in YELLOW, current in ORANGE (Chrome-like)
+- **Auto-scroll**: Automatically scrolls to current match (centered in viewport)
+- **Match Counter**: Shows "Match X/Y" so you know your progress
+- **Wrap-around**: After last match, returns to first match
+- **Case-insensitive**: Finds text regardless of case
+
+**Limitations:**
+- ❌ Does NOT work with PDF files (PDFs are auto-downloaded, not displayed)
+- ❌ Does NOT search across multiple pages
+- ✅ Works with regular web pages, including shadow DOM content
+
+**Example - Finding Specific Information:**
+```python
+# Navigate to documentation page
+await browser_tool.goto("https://docs.example.com/api")
+
+# Search for specific API endpoint
+result = await browser_tool.search_page("/api/v2/users")
+# Match 1/3 found - scrolls to first occurrence
+
+# Check if it's the right one with screenshot
+screenshot = await browser_tool.screenshot()
+# Visual: See highlighted text in orange
+
+# Not the right one? Navigate to next match
+result = await browser_tool.search_page("/api/v2/users")
+# Match 2/3 - scrolls to second occurrence
+```
+
+### Automatic Download Detection
+
+!!! info "Smart Download Handling"
+    Actions that trigger file downloads are automatically detected and reported!
+
+The browser automatically detects when actions (clicks, Enter key presses, navigation) trigger file downloads:
+
+```python
+# Clicking a download link automatically detects the download
+result = await browser_tool.mouse_click(x=450, y=300)
+# Returns: "Action 'mouse_click' triggered a file download.
+#          File 'report.pdf' has been downloaded to: /path/to/tmp/downloads/report.pdf"
+
+# Navigating to a PDF URL triggers automatic download
+result = await browser_tool.goto("https://example.com/paper.pdf")
+# Returns: "Action 'goto' triggered a file download.
+#          File 'paper.pdf' has been downloaded to: /path/to/tmp/downloads/paper.pdf"
+
+# Pressing Enter on a download button
+await browser_tool.mouse_click(x=500, y=400)  # Focus download button
+await browser_tool.keyboard_press("Enter")
+# Returns: "Action 'keyboard_press' triggered a file download.
+#          File 'data.xlsx' has been downloaded to: /path/to/tmp/downloads/data.xlsx"
+```
+
+**Automatic Detection Features:**
+- ✅ Detects downloads triggered by clicks, keyboard presses, or navigation
+- ✅ Returns file path and filename in response
+- ✅ Downloads saved to `./tmp/downloads/` by default
+- ✅ PDFs are **always** downloaded (never displayed in browser)
+- ✅ Works with all file types (PDF, Excel, CSV, images, etc.)
+
+**PDF-Specific Behavior:**
+```python
+# PDFs are NEVER displayed in browser - always downloaded
+await browser_tool.goto("https://research.org/paper.pdf")
+# Automatically downloads to ./tmp/downloads/paper.pdf
+# Browser stays on previous page
+
+# search_page() does NOT work with PDFs
+# Instead, use file operation tools on the downloaded file
+```
+
+**Download Path Configuration:**
+```python
+browser_tool = await BrowserTool.create(
+    downloads_path="/custom/path/downloads",  # Custom download directory
+    temp_dir="/custom/tmp",  # Custom temp directory (default: ./tmp)
+)
 ```
 
 ### Data Extraction

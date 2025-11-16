@@ -387,7 +387,7 @@ AgentCallMsg(
 **Example:**
 ```python
 agent_call = AgentCallMsg(
-    agent_name="DataProcessor",
+    name="DataProcessor",
     request="Process the quarterly sales data"
 )
 ```
@@ -458,7 +458,7 @@ class PersistentMemory:
     """Memory with automatic persistence."""
 
     def __init__(self, agent_name: str, base_path: Path):
-        self.agent_name = agent_name
+        self.name=agent_name
         self.filepath = base_path / f"{agent_name}_memory.json"
         self.memory = ConversationMemory()
         self._load()
