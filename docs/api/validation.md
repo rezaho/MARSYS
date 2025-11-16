@@ -53,7 +53,7 @@ processor = ValidationProcessor(topology_graph)
 
 result = await processor.validate_response(
     response={"next_action": "invoke_agent", "action_input": "Analyzer"},
-    agent_name="Coordinator",
+    name="Coordinator",
     allowed_agents=["Analyzer", "Reporter"],
     branch=current_branch
 )
@@ -423,7 +423,7 @@ response = await agent.run(prompt)
 # 2. Validate response
 validation_result = await validation_processor.validate_response(
     response=response,
-    agent_name=agent.name,
+    name=agent.name,
     allowed_agents=topology_graph.get_allowed_targets(agent.name),
     branch=current_branch
 )
