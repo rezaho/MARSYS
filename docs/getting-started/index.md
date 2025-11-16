@@ -52,15 +52,15 @@ model_config = ModelConfig(
 # Define agents and their allowed interactions
 researcher = Agent(
     model_config=model_config,
-    agent_name="Researcher",
-    description="Expert at finding and analyzing information",
+    name="Researcher",
+    goal="Expert at finding and analyzing information",
     allowed_peers=["Writer"]  # Can invoke the Writer agent
 )
 
 writer = Agent(
     model_config=model_config,
-    agent_name="Writer",
-    description="Skilled at creating clear, engaging content",
+    name="Writer",
+    goal="Skilled at creating clear, engaging content",
     allowed_peers=[]  # Cannot invoke other agents
 )
 
@@ -139,7 +139,7 @@ topology = PatternConfig.pipeline(
 pool = AgentPool(
     agent_class=BrowserAgent,
     num_instances=3,
-    agent_name="BrowserPool"
+    name="BrowserPool"
 )
 ```
 
@@ -216,14 +216,14 @@ model_config = ModelConfig(
 # Create specialized agents
 researcher = Agent(
     model_config=model_config,
-    agent_name="Researcher",
-    description="Expert at finding and analyzing information"
+    name="Researcher",
+    goal="Expert at finding and analyzing information"
 )
 
 writer = Agent(
     model_config=model_config,
-    agent_name="Writer",
-    description="Skilled at creating clear, engaging content"
+    name="Writer",
+    goal="Skilled at creating clear, engaging content"
 )
 
 # Define workflow

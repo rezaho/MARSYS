@@ -427,61 +427,8 @@ class CodeReviewAgent(BaseAgent):
             self.review_standards[category].append(standard)
 ```
 
-### Agent with State Management
-
-Create agents that maintain internal state:
-
-```python
-class StatefulAnalysisAgent(BaseAgent):
-    """Agent that maintains analysis state across invocations."""
-
-    def __init__(self, model_config, **kwargs):
-        super().__init__(
-            model=self._create_model(model_config),
-            goal="Perform analysis while maintaining state across invocations",
-            instruction="Stateful analysis agent that remembers and builds upon previous analyses",
-            **kwargs
-        )
-        self.analysis_history = []
-        self.insights = {}
-        self.confidence_threshold = 0.8
-
-    async def _run(self, prompt: Any, context: Dict[str, Any], **kwargs) -> Message:
-        """Run analysis and update state."""
-
-        # Check for previous related analyses
-        related = self._find_related_analyses(prompt)
-
-        # Enhance prompt with historical context
-        if related:
-            prompt = f"{prompt}\n\nPrevious related insights: {related}"
-
-        # Get response
-        messages = self._prepare_messages(prompt)
-        response = await self.model.run(messages)
-
-        # Update state
-        self._update_state(prompt, response.content)
-
-        return Message(
-            role="assistant",
-            content=response.content,
-            metadata={"used_history": bool(related)}
-        )
-
-    def _find_related_analyses(self, prompt: str) -> str:
-        """Find related previous analyses."""
-        # Implementation for finding related work
-        return ""
-
-    def _update_state(self, prompt: str, response: str):
-        """Update internal state with new analysis."""
-        self.analysis_history.append({
-            "prompt": prompt,
-            "response": response,
-            "timestamp": datetime.now()
-        })
-```
+!!! tip "Advanced Custom Agents"
+    For more complex patterns like stateful agents, see [Custom Agents Guide](../concepts/custom-agents.md).
 
 ## 🌐 Specialized Agent Types
 
@@ -569,16 +516,16 @@ researcher = Agent(
 # Create writer that can call researcher
 writer = Agent(
     model_config=config,
-    agent_name="Writer",
-    description="Content writer",
+    name="Writer",
+    goal="Content writer",
     allowed_peers=["Researcher"]  # Can invoke Researcher
 )
 
 # Create editor that can call both
 editor = Agent(
     model_config=config,
-    agent_name="Editor",
-    description="Content editor",
+    name="Editor",
+    goal="Content editor",
     allowed_peers=["Researcher", "Writer"]  # Can invoke both
 )
 ```
@@ -640,8 +587,8 @@ class ResearchResponse(BaseModel):
 # Agent with schemas
 agent = Agent(
     model_config=config,
-    agent_name="StructuredResearcher",
-    description="Researcher with structured I/O",
+    name="StructuredResearcher",
+    goal="Researcher with structured I/O",
     input_schema=ResearchRequest,
     output_schema=ResearchResponse
 )
@@ -660,8 +607,8 @@ agent = Agent(
         temperature=0.3,
         max_tokens=12000
     ),
-    agent_name="PrecisionAgent",
-    description="High-precision analytical agent",
+    name="PrecisionAgent",
+    goal="High-precision analytical agent",
     max_tokens=12000,
     auto_summarize=True,
     response_format="markdown",
@@ -679,10 +626,10 @@ agent = Agent(
 Always provide clear, specific descriptions:
 ```python
 # Good
-description = "Technical documentation writer specializing in API documentation"
+goal="Technical documentation writer specializing in API documentation"
 
 # Bad
-description = "Writer"
+goal="Writer"
 ```
 
 ### 2. **Appropriate Models**
@@ -721,48 +668,6 @@ except Exception as e:
     logger.error(f"Agent failed: {e}")
     # Fallback logic
 ```
-
-## 🖼️ Vision Agents (Multimodal)
-
-MARSYS supports vision models that can analyze images alongside text:
-
-```python
-from marsys.coordination import Orchestra
-from marsys.agents import Agent
-from marsys.models import ModelConfig
-
-# Create vision-enabled agent
-vision_agent = Agent(
-    model_config=ModelConfig(
-        type="api",
-        name="google/gemini-2.5-pro",
-        provider="openrouter",
-        api_key=os.getenv("OPENROUTER_API_KEY")
-    ),
-    agent_name="ImageAnalyst",
-    description="Analyzes images and visual content",
-    system_prompt="You are an expert at analyzing visual content in detail."
-)
-
-# Run with images
-result = await Orchestra.run(
-    task={
-        "content": "What is shown in this screenshot? Describe in detail.",
-        "images": ["/path/to/screenshot.png"]
-    },
-    topology={"nodes": ["ImageAnalyst"], "edges": []}
-)
-
-print(result.final_response)
-```
-
-**Key Points:**
-- Use `task` as a dict with `"content"` and `"images"` fields
-- Images can be local paths or URLs
-- Framework automatically encodes images for the vision model
-- Works with all vision models: GPT-5, Claude Sonnet 4.5, Gemini 2.5 Pro
-
-For more details, see the [Multimodal Agents Guide](../guides/multimodal-agents.md).
 
 ## 🚦 Next Steps
 
