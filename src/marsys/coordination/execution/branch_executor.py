@@ -1194,9 +1194,9 @@ class BranchExecutor:
                             # NEW: Check convergence policy
                             policy = getattr(self.branch_spawner, 'convergence_policy', None)
                             if policy is None:
-                                # Fallback to old behavior for backward compatibility
+                                # Fallback to strict convergence when no policy provided
                                 from ...coordination.config import ConvergencePolicyConfig
-                                policy = ConvergencePolicyConfig.from_value(0.67)
+                                policy = ConvergencePolicyConfig.from_value(1.0)
 
                             # Count how many branches reached THIS convergence point
                             arrived_at_target = group.get_arrived_at_convergence(next_agent)

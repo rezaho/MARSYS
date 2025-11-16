@@ -638,7 +638,7 @@ class Orchestra:
             # Parse convergence policy
             from .config import ConvergencePolicyConfig
             convergence_policy = ConvergencePolicyConfig.from_value(
-                execution_config.convergence_policy if execution_config else 0.67
+                execution_config.convergence_policy if execution_config else 1.0
             )
             logger.info(f"Convergence policy: {convergence_policy.describe()}")
 

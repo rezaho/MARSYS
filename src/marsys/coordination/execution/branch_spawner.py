@@ -351,7 +351,7 @@ class DynamicBranchSpawner:
         # Store convergence policy
         if convergence_policy is None:
             from ..config import ConvergencePolicyConfig
-            convergence_policy = ConvergencePolicyConfig.from_value(0.67)
+            convergence_policy = ConvergencePolicyConfig.from_value(1.0)
         self.convergence_policy = convergence_policy
 
         # Identify convergence points from topology
