@@ -62,20 +62,20 @@ from marsys.models import ModelConfig
 
 # Create agents - they auto-register
 agent1 = Agent(
-    agent_name="data_processor",
+    name="data_processor",
     model_config=ModelConfig(
         type="api",
         provider="openrouter",
         name="anthropic/claude-haiku-4.5",
         max_tokens=12000
     ),
-    description="Processes and analyzes data"
+    goal="Processes and analyzes data"
 )
 
 agent2 = Agent(
-    agent_name="report_writer",
+    name="report_writer",
     model_config=config,
-    description="Creates detailed reports"
+    goal="Creates detailed reports"
 )
 
 # Check registration
@@ -106,7 +106,7 @@ class Agent(BaseAgent):
             AgentRegistry.register_instance(self, self.name)
 
 # No manual registration needed!
-agent = Agent(agent_name="assistant")  # Automatically in registry
+agent = Agent(name="assistant")  # Automatically in registry
 ```
 
 ### Registry Operations
@@ -143,7 +143,7 @@ To prevent race conditions during concurrent execution, use identity-safe unregi
 from marsys.agents.registry import AgentRegistry
 
 # Create agent
-agent = Agent(agent_name="worker", model_config=config)
+agent = Agent(name="worker", model_config=config)
 
 # Later: cleanup and unregister (identity-safe)
 await agent.cleanup()  # Close resources
@@ -424,9 +424,9 @@ class PersistentRegistry:
 
             # Recreate agent based on type
             if agent_type == "Agent":
-                Agent(agent_name=agent_name, model_config=config)
+                Agent(name=agent_name, model_config=config)
             elif agent_type == "BrowserAgent":
-                BrowserAgent(agent_name=agent_name, model_config=config)
+                BrowserAgent(name=agent_name, model_config=config)
             # Add other agent types as needed
 ```
 
@@ -436,12 +436,12 @@ class PersistentRegistry:
 
 ```python
 # ✅ GOOD - Descriptive, unique names
-agent1 = Agent(agent_name="financial_analyst_v2", model_config=config)
-agent2 = Agent(agent_name="report_generator_q4_2024", model_config=config)
+agent1 = Agent(name="financial_analyst_v2", model_config=config)
+agent2 = Agent(name="report_generator_q4_2024", model_config=config)
 
 # ❌ BAD - Generic, collision-prone names
-agent1 = Agent(agent_name="agent", model_config=config)
-agent2 = Agent(agent_name="helper", model_config=config)
+agent1 = Agent(name="agent", model_config=config)
+agent2 = Agent(name="helper", model_config=config)
 ```
 
 ### 2. **Existence Checks**
@@ -479,7 +479,7 @@ result = await Orchestra.run(
 # ✅ GOOD - Manual cleanup for standalone agents
 async def process_batch(items):
     temp_agent = Agent(
-        agent_name=f"batch_processor_{uuid.uuid4().hex[:8]}",
+        name=f"batch_processor_{uuid.uuid4().hex[:8]}",
         model_config=config
     )
 
@@ -496,7 +496,7 @@ async def process_batch(items):
 
 # ❌ BAD - Creating agents without cleanup
 for i in range(1000):
-    Agent(agent_name=f"worker_{i}", model_config=config)
+    Agent(name=f"worker_{i}", model_config=config)
     # Creates 1000 agents with open aiohttp sessions, registry entries!
 ```
 

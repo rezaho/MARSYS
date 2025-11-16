@@ -33,7 +33,7 @@ from marsys.agents import BrowserAgent
 
 agent = BrowserAgent(
     model_config=config,
-    agent_name="WebAutomation",
+    name="WebAutomation",
     mode="vision",  # "basic", "cdp", "stealth", or "vision"
     headless=True
 )
@@ -63,7 +63,7 @@ from marsys.agents import FileOperationAgent
 
 agent = FileOperationAgent(
     model_config=config,
-    agent_name="FileHelper",
+    name="FileHelper",
     enable_bash=True,  # Enable bash commands
     allowed_bash_commands=["grep", "find", "wc"]  # Whitelist
 )
@@ -93,7 +93,7 @@ from marsys.agents import WebSearchAgent
 
 agent = WebSearchAgent(
     model_config=config,
-    agent_name="Researcher",
+    name="Researcher",
     search_mode="all",  # "web", "scholarly", or "all"
     bing_api_key=os.getenv("BING_SEARCH_API_KEY")
 )
