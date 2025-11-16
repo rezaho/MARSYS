@@ -161,7 +161,7 @@ analyst_pool = AgentPool(
     agent_class=FinancialAnalyst,
     num_instances=5,
     model_config=config,
-    agent_name="AnalystPool"
+    name="AnalystPool"
 )
 
 topology = {

@@ -419,8 +419,8 @@ agent = Agent(
         provider="openrouter",
         max_tokens=12000
     ),
-    agent_name="ResearchAgent",
-    description="Research agent with web search capabilities",
+    name="ResearchAgent",
+    goal="Research agent with web search capabilities",
     tools=[web_search, fetch_url_content, calculate_math]
 )
 ```
