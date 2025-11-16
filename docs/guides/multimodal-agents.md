@@ -34,9 +34,9 @@ vision_agent = Agent(
         provider="openai",
         api_key=os.getenv("OPENAI_API_KEY")
     ),
-    agent_name="VisionAnalyst",
-    description="Expert at analyzing visual content",
-    system_prompt="You are an expert at analyzing images and providing detailed insights."
+    name="VisionAnalyst",
+    goal="Expert at analyzing visual content",
+    instruction="You are an expert at analyzing images and providing detailed insights."
 )
 
 # Run with images
@@ -316,9 +316,9 @@ ui_analyst = Agent(
         provider="openai",
         api_key=os.getenv("OPENAI_API_KEY")
     ),
-    agent_name="UIAnalyst",
-    description="Expert at analyzing user interfaces",
-    system_prompt="""You are a UI/UX expert. When analyzing screenshots:
+    name="UIAnalyst",
+    goal="Expert at analyzing user interfaces",
+    instruction="""You are a UI/UX expert. When analyzing screenshots:
     1. Identify all UI elements
     2. Assess usability and accessibility
     3. Note any design issues
@@ -361,8 +361,8 @@ coordinator = Agent(
         provider="openai",
         api_key=os.getenv("OPENAI_API_KEY")
     ),
-    agent_name="Coordinator",
-    description="Coordinates document analysis",
+    name="Coordinator",
+    goal="Coordinates document analysis",
     tools=[tool_read_file]
 )
 
@@ -373,9 +373,9 @@ analyst = Agent(
         provider="openai",
         api_key=os.getenv("OPENAI_API_KEY")
     ),
-    agent_name="DocumentAnalyst",
-    description="Analyzes document content",
-    system_prompt="You are an expert at analyzing documents and extracting key information."
+    name="DocumentAnalyst",
+    goal="Analyzes document content",
+    instruction="You are an expert at analyzing documents and extracting key information."
 )
 
 # Define workflow
@@ -415,10 +415,10 @@ researcher = Agent(
         api_key=os.getenv("OPENAI_API_KEY"),
         parameters={"temperature": 0.0}  # Deterministic for benchmarks
     ),
-    agent_name="GaiaResearcher",
-    description="Answers GAIA benchmark questions",
+    name="GaiaResearcher",
+    goal="Answers GAIA benchmark questions",
     tools=[tool_read_gaia_file, tool_google_search],
-    system_prompt="""You are a helpful assistant that answers questions precisely.
+    instruction="""You are a helpful assistant that answers questions precisely.
     When files are provided, read them using the read_file tool.
     Extract information carefully and answer concisely."""
 )
@@ -448,9 +448,9 @@ image_captioner = Agent(
         provider="openai",
         api_key=os.getenv("OPENAI_API_KEY")
     ),
-    agent_name="Captioner",
-    description="Creates detailed image captions",
-    system_prompt="Generate detailed, accurate captions for images."
+    name="Captioner",
+    goal="Creates detailed image captions",
+    instruction="Generate detailed, accurate captions for images."
 )
 
 object_detector = Agent(
@@ -460,9 +460,9 @@ object_detector = Agent(
         provider="google",
         api_key=os.getenv("GOOGLE_API_KEY")
     ),
-    agent_name="ObjectDetector",
-    description="Identifies objects in images",
-    system_prompt="List all objects visible in images with confidence scores."
+    name="ObjectDetector",
+    goal="Identifies objects in images",
+    instruction="List all objects visible in images with confidence scores."
 )
 
 scene_analyzer = Agent(
@@ -472,9 +472,9 @@ scene_analyzer = Agent(
         provider="anthropic",
         api_key=os.getenv("ANTHROPIC_API_KEY")
     ),
-    agent_name="SceneAnalyzer",
-    description="Analyzes overall scene context",
-    system_prompt="Analyze the overall scene, context, and relationships."
+    name="SceneAnalyzer",
+    goal="Analyzes overall scene context",
+    instruction="Analyze the overall scene, context, and relationships."
 )
 
 synthesizer = Agent(
@@ -484,9 +484,9 @@ synthesizer = Agent(
         provider="openai",
         api_key=os.getenv("OPENAI_API_KEY")
     ),
-    agent_name="Synthesizer",
-    description="Synthesizes analysis from specialists",
-    system_prompt="Combine insights from specialists into comprehensive report."
+    name="Synthesizer",
+    goal="Synthesizes analysis from specialists",
+    instruction="Combine insights from specialists into comprehensive report."
 )
 
 # Pipeline topology
@@ -639,7 +639,7 @@ from marsys.agents import Agent
 # Configure memory retention
 vision_agent = Agent(
     model_config=vision_model_config,
-    agent_name="VisionAgent",
+    name="VisionAgent",
     memory_retention="single_run",  # Clear after each run
     max_tokens=4000  # Higher limit for vision
 )

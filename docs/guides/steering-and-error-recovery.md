@@ -338,7 +338,7 @@ if error_context_dict:
 
 # Build steering context
 steering_ctx = SteeringContext(
-    agent_name=agent_name,
+    name=agent_name,
     available_actions=["invoke_agent", "final_response"],
     error_context=error_context,
     is_retry=True,
@@ -443,7 +443,7 @@ if stats['by_category'].get('format_error', 0) > 10:
 
 # UserNodeHandler signals cleanup
 return StepResult(
-    agent_name="User",
+    name="User",
     response=user_response,
     success=True,
     metadata={"clear_error_context": True}  # Automatic cleanup
