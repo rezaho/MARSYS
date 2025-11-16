@@ -2,6 +2,9 @@
 
 Complete API documentation for the Agent classes in MARSYS, including BaseAgent, Agent, BrowserAgent, and AgentPool.
 
+!!! tip "Architecture & Patterns"
+    For architectural overview, design patterns, and best practices, see [Agents Concept Guide](../concepts/agents.md).
+
 ## 📦 BaseAgent
 
 Abstract base class that all agents must inherit from.
@@ -20,15 +23,18 @@ class BaseAgent(ABC):
     def __init__(
         self,
         model: Union[BaseVLM, BaseLLM, BaseAPIModel],
+        name: str,
         goal: str,
         instruction: str,
         tools: Optional[Dict[str, Callable]] = None,
-        max_tokens: int = 512,
-        name: Optional[str] = None,
+        max_tokens: Optional[int] = 10000,
         allowed_peers: Optional[List[str]] = None,
-        memory_retention: str = "session",
+        bidirectional_peers: bool = False,
+        is_convergence_point: Optional[bool] = None,
         input_schema: Optional[Any] = None,
-        output_schema: Optional[Any] = None
+        output_schema: Optional[Any] = None,
+        memory_retention: str = "session",
+        memory_storage_path: Optional[str] = None
     ):
         """
         Initialize base agent.
@@ -133,7 +139,7 @@ The framework automatically calls `cleanup()` on all topology agents after `Orch
 
 ```python
 # Create agent
-agent = Agent(agent_name="my_agent", model_config=config)
+agent = Agent(name="my_agent", model_config=config)
 
 # Use agent
 result = await agent.run("Process data")
@@ -294,7 +300,7 @@ calculator = Agent(
     goal="Perform mathematical calculations accurately",
     instruction="Mathematical calculation specialist who uses tools for precise computations",
     tools=[calculate],
-    system_prompt="You are a precise calculator. Always use the calculate tool for math."
+    instruction="You are a precise calculator. Always use the calculate tool for math."
 )
 
 # Multi-agent coordinator

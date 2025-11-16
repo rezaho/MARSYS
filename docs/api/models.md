@@ -2,6 +2,10 @@
 
 Complete API documentation for the MARSYS model system, providing unified interfaces for local and API-based language models.
 
+!!! tip "Model Selection Guide"
+    For guidance on choosing models and when to use VLM, see [Models Concept Guide](../concepts/models.md).
+
+
 ## 📦 ModelConfig
 
 Configuration schema for all model types using Pydantic validation.
@@ -17,78 +21,78 @@ class ModelConfig(BaseModel):
 
     # Core settings
     type: Literal["local", "api"] = Field(
-        description="Model type - local or API-based"
+        goal="Model type - local or API-based"
     )
     name: str = Field(
-        description="Model identifier or HuggingFace path"
+        goal="Model identifier or HuggingFace path"
     )
 
     # API settings
     provider: Optional[str] = Field(
         default=None,
-        description="API provider (openai, anthropic, google, groq)"
+        goal="API provider (openai, anthropic, google, groq)"
     )
     base_url: Optional[str] = Field(
         default=None,
-        description="Custom API endpoint URL"
+        goal="Custom API endpoint URL"
     )
     api_key: Optional[str] = Field(
         default=None,
-        description="API key (auto-loaded from env if None)"
+        goal="API key (auto-loaded from env if None)"
     )
 
     # Generation parameters
     max_tokens: int = Field(
         default=1024,
-        description="Maximum output tokens"
+        goal="Maximum output tokens"
     )
     temperature: float = Field(
         default=0.7,
         ge=0.0,
         le=2.0,
-        description="Sampling temperature"
+        goal="Sampling temperature"
     )
     top_p: float = Field(
         default=1.0,
         ge=0.0,
         le=1.0,
-        description="Nucleus sampling parameter"
+        goal="Nucleus sampling parameter"
     )
     frequency_penalty: float = Field(
         default=0.0,
         ge=-2.0,
         le=2.0,
-        description="Frequency penalty"
+        goal="Frequency penalty"
     )
     presence_penalty: float = Field(
         default=0.0,
         ge=-2.0,
         le=2.0,
-        description="Presence penalty"
+        goal="Presence penalty"
     )
 
     # Local model settings
     model_class: Optional[Literal["llm", "vlm"]] = Field(
         default=None,
-        description="Local model class"
+        goal="Local model class"
     )
     torch_dtype: str = Field(
         default="auto",
-        description="PyTorch dtype (auto, float16, bfloat16, float32)"
+        goal="PyTorch dtype (auto, float16, bfloat16, float32)"
     )
     device_map: str = Field(
         default="auto",
-        description="Device mapping strategy"
+        goal="Device mapping strategy"
     )
     quantization_config: Optional[Dict[str, Any]] = Field(
         default=None,
-        description="Quantization configuration"
+        goal="Quantization configuration"
     )
 
     # Additional parameters
     parameters: Dict[str, Any] = Field(
         default_factory=dict,
-        description="Provider-specific parameters"
+        goal="Provider-specific parameters"
     )
 ```
 

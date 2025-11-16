@@ -223,9 +223,9 @@ def calculate_tool(expression: str) -> float:
 # Create agent with tools
 agent = Agent(
     model_config=model_config,
-    agent_name="Assistant",
+    name="Assistant",
     tools=[search_tool, calculate_tool],  # Auto-generates schemas
-    description="Assistant with search and calculation capabilities"
+    goal="Assistant with search and calculation capabilities"
 )
 
 # Tools are automatically available to the agent
@@ -257,7 +257,7 @@ manual_schema = {
 # Add to agent
 agent = Agent(
     model_config=model_config,
-    agent_name="CustomAgent",
+    name="CustomAgent",
     tool_schemas=[manual_schema],  # Provide schemas directly
     tool_functions={"custom_tool": custom_tool_func}
 )
