@@ -102,8 +102,8 @@ async def main():
             name="anthropic/claude-haiku-4.5",
             provider="openrouter"
         ),
-        agent_name="Poet",
-        description="Creative poet"
+        name="Poet",
+        goal="Creative poet"
     )
 
     # One-line execution
@@ -144,15 +144,15 @@ async def main():
     # Create specialized agents with allowed_peers
     researcher = Agent(
         model_config=model_config,
-        agent_name="Researcher",
-        description="Expert at finding and analyzing information",
+        name="Researcher",
+        goal="Expert at finding and analyzing information",
         allowed_peers=["Writer"]  # Can invoke Writer
     )
 
     writer = Agent(
         model_config=model_config,
-        agent_name="Writer",
-        description="Skilled at creating clear, engaging content",
+        name="Writer",
+        goal="Skilled at creating clear, engaging content",
         allowed_peers=[]  # Cannot invoke other agents
     )
 
@@ -194,20 +194,20 @@ async def main():
     # Create three specialized agents
     data_collector = Agent(
         model_config=model_config,
-        agent_name="DataCollector",
-        description="Collects and gathers relevant data"
+        name="DataCollector",
+        goal="Collects and gathers relevant data"
     )
 
     analyzer = Agent(
         model_config=model_config,
-        agent_name="Analyzer",
-        description="Analyzes collected data and finds patterns"
+        name="Analyzer",
+        goal="Analyzes collected data and finds patterns"
     )
 
     reporter = Agent(
         model_config=model_config,
-        agent_name="Reporter",
-        description="Creates comprehensive reports from analysis"
+        name="Reporter",
+        goal="Creates comprehensive reports from analysis"
     )
 
     # Define sequential workflow
@@ -230,334 +230,45 @@ async def main():
 asyncio.run(main())
 ```
 
-## 👥 Example 4: Human-in-the-Loop
+---
 
-Add user interaction to your workflows:
+✅ **Congratulations!** You've completed the Quick Start and learned the core MARSYS patterns:
 
-```python
-import asyncio
-from marsys.coordination import Orchestra
-from marsys.agents import Agent
-from marsys.models import ModelConfig
-from marsys.coordination.config import ExecutionConfig
+1. ✓ Single agent execution
+2. ✓ Multi-agent collaboration
+3. ✓ Sequential workflows
 
-async def main():
-    # Use a single model configuration
-    model_config = ModelConfig(
-        type="api",
-        name="anthropic/claude-haiku-4.5",
-        provider="openrouter"
-    )
+## 🚀 What's Next?
 
-    # Topology with User node
-    topology = {
-        "nodes": ["User", "Assistant", "Expert"],
-        "edges": [
-            "User -> Assistant",
-            "Assistant -> Expert",
-            "Expert -> Assistant",
-            "Assistant -> User"
-        ]
-    }
+Ready to build more advanced systems? Explore these topics:
 
-    # Create agents (must assign to variables)
-    assistant = Agent(
-        model_config=model_config,
-        agent_name="Assistant",
-        description="Helpful AI assistant that can consult experts"
-    )
+<div class="grid cards" markdown="1">
 
-    expert = Agent(
-        model_config=model_config,
-        agent_name="Expert",
-        description="Domain expert for complex questions"
-    )
+- :material-tools:{ .lg .middle } **[Agent Tools](first-agent.md#agent-with-tools)**
 
-    # Enable user interaction
-    config = ExecutionConfig(
-        user_interaction="terminal",
-        user_first=True,
-        initial_user_msg="Hello! I'm your AI assistant. How can I help you today?"
-    )
+    ---
 
-    # Run interactive session
-    result = await Orchestra.run(
-        task="Help the user with their questions",
-        topology=topology,
-        execution_config=config
-    )
+    Give agents superpowers with custom tools
 
-asyncio.run(main())
-```
+- :material-account-group:{ .lg .middle } **[User Interaction](../concepts/communication.md)**
 
-## 🛠️ Example 5: Agent with Tools
+    ---
 
-Give your agents superpowers with tools:
+    Build human-in-the-loop workflows
 
-```python
-import asyncio
-from marsys.coordination import Orchestra
-from marsys.agents import Agent
-from marsys.models import ModelConfig
+- :material-web:{ .lg .middle } **[Browser Automation](../concepts/browser-automation.md)**
 
-# Define a simple tool
-def calculate(expression: str) -> float:
-    """
-    Safely evaluate a mathematical expression.
+    ---
 
-    Args:
-        expression: Mathematical expression to evaluate
+    Automate web tasks with BrowserAgent
 
-    Returns:
-        The result of the calculation
-    """
-    # Safe evaluation (avoid eval in production)
-    allowed = {
-        'abs': abs, 'round': round,
-        'min': min, 'max': max
-    }
-    return eval(expression, {"__builtins__": {}}, allowed)
+- :material-pipeline:{ .lg .middle } **[Advanced Patterns](../concepts/advanced/topology.md)**
 
-def web_search(query: str) -> str:
-    """
-    Search the web for information.
+    ---
 
-    Args:
-        query: Search query
+    Pipeline, mesh, and hierarchical topologies
 
-    Returns:
-        Search results
-    """
-    # Placeholder - integrate with real search API
-    return f"Search results for '{query}': [Latest AI news, Research papers, etc.]"
-
-async def main():
-    # Create agent with tools
-    agent = Agent(
-        model_config=ModelConfig(
-            type="api",
-            name="anthropic/claude-haiku-4.5",  # Fast and capable for tool use
-            provider="openrouter"
-        ),
-        agent_name="ResearchAssistant",
-        description="Research assistant with calculation and search capabilities",
-        tools=[calculate, web_search]  # Tools are auto-converted to schemas
-    )
-
-    # Single agent with tools
-    result = await Orchestra.run(
-        task="Search for the latest GDP growth rate and calculate the compound growth over 5 years",
-        topology={"nodes": ["ResearchAssistant"], "edges": []}
-    )
-
-    print(result.final_response)
-
-asyncio.run(main())
-```
-
-## 🌐 Example 6: Browser Automation
-
-Automate web interactions with browser agents:
-
-```python
-import asyncio
-from marsys.coordination import Orchestra
-from marsys.agents import BrowserAgent
-from marsys.models import ModelConfig
-
-async def main():
-    # Create browser automation agent
-    browser = BrowserAgent(
-        model_config=ModelConfig(
-            type="api",
-            name="anthropic/claude-haiku-4.5",
-            provider="openrouter"
-        ),
-        agent_name="WebScraper",
-        description="Extracts information from websites",
-        headless=True  # Run browser in background
-    )
-
-    # Scrape website
-    result = await Orchestra.run(
-        task="Go to news.ycombinator.com and find the top 3 stories",
-        topology={"nodes": ["WebScraper"], "edges": []}
-    )
-
-    print(result.final_response)
-
-asyncio.run(main())
-```
-
-## 📊 Example 7: Pipeline Pattern
-
-Process data through multiple stages:
-
-```python
-import asyncio
-from marsys.coordination import Orchestra
-from marsys.coordination.topology.patterns import PatternConfig
-from marsys.agents import Agent
-from marsys.models import ModelConfig
-
-async def main():
-    # Create pipeline agents
-    model_config = ModelConfig(
-        type="api",
-        name="anthropic/claude-haiku-4.5",
-        provider="openrouter"
-    )
-
-    # Must assign each agent to a variable to prevent garbage collection
-    data_collector = Agent(
-        model_config=model_config,
-        agent_name="DataCollector",
-        description="Collects raw data from sources"
-    )
-
-    data_cleaner = Agent(
-        model_config=model_config,
-        agent_name="DataCleaner",
-        description="Cleans and validates data"
-    )
-
-    data_analyzer = Agent(
-        model_config=model_config,
-        agent_name="DataAnalyzer",
-        description="Analyzes cleaned data"
-    )
-
-    report_writer = Agent(
-        model_config=model_config,
-        agent_name="ReportWriter",
-        description="Writes final report"
-    )
-
-    # Pipeline pattern
-    topology = PatternConfig.pipeline(
-        stages=[
-            {"name": "collect", "agents": ["DataCollector"]},
-            {"name": "process", "agents": ["DataCleaner", "DataAnalyzer"]},
-            {"name": "report", "agents": ["ReportWriter"]}
-        ],
-        parallel_within_stage=True
-    )
-
-    # Run pipeline
-    result = await Orchestra.run(
-        task="Analyze customer feedback data and create a report",
-        topology=topology
-    )
-
-    print(result.final_response)
-
-asyncio.run(main())
-```
-
-## 🎮 Complete Example: Research Team
-
-Here's a full example combining multiple concepts:
-
-```python
-import asyncio
-import os
-from marsys.coordination import Orchestra
-from marsys.coordination.topology.patterns import PatternConfig
-from marsys.coordination.config import ExecutionConfig, StatusConfig
-from marsys.agents import Agent
-from marsys.models import ModelConfig
-
-# Tool for web search
-def search_web(query: str, max_results: int = 5) -> str:
-    """Search the web for information."""
-    return f"Found {max_results} results for: {query}"
-
-# Tool for saving files
-def save_report(content: str, filename: str) -> str:
-    """Save report to file."""
-    with open(filename, 'w') as f:
-        f.write(content)
-    return f"Report saved to {filename}"
-
-async def main():
-    # Use single model configuration
-    model_config = ModelConfig(
-        type="api",
-        name="anthropic/claude-haiku-4.5",
-        provider="openrouter"
-    )
-
-    # Create research team (must assign to variables)
-    lead_researcher = Agent(
-        model_config=model_config,
-        agent_name="LeadResearcher",
-        description="Coordinates research and assigns tasks"
-    )
-
-    data_analyst = Agent(
-        model_config=model_config,
-        agent_name="DataAnalyst",
-        description="Analyzes data and statistics",
-        tools=[search_web]
-    )
-
-    fact_checker = Agent(
-        model_config=model_config,
-        agent_name="FactChecker",
-        description="Verifies information accuracy",
-        tools=[search_web]
-    )
-
-    technical_writer = Agent(
-        model_config=model_config,
-        agent_name="TechnicalWriter",
-        description="Writes comprehensive reports",
-        tools=[save_report]
-    )
-
-    # Hub-and-spoke with parallel workers
-    topology = PatternConfig.hub_and_spoke(
-        hub="LeadResearcher",
-        spokes=["DataAnalyst", "FactChecker", "TechnicalWriter"],
-        parallel_spokes=True
-    )
-
-    # Configuration for detailed output
-    config = ExecutionConfig(
-        status=StatusConfig.from_verbosity(2),  # Verbose output
-        convergence_timeout=300.0,  # 5 minutes for parallel work
-        step_timeout=60.0  # 1 minute per step
-    )
-
-    # Run research project
-    result = await Orchestra.run(
-        task="""
-        Research the impact of artificial intelligence on healthcare in 2024.
-        Include:
-        1. Current AI applications in healthcare
-        2. Statistical data on adoption rates
-        3. Case studies of successful implementations
-        4. Future predictions
-
-        Create a comprehensive report and save it as 'ai_healthcare_report.md'
-        """,
-        topology=topology,
-        execution_config=config,
-        max_steps=20
-    )
-
-    print("="*50)
-    print("Research Complete!")
-    print("="*50)
-    print(f"Total time: {result.total_duration:.2f} seconds")
-    print(f"Total steps: {result.total_steps}")
-    print(f"Success: {result.success}")
-    print("\nFinal Report:")
-    print(result.final_response)
-
-if __name__ == "__main__":
-    asyncio.run(main())
-```
+</div>
 
 ## 🎯 Key Concepts to Remember
 
@@ -582,7 +293,7 @@ topology = {
 ### 3. **Agents Auto-Register**
 Creating an agent automatically registers it:
 ```python
-agent = Agent(agent_name="MyAgent", ...)  # Auto-registered
+agent = Agent(name="MyAgent", ...)  # Auto-registered
 ```
 
 ### 4. **Patterns Simplify Complex Workflows**

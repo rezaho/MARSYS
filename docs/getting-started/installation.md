@@ -242,8 +242,8 @@ async def test():
             name="anthropic/claude-haiku-4.5",
             provider="openrouter"
         ),
-        agent_name="TestAgent",
-        description="Test agent for verification"
+        name="TestAgent",
+        goal="Test agent for verification"
     )
 
     # Run a simple task
