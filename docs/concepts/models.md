@@ -2,6 +2,10 @@
 
 Models are the AI backends that power agent intelligence, providing a unified interface for different providers and model types.
 
+!!! info "See Also"
+    For ModelConfig class definition and provider-specific parameters, see [Models API Reference](../api/models.md).
+
+
 ## 🎯 Overview
 
 MARSYS provides a flexible model abstraction layer that:
@@ -175,8 +179,8 @@ agent = Agent(
         name="anthropic/claude-haiku-4.5",
         temperature=0.7
     ),
-    agent_name="Assistant",
-    description="A helpful assistant"
+    name="Assistant",
+    goal="A helpful assistant"
 )
 
 # Agent uses model internally
@@ -199,8 +203,8 @@ vlm_config = ModelConfig(
 # Create vision-capable agent
 vision_agent = Agent(
     model_config=vlm_config,
-    agent_name="ImageAnalyzer",
-    description="I analyze images and answer questions about them"
+    name="ImageAnalyzer",
+    goal="I analyze images and answer questions about them"
 )
 
 # Process image
@@ -225,7 +229,7 @@ from marsys.models import ModelConfig
 
 # Create BrowserAgent with vision capabilities
 browser_agent = await BrowserAgent.create_safe(
-    agent_name="WebNavigator",
+    name="WebNavigator",
     # Main model: Any text-based model for planning and decision-making
     model_config=ModelConfig(
         type="api",
@@ -326,7 +330,7 @@ def calculate(expression: str) -> float:
 # Agent with tools
 agent = Agent(
     model_config=gpt4_config,
-    agent_name="ToolUser",
+    name="ToolUser",
     tools=[search_web, calculate]
 )
 
@@ -353,8 +357,8 @@ agent = Agent(
         name="openai/gpt-5",
         parameters={"response_format": {"type": "json_object"}}
     ),
-    agent_name="StructuredAgent",
-    system_prompt="""
+    name="StructuredAgent",
+    instruction="""
     Always respond in JSON format:
     {
         "analysis": "...",
@@ -593,7 +597,7 @@ class ModelPool:
 
     def __init__(self, configs: List[ModelConfig]):
         self.agents = [
-            Agent(model_config=config, agent_name=f"pool_{i}")
+            Agent(model_config=config, name=f"pool_{i}")
             for i, config in enumerate(configs)
         ]
         self.current = 0
@@ -620,7 +624,7 @@ from functools import lru_cache
 
 class CachedModel:
     def __init__(self, model_config: ModelConfig, cache_size: int = 100):
-        self.agent = Agent(model_config=model_config, agent_name="cached")
+        self.agent = Agent(model_config=model_config, name="cached")
         self.cache = {}
 
     def _cache_key(self, prompt: str) -> str:

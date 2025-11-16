@@ -2,6 +2,9 @@
 
 Agents are the fundamental building blocks of MARSYS - autonomous AI entities that can perceive, reason, and take actions to accomplish tasks.
 
+!!! info "See Also"
+    For detailed class signatures, method parameters, and API reference, see [Agent API Reference](../api/agent-class.md).
+
 ## 🎯 Overview
 
 Agents in MARSYS are designed with a **pure execution model** - they implement stateless `_run()` methods with no side effects, enabling:
@@ -255,7 +258,7 @@ def analyze_data(data: List[float], method: str = "mean") -> float:
 researcher = Agent(
     model_config=config,
     name="Researcher",
-    description="Research specialist with web search and analysis capabilities",
+    goal="Research specialist with web search and analysis capabilities",
     tools=[search_web, analyze_data]  # Auto-generates OpenAI-compatible schemas
 )
 ```
@@ -373,7 +376,7 @@ Each agent maintains its conversation history through a `ConversationMemory`:
 # Memory retention policies
 agent = Agent(
     model_config=config,
-    agent_name="Assistant",
+    name="Assistant",
     memory_retention="session"  # Options: single_run, session, persistent
 )
 
@@ -431,8 +434,8 @@ vlm_config = ModelConfig(
 agent = Agent(
     model_config=config,
     name="Expert",  # Unique identifier
-    description="Domain expert in...",  # Role definition
-    system_prompt="Detailed instructions...",  # System message
+    goal="Domain expert in...",  # Role definition
+    instruction="Detailed instructions...",  # System message
     tools=[...],  # Available functions
     max_tokens=2000,  # Response limit
     allowed_peers=["Agent1", "Agent2"],  # Can invoke these agents
@@ -465,7 +468,7 @@ async def _run(self, prompt, context, **kwargs):
 
 ```python
 # ✅ GOOD - Specific and actionable
-description = """
+goal="""
 You are a Python code reviewer specializing in security and performance.
 Your responsibilities:
 1. Identify security vulnerabilities (SQL injection, XSS, etc.)
@@ -476,7 +479,7 @@ Output format: Markdown with code blocks
 """
 
 # ❌ BAD - Vague
-description = "You review code"
+goal="You review code"
 ```
 
 ### 3. **Robust Tool Design**
@@ -551,13 +554,13 @@ data_collector = Agent(config, name="DataCollector",
 analyzer = Agent(config, name="Analyzer",
                 tools=[statistical_analysis, create_charts])
 writer = Agent(config, name="Writer",
-              description="Technical writer...")
+              goal="Technical writer...")
 
 # Coordinator orchestrates them
 coordinator = Agent(
     config,
     name="Coordinator",
-    description="""
+    goal="""
     You coordinate research projects. Your workflow:
     1. Ask DataCollector to gather information
     2. Ask Analyzer to process the data

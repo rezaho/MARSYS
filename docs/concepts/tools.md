@@ -2,6 +2,10 @@
 
 Tools extend agent capabilities by providing access to external functions, APIs, and services, enabling agents to interact with the real world.
 
+!!! info "See Also"
+    For tool schema structure and API details, see [Tools API Reference](../api/tools.md). For built-in tools list, see [Built-in Tools Guide](../guides/built-in-tools.md).
+
+
 ## 🎯 Overview
 
 Tools in MARSYS are Python functions that agents can invoke to:
@@ -147,8 +151,8 @@ agent = Agent(
         provider="openrouter",
         max_tokens=12000
     ),
-    agent_name="DataAnalyst",
-    description="Expert data analyst with database access",
+    name="DataAnalyst",
+    goal="Expert data analyst with database access",
     tools=[search_database, analyze_data, export_results]  # List of functions
     # OR
     tools={  # Dict with custom names
@@ -591,7 +595,7 @@ tools = file_ops.get_tool_wrappers()
 
 agent = Agent(
     model_config=gpt4_vision_config,
-    agent_name="DocumentAnalyzer",
+    name="DocumentAnalyzer",
     tools=[tools['read_file']]  # Auto-generates schema with extract_images param
 )
 
@@ -659,8 +663,8 @@ tools = file_ops.get_tool_wrappers()
 # Create vision-capable agent
 analyst = Agent(
     model_config=gpt4_vision_config,
-    agent_name="PaperAnalyst",
-    system_prompt="Analyze research papers including figures and tables.",
+    name="PaperAnalyst",
+    instruction="Analyze research papers including figures and tables.",
     tools=[tools['read_file']]
 )
 
