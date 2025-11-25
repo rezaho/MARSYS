@@ -114,24 +114,24 @@ from marsys.agents import BrowserAgent, BrowserAgentMode
 
 # Mode selection with enum (type-safe)
 browser_agent = await BrowserAgent.create_safe(
-    agent_name="scraper",
     model_config=config,
+    name="scraper",
     mode=BrowserAgentMode.PRIMITIVE,  # Using enum
     goal="Efficiently fetch and extract content from web pages"
 )
 
 # Mode selection with string (convenient)
 browser_agent = await BrowserAgent.create_safe(
-    agent_name="scraper",
     model_config=config,
+    name="scraper",
     mode="primitive",  # Using string
     goal="Efficiently fetch and extract content from web pages"
 )
 
 # ADVANCED mode - Visual interaction
 browser_agent = await BrowserAgent.create_safe(
-    agent_name="navigator",
     model_config=config,  # Main agent model (Claude Haiku/Sonnet recommended)
+    name="navigator",
     mode=BrowserAgentMode.ADVANCED,  # or mode="advanced"
     auto_screenshot=True,  # Enable visual feedback
     vision_model_config=ModelConfig(  # Vision model for screenshot analysis
@@ -156,30 +156,30 @@ from marsys.models import ModelConfig
 
 # PRIMITIVE Mode - Fast content extraction
 browser_agent = await BrowserAgent.create_safe(
-    agent_name="web_scraper",
     model_config=ModelConfig(
         type="api",
         provider="openrouter",
         name="anthropic/claude-haiku-4.5",
         temperature=0.3
     ),
+    name="web_scraper",
     mode="primitive",  # Simple string mode selection
-    description="Fast web scraping agent for content extraction",
-    headless_browser=True,
-    temp_dir="./tmp/browser"
+    goal="Fast web scraping agent for content extraction",
+    headless=True,
+    tmp_dir="./tmp/browser"
 )
 
 # ADVANCED Mode - Visual interaction with auto-screenshot
 browser_agent_advanced = await BrowserAgent.create_safe(
-    agent_name="web_navigator",
     model_config=ModelConfig(
         type="api",
         provider="openrouter",
         name="anthropic/claude-haiku-4.5",  # Main agent for decision-making and planning
         temperature=0.3
     ),
+    name="web_navigator",
     mode="advanced",  # Simple string mode selection
-    description="Expert web automation agent for complex interactions",
+    goal="Expert web automation agent for complex interactions",
     auto_screenshot=True,  # Enable visual feedback
     vision_model_config=ModelConfig(  # Required for auto-screenshot
         type="api",
@@ -189,12 +189,8 @@ browser_agent_advanced = await BrowserAgent.create_safe(
         temperature=0,
         thinking_budget=0  # Disable thinking for faster vision responses
     ),
-    headless_browser=False,
-    temp_dir="./tmp/screenshots",
-    playwright_browser_launch_options={
-        "args": ["--disable-blink-features=AutomationControlled"],
-        "ignore_default_args": ["--enable-automation"]
-    }
+    headless=False,
+    tmp_dir="./tmp/screenshots"
 )
 
 # Always clean up

@@ -51,53 +51,43 @@ graph TB
 
 ### Base Exception
 
-All MARSYS exceptions inherit from `MarsysError`:
+All MARSYS exceptions inherit from `AgentFrameworkError`:
 
 ```python
-from marsys.coordination.exceptions import MarsysError
+from marsys.agents.exceptions import AgentFrameworkError, AgentError
 
-class MarsysError(Exception):
-    """Base exception for all MARSYS errors."""
+class AgentFrameworkError(Exception):
+    """Base exception for all MARSYS framework errors."""
+    pass
 
-    def __init__(
-        self,
-        message: str,
-        error_code: Optional[str] = None,
-        context: Optional[Dict[str, Any]] = None,
-        suggestion: Optional[str] = None,
-        recoverable: bool = False
-    ):
-        self.message = message
-        self.error_code = error_code or self.__class__.__name__
-        self.context = context or {}
-        self.suggestion = suggestion
-        self.recoverable = recoverable
-        self.timestamp = datetime.now()
-        super().__init__(message)
+class AgentError(AgentFrameworkError):
+    """Exception for agent-specific errors."""
+    pass
 
-    def to_dict(self) -> Dict[str, Any]:
-        """Convert to dictionary for logging/serialization."""
-        return {
-            "error_type": self.__class__.__name__,
-            "error_code": self.error_code,
-            "message": self.message,
-            "context": self.context,
-            "suggestion": self.suggestion,
-            "recoverable": self.recoverable,
-            "timestamp": self.timestamp.isoformat()
-        }
+# The actual exception classes are simpler than previously documented.
+# Complex error metadata is handled at the coordination layer, not in exceptions.
 ```
 
 ### Error Categories
 
+The framework uses specific exception types for different error scenarios:
+
 ```python
-# Validation Errors
-class ValidationError(MarsysError):
-    """Input validation failures."""
+from marsys.agents.exceptions import (
+    AgentFrameworkError,
+    AgentError,
+    ToolExecutionError,
+    ModelError
+)
+
+# Agent-specific errors
+class AgentError(AgentFrameworkError):
+    """Agent execution and initialization errors."""
     pass
 
-class MessageFormatError(ValidationError):
-    """Message parsing/formatting errors."""
+# Tool execution errors
+class ToolExecutionError(AgentFrameworkError):
+    """Tool function execution failures."""
     pass
 
 class ActionValidationError(ValidationError):

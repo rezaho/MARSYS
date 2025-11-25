@@ -31,10 +31,11 @@ Autonomous browser automation with vision-based interaction and screenshot analy
 ```python
 from marsys.agents import BrowserAgent
 
-agent = BrowserAgent(
+# BrowserAgent requires async creation via create_safe()
+agent = await BrowserAgent.create_safe(
     model_config=config,
     name="WebAutomation",
-    mode="vision",  # "basic", "cdp", "stealth", or "vision"
+    mode="advanced",  # "primitive" or "advanced"
     headless=True
 )
 ```

@@ -93,6 +93,8 @@ Let's start with the simplest possible example:
 ```python
 import asyncio
 from marsys.coordination import Orchestra
+from marsys.agents import Agent
+from marsys.models import ModelConfig
 
 async def main():
     # Create the agent first
@@ -103,7 +105,8 @@ async def main():
             provider="openrouter"
         ),
         name="Poet",
-        goal="Creative poet"
+        goal="Creative poet",
+        instruction="You are a talented poet who writes beautiful, evocative poetry."
     )
 
     # One-line execution
@@ -146,6 +149,7 @@ async def main():
         model_config=model_config,
         name="Researcher",
         goal="Expert at finding and analyzing information",
+        instruction="You are a research specialist. Find and analyze information thoroughly.",
         allowed_peers=["Writer"]  # Can invoke Writer
     )
 
@@ -153,6 +157,7 @@ async def main():
         model_config=model_config,
         name="Writer",
         goal="Skilled at creating clear, engaging content",
+        instruction="You are a skilled writer. Create clear, engaging content based on research.",
         allowed_peers=[]  # Cannot invoke other agents
     )
 
@@ -195,19 +200,22 @@ async def main():
     data_collector = Agent(
         model_config=model_config,
         name="DataCollector",
-        goal="Collects and gathers relevant data"
+        goal="Collects and gathers relevant data",
+        instruction="You are a data collection specialist. Gather relevant information systematically."
     )
 
     analyzer = Agent(
         model_config=model_config,
         name="Analyzer",
-        goal="Analyzes collected data and finds patterns"
+        goal="Analyzes collected data and finds patterns",
+        instruction="You are a data analyst. Analyze data thoroughly and identify key patterns."
     )
 
     reporter = Agent(
         model_config=model_config,
         name="Reporter",
-        goal="Creates comprehensive reports from analysis"
+        goal="Creates comprehensive reports from analysis",
+        instruction="You are a report writer. Create clear, comprehensive reports from analysis results."
     )
 
     # Define sequential workflow

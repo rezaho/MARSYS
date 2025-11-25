@@ -73,15 +73,17 @@ model_config = ModelConfig(
 # Create agents with allowed_peers
 researcher = Agent(
     model_config=model_config,
-    agent_name="Researcher",
-    description="Expert at finding and analyzing information",
+    name="Researcher",
+    goal="Expert at finding and analyzing information",
+    instruction="You are a research specialist. Find and analyze information thoroughly.",
     allowed_peers=["Writer"]  # Can invoke Writer
 )
 
 writer = Agent(
     model_config=model_config,
-    agent_name="Writer",
-    description="Skilled at creating clear, engaging content",
+    name="Writer",
+    goal="Skilled at creating clear, engaging content",
+    instruction="You are a skilled writer. Create clear, engaging content based on research.",
     allowed_peers=[]  # Cannot invoke other agents
 )
 
@@ -113,14 +115,16 @@ model_config = ModelConfig(type="api", name="gpt-5", provider="openai")
 
 researcher = Agent(
     model_config=model_config,
-    agent_name="Researcher",
-    description="Expert at finding and analyzing information"
+    name="Researcher",
+    goal="Expert at finding and analyzing information",
+    instruction="You are a research specialist. Find and analyze information thoroughly."
 )
 
 writer = Agent(
     model_config=model_config,
-    agent_name="Writer",
-    description="Skilled at creating clear, engaging content"
+    name="Writer",
+    goal="Skilled at creating clear, engaging content",
+    instruction="You are a skilled writer. Create clear, engaging content based on research."
 )
 
 # Define topology with string notation
@@ -158,14 +162,16 @@ model_config = ModelConfig(type="api", name="gpt-5", provider="openai")
 
 researcher = Agent(
     model_config=model_config,
-    agent_name="Researcher",
-    description="Expert at finding and analyzing information"
+    name="Researcher",
+    goal="Expert at finding and analyzing information",
+    instruction="You are a research specialist. Find and analyze information thoroughly."
 )
 
 writer = Agent(
     model_config=model_config,
-    agent_name="Writer",
-    description="Skilled at creating clear, engaging content"
+    name="Writer",
+    goal="Skilled at creating clear, engaging content",
+    instruction="You are a skilled writer. Create clear, engaging content based on research."
 )
 
 # Define nodes with full control
@@ -223,14 +229,16 @@ model_config = ModelConfig(type="api", name="gpt-5", provider="openai")
 
 researcher = Agent(
     model_config=model_config,
-    agent_name="Researcher",
-    description="Expert at finding and analyzing information"
+    name="Researcher",
+    goal="Expert at finding and analyzing information",
+    instruction="You are a research specialist. Find and analyze information thoroughly."
 )
 
 writer = Agent(
     model_config=model_config,
-    agent_name="Writer",
-    description="Skilled at creating clear, engaging content"
+    name="Writer",
+    goal="Skilled at creating clear, engaging content",
+    instruction="You are a skilled writer. Create clear, engaging content based on research."
 )
 
 # Use Pipeline Pattern for our workflow

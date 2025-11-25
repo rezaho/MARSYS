@@ -62,10 +62,8 @@ openai_config = ModelConfig(
     name="gpt-5",
     provider="openai",
     api_key=os.getenv("OPENAI_API_KEY"),
-    parameters={
-        "temperature": 0.7,
-        "max_tokens": 2000
-    }
+    temperature=0.7,
+    max_tokens=2000
 )
 
 # Anthropic model with vision (Claude Sonnet 4.5)
@@ -363,7 +361,8 @@ coordinator = Agent(
     ),
     name="Coordinator",
     goal="Coordinates document analysis",
-    tools=[tool_read_file]
+    instruction="You coordinate document analysis tasks between agents.",
+    tools={"read_file": tool_read_file}
 )
 
 analyst = Agent(
@@ -413,14 +412,14 @@ researcher = Agent(
         name="gpt-5",
         provider="openai",
         api_key=os.getenv("OPENAI_API_KEY"),
-        parameters={"temperature": 0.0}  # Deterministic for benchmarks
+        temperature=0.0  # Deterministic for benchmarks
     ),
     name="GaiaResearcher",
     goal="Answers GAIA benchmark questions",
-    tools=[tool_read_gaia_file, tool_google_search],
     instruction="""You are a helpful assistant that answers questions precisely.
     When files are provided, read them using the read_file tool.
-    Extract information carefully and answer concisely."""
+    Extract information carefully and answer concisely.""",
+    tools={"read_gaia_file": tool_read_gaia_file, "google_search": tool_google_search}
 )
 
 # Run GAIA task
