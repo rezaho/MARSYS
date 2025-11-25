@@ -62,12 +62,18 @@ class BaseAgent(ABC):
     def __init__(
         self,
         model: Union[BaseVLM, BaseLLM, BaseAPIModel],
-        description: str,
+        name: str,
+        goal: str,
+        instruction: str,
         tools: Optional[Dict[str, Callable]] = None,
-        max_tokens: int = 512,
-        agent_name: Optional[str] = None,
+        max_tokens: Optional[int] = 10000,
         allowed_peers: Optional[List[str]] = None,
-        memory_retention: str = "session"
+        bidirectional_peers: bool = False,
+        is_convergence_point: Optional[bool] = None,
+        input_schema: Optional[Any] = None,
+        output_schema: Optional[Any] = None,
+        memory_retention: str = "session",
+        memory_storage_path: Optional[str] = None
     ):
         # Auto-generates tool schemas from function signatures
         # Registers with AgentRegistry
@@ -108,7 +114,7 @@ agent = Agent(
     name="DataAnalyst",
     goal="Analyze data and extract meaningful trends and insights",
     instruction="You are a thorough data analyst...",
-    tools=[analyze_data, create_chart],
+    tools={"analyze_data": analyze_data, "create_chart": create_chart},
     memory_retention="session"
 )
 ```
@@ -120,19 +126,20 @@ Specialized for web automation tasks:
 ```python
 from marsys.agents import BrowserAgent
 
-browser = BrowserAgent(
+browser = await BrowserAgent.create_safe(
     model_config=config,
     name="WebResearcher",
     goal="Research and extract information from web pages",
     instruction="Web research specialist with browser access and automation capabilities",
     headless=True,
-    viewport_size=(1920, 1080)
+    viewport_width=1920,
+    viewport_height=1080
 )
 
-# Browser-specific capabilities
-await browser.navigate("https://example.com")
-await browser.click("button#submit")
-content = await browser.extract_content()
+# Browser-specific capabilities (via browser_tool)
+await browser.browser_tool.goto("https://example.com")
+await browser.browser_tool.mouse_click(x=500, y=300)  # Click by coordinates
+content = await browser.browser_tool.fetch_url("https://example.com")
 ```
 
 ### LearnableAgent
@@ -259,7 +266,8 @@ researcher = Agent(
     model_config=config,
     name="Researcher",
     goal="Research specialist with web search and analysis capabilities",
-    tools=[search_web, analyze_data]  # Auto-generates OpenAI-compatible schemas
+    instruction="You are a research specialist. Use search_web to find information and analyze_data to process results.",
+    tools={"search_web": search_web, "analyze_data": analyze_data}  # Auto-generates OpenAI-compatible schemas
 )
 ```
 
@@ -298,7 +306,7 @@ class CustomAnalyzer(BaseAgent):
         return Message(
             role="assistant",
             content=response.content,
-            metadata={"analyzed": True}
+            structured_data={"analyzed": True}
         )
 ```
 
@@ -436,7 +444,7 @@ agent = Agent(
     name="Expert",  # Unique identifier
     goal="Domain expert in...",  # Role definition
     instruction="Detailed instructions...",  # System message
-    tools=[...],  # Available functions
+    tools={"tool_name": tool_func},  # Available functions (dict format)
     max_tokens=2000,  # Response limit
     allowed_peers=["Agent1", "Agent2"],  # Can invoke these agents
     memory_retention="session",  # Memory policy
@@ -549,23 +557,36 @@ results = await asyncio.gather(*[
 
 ```python
 # Specialized agents
-data_collector = Agent(config, name="DataCollector",
-                       tools=[search_web, scrape_page])
-analyzer = Agent(config, name="Analyzer",
-                tools=[statistical_analysis, create_charts])
-writer = Agent(config, name="Writer",
-              goal="Technical writer...")
+data_collector = Agent(
+    model_config=config,
+    name="DataCollector",
+    goal="Collect data from web sources",
+    instruction="You collect data by searching the web and scraping pages.",
+    tools={"search_web": search_web, "scrape_page": scrape_page}
+)
+analyzer = Agent(
+    model_config=config,
+    name="Analyzer",
+    goal="Analyze data statistically",
+    instruction="You analyze data using statistical methods and create charts.",
+    tools={"statistical_analysis": statistical_analysis, "create_charts": create_charts}
+)
+writer = Agent(
+    model_config=config,
+    name="Writer",
+    goal="Technical writer creating reports",
+    instruction="You write clear technical reports based on analyzed data."
+)
 
 # Coordinator orchestrates them
 coordinator = Agent(
-    config,
+    model_config=config,
     name="Coordinator",
-    goal="""
-    You coordinate research projects. Your workflow:
+    goal="Coordinate research projects between specialized agents",
+    instruction="""You coordinate research projects. Your workflow:
     1. Ask DataCollector to gather information
     2. Ask Analyzer to process the data
-    3. Ask Writer to create the report
-    """,
+    3. Ask Writer to create the report""",
     allowed_peers=["DataCollector", "Analyzer", "Writer"]
 )
 ```

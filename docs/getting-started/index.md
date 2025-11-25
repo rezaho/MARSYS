@@ -54,6 +54,7 @@ researcher = Agent(
     model_config=model_config,
     name="Researcher",
     goal="Expert at finding and analyzing information",
+    instruction="You are a research specialist. Find and analyze information thoroughly.",
     allowed_peers=["Writer"]  # Can invoke the Writer agent
 )
 
@@ -61,6 +62,7 @@ writer = Agent(
     model_config=model_config,
     name="Writer",
     goal="Skilled at creating clear, engaging content",
+    instruction="You are a skilled writer. Create clear, engaging content based on research.",
     allowed_peers=[]  # Cannot invoke other agents
 )
 
@@ -80,7 +82,7 @@ This is just one of **four ways** to define multi-agent systems in MARSYS. As yo
 
 Before you begin, ensure you have:
 
-- **Python 3.8+** installed on your system
+- **Python 3.12+** installed on your system
 - **pip** or **conda** for package management
 - **API keys** for your chosen AI providers (OpenAI, Anthropic, Google, etc.)
 - Basic understanding of Python async/await (helpful but not required)
@@ -217,13 +219,15 @@ model_config = ModelConfig(
 researcher = Agent(
     model_config=model_config,
     name="Researcher",
-    goal="Expert at finding and analyzing information"
+    goal="Expert at finding and analyzing information",
+    instruction="You are a research specialist. Find and analyze information thoroughly."
 )
 
 writer = Agent(
     model_config=model_config,
     name="Writer",
-    goal="Skilled at creating clear, engaging content"
+    goal="Skilled at creating clear, engaging content",
+    instruction="You are a skilled writer. Create clear, engaging content based on research."
 )
 
 # Define workflow

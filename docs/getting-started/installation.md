@@ -243,7 +243,8 @@ async def test():
             provider="openrouter"
         ),
         name="TestAgent",
-        goal="Test agent for verification"
+        goal="Test agent for verification",
+        instruction="You are a test agent. Respond to requests clearly and concisely."
     )
 
     # Run a simple task

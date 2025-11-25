@@ -118,10 +118,8 @@ MARSYS supports multiple AI providers:
             name="gemini-pro",
             provider="google",
             api_key=os.getenv("GOOGLE_API_KEY"),
-            parameters={
-                "temperature": 0.9,
-                "top_p": 0.95
-            }
+            temperature=0.9,
+            top_p=0.95
         ),
         name="GeminiAgent",
         goal="Leverage Google's Gemini model for AI assistance",
@@ -137,9 +135,7 @@ MARSYS supports multiple AI providers:
             name="llama2",
             provider="ollama",
             base_url="http://localhost:11434",
-            parameters={
-                "temperature": 0.8
-            }
+            temperature=0.8
         ),
         name="LocalAgent",
         goal="Provide local AI assistance without external API dependencies",
@@ -226,7 +222,7 @@ agent = Agent(
     name="FinancialAnalyst",
     goal="Analyze financial data and provide investment insights",
     instruction="Financial analysis expert with stock price and sentiment analysis capabilities",
-    tools=[fetch_stock_price, analyze_sentiment]
+    tools={"fetch_stock_price": fetch_stock_price, "analyze_sentiment": analyze_sentiment}
 )
 ```
 
@@ -247,7 +243,7 @@ async def fetch_news(
     sources: Optional[List[str]] = None,
     limit: int = 5,
     sort_by: str = "relevance"
-) -> Dict[str, any]:
+) -> Dict[str, Any]:
     """
     Fetch news articles based on search query.
 
@@ -303,7 +299,7 @@ agent = Agent(
     name="NewsAnalyst",
     goal="Analyze and summarize news articles for key insights",
     instruction="News analysis and summarization expert with real-time news fetching capabilities",
-    tools=[fetch_news]
+    tools={"fetch_news": fetch_news}
 )
 ```
 
@@ -609,14 +605,8 @@ agent = Agent(
     ),
     name="PrecisionAgent",
     goal="High-precision analytical agent",
-    max_tokens=12000,
-    auto_summarize=True,
-    response_format="markdown",
-    error_handling="retry",
-    retry_config={
-        "max_retries": 3,
-        "backoff_factor": 2
-    }
+    instruction="You are a precision analyst. Provide accurate, detailed analysis with clear reasoning.",
+    max_tokens=12000
 )
 ```
 

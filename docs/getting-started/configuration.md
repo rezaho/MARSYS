@@ -72,13 +72,8 @@ config = ModelConfig(
     name="anthropic/claude-haiku-4.5",  # Model name
     api_key=None,                  # Auto-loads from env
     base_url=None,                 # Custom endpoint
-    parameters={                   # Model parameters
-        "temperature": 0.7,
-        "max_tokens": 2000,
-        "top_p": 0.9,
-        "frequency_penalty": 0.5,
-        "presence_penalty": 0.5
-    }
+    temperature=0.7,               # Sampling temperature
+    max_tokens=2000                # Maximum output tokens
 )
 ```
 
@@ -125,7 +120,7 @@ config = ExecutionConfig(
     branch_timeout=600.0,              # Max time per branch
     agent_acquisition_timeout=240.0,   # Max wait to acquire from pool
     step_timeout=300.0,                # Max time per step
-    tool_execution_timeout=60.0,       # Max time for tool calls
+    tool_execution_timeout=120.0,      # Max time for tool calls
     user_interaction_timeout=300.0,    # Max wait for user input
 
     # Convergence behavior
@@ -133,11 +128,8 @@ config = ExecutionConfig(
     parent_completes_on_spawn=True,    # Parent waits for children
     auto_detect_convergence=True,      # Automatic convergence detection
 
-    # Retry and steering
-    steering_mode="auto",              # "auto", "always", "never"
-    max_retries=3,                     # Retry attempts per step
-    retry_delay=1.0,                   # Delay between retries
-    exponential_backoff=True,          # Exponential retry delay
+    # Steering mode for retry guidance
+    steering_mode="error",             # "auto", "always", "error"
 
     # Status and output
     status=StatusConfig.from_verbosity(VerbosityLevel.NORMAL),
@@ -174,7 +166,7 @@ realtime_config = ExecutionConfig(
     step_timeout=10.0,
     convergence_timeout=30.0,
     branch_timeout=60.0,
-    steering_mode="never"  # No retries for speed
+    steering_mode="error"  # Minimal steering for speed
 )
 ```
 
@@ -214,13 +206,10 @@ status = StatusConfig(
     prefix_alignment="left",          # "left", "right", "center"
 
     # Output channels
-    channels=["cli", "file"],         # Output destinations
-    file_path="execution.log",        # Log file path
+    channels=["cli"],                 # Output destinations
 
-    # Progress indicators
-    show_progress_bar=True,           # Show progress
-    show_step_counter=True,           # Show step numbers
-    show_branch_indicators=True,      # Show branch status
+    # Follow-up timeout
+    follow_up_timeout=30.0            # Timeout for follow-up questions
 )
 ```
 
@@ -287,12 +276,10 @@ error_config = ErrorHandlingConfig(
 
     # Notifications
     notify_on_critical_errors=True,   # Alert on critical errors
-    notification_channels=["cli", "log"],
 
     # Retry behavior
     auto_retry_on_rate_limits=True,   # Auto-retry rate limits
     max_rate_limit_retries=3,
-    rate_limit_backoff=60,            # Seconds
 
     # Pool-specific
     pool_retry_attempts=2,            # Retries for pool acquisition
@@ -360,10 +347,8 @@ def create_production_config():
         auto_detect_convergence=True,
         steering_mode="auto",
 
-        # Retry with exponential backoff
-        max_retries=3,
-        retry_delay=2.0,
-        exponential_backoff=True,
+        # Agent lifecycle
+        auto_cleanup_agents=True,
 
         # Status for production
         status=StatusConfig(
@@ -424,12 +409,11 @@ async def run_with_config():
     state_manager = StateManager(storage)
 
     # Run with full configuration
+    # Note: communication and error handling settings are part of ExecutionConfig
     result = await Orchestra.run(
         task="Complex multi-agent task",
         topology=topology,
         execution_config=exec_config,
-        communication_config=comm_config,
-        error_config=error_config,
         state_manager=state_manager,
         max_steps=50
     )
@@ -466,7 +450,7 @@ prod_config = ExecutionConfig(
 realtime_config = ExecutionConfig(
     step_timeout=10.0,
     convergence_timeout=30.0,
-    steering_mode="never",  # No retries
+    steering_mode="error",  # Minimal retries (only on errors)
     status=StatusConfig(enabled=False)  # No output overhead
 )
 ```

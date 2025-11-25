@@ -199,12 +199,10 @@ result = await Orchestra.run(
 async def run(
     cls,
     task: Union[str, Dict[str, Any]],
-    topology: Union[Dict, Topology],
+    topology: Union[Dict, Topology, PatternConfig],
     agent_registry: Optional[AgentRegistry] = None,
     context: Optional[Dict[str, Any]] = None,
     execution_config: Optional[ExecutionConfig] = None,
-    communication_config: Optional[CommunicationConfig] = None,
-    error_config: Optional[ErrorHandlingConfig] = None,
     state_manager: Optional[StateManager] = None,
     max_steps: int = 100,
     allow_follow_ups: bool = False,

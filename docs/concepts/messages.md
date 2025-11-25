@@ -75,14 +75,9 @@ class Message:
     # Additional data
     structured_data: Optional[Dict] = None         # Structured responses
     images: Optional[List[str]] = None            # For vision models
-    metadata: Dict[str, Any] = field(default_factory=dict)
-    timestamp: datetime = field(default_factory=datetime.now)
 
     # Methods
     def to_llm_dict(self) -> Dict[str, Any]
-    def to_json(self) -> str
-    @classmethod
-    def from_llm_response(cls, response: Dict) -> 'Message'
 ```
 
 ### Message Roles
@@ -127,7 +122,7 @@ assistant_msg = Message(
 error_msg = Message(
     role="error",
     content="Failed to connect to database",
-    metadata={
+    structured_data={
         "error_type": "ConnectionError",
         "retry_count": 3
     }
@@ -144,11 +139,10 @@ tool_call_msg = Message(
     tool_calls=[
         ToolCallMsg(
             id="call_abc123",
+            call_id="call_abc123",
             type="function",
-            function=FunctionCall(
-                name="analyze_data",
-                arguments='{"dataset": "sales_q4", "metrics": ["revenue", "growth"]}'
-            )
+            name="analyze_data",
+            arguments='{"dataset": "sales_q4", "metrics": ["revenue", "growth"]}'
         )
     ]
 )
@@ -173,8 +167,7 @@ agent_call = Message(
     agent_calls=[
         AgentCallMsg(
             agent_name="Researcher",
-            request="Research the latest AI trends for 2025",
-            context={"depth": "detailed", "sources": 10}
+            request="Research the latest AI trends for 2025"
         )
     ]
 )
@@ -358,10 +351,10 @@ tool_flow = [
         content="I'll check the weather in Tokyo for you.",
         tool_calls=[ToolCallMsg(
             id="call_weather_1",
-            function=FunctionCall(
-                name="get_weather",
-                arguments='{"city": "Tokyo", "units": "celsius"}'
-            )
+            call_id="call_weather_1",
+            type="function",
+            name="get_weather",
+            arguments='{"city": "Tokyo", "units": "celsius"}'
         )]
     ),
 
