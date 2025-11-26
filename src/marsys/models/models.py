@@ -385,20 +385,16 @@ class OpenAIAdapter(APIProviderAdapter):
 
     def format_request_payload(self, messages: List[Dict], **kwargs) -> Dict[str, Any]:
         import re
-        
-        # Check if this is an O-series model using regex pattern
-        is_o_series = bool(re.match(r'^o\d-', self.model_name))
-        
-        # Handle temperature for O-series models
-        temperature = kwargs.get("temperature", self.temperature)
-        if is_o_series and temperature != 1:
-            import warnings
-            warnings.warn(
-                f"OpenAI {self.model_name} only supports temperature=1. "
-                f"Ignoring provided temperature={temperature} and using temperature=1."
-            )
-            temperature = 1
-        
+
+        # Check if this is a reasoning model (GPT-5+, o-series) that doesn't support temperature
+        # Based on: https://learn.microsoft.com/en-us/azure/ai-foundry/openai/how-to/reasoning
+        # Future-proof: Supports GPT-5.x, GPT-6+, GPT-10+, o1, o2, o10+, etc.
+        model_lower = self.model_name.lower()
+        is_reasoning_model = bool(
+            re.match(r'^gpt-([5-9]|\d{2,})', model_lower) or  # GPT-5+, GPT-6+, GPT-10+, including minor versions (e.g., gpt-5.1)
+            re.match(r'^o[1-9]\d*-', model_lower)  # o1, o2, o3, o4, o5, o10+, etc.
+        )
+
         # Convert None content to empty string for compatibility
         cleaned_messages = []
         for msg in messages:
@@ -406,76 +402,139 @@ class OpenAIAdapter(APIProviderAdapter):
             if cleaned_msg.get("content") is None:
                 cleaned_msg["content"] = ""
             cleaned_messages.append(cleaned_msg)
-        
+
         payload = {
             "model": self.model_name,
-            "messages": cleaned_messages,
-            "temperature": temperature,
+            "input": cleaned_messages,  # Changed from 'messages' to 'input' for Responses API
         }
-        
-        # Handle max tokens - always use max_completion_tokens for OpenAI
+
+        # Handle temperature - reasoning models (GPT-5, o1-*, o3-*, o4-*) don't support it
+        if not is_reasoning_model:
+            temperature = kwargs.get("temperature", self.temperature)
+            payload["temperature"] = temperature
+        elif kwargs.get("temperature") is not None:
+            logger.warning(
+                f"OpenAI {self.model_name} is a reasoning model that does not support the temperature parameter. "
+                f"Temperature setting will be ignored."
+            )
+
+        # Handle max tokens - Responses API uses max_output_tokens
         if "max_completion_tokens" in kwargs:
-            payload["max_completion_tokens"] = kwargs["max_completion_tokens"]
+            payload["max_output_tokens"] = kwargs["max_completion_tokens"]
         elif "max_tokens" in kwargs:
-            payload["max_completion_tokens"] = kwargs["max_tokens"]
+            payload["max_output_tokens"] = kwargs["max_tokens"]
         else:
             # Default to 2048 if not specified
-            payload["max_completion_tokens"] = 2048
+            payload["max_output_tokens"] = 2048
 
         if kwargs.get("top_p") is not None:
             payload["top_p"] = kwargs["top_p"]
         elif self.top_p is not None:
             payload["top_p"] = self.top_p
 
-        # Handle structured output (takes precedence over simple json_mode)
+        # Handle structured output (Responses API uses text.format instead of response_format)
         # Priority: response_schema > response_format > json_mode
         response_schema = kwargs.get("response_schema")
         if response_schema:
-            # Convert unified response_schema to OpenAI's response_format
-            payload["response_format"] = {
-                "type": "json_schema",
-                "json_schema": {
+            # Convert unified response_schema to Responses API text.format
+            payload["text"] = {
+                "format": {
+                    "type": "json_schema",
                     "name": "response_schema",
                     "strict": True,
                     "schema": response_schema
                 }
             }
         elif kwargs.get("response_format"):
-            # Allow direct response_format for advanced use cases
-            payload["response_format"] = kwargs["response_format"]
+            # Allow direct response_format - convert to text.format for Responses API
+            response_format = kwargs["response_format"]
+            if isinstance(response_format, dict) and "json_schema" in response_format:
+                # Convert Chat Completions format to Responses API format
+                payload["text"] = {"format": response_format["json_schema"]}
+            elif isinstance(response_format, dict) and response_format.get("type") == "json_object":
+                payload["text"] = {"format": {"type": "json_object"}}
+            else:
+                payload["text"] = {"format": response_format}
         elif kwargs.get("json_mode"):
-            payload["response_format"] = {"type": "json_object"}
+            payload["text"] = {"format": {"type": "json_object"}}
 
+        # Handle tools - Responses API uses flattened structure (internally tagged)
+        # Converts externally tagged format to internally tagged format
         if kwargs.get("tools"):
-            payload["tools"] = kwargs["tools"]
+            tools = kwargs["tools"]
+            converted_tools = []
+            for tool in tools:
+                if isinstance(tool, dict):
+                    if tool.get("type") == "function" and "function" in tool:
+                        # Convert from Chat Completions format (externally tagged)
+                        func = tool["function"]
+                        converted_tools.append({
+                            "type": "function",
+                            "name": func.get("name"),
+                            "description": func.get("description"),
+                            "parameters": func.get("parameters"),
+                            # Note: strict is true by default in Responses API
+                        })
+                    else:
+                        # Already in Responses API format or other tool type
+                        converted_tools.append(tool)
+                else:
+                    converted_tools.append(tool)
+            payload["tools"] = converted_tools
 
-        # Handle OpenAI reasoning (effort-based only)
+        # Handle OpenAI reasoning (effort-based for all models via Responses API)
         reasoning_effort = kwargs.get("reasoning_effort")
-        if reasoning_effort and reasoning_effort.lower() in ["high", "medium", "low"]:
+        if reasoning_effort and reasoning_effort.lower() in ["minimal", "low", "medium", "high"]:
             payload["reasoning"] = {"effort": reasoning_effort.lower()}
 
-        # Only accept known OpenAI API parameters - warn about unknown ones
+        # Only accept known OpenAI Responses API parameters - warn about unknown ones
+        # Based on: https://platform.openai.com/docs/api-reference/responses/create
         valid_openai_params = {
-            "max_tokens",
-            "max_completion_tokens",
+            # Token limits
+            "max_tokens",  # Legacy, converted to max_output_tokens
+            "max_completion_tokens",  # Legacy, converted to max_output_tokens
+            "max_output_tokens",  # Responses API parameter
+            "max_tool_calls",
+            # Sampling
             "temperature",
             "top_p",
-            "json_mode",
+            # Structured outputs
+            "json_mode",  # Converted to text.format
+            "response_format",  # Legacy, converted to text.format
+            "response_schema",  # Unified parameter, converted to text.format
+            # Tools and reasoning
             "tools",
-            "response_format",
-            "reasoning_effort",
-            "thinking_budget",  # Used by other providers but ignored for OpenAI
-            "frequency_penalty",
-            "presence_penalty",
-            "logit_bias",
-            "logprobs",
-            "top_logprobs",
-            "n",
-            "seed",
-            "stop",
+            "tool_choice",
+            "parallel_tool_calls",
+            "reasoning_effort",  # Converted to reasoning.effort
+            # Streaming and logging
             "stream",
-            "suffix",
-            "user",
+            "stream_options",
+            "top_logprobs",
+            # State management
+            "store",
+            "conversation",
+            "previous_response_id",
+            # Instructions
+            "instructions",
+            # Metadata and identifiers
+            "metadata",
+            "safety_identifier",
+            "prompt_cache_key",
+            "prompt_cache_retention",
+            "user",  # Deprecated, but still accepted
+            # Service tier
+            "service_tier",
+            # Truncation
+            "truncation",
+            # Include options
+            "include",
+            # Background execution
+            "background",
+            # Prompt template
+            "prompt",
+            # Provider compatibility (ignored by OpenAI)
+            "thinking_budget",  # Used by other providers
         }
 
         for key, value in kwargs.items():
@@ -489,7 +548,9 @@ class OpenAIAdapter(APIProviderAdapter):
         return payload
 
     def get_endpoint_url(self) -> str:
-        return f"{self.base_url.rstrip('/')}/chat/completions"
+        # Migrate to OpenAI Responses API (unified endpoint for all models)
+        # Supports reasoning parameter for GPT-5, o-series, and all future models
+        return f"{self.base_url.rstrip('/')}/responses"
 
     def handle_api_error(self, error: Exception, response=None) -> ErrorResponse:
         """Enhanced error handling using ModelAPIError classification."""
@@ -515,24 +576,94 @@ class OpenAIAdapter(APIProviderAdapter):
     def harmonize_response(
         self, raw_response: Dict[str, Any], request_start_time: float
     ) -> HarmonizedResponse:
-        """Convert OpenAI response to standardized Pydantic model"""
+        """
+        Convert OpenAI Responses API output to standardized Pydantic model.
 
-        # Extract message content
-        message = raw_response.get("choices", [{}])[0].get("message", {})
-        choice = raw_response.get("choices", [{}])[0]
+        Responses API structure (/v1/responses):
+        {
+          "id": "resp_...",
+          "object": "response",
+          "created_at": ...,
+          "model": "gpt-5-...",
+          "output": [
+            {"type": "reasoning", "content": [], "summary": []},
+            {
+              "type": "message",
+              "content": [{"type": "output_text", "text": "..."}],
+              "role": "assistant",
+              "status": "completed"
+            }
+          ],
+          "usage": {...}
+        }
+        """
 
-        # Build tool calls
+        # Initialize default values
+        content = ""
+        role = "assistant"
+        finish_reason = None
+        reasoning_data = None
         tool_calls = []
-        for tc in message.get("tool_calls", []):
-            tool_calls.append(
-                ToolCall(
-                    id=tc.get("id", ""),
-                    type=tc.get("type", "function"),
-                    function=tc.get("function", {}),
-                )
-            )
 
-        # Build usage info
+        # Parse output array from Responses API
+        output_array = raw_response.get("output", [])
+        for item in output_array:
+            item_type = item.get("type", "")
+
+            # Extract reasoning information
+            if item_type == "reasoning":
+                # Convert reasoning to string format (HarmonizedResponse expects string)
+                summary = item.get("summary", [])
+                content_array = item.get("content", [])
+
+                # Prefer summary (key insights) over detailed content
+                if summary:
+                    reasoning_data = "\n".join(str(s) for s in summary if s)
+                elif content_array:
+                    reasoning_data = "\n".join(str(c) for c in content_array if c)
+                else:
+                    reasoning_data = None
+
+            # Extract message content
+            elif item_type == "message":
+                role = item.get("role", "assistant")
+                status = item.get("status")
+
+                # Determine finish reason from status
+                if status == "completed":
+                    finish_reason = "stop"
+                elif status == "incomplete":
+                    finish_reason = "length"
+                elif status:
+                    finish_reason = status
+
+                # Extract text from content array
+                content_items = item.get("content", [])
+                for content_item in content_items:
+                    if isinstance(content_item, dict):
+                        if content_item.get("type") == "output_text":
+                            content = content_item.get("text", "")
+                            break
+                    elif isinstance(content_item, str):
+                        # Fallback for simple string content
+                        content = content_item
+                        break
+
+            # Extract function calls (Responses API format)
+            # In Responses API, function calls are separate items with call_id
+            elif item_type == "function_call":
+                tool_calls.append(
+                    ToolCall(
+                        id=item.get("call_id", item.get("id", "")),
+                        type="function",
+                        function={
+                            "name": item.get("name", ""),
+                            "arguments": item.get("arguments", "")
+                        },
+                    )
+                )
+
+        # Build usage info (format remains the same)
         usage_data = raw_response.get("usage", {})
         usage = None
         if usage_data:
@@ -540,7 +671,7 @@ class OpenAIAdapter(APIProviderAdapter):
                 prompt_tokens=usage_data.get("prompt_tokens"),
                 completion_tokens=usage_data.get("completion_tokens"),
                 total_tokens=usage_data.get("total_tokens"),
-                reasoning_tokens=usage_data.get("reasoning_tokens"),  # o1 models
+                reasoning_tokens=usage_data.get("reasoning_tokens"),
             )
 
         # Build metadata
@@ -548,23 +679,22 @@ class OpenAIAdapter(APIProviderAdapter):
             provider="openai",
             model=raw_response.get("model", self.model_name),
             request_id=raw_response.get("id"),
-            created=raw_response.get("created"),
+            created=raw_response.get("created") or raw_response.get("created_at"),
             usage=usage,
-            finish_reason=choice.get("finish_reason"),
+            finish_reason=finish_reason,
             response_time=time.time() - request_start_time,
         )
 
         # Handle content - provide a default message if truncated
-        content = message.get("content", "")
-        if not content and choice.get("finish_reason") == "length":
+        if not content and finish_reason == "length":
             content = "[Response truncated due to token limit. Please increase max_completion_tokens or continue the conversation.]"
-        
+
         # Build harmonized response
         return HarmonizedResponse(
-            role=message.get("role", "assistant"),
+            role=role,
             content=content,
             tool_calls=tool_calls,
-            reasoning=message.get("reasoning"),  # o1 models
+            reasoning=reasoning_data,
             metadata=metadata,
         )
 
