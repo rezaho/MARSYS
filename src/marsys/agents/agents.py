@@ -2793,6 +2793,27 @@ The user will provide their response, and you'll receive it to continue your tas
                 except Exception as e:
                     self.logger.warning(f"Failed to clear memory: {e}")
 
+            # Cleanup agent resources (aiohttp sessions, etc.)
+            # This prevents "Unclosed client session" warnings
+            if 'orchestra' in dir() and orchestra is not None:
+                if hasattr(orchestra, '_auto_cleanup_agents') and hasattr(orchestra, 'canonical_topology'):
+                    try:
+                        await orchestra._auto_cleanup_agents(
+                            orchestra.canonical_topology,
+                            config.execution if config else None
+                        )
+                        self.logger.debug(f"Cleaned up agent resources for '{self.name}'")
+                    except Exception as e:
+                        self.logger.warning(f"Failed to cleanup agents: {e}")
+
+                # Shutdown status manager if exists
+                if hasattr(orchestra, 'status_manager') and orchestra.status_manager:
+                    try:
+                        await orchestra.status_manager.shutdown()
+                        self.logger.debug(f"Shutdown status manager for '{self.name}'")
+                    except Exception as e:
+                        self.logger.warning(f"Failed to shutdown status manager: {e}")
+
     async def _execute_tool_calls(
         self, tool_calls: List[Dict[str, Any]], request_context: RequestContext
     ) -> List[Dict[str, Any]]:
