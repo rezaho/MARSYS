@@ -36,6 +36,23 @@ With MARSYS, you can create sophisticated multi-agent systems where AI agents co
 
 ## 🚀 Quick Overview
 
+!!! info "API Keys Required for API Models"
+    Set your API key by **environment variable** or directly in `ModelConfig(api_key="...")`. For local models, no API keys needed.
+
+    **Quick setup** - Set OpenRouter API key (recommended for unified access):
+
+    === "macOS/Linux"
+        ```bash
+        export OPENROUTER_API_KEY="your-api-key-here"
+        ```
+
+    === "Windows"
+        ```cmd
+        set OPENROUTER_API_KEY=your-api-key-here
+        ```
+
+    See [Installation Guide - Configure API Keys](installation/#3-configure-api-keys) for other providers and detailed setup.
+
 MARSYS provides multiple ways to orchestrate agents. Here's the simplest approach using `allowed_peers`:
 
 ```python
@@ -45,8 +62,8 @@ from marsys.models import ModelConfig
 # Create agents with same configuration
 model_config = ModelConfig(
     type="api",
-    name="gpt-5",
-    provider="openai"
+    name="anthropic/claude-sonnet-4.5",
+    provider="openrouter"
 )
 
 # Define agents and their allowed interactions
@@ -211,8 +228,8 @@ from marsys.models import ModelConfig
 # Create a single model configuration
 model_config = ModelConfig(
     type="api",
-    name="gpt-5",
-    provider="openai"
+    name="anthropic/claude-sonnet-4.5",
+    provider="openrouter"
 )
 
 # Create specialized agents

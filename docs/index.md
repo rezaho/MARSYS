@@ -88,8 +88,8 @@ from marsys.models import ModelConfig
 # Create specialized agents
 model_config = ModelConfig(
     type="api",
-    name="gpt-5",
-    provider="openai"
+    name="anthropic/claude-sonnet-4.5",
+    provider="openrouter"
 )
 
 coordinator = Agent(
