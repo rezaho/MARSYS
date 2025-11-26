@@ -1,16 +1,12 @@
 # Memory API
 
-Complete API reference for the conversation memory system that manages agent memory and message history.
+API reference for the memory system that manages agent conversation history.
 
-## 🎯 Overview
-
-The Memory API provides comprehensive memory management for agents, including conversation history, message formatting, and memory retention policies.
-
-## 📦 Core Classes
+## Core Classes
 
 ### ConversationMemory
 
-Manages conversation history for an agent.
+Stores conversation history as a list of Message objects.
 
 **Import:**
 ```python
@@ -19,89 +15,188 @@ from marsys.agents.memory import ConversationMemory
 
 **Constructor:**
 ```python
-ConversationMemory(
-    max_messages: Optional[int] = None,
-    retention_policy: str = "session"
+ConversationMemory(description: Optional[str] = None)
+```
+
+**Parameters:**
+| Parameter | Type | Description | Default |
+|-----------|------|-------------|---------|
+| `description` | `str` | Initial system message content | `None` |
+
+**Methods:**
+
+| Method | Signature | Description |
+|--------|-----------|-------------|
+| `add` | `add(message=None, *, role=None, content=None, name=None, tool_calls=None, agent_calls=None, images=None, tool_call_id=None) -> str` | Add message, returns message_id |
+| `update` | `update(message_id, *, role=None, content=None, ...) -> None` | Update existing message by ID |
+| `retrieve_all` | `retrieve_all() -> List[Dict[str, Any]]` | Get all messages as dicts |
+| `retrieve_recent` | `retrieve_recent(n: int = 1) -> List[Dict[str, Any]]` | Get last n messages as dicts |
+| `get_messages` | `get_messages() -> List[Dict[str, Any]]` | Get messages for LLM (same as retrieve_all) |
+| `retrieve_by_id` | `retrieve_by_id(message_id: str) -> Optional[Dict]` | Get message by ID |
+| `retrieve_by_role` | `retrieve_by_role(role: str, n: Optional[int] = None) -> List[Dict]` | Filter by role |
+| `remove_by_id` | `remove_by_id(message_id: str) -> bool` | Delete message by ID |
+| `replace_memory` | `replace_memory(idx: int, ...) -> None` | Replace message at index |
+| `delete_memory` | `delete_memory(idx: int) -> None` | Delete message at index |
+| `reset_memory` | `reset_memory() -> None` | Clear all (keeps system prompt) |
+
+**Example:**
+```python
+memory = ConversationMemory(description="You are helpful")
+
+# Add messages
+msg_id = memory.add(role="user", content="Hello")
+memory.add(role="assistant", content="Hi there!")
+
+# Retrieve messages
+all_msgs = memory.retrieve_all()  # List[Dict]
+recent = memory.retrieve_recent(5)
+
+# Clear
+memory.reset_memory()  # Keeps system prompt
+```
+
+---
+
+### ManagedConversationMemory
+
+Conversation memory with automatic token management.
+
+**Import:**
+```python
+from marsys.agents.memory import ManagedConversationMemory, ManagedMemoryConfig
+```
+
+**Constructor:**
+```python
+ManagedConversationMemory(
+    config: Optional[ManagedMemoryConfig] = None,
+    trigger_strategy: Optional[TriggerStrategy] = None,
+    process_strategy: Optional[ProcessStrategy] = None,
+    retrieval_strategy: Optional[RetrievalStrategy] = None,
+    description: Optional[str] = None
+)
+```
+
+**Methods:** Same as ConversationMemory, plus:
+
+| Method | Description |
+|--------|-------------|
+| `get_raw_messages()` | Get full raw message history |
+| `get_cache_stats()` | Get cache statistics |
+
+**ManagedMemoryConfig:**
+```python
+@dataclass
+class ManagedMemoryConfig:
+    max_total_tokens_trigger: int = 150_000
+    target_total_tokens: int = 100_000
+    image_token_estimate: int = 800
+    min_retrieval_gap_steps: int = 2
+    min_retrieval_gap_tokens: int = 5000
+    trigger_events: List[str] = ["add", "get_messages"]
+    cache_invalidation_events: List[str] = ["add", "remove_by_id", "delete_memory"]
+    token_counter: Optional[Callable] = None
+    enable_headroom_percent: float = 0.1
+    processing_strategy: str = "none"
+```
+
+---
+
+### KGMemory
+
+Knowledge graph memory storing facts as (Subject, Predicate, Object) triplets.
+
+**Import:**
+```python
+from marsys.agents.memory import KGMemory
+```
+
+**Constructor:**
+```python
+KGMemory(
+    model: Union[BaseVLM, BaseLLM, BaseAPIModel],
+    description: Optional[str] = None
+)
+```
+
+**Methods:** Same as BaseMemory, plus:
+
+| Method | Description |
+|--------|-------------|
+| `add_fact(role, subject, predicate, obj)` | Add fact directly |
+| `extract_and_update_from_text(input_text, role)` | Extract facts from text using model |
+
+---
+
+### MemoryManager
+
+Factory that creates appropriate memory type.
+
+**Import:**
+```python
+from marsys.agents.memory import MemoryManager
+```
+
+**Constructor:**
+```python
+MemoryManager(
+    memory_type: str = "conversation_history",
+    description: Optional[str] = None,
+    model: Optional[Union[BaseLLM, BaseVLM]] = None,
+    memory_config: Optional[ManagedMemoryConfig] = None,
+    token_counter: Optional[Callable] = None
 )
 ```
 
 **Parameters:**
 | Parameter | Type | Description | Default |
 |-----------|------|-------------|---------|
-| `max_messages` | `int` | Maximum messages to retain | `None` (unlimited) |
-| `retention_policy` | `str` | Memory retention policy | `"session"` |
+| `memory_type` | `str` | `"conversation_history"`, `"managed_conversation"`, or `"kg"` | `"conversation_history"` |
+| `description` | `str` | Initial system prompt | `None` |
+| `model` | `BaseLLM/BaseVLM` | Required for `"kg"` type | `None` |
+| `memory_config` | `ManagedMemoryConfig` | Config for managed memory | `None` |
+| `token_counter` | `Callable` | Custom token counter | `None` |
 
-**Methods:**
+**Methods:** Delegates to underlying memory type, plus:
 
-#### add_message
-```python
-def add_message(message: Message) -> None
-```
-Add a message to memory.
-
-#### get_messages
-```python
-def get_messages() -> List[Message]
-```
-Get all messages in memory.
-
-#### get_recent
-```python
-def get_recent(n: int = 10) -> List[Message]
-```
-Get n most recent messages.
-
-#### clear
-```python
-def clear() -> None
-```
-Clear all messages.
-
-#### to_dict
-```python
-def to_dict() -> List[Dict[str, Any]]
-```
-Convert messages to dictionary format.
-
-#### save_to_file
-```python
-def save_to_file(filepath: Path) -> None
-```
-Save memory to JSON file.
-
-#### load_from_file
-```python
-def load_from_file(filepath: Path) -> None
-```
-Load memory from JSON file.
+| Method | Description |
+|--------|-------------|
+| `save_to_file(filepath: str)` | Save memory state to JSON |
+| `load_from_file(filepath: str)` | Load memory state from JSON |
 
 **Example:**
 ```python
-memory = ConversationMemory(max_messages=100)
+# Standard memory
+manager = MemoryManager(
+    memory_type="conversation_history",
+    description="System prompt"
+)
 
-# Add messages
-memory.add_message(Message(
-    role="user",
-    content="What is the weather?"
-))
+# With token management
+manager = MemoryManager(
+    memory_type="managed_conversation",
+    memory_config=ManagedMemoryConfig(
+        max_total_tokens_trigger=100000
+    )
+)
 
-memory.add_message(Message(
-    role="assistant",
-    content="I'll help you check the weather."
-))
+# Knowledge graph
+manager = MemoryManager(
+    memory_type="kg",
+    model=your_model
+)
 
-# Get recent messages
-recent = memory.get_recent(5)
-
-# Save to file
-memory.save_to_file(Path("conversation.json"))
+# Use it
+manager.add(role="user", content="Hello")
+msgs = manager.get_messages()
+manager.save_to_file("memory.json")
 ```
 
 ---
 
 ### Message
 
-Represents a single message in conversation.
+Single message in conversation.
 
 **Import:**
 ```python
@@ -112,7 +207,7 @@ from marsys.agents.memory import Message
 ```python
 Message(
     role: str,
-    content: Optional[Union[str, Dict[str, Any]]] = None,
+    content: Optional[Union[str, Dict[str, Any], List[Dict[str, Any]]]] = None,
     message_id: str = auto_generated,
     name: Optional[str] = None,
     tool_calls: Optional[List[ToolCallMsg]] = None,
@@ -123,19 +218,6 @@ Message(
 )
 ```
 
-**Parameters:**
-| Parameter | Type | Description | Default |
-|-----------|------|-------------|---------|
-| `role` | `str` | Message role | Required |
-| `content` | `Union[str, Dict]` | Message content | `None` |
-| `message_id` | `str` | Unique identifier | Auto-generated |
-| `name` | `str` | Tool/model name | `None` |
-| `tool_calls` | `List[ToolCallMsg]` | Tool call requests | `None` |
-| `agent_calls` | `List[AgentCallMsg]` | Agent invocations | `None` |
-| `structured_data` | `Dict` | Structured response data | `None` |
-| `images` | `List[str]` | Image paths/URLs | `None` |
-| `tool_call_id` | `str` | Link to tool call | `None` |
-
 **Role Values:**
 - `"system"` - System instructions
 - `"user"` - User input
@@ -144,134 +226,54 @@ Message(
 
 **Methods:**
 
-| Method | Description | Returns |
-|--------|-------------|---------|
-| `to_dict()` | Convert to dictionary | `Dict[str, Any]` |
-| `from_dict(data)` | Create from dictionary | `Message` |
-| `is_valid_role(role)` | Check if role is valid | `bool` |
+| Method | Description |
+|--------|-------------|
+| `to_llm_dict()` | Convert to LLM API format dict |
+| `to_api_format()` | Convert to OpenAI API format |
+| `from_response_dict(response_dict, ...)` | Create from model response (classmethod) |
+| `from_harmonized_response(response, ...)` | Create from HarmonizedResponse (classmethod) |
 
 **Example:**
 ```python
-# Simple text message
-msg = Message(
-    role="user",
-    content="Analyze this data"
-)
+# Simple message
+msg = Message(role="user", content="Hello")
 
-# Assistant with tool calls
+# With tool calls
 msg = Message(
     role="assistant",
-    content="I'll search for that information.",
+    content=None,
     tool_calls=[
         ToolCallMsg(
             id="call_123",
             call_id="call_123",
             type="function",
             name="search",
-            arguments='{"query": "AI trends"}'
+            arguments='{"query": "AI"}'
         )
     ]
 )
 
-# Structured data response
+# Tool response
 msg = Message(
-    role="assistant",
-    structured_data={
-        "analysis": "Complete",
-        "results": [1, 2, 3]
-    }
+    role="tool",
+    content='{"result": "found"}',
+    tool_call_id="call_123",
+    name="search"
 )
 
-# Vision message with images
+# With images
 msg = Message(
     role="user",
-    content="What's in this image?",
+    content="Describe this",
     images=["path/to/image.jpg"]
 )
 ```
 
 ---
 
-### MemoryManager
-
-Manages memory for multiple agents in a session.
-
-**Import:**
-```python
-from marsys.agents.memory import MemoryManager
-```
-
-**Constructor:**
-```python
-MemoryManager(
-    retention_policy: str = "session",
-    max_messages_per_agent: int = 1000
-)
-```
-
-**Parameters:**
-| Parameter | Type | Description | Default |
-|-----------|------|-------------|---------|
-| `retention_policy` | `str` | Default retention policy | `"session"` |
-| `max_messages_per_agent` | `int` | Max messages per agent | `1000` |
-
-**Retention Policies:**
-- `"single_run"` - Clear after each run
-- `"session"` - Keep for session duration
-- `"persistent"` - Persist across sessions
-
-**Methods:**
-
-#### get_memory
-```python
-def get_memory(agent_name: str) -> ConversationMemory
-```
-Get or create memory for agent.
-
-#### clear_agent_memory
-```python
-def clear_agent_memory(agent_name: str) -> None
-```
-Clear memory for specific agent.
-
-#### clear_all
-```python
-def clear_all() -> None
-```
-Clear all agent memories.
-
-#### set_retention_policy
-```python
-def set_retention_policy(
-    agent_name: str,
-    policy: str
-) -> None
-```
-Set retention policy for agent.
-
-**Example:**
-```python
-manager = MemoryManager(retention_policy="session")
-
-# Get memory for agent
-agent_memory = manager.get_memory("Analyzer")
-agent_memory.add_message(msg)
-
-# Set custom retention
-manager.set_retention_policy("Analyzer", "persistent")
-
-# Clear specific agent
-manager.clear_agent_memory("Analyzer")
-
-# Clear all
-manager.clear_all()
-```
-
----
-
 ### MessageContent
 
-Structured content for agent responses.
+Structured content for agent action responses.
 
 **Import:**
 ```python
@@ -287,38 +289,23 @@ MessageContent(
 )
 ```
 
-**Parameters:**
-| Parameter | Type | Description | Default |
-|-----------|------|-------------|---------|
-| `thought` | `str` | Agent's reasoning | `None` |
-| `next_action` | `str` | Next action to take | `None` |
-| `action_input` | `Dict` | Action parameters | `None` |
+**Valid next_action values:**
+- `"call_tool"`
+- `"invoke_agent"`
+- `"final_response"`
 
-**Valid Actions:**
-- `"call_tool"` - Execute tool
-- `"invoke_agent"` - Call another agent
-- `"final_response"` - Return final result
+**Methods:**
 
-**Example:**
-```python
-content = MessageContent(
-    thought="I need to analyze this data",
-    next_action="invoke_agent",
-    action_input={"agent_name": "DataAnalyzer"}
-)
-
-# Convert to dict
-data = content.to_dict()
-
-# Create from dict
-content = MessageContent.from_dict(data)
-```
+| Method | Description |
+|--------|-------------|
+| `to_dict()` | Convert to dictionary |
+| `from_dict(data)` | Create from dictionary (classmethod) |
 
 ---
 
 ### ToolCallMsg
 
-Represents a tool call in a message.
+Tool call request in a message.
 
 **Import:**
 ```python
@@ -336,34 +323,18 @@ ToolCallMsg(
 )
 ```
 
-**Parameters:**
-| Parameter | Type | Description | Default |
-|-----------|------|-------------|---------|
-| `id` | `str` | Unique identifier | Required |
-| `call_id` | `str` | Call identifier | Required |
-| `type` | `str` | Call type | Required |
-| `name` | `str` | Tool name | Required |
-| `arguments` | `str` | JSON arguments | Required |
+**Methods:**
 
-**Example:**
-```python
-tool_call = ToolCallMsg(
-    id="call_123",
-    call_id="call_123",
-    type="function",
-    name="calculate",
-    arguments='{"a": 5, "b": 3}'
-)
-
-# Convert to OpenAI format
-openai_format = tool_call.to_dict()
-```
+| Method | Description |
+|--------|-------------|
+| `to_dict()` | Convert to OpenAI API format |
+| `from_dict(data)` | Create from dict (classmethod) |
 
 ---
 
 ### AgentCallMsg
 
-Represents an agent invocation call.
+Agent invocation request.
 
 **Import:**
 ```python
@@ -378,215 +349,24 @@ AgentCallMsg(
 )
 ```
 
-**Parameters:**
-| Parameter | Type | Description | Default |
-|-----------|------|-------------|---------|
-| `agent_name` | `str` | Target agent name | Required |
-| `request` | `Any` | Request data | Required |
+**Methods:**
+
+| Method | Description |
+|--------|-------------|
+| `to_dict()` | Convert to dictionary |
+| `from_dict(data)` | Create from dict (classmethod) |
 
 **Example:**
 ```python
 agent_call = AgentCallMsg(
-    name="DataProcessor",
-    request="Process the quarterly sales data"
+    agent_name="DataProcessor",
+    request="Process the sales data"
 )
 ```
 
 ---
 
-## 🎨 Memory Patterns
-
-### Conversation Tracking
-
-```python
-class ConversationTracker:
-    """Track multi-turn conversations."""
-
-    def __init__(self):
-        self.memory = ConversationMemory()
-        self.turn_count = 0
-
-    def add_turn(self, user_msg: str, assistant_msg: str):
-        """Add a conversation turn."""
-        self.memory.add_message(Message(
-            role="user",
-            content=user_msg
-        ))
-        self.memory.add_message(Message(
-            role="assistant",
-            content=assistant_msg
-        ))
-        self.turn_count += 1
-
-    def get_context(self, max_turns: int = 5) -> List[Message]:
-        """Get recent conversation context."""
-        return self.memory.get_recent(max_turns * 2)
-```
-
-### Memory Summarization
-
-```python
-class SummarizingMemory(ConversationMemory):
-    """Memory that summarizes old messages."""
-
-    def __init__(self, max_messages: int = 50):
-        super().__init__(max_messages)
-        self.summaries = []
-
-    def add_message(self, message: Message):
-        """Add message and summarize if needed."""
-        super().add_message(message)
-
-        if len(self.messages) >= self.max_messages:
-            # Summarize oldest 25 messages
-            old_messages = self.messages[:25]
-            summary = self._summarize(old_messages)
-            self.summaries.append(summary)
-            # Remove summarized messages
-            self.messages = self.messages[25:]
-
-    def _summarize(self, messages: List[Message]) -> str:
-        """Create summary of messages."""
-        # Implement summarization logic
-        pass
-```
-
-### Memory Persistence
-
-```python
-class PersistentMemory:
-    """Memory with automatic persistence."""
-
-    def __init__(self, agent_name: str, base_path: Path):
-        self.name=agent_name
-        self.filepath = base_path / f"{agent_name}_memory.json"
-        self.memory = ConversationMemory()
-        self._load()
-
-    def _load(self):
-        """Load from disk if exists."""
-        if self.filepath.exists():
-            self.memory.load_from_file(self.filepath)
-
-    def save(self):
-        """Save to disk."""
-        self.memory.save_to_file(self.filepath)
-
-    def add_message(self, message: Message):
-        """Add message and auto-save."""
-        self.memory.add_message(message)
-        self.save()
-```
-
----
-
-## 🔧 Message Formatting
-
-### For Different Models
-
-```python
-def format_for_openai(messages: List[Message]) -> List[Dict]:
-    """Format messages for OpenAI API."""
-    formatted = []
-    for msg in messages:
-        entry = {"role": msg.role}
-
-        if msg.content:
-            entry["content"] = msg.content
-        if msg.name:
-            entry["name"] = msg.name
-        if msg.tool_calls:
-            entry["tool_calls"] = [tc.to_dict() for tc in msg.tool_calls]
-        if msg.tool_call_id:
-            entry["tool_call_id"] = msg.tool_call_id
-
-        formatted.append(entry)
-    return formatted
-
-def format_for_anthropic(messages: List[Message]) -> List[Dict]:
-    """Format messages for Anthropic API."""
-    # Anthropic has different format
-    formatted = []
-    for msg in messages:
-        if msg.role == "system":
-            # Handle system message differently
-            pass
-        else:
-            formatted.append({
-                "role": msg.role,
-                "content": msg.content
-            })
-    return formatted
-```
-
----
-
-## 📋 Best Practices
-
-### ✅ DO:
-- Set appropriate max_messages limits
-- Use correct retention policies
-- Save important conversations
-- Clear memory when appropriate
-- Validate message roles
-
-### ❌ DON'T:
-- Keep unlimited message history
-- Mix retention policies inappropriately
-- Store sensitive data without encryption
-- Ignore memory limits in long sessions
-- Create circular references in messages
-
----
-
-## 🚦 Memory Lifecycle
-
-### Complete Flow
-
-```python
-# 1. Initialize memory manager
-manager = MemoryManager(retention_policy="session")
-
-# 2. Agent gets memory
-agent_memory = manager.get_memory("Agent1")
-
-# 3. Add messages during execution
-agent_memory.add_message(Message(
-    role="user",
-    content="Start analysis"
-))
-
-# 4. Process with context
-context = agent_memory.get_recent(10)
-# ... agent processing ...
-
-# 5. Save results
-agent_memory.add_message(Message(
-    role="assistant",
-    content="Analysis complete"
-))
-
-# 6. Persist if needed
-if important_session:
-    agent_memory.save_to_file(Path("important.json"))
-
-# 7. Clear after session
-manager.clear_all()
-```
-
----
-
-## 🚦 Related Documentation
+## Related Documentation
 
 - [Agent API](agent-class.md) - Agent memory integration
-- [Execution API](execution.md) - Memory in execution
-- [State API](state.md) - Memory persistence
-- [Memory Patterns](../concepts/memory-patterns.md) - Memory strategies
-
----
-
-!!! tip "Pro Tip"
-    Use `get_recent()` instead of `get_messages()` for large conversations to limit token usage when sending to LLMs.
-
-!!! warning "Memory Limits"
-    Always set reasonable `max_messages` limits to prevent memory issues in long-running sessions. Consider implementing summarization for very long conversations.
+- [Memory Concepts](../concepts/memory.md) - Memory usage patterns

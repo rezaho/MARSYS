@@ -153,9 +153,8 @@ agent = Agent(
     ),
     name="DataAnalyst",
     goal="Expert data analyst with database access",
-    tools=[search_database, analyze_data, export_results]  # List of functions
-    # OR
-    tools={  # Dict with custom names
+    instruction="You are a data analyst. Use your tools to search databases, analyze data, and export results.",
+    tools={  # Dict mapping names to functions
         "db_search": search_database,
         "analyze": analyze_data,
         "export": export_results

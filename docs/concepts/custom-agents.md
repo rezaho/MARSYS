@@ -66,7 +66,9 @@ class CustomAgent(BaseAgent):
     ):
         super().__init__(
             model=model,
-            description="Custom specialized agent",
+            name=kwargs.pop("name", "CustomAgent"),
+            goal="Custom specialized agent",
+            instruction="A custom agent with specialized capabilities.",
             **kwargs
         )
         self.specialized_knowledge = specialized_knowledge or {}
@@ -103,7 +105,7 @@ class CustomAgent(BaseAgent):
             role="assistant",
             content=response.content,
             tool_calls=response.tool_calls if hasattr(response, 'tool_calls') else None,
-            metadata={"processing_state": self.processing_state}
+            structured_data={"processing_state": self.processing_state}
         )
 
     def _should_use_knowledge(self, prompt: str) -> bool:
@@ -123,7 +125,9 @@ class FinancialAnalyst(BaseAgent):
     def __init__(self, model, market_data_api=None, **kwargs):
         super().__init__(
             model=model,
-            description="Expert financial analyst with real-time market access",
+            name=kwargs.pop("name", "FinancialAnalyst"),
+            goal="Expert financial analyst with real-time market access",
+            instruction="You are a senior financial analyst specializing in market analysis.",
             tools={
                 "get_stock_price": self._get_stock_price,
                 "calculate_metrics": self._calculate_metrics

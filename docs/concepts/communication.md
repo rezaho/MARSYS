@@ -79,17 +79,16 @@ comm_manager = CommunicationManager(config=comm_config)
 comm_manager.register_channel("terminal", TerminalChannel())
 comm_manager.register_channel("web", WebChannel())
 
-# Send messages
-await comm_manager.send_message(
-    channel="terminal",
-    message="Processing request...",
-    metadata={"agent": "Coordinator", "level": "info"}
-)
+# CommunicationManager is used with Orchestra for user interaction
+# Direct send/receive is handled through channels internally
 
-# Receive input
-user_input = await comm_manager.receive_input(
-    channel="terminal",
-    prompt="Enter your choice: "
+# Use with Orchestra
+result = await Orchestra.run(
+    task="Help me with a task",
+    topology=topology,
+    execution_config=ExecutionConfig(
+        user_interaction="terminal"  # Auto-creates CommunicationManager
+    )
 )
 ```
 

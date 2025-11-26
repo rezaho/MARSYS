@@ -1,180 +1,180 @@
 # Memory
 
-Memory management is crucial for agents to maintain context, learn from interactions, and provide coherent responses across multi-turn conversations.
+Memory management enables agents to maintain context across multi-turn conversations.
 
 !!! info "See Also"
-    For ConversationMemory API, Message class, and MemoryManager methods, see [Memory API Reference](../api/memory.md).
+    For detailed API signatures, see [Memory API Reference](../api/memory.md).
 
 
-## 🎯 Overview
+## Overview
 
-MARSYS provides a sophisticated memory system that:
+MARSYS provides a memory system that:
 
-- **Maintains Context**: Preserves conversation history within branches
-- **Enables Continuity**: Supports multi-turn dialogues and follow-ups
-- **Manages Retention**: Configurable policies for memory persistence
-- **Handles Isolation**: Each branch maintains independent memory state
-- **Supports Patterns**: Episodic, shared, and hierarchical memory structures
+- **Maintains Context**: Preserves conversation history
+- **Supports Multiple Types**: ConversationMemory, ManagedConversationMemory, KGMemory
+- **Handles Token Limits**: ManagedConversationMemory automatically manages context size
 
-## 🏗️ Architecture
 
-```mermaid
-graph TB
-    subgraph "Memory System"
-        MM[MemoryManager<br/>Central Manager]
-        CM[ConversationMemory<br/>Standard Implementation]
-        EM[EpisodicMemory<br/>Episode-based]
-        SM[SharedMemory<br/>Cross-agent]
-    end
-
-    subgraph "Components"
-        MS[Message Store<br/>Chronological Storage]
-        IP[Input Processor<br/>Response → Message]
-        OP[Output Processor<br/>Message → LLM Format]
-        MF[Message Filters<br/>Retrieval Logic]
-    end
-
-    subgraph "Retention Policies"
-        SR[Single Run<br/>Cleared after run]
-        SS[Session<br/>Workflow duration]
-        PS[Persistent<br/>Long-term storage]
-    end
-
-    MM --> CM
-    CM --> MS
-    CM --> IP
-    CM --> OP
-    MS --> MF
-
-    MM --> SR
-    MM --> SS
-    MM --> PS
-
-    style MM fill:#4fc3f7
-    style CM fill:#29b6f6
-    style MS fill:#e1f5fe
-```
-
-## 📦 Core Components
+## Core Components
 
 ### Message Structure
 
 The fundamental unit of memory:
 
 ```python
-from dataclasses import dataclass
-from typing import Optional, Union, Dict, List, Any
+from marsys.agents.memory import Message
 
 @dataclass
 class Message:
-    role: str  # user, assistant, system, tool, agent_call, agent_response
-    content: Optional[Union[str, Dict]]
-    message_id: str  # Unique identifier
-    name: Optional[str] = None  # Tool/agent name
+    role: str  # user, assistant, system, tool
+    content: Optional[Union[str, Dict[str, Any], List[Dict[str, Any]]]] = None
+    message_id: str  # Auto-generated UUID
+    name: Optional[str] = None  # Tool name or model name
     tool_calls: Optional[List[ToolCallMsg]] = None
-    tool_call_id: Optional[str] = None  # For tool responses
     agent_calls: Optional[List[AgentCallMsg]] = None
-    structured_data: Optional[Dict] = None  # For dict responses
+    structured_data: Optional[Dict[str, Any]] = None
     images: Optional[List[str]] = None  # For vision models
-    metadata: Dict[str, Any] = field(default_factory=dict)
-    timestamp: datetime = field(default_factory=datetime.now)
+    tool_call_id: Optional[str] = None  # For tool response messages
 ```
 
 ### ConversationMemory
 
-Standard memory implementation:
+Standard memory implementation for storing conversation history:
 
 ```python
 from marsys.agents.memory import ConversationMemory
 
-class ConversationMemory:
-    def __init__(self):
-        self.messages: List[Message] = []
-        self.message_index: Dict[str, Message] = {}
+# Create memory with optional system prompt
+memory = ConversationMemory(description="You are a helpful assistant")
 
-    def add_message(self, message: Message) -> None:
-        """Add message to memory (immutable once added)"""
-        self.messages.append(message)
-        self.message_index[message.message_id] = message
+# Add a message
+message_id = memory.add(role="user", content="Hello")
 
-    def get_messages(self) -> List[Message]:
-        """Get all messages in chronological order"""
-        return self.messages.copy()
+# Or add a Message object directly
+from marsys.agents.memory import Message
+msg = Message(role="assistant", content="Hi there!")
+memory.add(message=msg)
 
-    def get_recent(self, n: int) -> List[Message]:
-        """Get last n messages"""
-        return self.messages[-n:] if n > 0 else []
+# Retrieve messages (returns List[Dict])
+all_messages = memory.retrieve_all()
+recent_messages = memory.retrieve_recent(n=5)
 
-    def clear(self) -> None:
-        """Clear all messages"""
-        self.messages.clear()
-        self.message_index.clear()
+# Get messages for LLM (same as retrieve_all for ConversationMemory)
+llm_messages = memory.get_messages()
 
-    def to_llm_format(self) -> List[Dict]:
-        """Convert to LLM-compatible format"""
-        return [msg.to_llm_dict() for msg in self.messages]
+# Other operations
+memory.retrieve_by_id("message-uuid-here")
+memory.retrieve_by_role("user", n=3)
+memory.remove_by_id("message-uuid-here")
+memory.reset_memory()  # Clears all except system message
+```
+
+**Key Methods:**
+
+| Method | Description |
+|--------|-------------|
+| `add()` | Add a message, returns message_id |
+| `update()` | Update existing message by ID |
+| `retrieve_all()` | Get all messages as dicts |
+| `retrieve_recent(n)` | Get last n messages as dicts |
+| `get_messages()` | Get messages for LLM consumption |
+| `retrieve_by_id()` | Get message by ID |
+| `retrieve_by_role()` | Filter by role |
+| `remove_by_id()` | Delete message by ID |
+| `reset_memory()` | Clear all messages (keeps system prompt) |
+
+### ManagedConversationMemory
+
+Advanced memory with automatic token management:
+
+```python
+from marsys.agents.memory import ManagedConversationMemory, ManagedMemoryConfig
+
+config = ManagedMemoryConfig(
+    max_total_tokens_trigger=150000,  # When to engage context management
+    target_total_tokens=100000,        # Target after pruning
+    image_token_estimate=800
+)
+
+memory = ManagedConversationMemory(config=config)
+
+# Usage is identical to ConversationMemory
+memory.add(role="user", content="Hello")
+messages = memory.get_messages()  # Returns curated context within token budget
+```
+
+### KGMemory
+
+Knowledge graph memory that extracts facts from text:
+
+```python
+from marsys.agents.memory import KGMemory
+
+# Requires a model for fact extraction
+memory = KGMemory(model=your_model, description="Initial context")
+
+# Add facts directly
+memory.add_fact(role="user", subject="Paris", predicate="is capital of", obj="France")
+
+# Or add text and extract facts automatically
+memory.add(role="user", content="The Eiffel Tower is in Paris.")
+# Facts are extracted asynchronously using the model
 ```
 
 ### MemoryManager
 
-Manages memory lifecycle and policies:
+Factory class that creates the appropriate memory type:
 
 ```python
 from marsys.agents.memory import MemoryManager
 
-class MemoryManager:
-    def __init__(
-        self,
-        retention_policy: str = "session",  # single_run, session, persistent
-        max_messages: Optional[int] = None,
-        auto_summarize: bool = False,
-        summarize_threshold: int = 100
-    ):
-        self.memory = ConversationMemory()
-        self.retention_policy = retention_policy
-        self.max_messages = max_messages
-        self.auto_summarize = auto_summarize
+# Create ConversationMemory
+manager = MemoryManager(
+    memory_type="conversation_history",
+    description="System prompt"
+)
 
-    def get_memory(self, agent_name: str) -> ConversationMemory:
-        """Get or create memory for agent"""
-        if agent_name not in self.agent_memories:
-            self.agent_memories[agent_name] = ConversationMemory()
-        return self.agent_memories[agent_name]
+# Create ManagedConversationMemory
+manager = MemoryManager(
+    memory_type="managed_conversation",
+    description="System prompt",
+    memory_config=ManagedMemoryConfig(...)
+)
 
-    def apply_retention_policy(self) -> None:
-        """Apply configured retention policy"""
-        if self.retention_policy == "single_run":
-            self.memory.clear()
-        elif self.retention_policy == "session":
-            # Maintained for workflow duration
-            pass
-        elif self.retention_policy == "persistent":
-            self.save_to_disk()
+# Create KGMemory
+manager = MemoryManager(
+    memory_type="kg",
+    description="System prompt",
+    model=your_model  # Required for KG
+)
+
+# Use like the underlying memory type
+manager.add(role="user", content="Hello")
+messages = manager.get_messages()
+
+# Save/load for persistence
+manager.save_to_file("memory.json")
+manager.load_from_file("memory.json")
 ```
 
-## 🔄 Memory Flow
 
-### 1. Message Addition
+## Message Addition Examples
 
 ```python
+from marsys.agents.memory import ConversationMemory
+
+memory = ConversationMemory()
+
 # User input
-memory.add_message(Message(
-    role="user",
-    content="Analyze the quarterly sales data",
-    message_id=generate_id()
-))
+memory.add(role="user", content="Analyze the quarterly sales data")
 
 # Agent response
-memory.add_message(Message(
-    role="assistant",
-    content="I'll analyze the quarterly sales data for you.",
-    message_id=generate_id()
-))
+memory.add(role="assistant", content="I'll analyze the data for you.")
 
-# Tool call
-memory.add_message(Message(
+# Tool call (assistant requesting a tool)
+memory.add(
     role="assistant",
-    content="",
+    content=None,
     tool_calls=[{
         "id": "call_123",
         "type": "function",
@@ -182,401 +182,68 @@ memory.add_message(Message(
             "name": "analyze_sales",
             "arguments": '{"quarter": "Q4"}'
         }
-    }],
-    message_id=generate_id()
-))
+    }]
+)
 
 # Tool result
-memory.add_message(Message(
+memory.add(
     role="tool",
     content='{"total_sales": 1500000, "growth": "15%"}',
     tool_call_id="call_123",
-    name="analyze_sales",
-    message_id=generate_id()
-))
-```
-
-### 2. Memory Retrieval
-
-```python
-# Get all messages
-all_messages = memory.get_messages()
-
-# Get recent context
-recent_context = memory.get_recent(10)
-
-# Get messages for LLM
-llm_messages = memory.to_llm_format()
-# Automatically handles role transformations:
-# - agent_call → user (with [Agent X] prefix)
-# - agent_response → assistant
-# - tool results properly formatted
-```
-
-### 3. Memory Processing
-
-```python
-# Input processor: LLM response → Message
-def process_llm_response(response: Dict) -> Message:
-    if "tool_calls" in response:
-        return Message(
-            role="assistant",
-            content=response.get("content", ""),
-            tool_calls=response["tool_calls"]
-        )
-    return Message(
-        role="assistant",
-        content=response["content"]
-    )
-
-# Output processor: Message → LLM format
-def process_for_llm(message: Message) -> Dict:
-    if message.role == "agent_call":
-        # Transform to user message with agent context
-        return {
-            "role": "user",
-            "content": f"[Request from {message.metadata.get('caller')}]: {message.content}"
-        }
-    return message.to_llm_dict()
-```
-
-## 🎯 Memory Patterns
-
-### Episodic Memory
-
-Organize memory into logical episodes:
-
-```python
-class EpisodicMemory:
-    def __init__(self):
-        self.episodes: List[ConversationMemory] = []
-        self.current_episode = ConversationMemory()
-        self.episode_metadata: List[Dict] = []
-
-    def start_new_episode(self, metadata: Dict = None):
-        """Begin a new episode"""
-        if self.current_episode.messages:
-            self.episodes.append(self.current_episode)
-            self.episode_metadata.append(metadata or {})
-        self.current_episode = ConversationMemory()
-
-    def recall_episode(self, query: str) -> Optional[ConversationMemory]:
-        """Find episodes containing relevant information"""
-        for episode in self.episodes:
-            for msg in episode.get_messages():
-                if query.lower() in str(msg.content).lower():
-                    return episode
-        return None
-
-    def summarize_episodes(self) -> List[str]:
-        """Generate summaries of past episodes"""
-        summaries = []
-        for i, episode in enumerate(self.episodes):
-            messages = episode.get_messages()
-            summary = f"Episode {i+1}: {len(messages)} messages"
-            # Add first and last message preview
-            if messages:
-                summary += f"\nStarted: {messages[0].content[:50]}..."
-                summary += f"\nEnded: {messages[-1].content[:50]}..."
-            summaries.append(summary)
-        return summaries
-```
-
-### Shared Memory
-
-Enable cross-agent knowledge sharing:
-
-```python
-class SharedMemoryPool:
-    def __init__(self):
-        self.global_memory = ConversationMemory()
-        self.agent_memories: Dict[str, ConversationMemory] = {}
-        self.shared_insights: List[Message] = []
-
-    def share_insight(self, agent_name: str, insight: str):
-        """Share an insight with all agents"""
-        message = Message(
-            role="system",
-            content=f"[Shared by {agent_name}]: {insight}",
-            metadata={"shared": True, "source": agent_name}
-        )
-        self.shared_insights.append(message)
-
-    def get_shared_context(self) -> List[Message]:
-        """Get shared insights for all agents"""
-        return self.shared_insights.copy()
-
-    def broadcast_message(self, message: Message):
-        """Broadcast message to all agent memories"""
-        for agent_memory in self.agent_memories.values():
-            agent_memory.add_message(message)
-```
-
-### Hierarchical Memory
-
-Organize memory by importance levels:
-
-```python
-class HierarchicalMemory:
-    def __init__(self):
-        self.core_memory = ConversationMemory()  # Critical info
-        self.working_memory = ConversationMemory()  # Current context
-        self.episodic_memory = ConversationMemory()  # Past events
-        self.importance_threshold = 0.7
-
-    def add_message_with_importance(self, message: Message, importance: float):
-        """Add message to appropriate memory level"""
-        if importance >= self.importance_threshold:
-            self.core_memory.add_message(message)
-        self.working_memory.add_message(message)
-
-        # Move old working memory to episodic
-        if len(self.working_memory.messages) > 50:
-            old_messages = self.working_memory.messages[:25]
-            for msg in old_messages:
-                self.episodic_memory.add_message(msg)
-            self.working_memory.messages = self.working_memory.messages[25:]
-
-    def get_context_for_llm(self) -> List[Dict]:
-        """Combine memories for LLM context"""
-        context = []
-        # Always include core memory
-        context.extend(self.core_memory.to_llm_format())
-        # Add working memory
-        context.extend(self.working_memory.to_llm_format())
-        return context
-```
-
-## 🔧 Memory Management
-
-### Token Limit Management
-
-```python
-def manage_token_limit(
-    memory: ConversationMemory,
-    max_tokens: int = 4000,
-    preserve_system: bool = True
-) -> List[Message]:
-    """Keep memory within token limits"""
-    messages = memory.get_messages()
-
-    # Separate system messages
-    system_msgs = [m for m in messages if m.role == "system"]
-    other_msgs = [m for m in messages if m.role != "system"]
-
-    # Estimate tokens (rough approximation)
-    def estimate_tokens(text: str) -> int:
-        return len(text) // 4  # Rough estimate
-
-    result = system_msgs if preserve_system else []
-    token_count = sum(estimate_tokens(str(m.content)) for m in result)
-
-    # Add messages from most recent
-    for msg in reversed(other_msgs):
-        msg_tokens = estimate_tokens(str(msg.content))
-        if token_count + msg_tokens > max_tokens:
-            break
-        result.insert(len(system_msgs), msg)
-        token_count += msg_tokens
-
-    return result
-```
-
-### Memory Summarization
-
-```python
-async def summarize_memory(
-    memory: ConversationMemory,
-    summarizer_agent: Agent,
-    chunk_size: int = 20
-) -> str:
-    """Summarize long conversation history"""
-    messages = memory.get_messages()
-
-    if len(messages) <= chunk_size:
-        return ""  # No need to summarize
-
-    # Get messages to summarize
-    to_summarize = messages[:-chunk_size]  # Keep recent messages intact
-
-    # Create summary prompt
-    conversation_text = "\n".join([
-        f"{msg.role}: {msg.content}"
-        for msg in to_summarize
-    ])
-
-    summary_prompt = f"""
-    Summarize this conversation, preserving key information:
-
-    {conversation_text}
-
-    Provide a concise summary focusing on:
-    1. Main topics discussed
-    2. Key decisions made
-    3. Important facts mentioned
-    """
-
-    summary = await summarizer_agent.run(summary_prompt)
-
-    # Replace old messages with summary
-    memory.clear()
-    memory.add_message(Message(
-        role="system",
-        content=f"Previous conversation summary: {summary.content}"
-    ))
-
-    # Add back recent messages
-    for msg in messages[-chunk_size:]:
-        memory.add_message(msg)
-
-    return summary.content
-```
-
-## 📋 Best Practices
-
-### 1. **Preserve Message IDs**
-
-```python
-# ✅ GOOD - Maintain IDs for tracking
-message = Message(
-    role="user",
-    content="Hello",
-    message_id=generate_unique_id()
+    name="analyze_sales"
 )
-memory.add_message(message)
-
-# Reference later
-related_message = Message(
-    role="assistant",
-    content="Response",
-    metadata={"in_reply_to": message.message_id}
-)
-
-# ❌ BAD - No tracking
-memory.add_message(Message(role="user", content="Hello"))
 ```
 
-### 2. **Use Appropriate Retention**
+
+## Best Practices
+
+### 1. Use Correct Methods
 
 ```python
-# ✅ GOOD - Match retention to use case
-# Short task
-quick_agent = Agent(memory_retention="single_run")
+# CORRECT
+memory.add(role="user", content="Hello")
+messages = memory.retrieve_all()
+memory.reset_memory()
 
-# Workflow that needs context
-workflow_agent = Agent(memory_retention="session")
-
-# Long-term assistant
-persistent_agent = Agent(memory_retention="persistent")
-
-# ❌ BAD - Wrong retention
-long_research_agent = Agent(memory_retention="single_run")  # Loses context!
+# WRONG - these methods don't exist
+# memory.add_message(...)
+# memory.get_recent(...)
+# memory.clear()
 ```
 
-### 3. **Handle Tool Results Properly**
+### 2. Handle Tool Results Properly
 
 ```python
-# ✅ GOOD - Proper tool result handling
-# Tool call
-memory.add_message(Message(
-    role="assistant",
-    tool_calls=[{...}],
-    message_id="msg_1"
-))
-
-# Tool result with reference
-memory.add_message(Message(
+# CORRECT - Link tool result to tool call
+memory.add(
     role="tool",
     content=result,
     tool_call_id="call_123",
     name="tool_name"
-))
+)
 
-# ❌ BAD - No association
-memory.add_message(Message(role="tool", content=result))
+# WRONG - No association
+memory.add(role="tool", content=result)
 ```
 
-### 4. **Monitor Memory Size**
+### 3. Use ManagedConversationMemory for Long Conversations
+
+For conversations that may exceed token limits:
 
 ```python
-# ✅ GOOD - Active memory management
-class ManagedMemoryAgent(Agent):
-    def __init__(self, max_memory_size=100, **kwargs):
-        super().__init__(**kwargs)
-        self.max_memory_size = max_memory_size
+from marsys.agents.memory import MemoryManager, ManagedMemoryConfig
 
-    async def _run(self, prompt, context, **kwargs):
-        # Check memory size
-        if len(self.memory.messages) > self.max_memory_size:
-            # Summarize or prune old messages
-            await self._compress_memory()
-
-        return await super()._run(prompt, context, **kwargs)
+manager = MemoryManager(
+    memory_type="managed_conversation",
+    memory_config=ManagedMemoryConfig(
+        max_total_tokens_trigger=100000,
+        target_total_tokens=80000
+    )
+)
 ```
 
-## 🎯 Common Patterns
 
-### Multi-Agent Memory Coordination
-
-```python
-class CoordinatedMemorySystem:
-    def __init__(self):
-        self.agent_memories: Dict[str, ConversationMemory] = {}
-        self.shared_facts = ConversationMemory()
-
-    def register_fact(self, agent_name: str, fact: str):
-        """Register a fact discovered by an agent"""
-        self.shared_facts.add_message(Message(
-            role="system",
-            content=fact,
-            metadata={"discovered_by": agent_name}
-        ))
-
-    def get_agent_context(self, agent_name: str) -> List[Message]:
-        """Get context including shared facts"""
-        context = []
-        # Add shared facts
-        context.extend(self.shared_facts.get_messages())
-        # Add agent-specific memory
-        if agent_name in self.agent_memories:
-            context.extend(self.agent_memories[agent_name].get_messages())
-        return context
-```
-
-### Retrieval-Augmented Memory
-
-```python
-class RAGMemory:
-    def __init__(self, embedding_model):
-        self.memory = ConversationMemory()
-        self.embedding_model = embedding_model
-        self.embeddings: List[np.ndarray] = []
-
-    async def add_with_embedding(self, message: Message):
-        """Add message with embedding for later retrieval"""
-        self.memory.add_message(message)
-        embedding = await self.embedding_model.embed(str(message.content))
-        self.embeddings.append(embedding)
-
-    async def retrieve_relevant(self, query: str, k: int = 5) -> List[Message]:
-        """Retrieve k most relevant messages"""
-        query_embedding = await self.embedding_model.embed(query)
-
-        # Calculate similarities
-        similarities = [
-            cosine_similarity(query_embedding, emb)
-            for emb in self.embeddings
-        ]
-
-        # Get top k indices
-        top_indices = np.argsort(similarities)[-k:][::-1]
-
-        # Return corresponding messages
-        all_messages = self.memory.get_messages()
-        return [all_messages[i] for i in top_indices]
-```
-
-## 🚦 Next Steps
+## Next Steps
 
 <div class="grid cards" markdown="1">
 
@@ -585,12 +252,6 @@ class RAGMemory:
     ---
 
     Understand message types and formats
-
-- :material-brain:{ .lg .middle } **[Memory Patterns](memory-patterns.md)**
-
-    ---
-
-    Advanced memory strategies and patterns
 
 - :material-robot:{ .lg .middle } **[Agents](agents.md)**
 
@@ -608,5 +269,5 @@ class RAGMemory:
 
 ---
 
-!!! success "Memory System Ready!"
-    You now understand how MARSYS manages agent memory. Proper memory management is key to building coherent, context-aware multi-agent systems.
+!!! success "Memory System"
+    MARSYS provides ConversationMemory for basic needs, ManagedConversationMemory for automatic token management, and KGMemory for knowledge graphs.

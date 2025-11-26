@@ -24,8 +24,8 @@ ExecutionConfig(
     convergence_timeout: float = 300.0,
     branch_timeout: float = 600.0,
     agent_acquisition_timeout: float = 240.0,
-    step_timeout: float = 300.0,
-    tool_execution_timeout: float = 60.0,
+    step_timeout: float = 600.0,
+    tool_execution_timeout: float = 120.0,
     user_interaction_timeout: float = 300.0,
 
     # Convergence behavior
@@ -34,7 +34,7 @@ ExecutionConfig(
     auto_detect_convergence: bool = True,
 
     # Steering
-    steering_mode: Literal["auto", "always", "never"] = "auto",
+    steering_mode: Literal["auto", "always", "error"] = "error",
 
     # User interaction
     user_first: bool = False,
@@ -57,13 +57,13 @@ ExecutionConfig(
 | `convergence_timeout` | `float` | Max wait at convergence points (seconds) | `300.0` |
 | `branch_timeout` | `float` | Overall branch execution timeout | `600.0` |
 | `agent_acquisition_timeout` | `float` | Timeout for acquiring from pool | `240.0` |
-| `step_timeout` | `float` | Individual step timeout | `300.0` |
-| `tool_execution_timeout` | `float` | Tool call timeout | `60.0` |
+| `step_timeout` | `float` | Individual step timeout | `600.0` |
+| `tool_execution_timeout` | `float` | Tool call timeout | `120.0` |
 | `user_interaction_timeout` | `float` | User input timeout | `300.0` |
 | `dynamic_convergence_enabled` | `bool` | Enable runtime convergence detection | `True` |
 | `parent_completes_on_spawn` | `bool` | Parent completes when spawning children | `True` |
 | `auto_detect_convergence` | `bool` | Automatic convergence point detection | `True` |
-| `steering_mode` | `str` | Retry guidance mode | `"auto"` |
+| `steering_mode` | `str` | Retry guidance mode (`auto`, `always`, `error`) | `"error"` |
 | `user_first` | `bool` | Show message to user before task | `False` |
 | `initial_user_msg` | `str` | Custom initial message for user | `None` |
 | `user_interaction` | `str` | User interaction type | `"terminal"` |
@@ -420,7 +420,7 @@ def create_test_config() -> ExecutionConfig:
         status=StatusConfig.from_verbosity(1),
         step_timeout=5.0,
         convergence_timeout=10.0,
-        steering_mode="never"
+        steering_mode="error"
     )
 ```
 

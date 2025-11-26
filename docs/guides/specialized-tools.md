@@ -110,35 +110,45 @@ except ValueError as e:
 
 ---
 
-### [BrowserTools](browser-tools.md)
+### BrowserAgent
 
-Browser automation and control with Playwright integration.
+Browser automation through the BrowserAgent class with Playwright integration.
 
 **Capabilities**: Navigate, click, type, screenshot, JavaScript execution, element extraction
 
 **Key Features**:
-- Multi-mode operation (basic, CDP, stealth, vision)
-- Vision-based interaction (no selectors)
-- Auto-screenshot management
-- Console monitoring
-- Cookie/storage management
+- Two modes: PRIMITIVE (content extraction) and ADVANCED (visual interaction)
+- Vision-based interaction with auto-screenshot
+- Built-in browser tools
 
 ```python
-from marsys.environment.browser_tools import BrowserTools
+from marsys.agents import BrowserAgent
+from marsys.models import ModelConfig
 
-browser_tools = BrowserTools(
-    mode="vision",
-    headless=True,
-    timeout=30
+# Create BrowserAgent with built-in browser tools
+browser_agent = await BrowserAgent.create_safe(
+    model_config=ModelConfig(
+        type="api",
+        provider="openrouter",
+        name="anthropic/claude-haiku-4.5",
+        temperature=0.3
+    ),
+    name="web_scraper",
+    mode="primitive",  # or "advanced" for visual interaction
+    goal="Web automation agent",
+    headless=True
 )
 
-# Get tools dict for agent
-tools = await browser_tools.get_tools()
+# Browser tools are automatically available to the agent
+result = await browser_agent.run("Navigate to example.com and extract content")
+
+# Always cleanup
+await browser_agent.cleanup()
 ```
 
-**Use with**: BrowserAgent, or custom agents needing web automation
+**Note**: Browser tools are accessed through BrowserAgent, not a separate BrowserTools class.
 
-[**Read Full Documentation →**](browser-tools.md)
+[**See BrowserAgent Documentation →**](../concepts/browser-automation.md)
 
 ---
 

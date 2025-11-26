@@ -155,13 +155,24 @@ Real-time market analysis and reporting.
 
 ```python
 from marsys.agents import Agent, AgentPool
+from marsys.models import ModelConfig
+
+# Create model config
+config = ModelConfig(
+    type="api",
+    provider="openrouter",
+    name="anthropic/claude-haiku-4.5",
+    temperature=0.3
+)
 
 # Create pool for parallel analysis
-analyst_pool = AgentPool(
-    agent_class=FinancialAnalyst,
+analyst_pool = await AgentPool.create_async(
+    agent_class=Agent,
     num_instances=5,
     model_config=config,
-    name="AnalystPool"
+    goal="Analyze financial markets and trends",
+    instruction="You are a financial analyst. Analyze market data and provide insights.",
+    name="FinancialAnalyst"
 )
 
 topology = {

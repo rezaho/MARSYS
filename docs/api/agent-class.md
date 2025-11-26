@@ -168,32 +168,36 @@ class Agent(BaseAgent):
     def __init__(
         self,
         model_config: ModelConfig,
-        agent_name: Optional[str] = None,
-        description: str = "A helpful AI assistant",
-        system_prompt: Optional[str] = None,
-        tools: Optional[Union[List[Callable], Dict[str, Callable]]] = None,
-        max_tokens: int = 2048,
+        goal: str,
+        instruction: str,
+        tools: Optional[Dict[str, Callable[..., Any]]] = None,
+        memory_type: Optional[str] = "conversation_history",
+        max_tokens: Optional[int] = None,
+        name: Optional[str] = None,
         allowed_peers: Optional[List[str]] = None,
-        memory_retention: str = "session",
+        bidirectional_peers: bool = False,
         input_schema: Optional[Any] = None,
         output_schema: Optional[Any] = None,
-        **kwargs
+        memory_retention: str = "session",
+        memory_storage_path: Optional[str] = None
     ):
         """
         Initialize agent with model configuration.
 
         Args:
             model_config: ModelConfig instance
-            agent_name: Unique identifier
-            description: Agent role description
-            system_prompt: System instruction override
-            tools: Available tool functions
-            max_tokens: Maximum response tokens
-            allowed_peers: Invokable agent names
-            memory_retention: Memory persistence policy
+            goal: 1-2 sentence summary of what this agent accomplishes
+            instruction: Detailed instructions on how the agent should behave
+            tools: Dictionary of tool functions
+            memory_type: Type of memory module to use
+            max_tokens: Maximum response tokens (None uses ModelConfig default)
+            name: Unique identifier for registration
+            allowed_peers: List of agent names this agent can invoke
+            bidirectional_peers: If True, creates bidirectional edges with allowed_peers
             input_schema: Input validation schema
             output_schema: Output validation schema
-            **kwargs: Additional model parameters
+            memory_retention: Memory persistence policy (single_run, session, persistent)
+            memory_storage_path: Path for persistent memory storage
         """
 ```
 
@@ -235,9 +239,11 @@ async def auto_run(
     """
 ```
 
-#### `invoke_agent(agent_name, task, context=None)`
+#### `invoke_agent(agent_name, task, context=None)` ⚠️ DEPRECATED
 
-Invoke another agent for task delegation.
+!!! warning "Deprecated Method"
+    This method is **DEPRECATED**. Agents should not directly invoke other agents.
+    Use Orchestra with topology-based agent coordination instead.
 
 ```python
 async def invoke_agent(
@@ -247,7 +253,10 @@ async def invoke_agent(
     context: Optional[RequestContext] = None
 ) -> Message:
     """
-    Invoke another agent to perform a task.
+    DEPRECATED: Invoke another agent to perform a task.
+
+    This method raises DeprecationWarning. Use Orchestra.run()
+    with proper topology configuration for multi-agent coordination.
 
     Args:
         agent_name: Name of agent to invoke
@@ -258,14 +267,7 @@ async def invoke_agent(
         Response from invoked agent
 
     Raises:
-        AgentPermissionError: If not allowed to invoke agent
-        AgentNotFoundError: If agent doesn't exist
-
-    Example:
-        result = await coordinator.invoke_agent(
-            "researcher",
-            "Find information about quantum computing"
-        )
+        DeprecationWarning: Always raised - use Orchestra instead
     """
 ```
 
@@ -296,11 +298,10 @@ def calculate(expression: str) -> float:
 
 calculator = Agent(
     model_config=config,
-    name="calculator",
     goal="Perform mathematical calculations accurately",
-    instruction="Mathematical calculation specialist who uses tools for precise computations",
-    tools=[calculate],
-    instruction="You are a precise calculator. Always use the calculate tool for math."
+    instruction="You are a precise calculator. Always use the calculate tool for math.",
+    tools={"calculate": calculate},
+    name="calculator"
 )
 
 # Multi-agent coordinator
@@ -329,11 +330,13 @@ class BrowserAgent(Agent):
     def __init__(
         self,
         model_config: ModelConfig,
-        agent_name: Optional[str] = None,
-        description: str = "Web automation specialist",
-        headless_browser: bool = True,
-        temp_dir: str = "./tmp/screenshots",
-        viewport_size: Tuple[int, int] = (1920, 1080),
+        name: str,
+        goal: Optional[str] = None,
+        instruction: Optional[str] = None,
+        headless: bool = True,
+        tmp_dir: Optional[str] = None,
+        viewport_width: int = 1920,
+        viewport_height: int = 1080,
         **kwargs
     ):
         """
@@ -341,11 +344,13 @@ class BrowserAgent(Agent):
 
         Args:
             model_config: Model configuration
-            agent_name: Unique identifier
-            description: Agent role
-            headless_browser: Run without UI
-            temp_dir: Screenshot directory
-            viewport_size: Browser viewport dimensions
+            name: Unique identifier
+            goal: Agent's purpose (defaults to web automation)
+            instruction: Detailed behavior instructions
+            headless: Run without UI
+            tmp_dir: Directory for screenshots
+            viewport_width: Browser viewport width
+            viewport_height: Browser viewport height
             **kwargs: Additional parameters
         """
 ```
@@ -357,8 +362,11 @@ class BrowserAgent(Agent):
 async def create_safe(
     cls,
     model_config: ModelConfig,
-    agent_name: Optional[str] = None,
-    headless_browser: bool = True,
+    name: str,
+    goal: Optional[str] = None,
+    instruction: Optional[str] = None,
+    headless: bool = True,
+    tmp_dir: Optional[str] = None,
     **kwargs
 ) -> "BrowserAgent":
     """
@@ -371,7 +379,7 @@ async def create_safe(
         browser = await BrowserAgent.create_safe(
             model_config=config,
             name="web_scraper",
-            headless_browser=True
+            headless=True
         )
     """
 ```
@@ -412,7 +420,7 @@ await browser.browser_tool.close_browser()
 browser_agent = await BrowserAgent.create_safe(
     model_config=config,
     name="scraper",
-    headless_browser=True
+    headless=True
 )
 
 try:
@@ -518,7 +526,7 @@ browser_pool = AgentPool(
     num_instances=3,
     model_config=config,
     name="BrowserPool",
-    headless_browser=True
+    headless=True
 )
 
 # Parallel scraping
@@ -593,8 +601,7 @@ class AnalysisAgent(BaseAgent):
         # Return pure Message
         return Message(
             role="assistant",
-            content=response["content"],
-            metadata={"analysis_type": analysis_type}
+            content=response["content"]
         )
 
     async def analyze_dataset(
@@ -613,8 +620,7 @@ class AnalysisAgent(BaseAgent):
         # Parse and structure results
         return {
             "method": method,
-            "results": result.content,
-            "timestamp": result.timestamp
+            "results": result.content
         }
 ```
 
