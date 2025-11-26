@@ -47,9 +47,9 @@ uv pip install marsys
 pip install marsys
 ```
 
-### 3. Configure API Keys (Required)
+### 3. Configure API Keys (Required for API Models)
 
-**⚠️ This is required before running any examples!**
+**⚠️ This is required if you are using API models to run the agents!**
 
 Create a `.env` file in your project directory:
 
@@ -101,7 +101,7 @@ async def main():
     poet = Agent(
         model_config=ModelConfig(
             type="api",
-            name="anthropic/claude-haiku-4.5",
+            name="anthropic/claude-sonnet-4.5",
             provider="openrouter"
         ),
         name="Poet",

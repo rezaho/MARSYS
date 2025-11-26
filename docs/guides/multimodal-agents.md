@@ -30,9 +30,9 @@ from marsys.models import ModelConfig
 vision_agent = Agent(
     model_config=ModelConfig(
         type="api",
-        name="gpt-5",
-        provider="openai",
-        api_key=os.getenv("OPENAI_API_KEY")
+        name="anthropic/claude-sonnet-4.5",
+        provider="openrouter",
+        api_key=os.getenv("OPENROUTER_API_KEY")
     ),
     name="VisionAnalyst",
     goal="Expert at analyzing visual content",
@@ -56,12 +56,12 @@ print(result.final_response)
 ```python
 from marsys.models import ModelConfig
 
-# OpenAI model with vision
-openai_config = ModelConfig(
+# OpenRouter with Claude Sonnet for vision
+claude_config = ModelConfig(
     type="api",
-    name="gpt-5",
-    provider="openai",
-    api_key=os.getenv("OPENAI_API_KEY"),
+    name="anthropic/claude-sonnet-4.5",
+    provider="openrouter",
+    api_key=os.getenv("OPENROUTER_API_KEY"),
     temperature=0.7,
     max_tokens=2000
 )
@@ -310,9 +310,9 @@ from marsys.models import ModelConfig
 ui_analyst = Agent(
     model_config=ModelConfig(
         type="api",
-        name="gpt-5",
-        provider="openai",
-        api_key=os.getenv("OPENAI_API_KEY")
+        name="anthropic/claude-sonnet-4.5",
+        provider="openrouter",
+        api_key=os.getenv("OPENROUTER_API_KEY")
     ),
     name="UIAnalyst",
     goal="Expert at analyzing user interfaces",
@@ -355,9 +355,9 @@ def tool_read_file(file_path: str) -> Dict[str, Any]:
 coordinator = Agent(
     model_config=ModelConfig(
         type="api",
-        name="gpt-5",
-        provider="openai",
-        api_key=os.getenv("OPENAI_API_KEY")
+        name="anthropic/claude-sonnet-4.5",
+        provider="openrouter",
+        api_key=os.getenv("OPENROUTER_API_KEY")
     ),
     name="Coordinator",
     goal="Coordinates document analysis",
@@ -368,9 +368,9 @@ coordinator = Agent(
 analyst = Agent(
     model_config=ModelConfig(
         type="api",
-        name="gpt-5",
-        provider="openai",
-        api_key=os.getenv("OPENAI_API_KEY")
+        name="anthropic/claude-sonnet-4.5",
+        provider="openrouter",
+        api_key=os.getenv("OPENROUTER_API_KEY")
     ),
     name="DocumentAnalyst",
     goal="Analyzes document content",
@@ -409,9 +409,9 @@ def tool_read_gaia_file(file_path: str) -> Dict[str, Any]:
 researcher = Agent(
     model_config=ModelConfig(
         type="api",
-        name="gpt-5",
-        provider="openai",
-        api_key=os.getenv("OPENAI_API_KEY"),
+        name="anthropic/claude-sonnet-4.5",
+        provider="openrouter",
+        api_key=os.getenv("OPENROUTER_API_KEY"),
         temperature=0.0  # Deterministic for benchmarks
     ),
     name="GaiaResearcher",
@@ -443,9 +443,9 @@ from marsys.coordination.topology.patterns import PatternConfig
 image_captioner = Agent(
     model_config=ModelConfig(
         type="api",
-        name="gpt-5",
-        provider="openai",
-        api_key=os.getenv("OPENAI_API_KEY")
+        name="anthropic/claude-sonnet-4.5",
+        provider="openrouter",
+        api_key=os.getenv("OPENROUTER_API_KEY")
     ),
     name="Captioner",
     goal="Creates detailed image captions",
@@ -479,9 +479,9 @@ scene_analyzer = Agent(
 synthesizer = Agent(
     model_config=ModelConfig(
         type="api",
-        name="gpt-5",
-        provider="openai",
-        api_key=os.getenv("OPENAI_API_KEY")
+        name="anthropic/claude-sonnet-4.5",
+        provider="openrouter",
+        api_key=os.getenv("OPENROUTER_API_KEY")
     ),
     name="Synthesizer",
     goal="Synthesizes analysis from specialists",

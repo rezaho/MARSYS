@@ -66,8 +66,8 @@ from marsys.models import ModelConfig
 # Configure the model
 model_config = ModelConfig(
     type="api",
-    name="gpt-5",
-    provider="openai"
+    name="anthropic/claude-sonnet-4.5",
+    provider="openrouter"
 )
 
 # Create agents with allowed_peers
@@ -111,7 +111,7 @@ from marsys.agents import Agent
 from marsys.models import ModelConfig
 
 # Create the same agents
-model_config = ModelConfig(type="api", name="gpt-5", provider="openai")
+model_config = ModelConfig(type="api", name="anthropic/claude-sonnet-4.5", provider="openrouter")
 
 researcher = Agent(
     model_config=model_config,
@@ -158,7 +158,7 @@ from marsys.agents import Agent
 from marsys.models import ModelConfig
 
 # Create the same agents
-model_config = ModelConfig(type="api", name="gpt-5", provider="openai")
+model_config = ModelConfig(type="api", name="anthropic/claude-sonnet-4.5", provider="openrouter")
 
 researcher = Agent(
     model_config=model_config,
@@ -225,7 +225,7 @@ from marsys.agents import Agent
 from marsys.models import ModelConfig
 
 # Create the same agents
-model_config = ModelConfig(type="api", name="gpt-5", provider="openai")
+model_config = ModelConfig(type="api", name="anthropic/claude-sonnet-4.5", provider="openrouter")
 
 researcher = Agent(
     model_config=model_config,

@@ -353,7 +353,7 @@ agent = Agent(
     model_config=ModelConfig(
         type="api",
         provider="openrouter",
-        name="openai/gpt-5",
+        name="anthropic/claude-sonnet-4.5",
         parameters={"response_format": {"type": "json_object"}}
     ),
     name="StructuredAgent",
@@ -412,10 +412,10 @@ stream_config = ModelConfig(
 premium_config = ModelConfig(
     type="api",
     provider="openrouter",
-    name="openai/gpt-5",
+    name="anthropic/claude-sonnet-4.5",
     temperature=0.3,
     max_tokens=12000,
-    parameters={"reasoning_effort": "high"}
+    thinking_budget=4096  # Enable extended thinking for complex reasoning
 )
 
 # Balance of cost and performance
@@ -523,7 +523,7 @@ creative_config = ModelConfig(
 # Analytical tasks
 analytical_config = ModelConfig(
     provider="openrouter",
-    name="openai/gpt-5",
+    name="anthropic/claude-sonnet-4.5",
     temperature=0.2  # Lower for consistency
 )
 
@@ -570,7 +570,7 @@ class ModelWithFallback:
         self.primary = ModelConfig(
             type="api",
             provider="openrouter",
-            name="openai/gpt-5"
+            name="anthropic/claude-sonnet-4.5"
         )
         self.fallback = ModelConfig(
             type="api",
@@ -609,9 +609,9 @@ class ModelPool:
 
 # Create pool
 pool = ModelPool([
-    ModelConfig(provider="openrouter", name="openai/gpt-5", max_tokens=12000),
     ModelConfig(provider="openrouter", name="anthropic/claude-sonnet-4.5", max_tokens=12000),
-    ModelConfig(provider="openrouter", name="google/gemini-2.5-pro", max_tokens=12000)
+    ModelConfig(provider="openrouter", name="anthropic/claude-haiku-4.5", max_tokens=12000),
+    ModelConfig(provider="openrouter", name="google/gemini-2.5-flash", max_tokens=12000)
 ])
 ```
 
