@@ -21,78 +21,88 @@ class ModelConfig(BaseModel):
 
     # Core settings
     type: Literal["local", "api"] = Field(
-        goal="Model type - local or API-based"
+        description="Model type - local or API-based"
     )
     name: str = Field(
-        goal="Model identifier or HuggingFace path"
+        description="Model identifier or HuggingFace path"
     )
 
     # API settings
     provider: Optional[str] = Field(
         default=None,
-        goal="API provider (openai, anthropic, google, groq)"
+        description="API provider (openai, anthropic, google, openrouter, groq)"
     )
     base_url: Optional[str] = Field(
         default=None,
-        goal="Custom API endpoint URL"
+        description="Custom API endpoint URL"
     )
     api_key: Optional[str] = Field(
         default=None,
-        goal="API key (auto-loaded from env if None)"
+        description="API key (auto-loaded from env if None)"
     )
 
     # Generation parameters
     max_tokens: int = Field(
-        default=1024,
-        goal="Maximum output tokens"
+        default=8192,
+        description="Maximum output tokens"
     )
     temperature: float = Field(
         default=0.7,
         ge=0.0,
         le=2.0,
-        goal="Sampling temperature"
+        description="Sampling temperature"
     )
     top_p: float = Field(
         default=1.0,
         ge=0.0,
         le=1.0,
-        goal="Nucleus sampling parameter"
+        description="Nucleus sampling parameter"
     )
     frequency_penalty: float = Field(
         default=0.0,
         ge=-2.0,
         le=2.0,
-        goal="Frequency penalty"
+        description="Frequency penalty"
     )
     presence_penalty: float = Field(
         default=0.0,
         ge=-2.0,
         le=2.0,
-        goal="Presence penalty"
+        description="Presence penalty"
+    )
+
+    # Reasoning parameters
+    thinking_budget: Optional[int] = Field(
+        default=1024,
+        description="Token budget for extended thinking (models with thinking support)"
+    )
+    reasoning_effort: Optional[str] = Field(
+        default="low",
+        description="Reasoning effort level (low, medium, high)"
     )
 
     # Local model settings
     model_class: Optional[Literal["llm", "vlm"]] = Field(
         default=None,
-        goal="Local model class"
+        description="Local model class"
     )
     torch_dtype: str = Field(
         default="auto",
-        goal="PyTorch dtype (auto, float16, bfloat16, float32)"
+        description="PyTorch dtype (auto, float16, bfloat16, float32)"
     )
     device_map: str = Field(
         default="auto",
-        goal="Device mapping strategy"
+        description="Device mapping strategy"
     )
     quantization_config: Optional[Dict[str, Any]] = Field(
         default=None,
-        goal="Quantization configuration"
+        description="Quantization configuration"
     )
 
     # Additional parameters
     parameters: Dict[str, Any] = Field(
         default_factory=dict,
-        goal="Provider-specific parameters"
+        description="Provider-specific parameters"
     )
 ```
 

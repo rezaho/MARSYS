@@ -20,30 +20,29 @@ from marsys.coordination.validation import ValidationProcessor
 **Constructor:**
 ```python
 ValidationProcessor(
-    topology_graph: TopologyGraph,
-    error_classifier: Optional[ErrorClassifier] = None
+    topology_graph: TopologyGraph
 )
 ```
 
 **Key Methods:**
 
-#### validate_response
+#### process_response
 ```python
-async def validate_response(
-    response: Any,
-    agent_name: str,
-    allowed_agents: List[str],
-    branch: ExecutionBranch
+async def process_response(
+    raw_response: Any,
+    agent: BaseAgent,
+    branch: ExecutionBranch,
+    exec_state: ExecutionState
 ) -> ValidationResult
 ```
 
 **Parameters:**
 | Parameter | Type | Description | Default |
 |-----------|------|-------------|---------|
-| `response` | `Any` | Agent response to validate | Required |
-| `agent_name` | `str` | Name of responding agent | Required |
-| `allowed_agents` | `List[str]` | Agents allowed to be invoked | Required |
+| `raw_response` | `Any` | Agent response to validate | Required |
+| `agent` | `BaseAgent` | The responding agent instance | Required |
 | `branch` | `ExecutionBranch` | Current execution branch | Required |
+| `exec_state` | `ExecutionState` | Current execution state | Required |
 
 **Returns:** `ValidationResult` with parsed action and validation status
 
@@ -51,11 +50,11 @@ async def validate_response(
 ```python
 processor = ValidationProcessor(topology_graph)
 
-result = await processor.validate_response(
-    response={"next_action": "invoke_agent", "action_input": "Analyzer"},
-    name="Coordinator",
-    allowed_agents=["Analyzer", "Reporter"],
-    branch=current_branch
+result = await processor.process_response(
+    raw_response={"next_action": "invoke_agent", "action_input": "Analyzer"},
+    agent=coordinator_agent,
+    branch=current_branch,
+    exec_state=execution_state
 )
 
 if result.is_valid:
@@ -420,12 +419,12 @@ validation_processor.register_processor(CustomFormatProcessor())
 # 1. Receive agent response
 response = await agent.run(prompt)
 
-# 2. Validate response
-validation_result = await validation_processor.validate_response(
-    response=response,
-    name=agent.name,
-    allowed_agents=topology_graph.get_allowed_targets(agent.name),
-    branch=current_branch
+# 2. Process response
+validation_result = await validation_processor.process_response(
+    raw_response=response,
+    agent=agent,
+    branch=current_branch,
+    exec_state=execution_state
 )
 
 # 3. Route based on validation

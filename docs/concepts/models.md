@@ -79,21 +79,16 @@ class ModelConfig(BaseModel):
     base_url: Optional[str] = None          # Custom endpoint
 
     # Generation parameters
-    max_tokens: int = 1024                  # Maximum output tokens
+    max_tokens: int = 8192                  # Maximum output tokens
     temperature: float = 0.7                # Sampling temperature (0.0-2.0)
-    top_p: float = 1.0                      # Nucleus sampling
-    frequency_penalty: float = 0.0          # Repetition penalty
-    presence_penalty: float = 0.0           # Topic penalty
+    thinking_budget: Optional[int] = 1024   # Token budget for thinking (Gemini, Claude, Qwen)
+    reasoning_effort: Optional[str] = "low" # Reasoning level for OpenAI/Grok (minimal, low, medium, high)
 
     # Local model settings
     model_class: Optional[Literal["llm", "vlm"]] = None
-    model_path: Optional[str] = None        # Path to local model
-    device: str = "cuda"                    # cuda, cpu, mps
-    torch_dtype: str = "auto"               # float16, bfloat16, float32
+    torch_dtype: Optional[str] = "auto"     # PyTorch dtype (bfloat16, float16, auto)
+    device_map: Optional[str] = "auto"      # Device map (auto, cuda:0)
     quantization_config: Optional[Dict] = None
-
-    # Additional parameters
-    parameters: Dict[str, Any] = {}         # Provider-specific params
 ```
 
 ### Provider Configurations
@@ -180,7 +175,8 @@ agent = Agent(
         temperature=0.7
     ),
     name="Assistant",
-    goal="A helpful assistant"
+    goal="A helpful assistant",
+    instruction="You are a helpful AI assistant that provides clear, accurate responses."
 )
 
 # Agent uses model internally
@@ -204,7 +200,8 @@ vlm_config = ModelConfig(
 vision_agent = Agent(
     model_config=vlm_config,
     name="ImageAnalyzer",
-    goal="I analyze images and answer questions about them"
+    goal="Analyze images and answer questions about visual content",
+    instruction="You are an image analysis specialist. Describe and analyze visual content in detail."
 )
 
 # Process image
@@ -248,7 +245,7 @@ browser_agent = await BrowserAgent.create_safe(
         temperature=0,
         thinking_budget=0  # Disable thinking for faster vision responses
     ),
-    headless_browser=True
+    headless=True
 )
 ```
 
@@ -331,7 +328,9 @@ def calculate(expression: str) -> float:
 agent = Agent(
     model_config=gpt4_config,
     name="ToolUser",
-    tools=[search_web, calculate]
+    goal="Use tools to search and calculate",
+    instruction="You are an agent that uses tools to find information and perform calculations.",
+    tools={"search_web": search_web, "calculate": calculate}
 )
 
 # Model automatically handles tool calls
@@ -354,7 +353,7 @@ agent = Agent(
     model_config=ModelConfig(
         type="api",
         provider="openrouter",
-        name="openai/gpt-5",
+        name="anthropic/claude-sonnet-4.5",
         parameters={"response_format": {"type": "json_object"}}
     ),
     name="StructuredAgent",
@@ -413,10 +412,10 @@ stream_config = ModelConfig(
 premium_config = ModelConfig(
     type="api",
     provider="openrouter",
-    name="openai/gpt-5",
+    name="anthropic/claude-sonnet-4.5",
     temperature=0.3,
     max_tokens=12000,
-    parameters={"reasoning_effort": "high"}
+    thinking_budget=4096  # Enable extended thinking for complex reasoning
 )
 
 # Balance of cost and performance
@@ -524,7 +523,7 @@ creative_config = ModelConfig(
 # Analytical tasks
 analytical_config = ModelConfig(
     provider="openrouter",
-    name="openai/gpt-5",
+    name="anthropic/claude-sonnet-4.5",
     temperature=0.2  # Lower for consistency
 )
 
@@ -571,7 +570,7 @@ class ModelWithFallback:
         self.primary = ModelConfig(
             type="api",
             provider="openrouter",
-            name="openai/gpt-5"
+            name="anthropic/claude-sonnet-4.5"
         )
         self.fallback = ModelConfig(
             type="api",
@@ -610,9 +609,9 @@ class ModelPool:
 
 # Create pool
 pool = ModelPool([
-    ModelConfig(provider="openrouter", name="openai/gpt-5", max_tokens=12000),
     ModelConfig(provider="openrouter", name="anthropic/claude-sonnet-4.5", max_tokens=12000),
-    ModelConfig(provider="openrouter", name="google/gemini-2.5-pro", max_tokens=12000)
+    ModelConfig(provider="openrouter", name="anthropic/claude-haiku-4.5", max_tokens=12000),
+    ModelConfig(provider="openrouter", name="google/gemini-2.5-flash", max_tokens=12000)
 ])
 ```
 

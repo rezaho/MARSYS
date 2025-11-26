@@ -55,8 +55,8 @@ from marsys.environment import create_file_operation_tools
 # Create model configuration (example using OpenRouter)
 # Note: API key is only required if you use API-based models
 model_config = ModelConfig(
-    model_type="api",
-    model_name="anthropic/claude-haiku-4.5",
+    type="api",
+    name="anthropic/claude-haiku-4.5",
     provider="openrouter",
     api_key=os.getenv("OPENROUTER_API_KEY")  # Set if using OpenRouter
 )
@@ -66,8 +66,7 @@ file_tools = create_file_operation_tools()
 
 # Create agent with file capabilities
 file_agent = Agent(
-    model=model_config,
-    name="FileAssistant",
+    model_config=model_config,
     goal="Manage and analyze files efficiently",
     instruction="""You are a file management assistant. Use your file operation tools to:
     - Read files intelligently based on size and type
@@ -78,6 +77,7 @@ file_agent = Agent(
 
     Always use the most appropriate reading strategy to optimize token usage.
     When editing, prefer unified diff format for complex changes.""",
+    name="FileAssistant",
     tools=file_tools
 )
 
@@ -1047,7 +1047,7 @@ config.force_base_directory = True
 secure_tools = create_file_operation_tools(config)
 
 secure_agent = Agent(
-    model=model_config,
+    model_config=model_config,
     name="SecureFileAgent",
     goal="Manage project files securely",
     instruction="Only access files within /workspace/project. Never access system files.",
@@ -1362,7 +1362,7 @@ config = FileOperationConfig(
 ```python
 # ✅ GOOD - Provide fallback instructions
 file_agent = Agent(
-    model=model_config,
+    model_config=model_config,
     name="FileAssistant",
     goal="Manage files",
     instruction="""Handle errors gracefully:
@@ -1391,8 +1391,8 @@ import os
 
 # Model configuration (adjust based on your provider)
 model_config = ModelConfig(
-    model_type="api",
-    model_name="anthropic/claude-haiku-4.5",
+    type="api",
+    name="anthropic/claude-haiku-4.5",
     provider="openrouter",
     api_key=os.getenv("OPENROUTER_API_KEY")
 )
@@ -1401,7 +1401,7 @@ file_tools = create_file_operation_tools()
 
 # Agent 1: File Scanner
 scanner = Agent(
-    model=model_config,
+    model_config=model_config,
     name="Scanner",
     goal="Scan directories and identify files for processing",
     instruction="Use list_files and search_files to find target files",
@@ -1410,7 +1410,7 @@ scanner = Agent(
 
 # Agent 2: Content Analyzer
 analyzer = Agent(
-    model=model_config,
+    model_config=model_config,
     name="Analyzer",
     goal="Analyze file contents and extract insights",
     instruction="Read files intelligently using appropriate strategies",
@@ -1419,7 +1419,7 @@ analyzer = Agent(
 
 # Agent 3: Report Generator
 reporter = Agent(
-    model=model_config,
+    model_config=model_config,
     name="Reporter",
     goal="Generate summary reports from analysis",
     instruction="Create structured reports and write to output files",

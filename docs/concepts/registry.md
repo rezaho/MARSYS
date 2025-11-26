@@ -79,10 +79,10 @@ agent2 = Agent(
 )
 
 # Check registration
-print(AgentRegistry.list())  # ['data_processor', 'report_writer']
+print(AgentRegistry.all())  # ['data_processor', 'report_writer']
 
 # Get specific agent
-processor = AgentRegistry.get_agent("data_processor")
+processor = AgentRegistry.get("data_processor")
 if processor:
     result = await processor.run("Analyze this data: ...")
 ```
@@ -113,26 +113,30 @@ agent = Agent(name="assistant")  # Automatically in registry
 
 ```python
 # Get agent by name
-agent = AgentRegistry.get_agent("assistant")
+agent = AgentRegistry.get("assistant")
 
 # Check if agent exists
-if AgentRegistry.has_agent("assistant"):
+if AgentRegistry.get("assistant") is not None:
     print("Agent is available")
 
 # List all agents
-all_agents = AgentRegistry.list()
+all_agents = AgentRegistry.all()
 print(f"Active agents: {all_agents}")
 
-# Get agents by type
-assistants = AgentRegistry.get_agents_by_type(Agent)
-browsers = AgentRegistry.get_agents_by_type(BrowserAgent)
+# List all agents including pools
+all_with_pools = AgentRegistry.all_with_pools()
+print(f"All registrations: {all_with_pools}")
+
+# Check if name is a pool
+if AgentRegistry.is_pool("BrowserPool"):
+    pool = AgentRegistry.get_pool("BrowserPool")
 
 # Count active agents
-count = len(AgentRegistry.list())
+count = len(AgentRegistry.all())
 print(f"Total agents: {count}")
 
-# Clear registry (careful!)
-AgentRegistry.clear()  # Removes all registrations
+# Unregister agent (identity-safe)
+AgentRegistry.unregister_if_same("assistant", agent_instance)
 ```
 
 ### Identity-Safe Unregistration

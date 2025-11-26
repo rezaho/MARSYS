@@ -421,7 +421,8 @@ agent = Agent(
     ),
     name="ResearchAgent",
     goal="Research agent with web search capabilities",
-    tools=[web_search, fetch_url_content, calculate_math]
+    instruction="You are a research agent with access to web search, URL fetching, and calculation tools.",
+    tools={"web_search": web_search, "fetch_url_content": fetch_url_content, "calculate_math": calculate_math}
 )
 ```
 
