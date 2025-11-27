@@ -139,7 +139,12 @@ The framework automatically calls `cleanup()` on all topology agents after `Orch
 
 ```python
 # Create agent
-agent = Agent(name="my_agent", model_config=config)
+agent = Agent(
+    name="my_agent",
+    model_config=config,
+    goal="Process data efficiently",
+    instruction="You are a data processing agent. Handle data operations as requested."
+)
 
 # Use agent
 result = await agent.run("Process data")
@@ -420,6 +425,8 @@ await browser.browser_tool.close_browser()
 browser_agent = await BrowserAgent.create_safe(
     model_config=config,
     name="scraper",
+    goal="Extract data from websites",
+    instruction="You are a web scraping specialist. Navigate to websites, extract requested data, and return structured results.",
     headless=True
 )
 

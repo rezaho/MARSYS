@@ -2221,6 +2221,11 @@ class DynamicBranchSpawner:
                 agent_name, branch_id, timeout=timeout
             )
 
+            # Store pre-acquisition info in branch metadata so branch_executor
+            # knows NOT to re-acquire or release this instance
+            branch.metadata['_pre_acquired_pool_agent'] = agent_name
+            branch.metadata['_pre_acquired_instance'] = resource
+
             # Phase 2: Execute using EXISTING logic (no duplication!)
             result = await self._execute_branch_with_group_awareness(
                 branch, request, context, group

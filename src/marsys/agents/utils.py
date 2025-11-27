@@ -58,19 +58,27 @@ class AgentLogFilter(logging.Filter):
 
 # --- Logging Setup Utility ---
 def init_agent_logging(
-    level: int = logging.INFO, clear_existing_handlers: bool = True
+    level: int = logging.INFO,
+    clear_existing_handlers: bool = True,
+    log_file: Optional[str] = None,
+    file_level: Optional[int] = None,
 ) -> None:
     """
-    Sets up a standardized console logging configuration for agent-based systems.
+    Sets up a standardized logging configuration for agent-based systems.
 
     Includes a custom filter to ensure 'agent_name' is available in log records.
 
     Args:
-        level: The desired logging level for the root logger (e.g., logging.INFO, logging.DEBUG).
+        level: The desired logging level for the root logger and console output
+               (e.g., logging.INFO, logging.DEBUG).
         clear_existing_handlers: If True, removes any handlers already attached to the
                                  root logger. This is useful in interactive environments
                                  (like Jupyter notebooks) to prevent duplicate log outputs
                                  when re-running setup code.
+        log_file: Optional path to a log file. If provided, debug logs will be written
+                  to this file in addition to console output.
+        file_level: Logging level for the file handler. Defaults to logging.DEBUG if
+                    log_file is provided.
     """
     root_logger = logging.getLogger()
 
@@ -79,27 +87,37 @@ def init_agent_logging(
             root_logger.removeHandler(handler)
             handler.close()  # Important to close handlers before removing
 
-    # Create a StreamHandler to output log messages to the console.
-    stream_handler = logging.StreamHandler()
-
     # Define the log message format.
     formatter = logging.Formatter(
         "%(asctime)s - %(levelname)s - [%(name)s] [%(agent_name)s] %(message)s"
     )
+
+    # Create a StreamHandler to output log messages to the console.
+    stream_handler = logging.StreamHandler()
     stream_handler.setFormatter(formatter)
-
-    # Add the custom AgentLogFilter to the stream_handler.
     stream_handler.addFilter(AgentLogFilter())
-
-    # Add the configured stream_handler to the root logger.
+    stream_handler.setLevel(level)
     root_logger.addHandler(stream_handler)
 
-    # Set the logging level for the root logger.
-    root_logger.setLevel(level)
+    # Optionally add a file handler for detailed debug logging
+    if log_file:
+        file_handler = logging.FileHandler(log_file, mode='w', encoding='utf-8')
+        file_handler.setLevel(file_level if file_level is not None else logging.DEBUG)
+        file_handler.setFormatter(logging.Formatter(
+            "%(asctime)s | %(levelname)-8s | %(name)s | [%(agent_name)s] %(message)s",
+            datefmt="%Y-%m-%d %H:%M:%S"
+        ))
+        file_handler.addFilter(AgentLogFilter())
+        root_logger.addHandler(file_handler)
 
-    logging.getLogger(__name__).info(
-        f"Agent logging setup complete. Root logger level set to {logging.getLevelName(level)}."
-    )
+    # Set the logging level for the root logger (use DEBUG if file logging to capture everything)
+    effective_level = logging.DEBUG if log_file else level
+    root_logger.setLevel(effective_level)
+
+    log_msg = f"Agent logging setup complete. Console level: {logging.getLevelName(level)}"
+    if log_file:
+        log_msg += f", File: {log_file} (level: {logging.getLevelName(file_level or logging.DEBUG)})"
+    logging.getLogger(__name__).info(log_msg)
 
 
 @dataclasses.dataclass
