@@ -149,14 +149,14 @@ graph LR
 
 ## 🛠️ Multimodal Tools
 
-### Creating Tools That Return Images
+### ToolResponse: The Proper Way to Return Multimodal Content
 
-Tools can return images alongside text results:
+Tools should return `ToolResponse` objects for multimodal content. This enables ordered sequences of text and images that map directly to LLM message content arrays.
 
 ```python
-from typing import Dict, Any, List
+from marsys.environment.tool_response import ToolResponse, ToolResponseContent
 
-def tool_read_pdf(pdf_path: str) -> Dict[str, Any]:
+def tool_read_pdf(pdf_path: str) -> ToolResponse:
     """
     Read PDF and return text + page images for vision analysis.
 
@@ -164,7 +164,7 @@ def tool_read_pdf(pdf_path: str) -> Dict[str, Any]:
         pdf_path: Path to PDF file
 
     Returns:
-        Dict with 'result' (text) and 'images' (list of page images)
+        ToolResponse with ordered text and image content blocks
     """
     # Extract text
     text = extract_text_from_pdf(pdf_path)
@@ -172,54 +172,115 @@ def tool_read_pdf(pdf_path: str) -> Dict[str, Any]:
     # Convert pages to images
     page_images = convert_pdf_pages_to_images(pdf_path)
 
-    return {
-        "result": f"Extracted {len(page_images)} pages. Text:\n{text}",
-        "images": page_images,  # Vision model will see these
-        "metadata": {"pages": len(page_images)}
-    }
+    # Build ordered content blocks
+    content_blocks = [
+        ToolResponseContent(text=f"Extracted {len(page_images)} pages from PDF.")
+    ]
+
+    # Add each page image with its text
+    for i, (page_text, page_image) in enumerate(zip(text.split("---"), page_images), 1):
+        content_blocks.append(ToolResponseContent(text=f"--- Page {i} ---"))
+        content_blocks.append(ToolResponseContent(image_path=page_image))
+        content_blocks.append(ToolResponseContent(text=page_text.strip()))
+
+    return ToolResponse(
+        content=content_blocks,
+        metadata={"pages": len(page_images), "file": pdf_path}
+    )
+```
+
+### ToolResponseContent Options
+
+`ToolResponseContent` supports three content types:
+
+```python
+from marsys.environment.tool_response import ToolResponseContent
+
+# 1. Text content (string)
+ToolResponseContent(text="Hello world")
+
+# 2. Text content (dict - will be JSON stringified)
+ToolResponseContent(text={"key": "value", "count": 42})
+
+# 3. Image with local file path (auto-converted to base64)
+ToolResponseContent(image_path="/path/to/image.png")
+
+# 4. Image with base64 data URL (already encoded)
+ToolResponseContent(image_data="data:image/png;base64,iVBORw0KGgo...")
+```
+
+!!! warning "Mutually Exclusive"
+    Each `ToolResponseContent` must have exactly ONE of: `text`, `image_path`, or `image_data`. You cannot combine them in the same content block.
+
+### ToolResponse Content Formats
+
+`ToolResponse` supports three content formats:
+
+```python
+from marsys.environment.tool_response import ToolResponse, ToolResponseContent
+
+# 1. Simple string (for text-only results)
+ToolResponse(content="File read successfully")
+
+# 2. Dictionary (for structured data)
+ToolResponse(content={"status": "success", "count": 42})
+
+# 3. List of ToolResponseContent (for ordered multimodal content)
+ToolResponse(
+    content=[
+        ToolResponseContent(text="Chapter 1"),
+        ToolResponseContent(image_data="data:image/png;base64,..."),
+        ToolResponseContent(text="Figure 1.1: System Architecture")
+    ],
+    metadata={"pages": "1-5", "images": 3}
+)
 ```
 
 ### Tool Result Flow
 
-The framework automatically handles image propagation:
+The framework automatically handles `ToolResponse` processing:
 
 ```python
 # 1. Agent calls tool
 agent: "I need to read this PDF"
 tool_call: tool_read_pdf("/path/to/document.pdf")
 
-# 2. Tool returns text + images
-tool_result = {
-    "result": "Extracted 3 pages. Text: Annual Report...",
-    "images": ["/tmp/page1.png", "/tmp/page2.png", "/tmp/page3.png"]
-}
-
-# 3. Framework extracts images (tool_executor.py)
-images = tool_result.get("images", [])
-
-# 4. Framework injects into memory (step_executor.py)
-agent.memory.add(
-    role="tool",
-    content=tool_result["result"],
-    images=images  # Images automatically added
+# 2. Tool returns ToolResponse with multimodal content
+tool_result = ToolResponse(
+    content=[
+        ToolResponseContent(text="Extracted 3 pages."),
+        ToolResponseContent(image_path="/tmp/page1.png"),
+        ToolResponseContent(text="Page 1: Annual Report..."),
+        ToolResponseContent(image_path="/tmp/page2.png"),
+        ToolResponseContent(text="Page 2: Financial Data...")
+    ]
 )
 
-# 5. Agent receives multimodal context
-# Vision model can now see both text and images
+# 3. Framework processes ToolResponse (tool_executor.py)
+# - Detects ToolResponse object
+# - Calls to_content_array() for proper LLM message format
+
+# 4. Framework creates two-message pattern (step_executor.py)
+# - role="tool": Metadata message about the tool execution
+# - role="user": Actual multimodal content array
+
+# 5. Agent receives properly formatted multimodal context
+# Vision model sees ordered text + images with correct structure
 ```
 
-### Complete Tool Example
+### Complete Tool Example with ToolResponse
 
 ```python
 import PyPDF2
 from pdf2image import convert_from_path
 from pathlib import Path
 import tempfile
+from marsys.environment.tool_response import ToolResponse, ToolResponseContent
 
 def tool_analyze_document(
     file_path: str,
     extract_images: bool = True
-) -> Dict[str, Any]:
+) -> ToolResponse:
     """
     Analyze a document file (PDF, image, text).
 
@@ -228,18 +289,20 @@ def tool_analyze_document(
         extract_images: Whether to extract visual content
 
     Returns:
-        Document content with optional images
+        ToolResponse with document content and optional images
     """
     file_path = Path(file_path)
 
     if not file_path.exists():
-        return {
-            "result": f"Error: File not found: {file_path}",
-            "images": []
-        }
+        return ToolResponse(
+            content=f"Error: File not found: {file_path}",
+            metadata={"error": "file_not_found"}
+        )
 
     # Handle PDFs
     if file_path.suffix.lower() == '.pdf':
+        content_blocks = []
+
         # Extract text
         text_parts = []
         with open(file_path, 'rb') as f:
@@ -247,12 +310,10 @@ def tool_analyze_document(
             for i, page in enumerate(reader.pages, 1):
                 page_text = page.extract_text()
                 if page_text.strip():
-                    text_parts.append(f"--- Page {i} ---\n{page_text}\n")
-
-        text_content = "\n".join(text_parts) if text_parts else "[No text found]"
+                    text_parts.append((i, page_text.strip()))
 
         # Optionally convert pages to images
-        images = []
+        image_paths = []
         if extract_images:
             temp_dir = Path(tempfile.mkdtemp(prefix="pdf_analysis_"))
             pdf_images = convert_from_path(str(file_path), dpi=200)
@@ -260,41 +321,55 @@ def tool_analyze_document(
             for i, img in enumerate(pdf_images, 1):
                 img_path = temp_dir / f"page_{i}.png"
                 img.save(str(img_path), 'PNG')
-                images.append(str(img_path))
+                image_paths.append(str(img_path))
 
-        return {
-            "result": text_content,
-            "images": images,
-            "metadata": {
+        # Build ordered content: text, then image for each page
+        content_blocks.append(
+            ToolResponseContent(text=f"Document: {file_path.name} ({len(text_parts)} pages)")
+        )
+
+        for i, (page_num, page_text) in enumerate(text_parts):
+            content_blocks.append(
+                ToolResponseContent(text=f"--- Page {page_num} ---\n{page_text}")
+            )
+            if i < len(image_paths):
+                content_blocks.append(
+                    ToolResponseContent(image_path=image_paths[i])
+                )
+
+        return ToolResponse(
+            content=content_blocks,
+            metadata={
                 "pages": len(text_parts),
                 "file_type": "pdf",
-                "visual_pages": len(images)
+                "visual_pages": len(image_paths)
             }
-        }
+        )
 
     # Handle image files
     elif file_path.suffix.lower() in ['.png', '.jpg', '.jpeg', '.gif', '.bmp']:
-        return {
-            "result": f"Image file: {file_path.name}",
-            "images": [str(file_path)],
-            "metadata": {"file_type": "image"}
-        }
+        return ToolResponse(
+            content=[
+                ToolResponseContent(text=f"Image file: {file_path.name}"),
+                ToolResponseContent(image_path=str(file_path))
+            ],
+            metadata={"file_type": "image"}
+        )
 
     # Handle text files
     else:
         try:
             with open(file_path, 'r', encoding='utf-8') as f:
                 content = f.read()
-            return {
-                "result": content,
-                "images": [],
-                "metadata": {"file_type": "text"}
-            }
+            return ToolResponse(
+                content=content,
+                metadata={"file_type": "text", "chars": len(content)}
+            )
         except Exception as e:
-            return {
-                "result": f"Error reading file: {e}",
-                "images": []
-            }
+            return ToolResponse(
+                content=f"Error reading file: {e}",
+                metadata={"error": "read_failed"}
+            )
 ```
 
 ## 💡 Real-World Examples
@@ -560,55 +635,67 @@ task = {
 ### 3. Handle Tool Errors Gracefully
 
 ```python
-# ✅ GOOD - Robust error handling
-def tool_read_file(file_path: str) -> Dict[str, Any]:
+from marsys.environment.tool_response import ToolResponse, ToolResponseContent
+
+# ✅ GOOD - Robust error handling with ToolResponse
+def tool_read_file(file_path: str) -> ToolResponse:
     """Read file with proper error handling."""
     try:
         if not Path(file_path).exists():
-            return {
-                "result": f"Error: File not found: {file_path}",
-                "images": [],
-                "error": "file_not_found"
-            }
+            return ToolResponse(
+                content=f"Error: File not found: {file_path}",
+                metadata={"error": "file_not_found"}
+            )
 
-        # Process file
-        result = process_file(file_path)
-        return result
+        # Process file and return multimodal content
+        return ToolResponse(
+            content=[
+                ToolResponseContent(text=f"Reading: {file_path}"),
+                ToolResponseContent(image_path=file_path) if is_image(file_path) else None,
+            ],
+            metadata={"file": file_path}
+        )
 
     except Exception as e:
-        return {
-            "result": f"Error processing file: {str(e)}",
-            "images": [],
-            "error": "processing_failed"
-        }
+        return ToolResponse(
+            content=f"Error processing file: {str(e)}",
+            metadata={"error": "processing_failed"}
+        )
 
 # ❌ BAD - Unhandled exceptions crash workflow
-def tool_read_file(file_path: str) -> Dict[str, Any]:
+def tool_read_file(file_path: str) -> ToolResponse:
     file = open(file_path)  # Raises FileNotFoundError
-    return {"result": file.read()}
+    return ToolResponse(content=file.read())
 ```
 
 ### 4. Clean Up Temporary Files
 
 ```python
-# ✅ GOOD - Clean up after processing
+# ✅ GOOD - Clean up after processing with ToolResponse
 import tempfile
 import shutil
+from marsys.environment.tool_response import ToolResponse, ToolResponseContent
 
-def tool_process_pdf(pdf_path: str) -> Dict[str, Any]:
+def tool_process_pdf(pdf_path: str) -> ToolResponse:
     """Process PDF with cleanup."""
     temp_dir = Path(tempfile.mkdtemp(prefix="pdf_"))
 
     try:
         # Extract pages to temp_dir
-        images = extract_pdf_pages(pdf_path, temp_dir)
+        image_paths = extract_pdf_pages(pdf_path, temp_dir)
 
-        result = {
-            "result": "PDF processed",
-            "images": images
-        }
+        # Build multimodal content
+        content_blocks = [
+            ToolResponseContent(text=f"Processed PDF: {len(image_paths)} pages")
+        ]
+        for i, img_path in enumerate(image_paths, 1):
+            content_blocks.append(ToolResponseContent(text=f"Page {i}:"))
+            content_blocks.append(ToolResponseContent(image_path=img_path))
 
-        return result
+        return ToolResponse(
+            content=content_blocks,
+            metadata={"pages": len(image_paths)}
+        )
 
     finally:
         # Clean up after a delay (allow time for processing)
@@ -620,7 +707,7 @@ def tool_process_pdf(pdf_path: str) -> Dict[str, Any]:
         threading.Thread(target=cleanup, daemon=True).start()
 
 # ❌ BAD - Temp files accumulate
-def tool_process_pdf(pdf_path: str) -> Dict[str, Any]:
+def tool_process_pdf(pdf_path: str) -> ToolResponse:
     temp_dir = "/tmp/pdf_" + str(uuid.uuid4())
     extract_pdf_pages(pdf_path, temp_dir)
     # Never cleaned up!
@@ -678,11 +765,22 @@ for msg in messages:
 ### Inspect Tool Results
 
 ```python
-# Check if tool is returning images correctly
+from marsys.environment.tool_response import ToolResponse
+
+# Check if tool is returning ToolResponse correctly
 result = tool_read_file("test.pdf")
 print(f"Result type: {type(result)}")
-print(f"Has 'images' key: {'images' in result}")
-print(f"Image count: {len(result.get('images', []))}")
+
+if isinstance(result, ToolResponse):
+    print(f"Content type: {type(result.content)}")
+    print(f"Has images: {result.has_images()}")
+    if isinstance(result.content, list):
+        text_count = sum(1 for c in result.content if c.type == "text")
+        image_count = sum(1 for c in result.content if c.type == "image")
+        print(f"Text blocks: {text_count}, Image blocks: {image_count}")
+    print(f"Metadata: {result.metadata}")
+else:
+    print("Warning: Tool should return ToolResponse for multimodal content")
 ```
 
 ## 🚦 Next Steps
