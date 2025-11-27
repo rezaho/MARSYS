@@ -177,22 +177,36 @@ class FileOperationTools:
         self,
         path: Union[str, Path],
         content: str,
+        mode: str = "write",
         create_parents: bool = True,
         **kwargs
     ) -> EditResult:
         """
-        Create or overwrite a file.
+        Write or append content to a file.
 
         Args:
             path: File path to write
             content: Content to write
+            mode: Write mode - "write" (overwrite) or "append" (add to end)
             create_parents: Whether to create parent directories
-            **kwargs: Additional arguments
+            **kwargs: Additional arguments (encoding, etc.)
 
         Returns:
             EditResult indicating success/failure
         """
         path = Path(path)
+
+        # Validate mode
+        mode_lower = mode.lower()
+        if mode_lower not in ("write", "append"):
+            return EditResult(
+                success=False,
+                path=path,
+                error=f"Invalid mode '{mode}'. Must be 'write' or 'append'."
+            )
+
+        # Map to Python file modes
+        file_mode = 'w' if mode_lower == "write" else 'a'
 
         # Security check
         validation = await self.security.authorize_operation("write", path)
@@ -204,8 +218,8 @@ class FileOperationTools:
             if create_parents and not path.parent.exists():
                 path.parent.mkdir(parents=True, exist_ok=True)
 
-            # Write file
-            with open(path, 'w', encoding=kwargs.get('encoding', 'utf-8')) as f:
+            # Write/append to file
+            with open(path, file_mode, encoding=kwargs.get('encoding', 'utf-8')) as f:
                 f.write(content)
 
             # Count lines
@@ -213,6 +227,7 @@ class FileOperationTools:
 
             # Log operation
             self.security.log_operation("write", path, True, {
+                'mode': mode_lower,
                 'lines': lines_written,
                 'size': len(content)
             })
@@ -758,10 +773,30 @@ class FileOperationTools:
         async def write_file_wrapper(
             path: Union[str, Path],
             content: str,
+            mode: str = "write",
             **kwargs
         ) -> Dict[str, Any]:
-            """Write file and return dict with success status."""
-            result = await self.write(path, content, **kwargs)
+            """
+            Write or append content to a file.
+
+            Args:
+                path: Path to the file to write
+                content: Content to write to the file
+                mode: Write mode - "write" (overwrite existing content) or "append" (add to end of file).
+                      Use "append" when adding entries to log files, JSONL files, or any file where
+                      you want to preserve existing content. Default is "write".
+
+            Returns:
+                Dict with success status and details
+
+            Examples:
+                # Overwrite a file (default)
+                write_file("report.md", "# Report\\nContent here")
+
+                # Append to a JSONL file
+                write_file("data.jsonl", '{"key": "value"}\\n', mode="append")
+            """
+            result = await self.write(path, content, mode=mode, **kwargs)
             return result.to_dict()
 
         async def edit_file_wrapper(
