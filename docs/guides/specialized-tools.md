@@ -136,6 +136,7 @@ browser_agent = await BrowserAgent.create_safe(
     name="web_scraper",
     mode="primitive",  # or "advanced" for visual interaction
     goal="Web automation agent",
+    instruction="You are a web automation specialist. Navigate websites, extract content, and interact with web pages as instructed.",
     headless=True
 )
 

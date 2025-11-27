@@ -60,7 +60,9 @@ from marsys.agents import LearnableAgent
 
 agent = LearnableAgent(
     model=local_llm,
-    description="You are a helpful assistant",
+    name="MyLearnableAgent",
+    goal="A helpful assistant that answers questions",
+    instruction="You are a helpful assistant. Provide clear and accurate responses to user queries.",
     tools={"search": search_function},
     learning_head="peft",
     learning_head_config={
@@ -68,8 +70,7 @@ agent = LearnableAgent(
         "lora_alpha": 32,
         "target_modules": ["q_proj", "v_proj"]
     },
-    max_tokens=512,
-    agent_name="MyLearnableAgent"
+    max_tokens=8000
 )
 ```
 
@@ -91,7 +92,9 @@ learning_head_config = {
 
 agent = LearnableAgent(
     model=local_model,
-    description="Expert coder",
+    name="ExpertCoder",
+    goal="Expert coding assistant for development tasks",
+    instruction="You are an expert coder. Help with code generation, debugging, and optimization.",
     learning_head="peft",
     learning_head_config=learning_head_config
 )
@@ -112,14 +115,15 @@ local_model = BaseLLM.from_pretrained("mistralai/Mistral-7B-v0.1")
 # Create agent with PEFT
 agent = LearnableAgent(
     model=local_model,
-    description="You are an expert code reviewer",
+    name="CodeReviewer",
+    goal="Expert code reviewer for quality assurance",
+    instruction="You are an expert code reviewer. Analyze code for bugs, security issues, and best practices.",
     learning_head="peft",
     learning_head_config={
         "r": 8,
         "lora_alpha": 16,
         "target_modules": ["q_proj", "v_proj"]
-    },
-    agent_name="CodeReviewer"
+    }
 )
 
 # Use in a topology
