@@ -213,8 +213,14 @@ class BranchExecutor:
             )
         finally:
             # Release any pool instances used by this branch
+            # Skip pre-acquired instances - branch_spawner handles their release
+            pre_acquired_agent = branch.metadata.get('_pre_acquired_pool_agent') if branch.metadata else None
             for agent_name in branch.topology.agents:
                 if self.agent_registry.is_pool(agent_name):
+                    if agent_name == pre_acquired_agent:
+                        # Skip - branch_spawner will release this instance
+                        logger.debug(f"Skipping release of pre-acquired '{agent_name}' for branch '{branch.id}'")
+                        continue
                     self.agent_registry.release_to_pool(agent_name, branch.id)
                     logger.debug(f"Released pool instance of '{agent_name}' for branch '{branch.id}'")
     
@@ -774,7 +780,16 @@ class BranchExecutor:
                     )
         
         # Get agent instance for normal agents (pool-aware)
-        agent = self.agent_registry.get_or_acquire(agent_name, branch.id)
+        # Check if branch_spawner pre-acquired this agent (for parallel pool execution)
+        pre_acquired_agent = branch.metadata.get('_pre_acquired_pool_agent') if branch.metadata else None
+        if pre_acquired_agent == agent_name and '_pre_acquired_instance' in branch.metadata:
+            # Use pre-acquired instance - don't re-acquire
+            agent = branch.metadata['_pre_acquired_instance']
+            logger.debug(f"Using pre-acquired instance for '{agent_name}' in branch '{branch.id}'")
+        else:
+            # Normal acquisition path
+            agent = self.agent_registry.get_or_acquire(agent_name, branch.id)
+
         if not agent:
             return StepResult(
                 agent_name=agent_name,
@@ -2067,16 +2082,28 @@ class BranchExecutor:
             else:
                 raise ValueError(f"Unsupported branch type for resumption: {branch.type}")
             
-            # Clean up continuation state
-            del self.branch_continuation[branch_id]
-            if branch_id in self.waiting_for_children:
-                del self.waiting_for_children[branch_id]
-            
+            # Clean up continuation state ONLY if branch is not waiting again
+            # If branch requested another parallel invocation, _handle_parallel_invocation
+            # already stored a NEW continuation state that we need to preserve
+            is_waiting_again = result.metadata and result.metadata.get("waiting")
+            if not is_waiting_again:
+                if branch_id in self.branch_continuation:
+                    del self.branch_continuation[branch_id]
+                if branch_id in self.waiting_for_children:
+                    del self.waiting_for_children[branch_id]
+            else:
+                logger.debug(f"Branch '{branch_id}' is waiting for children again - preserving continuation state")
+
             return result
-            
+
         except Exception as e:
             logger.error(f"Error resuming branch '{branch_id}': {e}")
             branch.state.status = BranchStatus.FAILED
+            # Clean up stale continuation state on failure to prevent memory leaks
+            if branch_id in self.branch_continuation:
+                del self.branch_continuation[branch_id]
+            if branch_id in self.waiting_for_children:
+                del self.waiting_for_children[branch_id]
             return BranchResult(
                 branch_id=branch_id,
                 success=False,

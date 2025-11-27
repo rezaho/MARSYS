@@ -19,7 +19,7 @@
 
 ## 📢 Latest News & Updates
 
-### 🎉 MARSYS v0.1 Beta Released! (January 2025)
+### 🎉 MARSYS v0.1 Beta Released! (26/11/2025)
 
 We're excited to announce the first beta release of MARSYS with major new features:
 
@@ -176,19 +176,10 @@ OPENROUTER_API_KEY=your-key-here
 EOF
 ```
 
-**Note:** You need to manually load `.env` files in your scripts:
-```python
-from dotenv import load_dotenv
-load_dotenv()  # Load .env file before importing marsys
+MARSYS automatically loads `.env` files using `python-dotenv`.
 
-# Now environment variables are available
-from marsys import Agent, ModelConfig
-```
-
-Install `python-dotenv` separately if needed:
-```bash
-pip install python-dotenv
-```
+!!! warning "Security"
+    Never commit `.env` files to version control. Add `.env` to your `.gitignore` file.
 
 ### Optional: Playwright Setup (Only for BrowserAgent)
 
@@ -210,62 +201,43 @@ If you don't use BrowserAgent, you can skip this step entirely.
 
 ### Basic Usage
 
-Here's a simple three-agent workflow:
+Here's a simple two-agent collaboration using `allowed_peers`:
 
 ```python
 import asyncio
-from marsys import Agent
+from marsys.agents import Agent
 from marsys.models import ModelConfig
 
 async def main():
-    # Use a single model configuration
-    # Note: Make sure OPENROUTER_API_KEY is set in your environment
-    # Get your key from: https://openrouter.ai
+    # Create a single model configuration
     model_config = ModelConfig(
         type="api",
-        name="google/gemini-2.5-pro",
+        name="anthropic/claude-haiku-4.5",
         provider="openrouter"
     )
 
-    # Create three specialized agents with allowed_peers
-    data_collector = Agent(
+    # Create specialized agents with allowed_peers
+    researcher = Agent(
         model_config=model_config,
-        name="DataCollector",
-        goal="Collect and gather relevant market data",
-        instruction="""You are a data collection specialist.
-        Gather comprehensive market data from various sources.
-        Focus on factual information and recent trends.
-        After gathering data, pass it to the Analyzer.""",
-        allowed_peers=["User", "Analyzer"]  # Can invoke Analyzer
+        name="Researcher",
+        goal="Expert at finding and analyzing information",
+        instruction="You are a research specialist. Find and analyze information thoroughly.",
+        allowed_peers=["Writer"]  # Can invoke Writer
     )
 
-    analyzer = Agent(
+    writer = Agent(
         model_config=model_config,
-        name="Analyzer",
-        goal="Analyze data and identify patterns",
-        instruction="""You are a data analysis expert.
-        Examine collected data for patterns and insights.
-        Provide evidence-based conclusions.
-        After analysis, send your findings to the Reporter.""",
-        allowed_peers=["Reporter"]  # Can invoke Reporter
+        name="Writer",
+        goal="Skilled at creating clear, engaging content",
+        instruction="You are a skilled writer. Create clear, engaging content based on research.",
+        allowed_peers=[]  # Cannot invoke other agents
     )
 
-    reporter = Agent(
-        model_config=model_config,
-        name="Reporter",
-        goal="Create comprehensive reports from analysis",
-        instruction="""You are a report writer.
-        Synthesize analysis into clear, actionable reports.
-        Structure information logically with executive summaries.""",
-        allowed_peers=[]  # Final agent, no downstream peers
-    )
-
-    # Run using auto_run - topology is automatically created from allowed_peers
-    result = await data_collector.auto_run(
-        task="Analyze market trends in the technology sector",
-        verbosity=2,
-        auto_inject_user=True,
-        max_steps=30
+    # Run with automatic topology creation from allowed_peers
+    result = await researcher.auto_run(
+        task="Research the latest AI breakthroughs and write a summary",
+        max_steps=20,
+        verbosity=1  # Show progress
     )
 
     print(result)
@@ -273,6 +245,64 @@ async def main():
 asyncio.run(main())
 ```
 
+### Three-Agent Sequential Workflow
+
+For more control, define the topology explicitly using `Orchestra.run()`:
+
+```python
+import asyncio
+from marsys.coordination import Orchestra
+from marsys.agents import Agent
+from marsys.models import ModelConfig
+
+async def main():
+    model_config = ModelConfig(
+        type="api",
+        name="anthropic/claude-haiku-4.5",
+        provider="openrouter"
+    )
+
+    # Create three specialized agents
+    data_collector = Agent(
+        model_config=model_config,
+        name="DataCollector",
+        goal="Collects and gathers relevant data",
+        instruction="You are a data collection specialist. Gather relevant information systematically."
+    )
+
+    analyzer = Agent(
+        model_config=model_config,
+        name="Analyzer",
+        goal="Analyzes collected data and finds patterns",
+        instruction="You are a data analyst. Analyze data thoroughly and identify key patterns."
+    )
+
+    reporter = Agent(
+        model_config=model_config,
+        name="Reporter",
+        goal="Creates comprehensive reports from analysis",
+        instruction="You are a report writer. Create clear, comprehensive reports from analysis results."
+    )
+
+    # Define sequential workflow
+    topology = {
+        "nodes": ["DataCollector", "Analyzer", "Reporter"],
+        "edges": [
+            "DataCollector -> Analyzer",
+            "Analyzer -> Reporter"
+        ]
+    }
+
+    # Run the workflow
+    result = await Orchestra.run(
+        task="Analyze market trends in the technology sector",
+        topology=topology
+    )
+
+    print(result.final_response)
+
+asyncio.run(main())
+```
 
 [More examples →](examples/)
 

@@ -242,7 +242,7 @@ class AgentPool:
                     f"Branch '{branch_id}' already has instance {allocation.instance_id}"
                 )
                 return allocation.agent_instance
-            
+
             # Try to acquire from any available instance
             for i, agent_instance in enumerate(self.instances):
                 # Skip if already allocated (tracked by pool)
