@@ -21,15 +21,15 @@ class ObjectNotationConverter:
     """Converts object notation (mixed types) to Topology."""
     
     @staticmethod
-    def convert(notation: Dict[str, Any], 
+    def convert(notation: Dict[str, Any],
                 agent_registry: Optional['AgentRegistry'] = None) -> Topology:
         """
         Convert object notation to Topology.
-        
+
         Expected format:
         {
-            "nodes": [agent1, agent2, "Agent3"],  # Mixed objects and strings
-            "edges": [Edge(...), ("A", "B"), "C -> D"],  # Mixed formats
+            "agents": [agent1, agent2, "Agent3"],  # Mixed objects and strings
+            "flows": [Edge(...), ("A", "B"), "C -> D"],  # Mixed formats
             "rules": [TimeoutRule(...), "parallel(A, B)"],  # Mixed formats
             "metadata": {...}  # optional
         }
@@ -62,27 +62,27 @@ class ObjectNotationConverter:
         if "exit_points" in notation:
             topology.metadata["exit_points"] = notation["exit_points"]
         
-        # Convert and add nodes
-        nodes = notation.get("nodes", [])
-        if not isinstance(nodes, list):
-            raise TypeError("'nodes' must be a list")
-        
-        for node_item in nodes:
+        # Convert and add agents
+        agents = notation.get("agents", [])
+        if not isinstance(agents, list):
+            raise TypeError("'agents' must be a list")
+
+        for agent_item in agents:
             try:
-                topology.add_node(node_item)
+                topology.add_node(agent_item)
             except ValueError as e:
-                logger.warning(f"Skipping invalid node {node_item}: {e}")
-        
-        # Convert and add edges
-        edges = notation.get("edges", [])
-        if not isinstance(edges, list):
-            raise TypeError("'edges' must be a list")
-        
-        for edge_item in edges:
+                logger.warning(f"Skipping invalid agent {agent_item}: {e}")
+
+        # Convert and add flows
+        flows = notation.get("flows", [])
+        if not isinstance(flows, list):
+            raise TypeError("'flows' must be a list")
+
+        for flow_item in flows:
             try:
-                topology.add_edge(edge_item)
+                topology.add_edge(flow_item)
             except ValueError as e:
-                logger.warning(f"Skipping invalid edge {edge_item}: {e}")
+                logger.warning(f"Skipping invalid flow {flow_item}: {e}")
         
         # Convert and add rules
         rules = notation.get("rules", [])
@@ -110,7 +110,7 @@ class ObjectNotationConverter:
             ObjectNotationConverter._validate_agents(topology, agent_registry)
         
         logger.info(f"Converted object notation to Topology with "
-                   f"{len(topology.nodes)} nodes, {len(topology.edges)} edges, "
+                   f"{len(topology.nodes)} agents, {len(topology.edges)} flows, "
                    f"{len(topology.rules)} rules")
         
         return topology
@@ -135,29 +135,29 @@ class ObjectNotationConverter:
     def is_object_notation(notation: Dict[str, Any]) -> bool:
         """
         Check if a dictionary uses object notation (has non-string elements).
-        
+
         Args:
             notation: Dictionary to check
-            
+
         Returns:
-            True if any values in nodes/edges/rules are not strings
+            True if any values in agents/flows/rules are not strings
         """
         if not isinstance(notation, dict):
             return False
-        
-        # Check if any nodes are not strings
-        nodes = notation.get("nodes", [])
-        if isinstance(nodes, list) and any(not isinstance(n, str) for n in nodes):
+
+        # Check if any agents are not strings
+        agents = notation.get("agents", [])
+        if isinstance(agents, list) and any(not isinstance(n, str) for n in agents):
             return True
-        
-        # Check if any edges are not strings
-        edges = notation.get("edges", [])
-        if isinstance(edges, list) and any(not isinstance(e, str) for e in edges):
+
+        # Check if any flows are not strings
+        flows = notation.get("flows", [])
+        if isinstance(flows, list) and any(not isinstance(e, str) for e in flows):
             return True
-        
+
         # Check if any rules are not strings
         rules = notation.get("rules", [])
         if isinstance(rules, list) and any(not isinstance(r, str) for r in rules):
             return True
-        
+
         return False
