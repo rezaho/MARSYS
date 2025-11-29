@@ -4,6 +4,11 @@ This module defines learnable agent classes that can incorporate trainable compo
 It includes the BaseLearnableAgent abstract class and the LearnableAgent implementation
 that supports PEFT (Parameter-Efficient Fine-Tuning) and other learning heads for
 customizing model behavior through training.
+
+LearnableAgent only supports local models (not API models) because:
+- Training requires direct access to model weights
+- PEFT/LoRA needs to modify the model architecture
+- RL training frameworks (trl, PPO, DPO) need raw model/tokenizer access
 """
 
 from __future__ import annotations
@@ -12,7 +17,7 @@ import json
 import re
 import uuid
 from abc import ABC
-from typing import Any, Callable, Dict, List, Optional, Union
+from typing import TYPE_CHECKING, Any, Callable, Dict, List, Optional, Union
 
 from .agents import BaseAgent
 from .memory import MemoryManager, Message
@@ -35,12 +40,24 @@ from .exceptions import (
     create_error_from_exception,
 )
 
+# Type-only imports for optional local model support (requires marsys[local-models])
+if TYPE_CHECKING:
+    from marsys.models.models import (
+        LocalProviderAdapter,
+        HuggingFaceLLMAdapter,
+        HuggingFaceVLMAdapter,
+        ModelConfig,
+    )
+
 
 class BaseLearnableAgent(BaseAgent, ABC):
     """
     Base class for agents that can incorporate learnable components (e.g., PEFT heads).
 
     Inherits from BaseAgent and adds handling for learning head initialization.
+
+    IMPORTANT: LearnableAgent only supports local HuggingFace models (not API models or vLLM).
+    This is because training requires direct access to model weights and tokenizer.
 
     Attributes:
         _learning_head_name: Name of the learning head type (e.g., 'peft').
@@ -49,59 +66,127 @@ class BaseLearnableAgent(BaseAgent, ABC):
 
     def __init__(
         self,
-        model: Union["BaseVLM", "BaseLLM"],
-        description: str,  # Renamed from system_prompt
+        model_config: ModelConfig,
+        goal: str,
+        instruction: str,
         learning_head: Optional[str] = None,
         learning_head_config: Optional[Dict[str, Any]] = None,
-        max_tokens: Optional[int] = 512,
-        agent_name: Optional[str] = None,
+        tools: Optional[Dict[str, Callable[..., Any]]] = None,
+        max_tokens: Optional[int] = None,
+        name: Optional[str] = None,
         allowed_peers: Optional[List[str]] = None,
+        bidirectional_peers: bool = False,
+        input_schema: Optional[Any] = None,
+        output_schema: Optional[Any] = None,
+        memory_retention: str = "session",
+        memory_storage_path: Optional[str] = None,
         **kwargs: Any,
     ) -> None:
         """
         Initializes the BaseLearnableAgent.
 
         Args:
-            model: The base language model instance (typically local).
-            description: The base description of the agent's role and purpose.
+            model_config: ModelConfig for creating the local model (must have type="local").
+            goal: A 1-2 sentence summary of what this agent accomplishes.
+            instruction: Detailed instructions on how the agent should behave and operate.
             learning_head: Optional name of the learning head type (e.g., 'peft').
             learning_head_config: Optional configuration for the learning head.
+            tools: Optional dictionary of tools.
             max_tokens: Default maximum tokens for model generation.
-            agent_name: Optional specific name for registration.
+            name: Optional specific name for registration.
             allowed_peers: List of agent names this agent can call.
-            **kwargs: Additional arguments passed to BaseAgent.__init__ (e.g., tools).
+            bidirectional_peers: If True, creates bidirectional edges with allowed_peers.
+            input_schema: Optional schema for validating agent input.
+            output_schema: Optional schema for validating agent output.
+            memory_retention: Memory retention policy - "single_run", "session", or "persistent"
+            memory_storage_path: Path for persistent memory storage (if retention is "persistent")
+            **kwargs: Additional arguments.
+
+        Raises:
+            TypeError: If model_config.type is not "local" (API models not supported).
+            TypeError: If backend is "vllm" (vLLM not supported for training).
         """
+        # Lazy import for local models (requires marsys[local-models])
+        try:
+            from marsys.models.models import (
+                LocalProviderAdapter,
+                HuggingFaceLLMAdapter,
+                HuggingFaceVLMAdapter,
+                LocalAdapterFactory,
+                PeftHead,
+            )
+        except ImportError as e:
+            raise ImportError(
+                "Learnable agents require local model support. Install with:\n"
+                "  pip install marsys[local-models]\n"
+                "or:\n"
+                "  uv pip install marsys[local-models]\n\n"
+                f"Original error: {str(e)}"
+            ) from e
+
+        # Enforce local models only
+        if model_config.type != "local":
+            raise TypeError(
+                f"LearnableAgent only supports local models (type='local'), "
+                f"got type='{model_config.type}'. API models cannot be used for training."
+            )
+
+        # Enforce HuggingFace backend only (vLLM doesn't support training)
+        backend = getattr(model_config, "backend", "huggingface") or "huggingface"
+        if backend == "vllm":
+            raise TypeError(
+                "LearnableAgent does not support vLLM backend. "
+                "Use backend='huggingface' for training support."
+            )
+
+        # Create adapter using factory
+        model_class = model_config.model_class or "llm"
+        effective_max_tokens = max_tokens if max_tokens is not None else model_config.max_tokens
+
+        adapter_kwargs = {
+            "max_tokens": effective_max_tokens,
+            "thinking_budget": model_config.thinking_budget,
+        }
+
+        # Add HuggingFace-specific parameters
+        if hasattr(model_config, "torch_dtype") and model_config.torch_dtype:
+            adapter_kwargs["torch_dtype"] = model_config.torch_dtype
+        if hasattr(model_config, "device_map") and model_config.device_map:
+            adapter_kwargs["device_map"] = model_config.device_map
+        if hasattr(model_config, "trust_remote_code"):
+            adapter_kwargs["trust_remote_code"] = model_config.trust_remote_code
+        if hasattr(model_config, "attn_implementation") and model_config.attn_implementation:
+            adapter_kwargs["attn_implementation"] = model_config.attn_implementation
+
+        model = LocalAdapterFactory.create_adapter(
+            backend=backend,
+            model_name=model_config.name,
+            model_class=model_class,
+            **adapter_kwargs,
+        )
+
         super().__init__(
             model=model,
-            description=description,  # Renamed
-            tools=kwargs.get("tools"),
-            # tools_schema=kwargs.get("tools_schema"), # Removed as BaseAgent.__init__ no longer takes it
-            max_tokens=max_tokens,
-            agent_name=agent_name,
+            goal=goal,
+            instruction=instruction,
+            tools=tools,
+            max_tokens=effective_max_tokens,
+            name=name,
             allowed_peers=allowed_peers,
+            bidirectional_peers=bidirectional_peers,
+            input_schema=input_schema,
+            output_schema=output_schema,
+            memory_retention=memory_retention,
+            memory_storage_path=memory_storage_path,
         )
+
         self._learning_head_name = learning_head
         self._learning_config = learning_head_config
-        if learning_head == "peft":
-            # Lazy import for local models (requires marsys[local-models])
-            try:
-                from marsys.models.models import BaseLLM, BaseVLM, PeftHead
-            except ImportError as e:
-                raise ImportError(
-                    "Learnable agents require local model support. Install with:\n"
-                    "  pip install marsys[local-models]\n"
-                    "or:\n"
-                    "  uv pip install marsys[local-models]\n\n"
-                    f"Original error: {str(e)}"
-                ) from e
 
+        if learning_head == "peft":
             if not learning_head_config:
                 raise ValueError(
                     "learning_head_config is required when learning_head is 'peft'"
-                )
-            if not isinstance(model, (BaseLLM, BaseVLM)):
-                raise TypeError(
-                    f"Base model for PEFT must be BaseLLM or BaseVLM, got {type(model)}"
                 )
             self.model = PeftHead(model=self.model)
             self.model.prepare_peft_model(**learning_head_config)
@@ -169,64 +254,91 @@ class LearnableAgent(BaseLearnableAgent):
     Use LearnableAgent when:
     - You need to customize model behavior through training
     - You have access to local GPU/compute resources
-    - You want to use open-source models (LLaMA, Mistral, etc.)
+    - You want to use open-source models (LLaMA, Mistral, Qwen, etc.)
     - You need full control over the model architecture
+
+    Training Access:
+    - Access raw PyTorch model: `agent.model.model` (for HuggingFace adapter)
+    - Access tokenizer: `agent.model.tokenizer`
+    - These can be used with training frameworks like trl, PEFT, etc.
     """
 
     def __init__(
         self,
-        model: Union["BaseVLM", "BaseLLM"],
-        description: str,  # Renamed from system_prompt
+        model_config: ModelConfig,
+        goal: str,
+        instruction: str,
         tools: Optional[Dict[str, Callable[..., Any]]] = None,
-        # tools_schema: Optional[List[Dict[str, Any]]] = None, # Removed from signature
+        memory_type: Optional[str] = "conversation_history",
         learning_head: Optional[str] = None,
         learning_head_config: Optional[Dict[str, Any]] = None,
-        max_tokens: Optional[int] = 512,
-        agent_name: Optional[str] = None,
+        max_tokens: Optional[int] = None,
+        name: Optional[str] = None,
         allowed_peers: Optional[List[str]] = None,
-        **kwargs: Any,  # Keep kwargs for other potential BaseAgent args if any in future
+        bidirectional_peers: bool = False,
+        input_schema: Optional[Any] = None,
+        output_schema: Optional[Any] = None,
+        memory_retention: str = "session",
+        memory_storage_path: Optional[str] = None,
+        **kwargs: Any,
     ) -> None:
         """
         Initializes the LearnableAgent.
 
         Args:
-            model: The local language model instance (potentially wrapped by PeftHead).
-            description: The base description of the agent's role and purpose.
+            model_config: ModelConfig for creating the local model (must have type="local").
+            goal: A 1-2 sentence summary of what this agent accomplishes.
+            instruction: Detailed instructions on how the agent should behave and operate.
             tools: Optional dictionary of tools.
+            memory_type: Type of memory module to use.
             learning_head: Optional type of learning head ('peft').
             learning_head_config: Optional configuration for the learning head.
             max_tokens: Default maximum tokens for model generation.
-            agent_name: Optional specific name for registration.
+            name: Optional specific name for registration.
             allowed_peers: List of agent names this agent can call.
-            **kwargs: Additional arguments passed to BaseAgent.__init__.
+            bidirectional_peers: If True, creates bidirectional edges with allowed_peers.
+            input_schema: Optional schema for validating agent input.
+            output_schema: Optional schema for validating agent output.
+            memory_retention: Memory retention policy - "single_run", "session", or "persistent"
+            memory_storage_path: Path for persistent memory storage (if retention is "persistent")
+            **kwargs: Additional arguments.
         """
         super().__init__(
-            model=model,
-            description=description,  # Renamed
+            model_config=model_config,
+            goal=goal,
+            instruction=instruction,
             learning_head=learning_head,
             learning_head_config=learning_head_config,
+            tools=tools,
             max_tokens=max_tokens,
-            agent_name=agent_name,
+            name=name,
             allowed_peers=allowed_peers,
-            tools=tools,  # Pass tools
-            # tools_schema is not passed as BaseLearnableAgent's super call to BaseAgent handles it
+            bidirectional_peers=bidirectional_peers,
+            input_schema=input_schema,
+            output_schema=output_schema,
+            memory_retention=memory_retention,
+            memory_storage_path=memory_storage_path,
             **kwargs,
         )
+
         # Lazy import for PeftHead type checking (requires marsys[local-models])
         try:
-            from marsys.models.models import PeftHead
+            from marsys.models.models import PeftHead, LocalProviderAdapter
         except ImportError:
-            PeftHead = None  # If not installed, PeftHead won't be used
+            PeftHead = None
+            LocalProviderAdapter = None
 
-        kg_model: Union["BaseVLM", "BaseLLM"]
+        # Get underlying model for KG memory if needed
+        kg_model = None
         if PeftHead and isinstance(self.model, PeftHead):
-            kg_model = self.model.model
-        else:
+            kg_model = self.model.model  # Get the adapter from PeftHead
+        elif LocalProviderAdapter and isinstance(self.model, LocalProviderAdapter):
             kg_model = self.model
+
         self.memory = MemoryManager(
-            memory_type="conversation_history",  # Default memory type
-            description=self.instruction,  # Pass agent's instruction for initial system message
-            model=None,  # kg_model is not needed since memory_type is "conversation_history"
+            memory_type=memory_type,
+            description=self.instruction,
+            model=kg_model,
             input_processor=self._input_message_processor(),
             output_processor=self._output_message_processor(),
         )
