@@ -144,15 +144,27 @@ gemini_config = ModelConfig(
     # api_key loaded from OPENROUTER_API_KEY env var
 )
 
-# Local Model
-local_config = ModelConfig(
+# Local Model - HuggingFace Backend (Development/Research)
+local_hf_config = ModelConfig(
     type="local",
     model_class="llm",
-    name="meta-llama/Llama-2-7b-chat-hf",
-    model_path="/models/llama-2-7b",
-    device="cuda",
-    torch_dtype="float16",
-    max_tokens=12000
+    name="Qwen/Qwen3-4B-Instruct-2507",
+    backend="huggingface",  # Default backend (can be omitted)
+    torch_dtype="bfloat16",
+    device_map="auto",
+    max_tokens=4096
+)
+
+# Local Model - vLLM Backend (Production/High-Throughput)
+local_vllm_config = ModelConfig(
+    type="local",
+    model_class="vlm",
+    name="Qwen/Qwen3-VL-8B-Instruct",
+    backend="vllm",  # High-throughput production backend
+    tensor_parallel_size=2,  # Multi-GPU inference
+    gpu_memory_utilization=0.9,
+    quantization="fp8",  # Optional: awq, gptq, fp8
+    max_tokens=4096
 )
 ```
 
@@ -257,6 +269,98 @@ browser_agent = await BrowserAgent.create_safe(
 | **Complex UIs** | `google/gemini-2.5-pro` | Higher accuracy for complex layouts, anti-bot challenges |
 
 **Note**: While Claude (Sonnet/Haiku 4.5) and other models work well for the main BrowserAgent planning logic, **Gemini models are specifically recommended for the vision component** due to superior performance in browser control and UI element detection tasks.
+
+### Local Models
+
+MARSYS supports running models locally using two backends:
+
+#### HuggingFace Backend (Development/Research)
+
+The default backend using HuggingFace transformers. Ideal for development, debugging, and research:
+
+```python
+from marsys.models import ModelConfig
+
+# Text-only LLM
+llm_config = ModelConfig(
+    type="local",
+    model_class="llm",
+    name="Qwen/Qwen3-4B-Instruct-2507",
+    backend="huggingface",  # Default, can be omitted
+    torch_dtype="bfloat16",
+    device_map="auto",
+    trust_remote_code=True,
+    max_tokens=4096
+)
+
+# Vision-Language Model
+vlm_config = ModelConfig(
+    type="local",
+    model_class="vlm",
+    name="Qwen/Qwen3-VL-8B-Instruct",
+    backend="huggingface",
+    torch_dtype="bfloat16",
+    device_map="auto",
+    thinking_budget=256,  # Token budget for thinking models
+    max_tokens=4096
+)
+```
+
+**Installation:**
+```bash
+pip install marsys[local-models]
+# or
+uv pip install marsys[local-models]
+```
+
+#### vLLM Backend (Production/High-Throughput)
+
+For production deployments with high throughput requirements:
+
+```python
+from marsys.models import ModelConfig
+
+vlm_config = ModelConfig(
+    type="local",
+    model_class="vlm",
+    name="Qwen/Qwen3-VL-8B-Instruct",
+    backend="vllm",
+    tensor_parallel_size=2,  # Multi-GPU inference
+    gpu_memory_utilization=0.9,
+    quantization="fp8",  # Optional: awq, gptq, fp8
+    max_tokens=4096
+)
+```
+
+**vLLM Features:**
+
+- **Continuous batching** for high throughput
+- **PagedAttention** for memory efficiency
+- **FP8/AWQ/GPTQ quantization** support
+- **Tensor parallelism** for multi-GPU inference
+
+**Installation:**
+```bash
+pip install marsys[production]
+# or
+uv pip install marsys[production]
+```
+
+#### Backend Comparison
+
+| Feature | HuggingFace | vLLM |
+|---------|-------------|------|
+| **Use Case** | Development/Research | Production |
+| **Throughput** | Lower | Higher (continuous batching) |
+| **Memory Efficiency** | Standard | Optimized (PagedAttention) |
+| **Quantization** | BitsAndBytes | FP8, AWQ, GPTQ |
+| **Multi-GPU** | device_map="auto" | Tensor parallelism |
+| **Training Support** | ✅ Yes | ❌ No |
+| **Debugging** | Easier | Harder |
+
+!!! tip "Choosing a Backend"
+    Use **HuggingFace** for development, debugging, and training integration.
+    Use **vLLM** for production deployments requiring high throughput.
 
 ### Custom API Models
 
@@ -436,13 +540,14 @@ speed_config = ModelConfig(
     max_tokens=12000
 )
 
-# Data privacy
+# Data privacy with local model
 private_config = ModelConfig(
     type="local",
     model_class="llm",
-    name="meta-llama/Llama-2-13b-chat-hf",
-    device="cuda",
-    torch_dtype="float16"
+    name="Qwen/Qwen3-4B-Instruct-2507",
+    backend="huggingface",
+    torch_dtype="bfloat16",
+    device_map="auto"
 )
 ```
 
