@@ -114,7 +114,7 @@ from marsys.agents.memory import KGMemory
 **Constructor:**
 ```python
 KGMemory(
-    model: Union[BaseVLM, BaseLLM, BaseAPIModel],
+    model: Union[BaseLocalModel, BaseAPIModel, LocalProviderAdapter],
     description: Optional[str] = None
 )
 ```
@@ -142,7 +142,7 @@ from marsys.agents.memory import MemoryManager
 MemoryManager(
     memory_type: str = "conversation_history",
     description: Optional[str] = None,
-    model: Optional[Union[BaseLLM, BaseVLM]] = None,
+    model: Optional[Union[BaseLocalModel, LocalProviderAdapter]] = None,
     memory_config: Optional[ManagedMemoryConfig] = None,
     token_counter: Optional[Callable] = None
 )
@@ -153,7 +153,7 @@ MemoryManager(
 |-----------|------|-------------|---------|
 | `memory_type` | `str` | `"conversation_history"`, `"managed_conversation"`, or `"kg"` | `"conversation_history"` |
 | `description` | `str` | Initial system prompt | `None` |
-| `model` | `BaseLLM/BaseVLM` | Required for `"kg"` type | `None` |
+| `model` | `BaseLocalModel/LocalProviderAdapter` | Required for `"kg"` type | `None` |
 | `memory_config` | `ManagedMemoryConfig` | Config for managed memory | `None` |
 | `token_counter` | `Callable` | Custom token counter | `None` |
 

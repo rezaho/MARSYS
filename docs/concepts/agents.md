@@ -61,7 +61,7 @@ from marsys.agents.memory import Message
 class BaseAgent(ABC):
     def __init__(
         self,
-        model: Union[BaseVLM, BaseLLM, BaseAPIModel],
+        model: Union[BaseLocalModel, BaseAPIModel],
         name: str,
         goal: str,
         instruction: str,

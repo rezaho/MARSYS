@@ -34,7 +34,7 @@ from marsys.coordination.context_manager import ContextSelector
 
 # --- New Imports ---
 from marsys.environment.utils import generate_openai_tool_schema
-from marsys.models.models import BaseAPIModel, ModelConfig
+from marsys.models.models import BaseAPIModel, BaseLocalModel, ModelConfig
 from marsys.utils.monitoring import default_progress_monitor
 
 from .memory import ConversationMemory, MemoryManager, Message, ToolCallMsg
@@ -148,7 +148,7 @@ class BaseAgent(ABC):
 
     def __init__(
         self,
-        model: Union["BaseVLM", "BaseLLM", BaseAPIModel],
+        model: Union[BaseLocalModel, BaseAPIModel],
         name: str,
         goal: str,
         instruction: str,
@@ -2604,8 +2604,8 @@ The user will provide their response, and you'll receive it to continue your tas
         try:
             # Create topology from allowed_peers
             topology = {
-                "nodes": [self.name],
-                "edges": [],  # Will be built automatically from allowed_peers
+                "agents": [self.name],
+                "flows": [],  # Will be built automatically from allowed_peers
                 "rules": [f"max_steps({max_steps or 30})"],
                 "entry_point": self.name,  # Specify this agent as the entry point
                 "exit_points": [self.name]  # Also specify as exit point so it can return final_response
@@ -2958,7 +2958,7 @@ The user will provide their response, and you'll receive it to continue your tas
         """
         Validates and normalizes model responses to ensure consistent format.
 
-        All models (BaseAPIModel, BaseLLM, BaseVLM) should return:
+        All models (BaseAPIModel, BaseLocalModel) should return:
         {
             "role": "assistant",
             "content": "...",  # Can be string, dict, or list
@@ -3965,7 +3965,7 @@ class Agent(BaseAgent):
             max_tokens if max_tokens is not None else model_config.max_tokens
         )
 
-        model_instance: Union["BaseLLM", "BaseVLM", BaseAPIModel] = (
+        model_instance: Union[BaseLocalModel, BaseAPIModel] = (
             self._create_model_from_config(model_config)  # Pass ModelConfig instance
         )
         super().__init__(
@@ -4010,7 +4010,7 @@ class Agent(BaseAgent):
 
     def _create_model_from_config(
         self, config: ModelConfig  # Changed type hint
-    ) -> Union["BaseLLM", "BaseVLM", BaseAPIModel]:
+    ) -> Union[BaseLocalModel, BaseAPIModel]:
         """
         Factory method to create a model instance from a ModelConfig object.
 
@@ -4018,7 +4018,7 @@ class Agent(BaseAgent):
             config: The model configuration object.
 
         Returns:
-            An instance of BaseLLM, BaseVLM, or BaseAPIModel.
+            An instance of BaseLocalModel or BaseAPIModel.
 
         Raises:
             ValueError: If configuration is invalid or model type/class is unsupported.
@@ -4034,41 +4034,39 @@ class Agent(BaseAgent):
         extra_kwargs = config.dict(exclude_unset=True, exclude=known_keys)
 
         if model_type == "local":
-            # Lazy import for local models (requires marsys[local-models])
-            try:
-                from marsys.models.models import BaseLLM, BaseVLM
-            except ImportError as e:
-                raise ImportError(
-                    "Local model support requires additional dependencies. Install with:\n"
-                    "  pip install marsys[local-models]\n"
-                    "or:\n"
-                    "  uv pip install marsys[local-models]\n\n"
-                    f"Original error: {str(e)}"
-                ) from e
-
+            # Use BaseLocalModel with adapter pattern for local models
+            # This supports both HuggingFace (development) and vLLM (production) backends
             model_class_type = config.model_class
-            torch_dtype = config.torch_dtype
-            device_map = config.device_map
+            if not model_class_type:
+                raise ValueError("'model_class' must be set to 'llm' or 'vlm' for local models")
 
-            if model_class_type == "llm":
-                return BaseLLM(
-                    model_name=model_name,
-                    max_tokens=max_tokens_cfg,
-                    torch_dtype=torch_dtype,
-                    device_map=device_map,
-                    **extra_kwargs,
-                )
-            elif model_class_type == "vlm":
-                return BaseVLM(
-                    model_name=model_name,
-                    max_tokens=max_tokens_cfg,
-                    torch_dtype=torch_dtype,
-                    device_map=device_map,
-                    **extra_kwargs,
-                )
-            else:
-                # This case should ideally be caught by ModelConfig validation
-                raise ValueError(f"Unsupported local model class: {model_class_type}")
+            # Get backend configuration (default to huggingface)
+            backend = getattr(config, "backend", "huggingface") or "huggingface"
+
+            # Build kwargs based on backend
+            local_kwargs = {
+                "model_name": model_name,
+                "model_class": model_class_type,
+                "backend": backend,
+                "max_tokens": max_tokens_cfg,
+                "thinking_budget": config.thinking_budget,
+            }
+
+            # Add backend-specific parameters
+            if backend == "huggingface":
+                local_kwargs["torch_dtype"] = config.torch_dtype
+                local_kwargs["device_map"] = config.device_map
+            elif backend == "vllm":
+                local_kwargs["tensor_parallel_size"] = getattr(config, "tensor_parallel_size", 1)
+                local_kwargs["gpu_memory_utilization"] = getattr(config, "gpu_memory_utilization", 0.9)
+                local_kwargs["dtype"] = config.torch_dtype  # vLLM uses 'dtype' instead of 'torch_dtype'
+                if hasattr(config, "quantization") and config.quantization:
+                    local_kwargs["quantization"] = config.quantization
+
+            # Merge extra kwargs
+            local_kwargs.update(extra_kwargs)
+
+            return BaseLocalModel(**local_kwargs)
         elif model_type == "api":
             api_key = config.api_key
             base_url = config.base_url
