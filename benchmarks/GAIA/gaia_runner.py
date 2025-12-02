@@ -572,7 +572,7 @@ async def run_gaia_benchmark(
 
     # Define topology (reused for all tasks)
     topology = {
-        "nodes": [
+        "agents": [
             "Coordinator",
             "Planner",
             "FileOps",
@@ -580,7 +580,7 @@ async def run_gaia_benchmark(
             "BrowserAgent",
             "Reasoner",
         ],
-        "edges": [
+        "flows": [
             # Coordinator orchestrates everything
             "Coordinator -> Planner",
             "Planner -> Coordinator",
