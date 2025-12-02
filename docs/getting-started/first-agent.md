@@ -40,7 +40,7 @@ async def main():
 
     result = await Orchestra.run(
         task="Explain quantum computing in simple terms",
-        topology={"nodes": ["Assistant"], "edges": []}
+        topology={"agents": ["Assistant"], "flows": []}
     )
 
     print(result.final_response)
@@ -452,8 +452,8 @@ browser_agent = BrowserAgent(
 
 # Use in a topology
 topology = {
-    "nodes": ["WebNavigator"],
-    "edges": []
+    "agents": ["WebNavigator"],
+    "flows": []
 }
 
 result = await Orchestra.run(

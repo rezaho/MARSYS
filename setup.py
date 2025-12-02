@@ -52,7 +52,7 @@ core_deps = [
 local_models_deps = [
     "torch>=2.6.0",
     "torchvision>=0.23.0",
-    "transformers>=4.54.1",
+    "transformers>=4.54,<5.0",
     "accelerate>=1.5.2",
     "peft>=0.17.1",
     "trl>=0.22.1",
@@ -93,9 +93,9 @@ setup(
 
     # Author information
     author="Reza Hosseini",
-    author_email="reza.hosseini@marsys.io",
+    author_email="reza@marsys.ai",
     maintainer="Reza Hosseini",
-    maintainer_email="reza.hosseini@marsys.io",
+    maintainer_email="reza@marsys.ai",
 
     # Package description
     description="A powerful framework for orchestrating collaborative AI agents with sophisticated reasoning, planning, and autonomous capabilities",
@@ -105,7 +105,7 @@ setup(
     # URLs
     url="https://github.com/rezaho/MARSYS",
     project_urls={
-        "Documentation": "https://marsys.io",
+        "Documentation": "https://marsys.ai",
         "Source Code": "https://github.com/rezaho/MARSYS",
         "Bug Tracker": "https://github.com/rezaho/MARSYS/issues",
         "Changelog": "https://github.com/rezaho/MARSYS/blob/main/CHANGELOG.md",

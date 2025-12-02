@@ -200,8 +200,8 @@ Orchestra accepts three topology formats:
 
 ```python
 topology = {
-    "nodes": ["Coordinator", "Worker1", "Worker2"],
-    "edges": [
+    "agents": ["Coordinator", "Worker1", "Worker2"],
+    "flows": [
         "Coordinator -> Worker1",
         "Coordinator -> Worker2"
     ]

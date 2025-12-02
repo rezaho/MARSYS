@@ -4,16 +4,16 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "marsys"
-version = "0.1.0"
+version = "0.1.1"
 description = "A powerful framework for orchestrating collaborative AI agents with sophisticated reasoning, planning, and autonomous capabilities"
 readme = "README.md"
 requires-python = ">=3.12"
 license = {text = "Apache-2.0"}
 authors = [
-    {name = "Reza Hosseini", email = "reza.hosseini@marsys.io"}
+    {name = "Reza Hosseini", email = "reza@marsys.ai"}
 ]
 maintainers = [
-    {name = "Reza Hosseini", email = "reza.hosseini@marsys.io"}
+    {name = "Reza Hosseini", email = "reza@marsys.ai"}
 ]
 keywords = [
     "ai", "agents", "multi-agent", "llm", "orchestration",
@@ -125,8 +125,8 @@ dev = [
 ]
 
 [project.urls]
-Homepage = "https://marsys.io"
-Documentation = "https://marsys.io"
+Homepage = "https://marsys.ai"
+Documentation = "https://marsys.ai"
 Repository = "https://github.com/rezaho/MARSYS"
 Issues = "https://github.com/rezaho/MARSYS/issues"
 Changelog = "https://github.com/rezaho/MARSYS/blob/main/CHANGELOG.md"

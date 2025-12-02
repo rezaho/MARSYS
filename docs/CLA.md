@@ -4,7 +4,7 @@ Thank you for your interest in contributing to the Marsys Multi-Agent Coordinati
 
 **Project Owner:** Marsys Project
 **Copyright Holder:** rezaho
-**Contact:** reza@marsys.io
+**Contact:** reza@marsys.ai
 
 This Contributor License Agreement ("Agreement") documents the rights granted by contributors to the Project Owner and clarifies copyright ownership.
 
@@ -140,7 +140,7 @@ This CLA is signed electronically via CLA Assistant when you submit your first p
 
 For questions about this Contributor License Agreement:
 
-**Email:** reza@marsys.io
+**Email:** reza@marsys.ai
 **GitHub:** @rezaho
 
 For more information, see:

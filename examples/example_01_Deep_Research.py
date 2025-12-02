@@ -7,11 +7,11 @@ reads from the scratch pad to create a comprehensive research report.
 Requirements:
     1. API Model Access: Running agents requires an active API key from your chosen provider.
        Configure your provider and API key in ModelConfig (e.g., OpenAI, Anthropic, OpenRouter).
-       See https://docs.marsys.io/getting-started/installation for setup instructions.
+       See https://docs.marsys.ai/getting-started/installation for setup instructions.
 
     2. Web Search API: This example uses Google Search API for web searches.
        - Set GOOGLE_SEARCH_API_KEY and GOOGLE_CSE_ID_GENERIC environment variables
-       - See https://docs.marsys.io/guides/built-in-tools for setup instructions
+       - See https://docs.marsys.ai/guides/built-in-tools for setup instructions
 
        If you don't have Google Search API keys, you can use DuckDuckGo to get started by
        changing enabled_tools=["duckduckgo"] in WebSearchAgent. However, DuckDuckGo is not

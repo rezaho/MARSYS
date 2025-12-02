@@ -135,7 +135,7 @@ Understand topologies, execution flow, and agent communication.
 # One-line execution for simple tasks
 result = await Orchestra.run(
     task="Analyze this data",
-    topology={"nodes": ["Analyst"], "edges": []}
+    topology={"agents": ["Analyst"], "flows": []}
 )
 ```
 
@@ -249,8 +249,8 @@ writer = Agent(
 
 # Define workflow
 topology = {
-    "nodes": ["Researcher", "Writer"],
-    "edges": ["Researcher -> Writer"]
+    "agents": ["Researcher", "Writer"],
+    "flows": ["Researcher -> Writer"]
 }
 
 # Run the system
