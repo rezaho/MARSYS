@@ -96,9 +96,12 @@ Return to OrchestratorAgent when all URLs have been processed.""",
         enabled_tools=["google", "semantic_scholar"],
     )
 
-    # Create file tools for BrowserAgent (only write_file needed with append mode)
+    # Create file tools for BrowserAgent:
+    # - write_file: to append results to scratch pad
+    # - read_file: to read downloaded PDFs and other files
     browser_file_tools = {
         "write_file": file_tools["write_file"],
+        "read_file": file_tools["read_file"],
     }
 
     browser_pool = await AgentPool.create_async(
@@ -114,6 +117,8 @@ Return to OrchestratorAgent when all URLs have been processed.""",
 
 WORKFLOW:
 1. Extract the content of the given URL.
+   - For regular web pages: extract directly from the page
+   - For PDFs/documents: the file is auto-downloaded to the downloads folder. Use read_file on the downloaded file path to extract its content.
 2. Clean and filter the extracted content to keep only information relevant to the provided search query.
 3. Save the result to the scratch_pad_file using mode="append".
 
@@ -159,8 +164,8 @@ Return to OrchestratorAgent after the report is saved.""",
     )
 
     topology = {
-        "nodes": ["User", "OrchestratorAgent", "RetrievalAgent", "WebSearchAgent", "BrowserAgent", "SynthesizerAgent"],
-        "edges": [
+        "agents": ["User", "OrchestratorAgent", "RetrievalAgent", "WebSearchAgent", "BrowserAgent", "SynthesizerAgent"],
+        "flows": [
             "User -> OrchestratorAgent",
             "OrchestratorAgent -> User",
             "OrchestratorAgent -> RetrievalAgent",
