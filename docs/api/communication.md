@@ -331,8 +331,8 @@ manager = CommunicationManager(
 ```python
 # In topology
 topology = {
-    "nodes": ["Agent1", "User", "Agent2"],
-    "edges": [
+    "agents": ["Agent1", "User", "Agent2"],
+    "flows": [
         "Agent1 -> User",
         "User -> Agent2"
     ]

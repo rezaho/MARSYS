@@ -129,8 +129,8 @@ writer = Agent(
 
 # Define topology with string notation
 topology = {
-    "nodes": ["Researcher", "Writer"],
-    "edges": ["Researcher -> Writer"],  # Researcher can invoke Writer
+    "agents": ["Researcher", "Writer"],
+    "flows": ["Researcher -> Writer"],  # Researcher can invoke Writer
     "rules": ["max_steps(20)", "timeout(300)"]
 }
 
