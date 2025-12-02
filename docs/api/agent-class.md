@@ -14,7 +14,6 @@ Abstract base class that all agents must inherit from.
 ```python
 from abc import ABC, abstractmethod
 from typing import Optional, Dict, List, Any, Union, Callable
-from marsys.models.base import BaseModel
 from marsys.agents.memory import ConversationMemory, Message
 
 class BaseAgent(ABC):
@@ -22,7 +21,7 @@ class BaseAgent(ABC):
 
     def __init__(
         self,
-        model: Union[BaseVLM, BaseLLM, BaseAPIModel],
+        model: Union[BaseLocalModel, BaseAPIModel],
         name: str,
         goal: str,
         instruction: str,
@@ -40,7 +39,7 @@ class BaseAgent(ABC):
         Initialize base agent.
 
         Args:
-            model: Language model instance
+            model: Language model instance (BaseLocalModel or BaseAPIModel)
             goal: 1-2 sentence summary of what the agent accomplishes
             instruction: Detailed instructions on how the agent should behave
             tools: Dictionary of tool functions

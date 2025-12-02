@@ -81,8 +81,11 @@ The MARSYS API is organized into several key modules:
 |-------|--------|-------------|
 | [`ModelConfig`](models/#modelconfig) | `src.models` | Model configuration |
 | [`BaseAPIModel`](models/#baseapimodel) | `src.models` | API model base class |
-| [`BaseLLM`](models/#basellm) | `src.models` | Local LLM base class |
-| [`BaseVLM`](models/#basevlm) | `src.models` | Vision-language model base |
+| [`BaseLocalModel`](models/#baselocalmodel) | `src.models` | Local model (unified interface) |
+| [`LocalProviderAdapter`](models/#localprovideradapter) | `src.models` | Local adapter base class |
+| [`HuggingFaceLLMAdapter`](models/#huggingfacellmadapter) | `src.models` | HuggingFace LLM adapter |
+| [`HuggingFaceVLMAdapter`](models/#huggingfacevlmadapter) | `src.models` | HuggingFace VLM adapter |
+| [`VLLMAdapter`](models/#vllmadapter) | `src.models` | vLLM adapter (production) |
 
 ### Topology Layer
 
@@ -138,8 +141,8 @@ from marsys.coordination.topology.patterns import PatternConfig
 
 # Simple topology
 topology = {
-    "nodes": ["A", "B", "C"],
-    "edges": ["A -> B", "B -> C"]
+    "agents": ["A", "B", "C"],
+    "flows": ["A -> B", "B -> C"]
 }
 
 # Pattern-based
@@ -317,8 +320,8 @@ result = await Orchestra.run(
 
 ```python
 topology = {
-    "nodes": ["User", "Processor", "ErrorHandler"],
-    "edges": [
+    "agents": ["User", "Processor", "ErrorHandler"],
+    "flows": [
         "User -> Processor",
         "Processor -> User",  # Success
         "Processor -> ErrorHandler",  # Error

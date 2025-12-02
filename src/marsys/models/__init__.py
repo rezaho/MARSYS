@@ -3,6 +3,13 @@
 from .models import (
     ModelConfig,
     BaseAPIModel,
+    BaseLocalModel,
+    # Local model adapters
+    LocalProviderAdapter,
+    LocalAdapterFactory,
+    HuggingFaceLLMAdapter,
+    HuggingFaceVLMAdapter,
+    VLLMAdapter,
 )
 
 from .response_models import (
@@ -16,10 +23,18 @@ from .response_models import (
 __all__ = [
     # Model config
     "ModelConfig",
-    
-    # Base
+
+    # API models
     "BaseAPIModel",
-    
+
+    # Local models (adapter pattern)
+    "BaseLocalModel",
+    "LocalProviderAdapter",
+    "LocalAdapterFactory",
+    "HuggingFaceLLMAdapter",
+    "HuggingFaceVLMAdapter",
+    "VLLMAdapter",
+
     # Response models
     "HarmonizedResponse",
     "ResponseMetadata",

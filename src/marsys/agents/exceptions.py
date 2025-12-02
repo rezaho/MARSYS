@@ -1146,8 +1146,8 @@ class TopologyError(CoordinationError):
             context["affected_nodes"] = affected_nodes
         if graph_structure:
             context["graph_info"] = {
-                "node_count": len(graph_structure.get("nodes", [])),
-                "edge_count": len(graph_structure.get("edges", []))
+                "node_count": len(graph_structure.get("agents", [])),
+                "edge_count": len(graph_structure.get("flows", []))
             }
 
         super().__init__(

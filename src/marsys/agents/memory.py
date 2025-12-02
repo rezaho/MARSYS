@@ -1,3 +1,5 @@
+from __future__ import annotations
+
 import asyncio
 import base64
 import dataclasses
@@ -7,16 +9,16 @@ import time
 import uuid
 from abc import ABC, abstractmethod
 from pathlib import Path
-from typing import Any, Callable, Dict, List, Optional, Union
+from typing import TYPE_CHECKING, Any, Callable, Dict, List, Optional, Union
 
 from pydantic import BaseModel
 
-from marsys.models.models import (
-    BaseAPIModel,
-    BaseLLM,  # Added ModelConfig
-    BaseVLM,
-)
+from marsys.models.models import BaseAPIModel
 from marsys.models.response_models import HarmonizedResponse
+
+# Type-only imports for optional local model support (requires marsys[local-models])
+if TYPE_CHECKING:
+    from marsys.models.models import BaseLocalModel, LocalProviderAdapter
 
 # Import the new exception classes
 from .exceptions import (
@@ -972,7 +974,7 @@ class KGMemory(BaseMemory):
 
     def __init__(
         self,
-        model: Union[BaseVLM, BaseLLM, BaseAPIModel],
+        model: Union[BaseLocalModel, LocalProviderAdapter, BaseAPIModel],
         description: Optional[str] = None,  # Renamed system_prompt to description
     ) -> None:
         super().__init__(memory_type="kg")
@@ -1646,7 +1648,7 @@ class MemoryManager:
         self,
         memory_type: str = "conversation_history",
         description: Optional[str] = None,
-        model: Optional[Union["BaseLLM", "BaseVLM"]] = None,
+        model: Optional[Union[BaseLocalModel, LocalProviderAdapter]] = None,
         memory_config: Optional[ManagedMemoryConfig] = None,
         token_counter: Optional[Callable] = None,
     ):
