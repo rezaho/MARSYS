@@ -84,7 +84,11 @@ class ModelConfig(BaseModel):
     # Local model settings
     model_class: Optional[Literal["llm", "vlm"]] = Field(
         default=None,
-        description="Local model class"
+        description="Local model class (required for type='local')"
+    )
+    backend: Optional[Literal["huggingface", "vllm"]] = Field(
+        default="huggingface",
+        description="Backend: 'huggingface' (dev) or 'vllm' (production)"
     )
     torch_dtype: str = Field(
         default="auto",
@@ -92,11 +96,21 @@ class ModelConfig(BaseModel):
     )
     device_map: str = Field(
         default="auto",
-        description="Device mapping strategy"
+        description="Device mapping strategy (HuggingFace only)"
     )
-    quantization_config: Optional[Dict[str, Any]] = Field(
+
+    # vLLM-specific settings
+    tensor_parallel_size: Optional[int] = Field(
+        default=1,
+        description="Number of GPUs for tensor parallelism (vLLM only)"
+    )
+    gpu_memory_utilization: Optional[float] = Field(
+        default=0.9,
+        description="GPU memory utilization fraction 0-1 (vLLM only)"
+    )
+    quantization: Optional[Literal["awq", "gptq", "fp8"]] = Field(
         default=None,
-        description="Quantization configuration"
+        description="Quantization method (vLLM only)"
     )
 
     # Additional parameters
@@ -129,14 +143,27 @@ claude_config = ModelConfig(
     max_tokens=12000
 )
 
-# Local Llama 2
-llama_config = ModelConfig(
+# Local LLM (HuggingFace backend)
+llm_config = ModelConfig(
     type="local",
-    name="meta-llama/Llama-2-7b-chat-hf",
+    name="Qwen/Qwen3-4B-Instruct-2507",
     model_class="llm",
-    torch_dtype="float16",
+    backend="huggingface",  # Default, can be omitted
+    torch_dtype="bfloat16",
     device_map="auto",
-    max_tokens=1024
+    max_tokens=4096
+)
+
+# Local VLM (vLLM backend for production)
+vlm_config = ModelConfig(
+    type="local",
+    name="Qwen/Qwen3-VL-8B-Instruct",
+    model_class="vlm",
+    backend="vllm",
+    tensor_parallel_size=2,
+    gpu_memory_utilization=0.9,
+    quantization="fp8",
+    max_tokens=4096
 )
 
 # Custom API endpoint
@@ -151,31 +178,59 @@ custom_config = ModelConfig(
 
 ## 🤖 Model Classes
 
-### BaseLLM
+### Local Model Architecture
 
-Base class for local language models using HuggingFace Transformers.
+MARSYS uses an **adapter pattern** for local models, supporting two backends:
+
+```
+                     ┌──────────────────────────────┐
+                     │        BaseLocalModel        │
+                     │    (Unified Interface)       │
+                     └────────────┬─────────────────┘
+                                  │
+                     ┌────────────┴─────────────────┐
+                     │      LocalAdapterFactory     │
+                     └────────────┬─────────────────┘
+                                  │
+          ┌───────────────────────┼───────────────────────┐
+          ▼                       ▼                       ▼
+┌──────────────────┐   ┌──────────────────┐   ┌──────────────────┐
+│ HuggingFaceLLM   │   │ HuggingFaceVLM   │   │    VLLMAdapter   │
+│    Adapter       │   │    Adapter       │   │ (LLM & VLM)      │
+└──────────────────┘   └──────────────────┘   └──────────────────┘
+```
+
+### BaseLocalModel
+
+Unified interface for local models. Recommended for most use cases.
 
 ```python
-class BaseLLM:
-    """Local language model wrapper."""
+from marsys.models import BaseLocalModel
+
+class BaseLocalModel:
+    """Base class for local models using adapter pattern."""
 
     def __init__(
         self,
         model_name: str,
-        max_tokens: int = 512,
-        torch_dtype: str = "auto",
-        device_map: str = "auto",
-        quantization_config: Optional[Dict] = None
+        model_class: str = "llm",
+        backend: str = "huggingface",
+        max_tokens: int = 1024,
+        thinking_budget: Optional[int] = None,
+        **kwargs
     ):
         """
-        Initialize local LLM.
+        Initialize local model.
 
         Args:
             model_name: HuggingFace model identifier
+            model_class: "llm" or "vlm"
+            backend: "huggingface" or "vllm"
             max_tokens: Maximum generation tokens
-            torch_dtype: PyTorch data type
-            device_map: Device mapping strategy
-            quantization_config: Quantization settings
+            thinking_budget: Token budget for thinking models
+            **kwargs: Backend-specific parameters:
+                - HuggingFace: torch_dtype, device_map, trust_remote_code
+                - vLLM: tensor_parallel_size, gpu_memory_utilization, quantization
         """
 ```
 
@@ -183,14 +238,14 @@ class BaseLLM:
 
 ##### `run(messages, **kwargs) -> Dict[str, Any]`
 
-Execute the model with input messages.
+Execute the model synchronously.
 
 **Parameters:**
-- `messages` (List[Dict[str, str]]): Conversation messages
+- `messages` (List[Dict]): Conversation messages
 - `json_mode` (bool): Enable JSON output mode
 - `max_tokens` (Optional[int]): Override max tokens
-- `temperature` (Optional[float]): Override temperature
 - `tools` (Optional[List[Dict]]): Tool definitions
+- `images` (Optional[List]): Images for VLM
 - `**kwargs`: Additional generation parameters
 
 **Returns:**
@@ -198,91 +253,162 @@ Execute the model with input messages.
 {
     "role": "assistant",
     "content": "Generated response text",
-    "tool_calls": [],  # If tools were used
-    "finish_reason": "stop",  # stop, length, tool_calls
-    "usage": {
-        "prompt_tokens": 100,
-        "completion_tokens": 50,
-        "total_tokens": 150
-    }
+    "thinking": "Optional thinking content for thinking models",
+    "tool_calls": []
 }
 ```
 
+##### `arun(messages, **kwargs) -> HarmonizedResponse`
+
+Execute the model asynchronously.
+
 **Example:**
 ```python
-from marsys.models import BaseLLM
+from marsys.models import BaseLocalModel
 
-llm = BaseLLM(
-    model_name="mistralai/Mistral-7B-Instruct-v0.1",
-    max_tokens=1024,
-    torch_dtype="bfloat16"
+# HuggingFace backend (development)
+model = BaseLocalModel(
+    model_name="Qwen/Qwen3-4B-Instruct-2507",
+    model_class="llm",
+    backend="huggingface",
+    torch_dtype="bfloat16",
+    device_map="auto",
+    max_tokens=4096
 )
 
-response = llm.run(
+response = model.run(
     messages=[
         {"role": "system", "content": "You are a helpful assistant."},
         {"role": "user", "content": "Explain quantum computing"}
-    ],
-    temperature=0.7
+    ]
 )
-
 print(response["content"])
+
+# vLLM backend (production)
+vlm_model = BaseLocalModel(
+    model_name="Qwen/Qwen3-VL-8B-Instruct",
+    model_class="vlm",
+    backend="vllm",
+    tensor_parallel_size=2,
+    gpu_memory_utilization=0.9,
+    max_tokens=4096
+)
 ```
 
-### BaseVLM
+### LocalProviderAdapter
 
-Base class for vision-language models.
+Abstract base class for local model adapters. Used internally by `BaseLocalModel`.
 
 ```python
-class BaseVLM:
-    """Vision-language model wrapper."""
+class LocalProviderAdapter(ABC):
+    """Abstract base class for local model provider adapters."""
 
-    def __init__(
-        self,
-        model_name: str,
-        max_tokens: int = 512,
-        torch_dtype: str = "auto",
-        device_map: str = "auto"
-    ):
-        """
-        Initialize VLM.
+    # Training access (HuggingFace only)
+    model: Any = None      # Raw PyTorch model
+    tokenizer: Any = None  # HuggingFace tokenizer
 
-        Args:
-            model_name: HuggingFace model identifier
-            max_tokens: Maximum generation tokens
-            torch_dtype: PyTorch data type
-            device_map: Device mapping strategy
-        """
+    @property
+    def supports_training(self) -> bool:
+        """True for HuggingFace adapters, False for vLLM."""
+
+    @property
+    def backend(self) -> str:
+        """Backend name: 'huggingface' or 'vllm'."""
 ```
 
-#### Methods
+### HuggingFaceLLMAdapter
 
-##### `run(messages, images=None, **kwargs) -> Dict[str, Any]`
+Adapter for text-only language models using HuggingFace transformers.
 
-Execute VLM with text and optional images.
-
-**Parameters:**
-- `messages` (List[Dict]): Conversation with optional images
-- `images` (Optional[List[str]]): Image paths or base64 data
-- `**kwargs`: Additional generation parameters
-
-**Example:**
 ```python
-from marsys.models import BaseVLM
+from marsys.models import HuggingFaceLLMAdapter
 
-vlm = BaseVLM(
-    model_name="llava-hf/llava-1.5-7b-hf",
-    max_tokens=512
+adapter = HuggingFaceLLMAdapter(
+    model_name="Qwen/Qwen3-4B-Instruct-2507",
+    max_tokens=4096,
+    torch_dtype="bfloat16",
+    device_map="auto",
+    thinking_budget=256,
+    trust_remote_code=True
 )
 
-response = vlm.run(
+# Access for training
+pytorch_model = adapter.model      # AutoModelForCausalLM
+tokenizer = adapter.tokenizer      # AutoTokenizer
+```
+
+### HuggingFaceVLMAdapter
+
+Adapter for vision-language models using HuggingFace transformers.
+
+```python
+from marsys.models import HuggingFaceVLMAdapter
+
+adapter = HuggingFaceVLMAdapter(
+    model_name="Qwen/Qwen3-VL-8B-Instruct",
+    max_tokens=4096,
+    torch_dtype="bfloat16",
+    device_map="auto",
+    thinking_budget=256
+)
+
+# Process images in messages
+response = adapter.run(
     messages=[
         {
             "role": "user",
-            "content": "What's in this image?",
-            "images": ["path/to/image.jpg"]
+            "content": [
+                {"type": "text", "text": "What's in this image?"},
+                {"type": "image_url", "image_url": {"url": "path/to/image.jpg"}}
+            ]
         }
     ]
+)
+```
+
+### VLLMAdapter
+
+Adapter for high-throughput production inference using vLLM.
+
+```python
+from marsys.models import VLLMAdapter
+
+adapter = VLLMAdapter(
+    model_name="Qwen/Qwen3-VL-8B-Instruct",
+    model_class="vlm",
+    max_tokens=4096,
+    tensor_parallel_size=2,       # Multi-GPU
+    gpu_memory_utilization=0.9,   # Memory fraction
+    quantization="fp8",           # awq, gptq, fp8
+    trust_remote_code=True
+)
+
+# Note: vLLM doesn't support training
+assert not adapter.supports_training
+```
+
+### LocalAdapterFactory
+
+Factory to create the appropriate adapter.
+
+```python
+from marsys.models import LocalAdapterFactory
+
+# Create HuggingFace LLM adapter
+adapter = LocalAdapterFactory.create_adapter(
+    backend="huggingface",
+    model_name="Qwen/Qwen3-4B-Instruct-2507",
+    model_class="llm",
+    torch_dtype="bfloat16",
+    device_map="auto"
+)
+
+# Create vLLM VLM adapter
+adapter = LocalAdapterFactory.create_adapter(
+    backend="vllm",
+    model_name="Qwen/Qwen3-VL-8B-Instruct",
+    model_class="vlm",
+    tensor_parallel_size=2
 )
 ```
 
@@ -378,31 +504,13 @@ if response.get("tool_calls"):
 
 ## 🏭 Model Factory
 
-### create_model
+### Model Creation
 
-Factory function to create model instances from configuration.
+For **API models**, use `BaseAPIModel.from_config()`:
 
 ```python
-def create_model(config: ModelConfig) -> Union[BaseLLM, BaseVLM, BaseAPIModel]:
-    """
-    Create model instance from configuration.
+from marsys.models import BaseAPIModel, ModelConfig
 
-    Args:
-        config: ModelConfig instance
-
-    Returns:
-        Appropriate model instance
-
-    Raises:
-        ValueError: If configuration is invalid
-    """
-```
-
-**Example:**
-```python
-from marsys.models import create_model, ModelConfig
-
-# Create from config
 config = ModelConfig(
     type="api",
     provider="openrouter",
@@ -410,11 +518,50 @@ config = ModelConfig(
     max_tokens=12000
 )
 
-model = create_model(config)
+model = BaseAPIModel.from_config(config)
+response = await model.arun(messages=[{"role": "user", "content": "Hello!"}])
+```
 
-# Use model
-response = await model.run(
-    messages=[{"role": "user", "content": "Hello!"}]
+For **local models**, use `BaseLocalModel`:
+
+```python
+from marsys.models import BaseLocalModel, ModelConfig
+
+config = ModelConfig(
+    type="local",
+    model_class="llm",
+    name="Qwen/Qwen3-4B-Instruct-2507",
+    backend="huggingface",
+    torch_dtype="bfloat16",
+    device_map="auto"
+)
+
+model = BaseLocalModel(
+    model_name=config.name,
+    model_class=config.model_class,
+    backend=config.backend,
+    torch_dtype=config.torch_dtype,
+    device_map=config.device_map,
+    max_tokens=config.max_tokens
+)
+
+response = model.run(messages=[{"role": "user", "content": "Hello!"}])
+```
+
+### LocalAdapterFactory
+
+For direct adapter creation:
+
+```python
+from marsys.models import LocalAdapterFactory
+
+# Creates the appropriate adapter based on backend and model_class
+adapter = LocalAdapterFactory.create_adapter(
+    backend="huggingface",  # or "vllm"
+    model_name="Qwen/Qwen3-4B-Instruct-2507",
+    model_class="llm",      # or "vlm"
+    torch_dtype="bfloat16",
+    device_map="auto"
 )
 ```
 

@@ -961,7 +961,7 @@ class TopologyGraph:
     def to_dict(self) -> Dict[str, Any]:
         """Convert graph to dictionary representation for debugging."""
         return {
-            "nodes": {name: {
+            "agents": {name: {
                 "incoming": node.incoming_edges,
                 "outgoing": node.outgoing_edges,
                 "is_divergence": node.is_divergence_point,
@@ -970,6 +970,6 @@ class TopologyGraph:
             "divergence_points": list(self.divergence_points),
             "convergence_points": list(self.convergence_points),
             "conversation_loops": [list(loop) for loop in self.conversation_loops],
-            "parallel_groups": [{"agents": g.agents, "trigger": g.trigger_point} 
+            "parallel_groups": [{"agents": g.agents, "trigger": g.trigger_point}
                               for g in self.parallel_groups]
         }
