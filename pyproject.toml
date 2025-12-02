@@ -44,6 +44,7 @@ dependencies = [
     "packaging>=25.0",
     "aiohttp>=3.12.15",
     "pyyaml>=6.0.2",
+    "python-dotenv>=1.0.0",
     # Browser automation
     "playwright>=1.55.0",
     "pillow>=12.0.0",  # Updated for file operations image handling
@@ -73,7 +74,7 @@ dependencies = [
 local-models = [
     "torch>=2.6.0",
     "torchvision>=0.23.0",
-    "transformers>=4.54.1",
+    "transformers>=4.54,<5.0",
     "accelerate>=1.5.2",
     "peft>=0.17.1",
     "trl>=0.22.1",
@@ -95,7 +96,7 @@ dev = [
     # Local models
     "torch>=2.6.0",
     "torchvision>=0.23.0",
-    "transformers>=4.54.1",
+    "transformers>=4.54,<5.0",
     "accelerate>=1.5.2",
     "peft>=0.17.1",
     "trl>=0.22.1",
