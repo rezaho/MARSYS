@@ -177,6 +177,7 @@ Return to OrchestratorAgent after the report is saved.""",
             "BrowserAgent -> RetrievalAgent",
             "SynthesizerAgent -> OrchestratorAgent",
         ],
+        "rules": ["timeout(600)"],  # 10 minute workflow timeout
     }
 
     result = await Orchestra.run(
@@ -186,9 +187,8 @@ Return to OrchestratorAgent after the report is saved.""",
             user_interaction="terminal",
             user_first=True,
             initial_user_msg="What topic would you like me to research today?",
-            convergence_timeout=1800,
         ),
-        max_steps=50,
+        max_steps=100,
         verbosity=2,
     )
 
