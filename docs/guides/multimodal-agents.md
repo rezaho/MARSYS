@@ -45,7 +45,7 @@ result = await Orchestra.run(
         "content": "What is shown in this image? Provide a detailed analysis.",
         "images": ["/path/to/screenshot.png"]
     },
-    topology={"nodes": ["VisionAnalyst"], "edges": []}
+    topology={"agents": ["VisionAnalyst"], "flows": []}
 )
 
 print(result.final_response)
@@ -408,7 +408,7 @@ result = await Orchestra.run(
             "./screenshots/settings.png"
         ]
     },
-    topology={"nodes": ["UIAnalyst"], "edges": []}
+    topology={"agents": ["UIAnalyst"], "flows": []}
 )
 
 print(result.final_response)
@@ -500,7 +500,7 @@ researcher = Agent(
 # Run GAIA task
 result = await Orchestra.run(
     task=f"File: {gaia_question['file_path']}\nQuestion: {gaia_question['question']}",
-    topology={"nodes": ["GaiaResearcher"], "edges": []}
+    topology={"agents": ["GaiaResearcher"], "flows": []}
 )
 
 # Compare answer

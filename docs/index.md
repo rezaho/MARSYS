@@ -266,7 +266,7 @@ graph LR
 
     ---
 
-    [Comprehensive guides and API reference](https://marsys.io/docs)
+    [Comprehensive guides and API reference](https://marsys.ai/docs)
 
 
 </div>

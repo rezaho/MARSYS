@@ -296,8 +296,8 @@ Convert string-based topology definitions.
 **Format:**
 ```python
 topology = {
-    "nodes": ["Agent1", "Agent2", "Agent3"],
-    "edges": [
+    "agents": ["Agent1", "Agent2", "Agent3"],
+    "flows": [
         "Agent1 -> Agent2",      # One-way
         "Agent2 <-> Agent3",      # Bidirectional
         "Agent1 => Agent3"        # Strong connection
@@ -316,11 +316,11 @@ Convert object-based topology definitions.
 **Format:**
 ```python
 topology = {
-    "nodes": [
+    "agents": [
         {"name": "Agent1", "type": "agent"},
         {"name": "User", "type": "user"}
     ],
-    "edges": [
+    "flows": [
         {"source": "User", "target": "Agent1"},
         {"source": "Agent1", "target": "User"}
     ],
@@ -412,8 +412,8 @@ order = analyzer.get_execution_order()
 ### Sequential Chain
 ```python
 topology = {
-    "nodes": ["A", "B", "C"],
-    "edges": ["A -> B", "B -> C"]
+    "agents": ["A", "B", "C"],
+    "flows": ["A -> B", "B -> C"]
 }
 ```
 
@@ -429,8 +429,8 @@ topology = PatternConfig.hub_and_spoke(
 ### Conversation Loop
 ```python
 topology = {
-    "nodes": ["Agent1", "Agent2"],
-    "edges": ["Agent1 <-> Agent2"],
+    "agents": ["Agent1", "Agent2"],
+    "flows": ["Agent1 <-> Agent2"],
     "rules": ["max_turns(5)"]
 }
 ```

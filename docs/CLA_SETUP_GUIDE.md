@@ -367,4 +367,4 @@ Use this checklist to verify setup:
 
 **Setup Complete!** Your CLA process is now automated. New contributors will be prompted to sign before their first contribution can be merged.
 
-For questions about this setup, contact: reza@marsys.io
+For questions about this setup, contact: reza@marsys.ai

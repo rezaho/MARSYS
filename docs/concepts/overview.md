@@ -227,8 +227,8 @@ All routing decisions based on topology:
 
 ```python
 topology = {
-    "nodes": ["A", "B", "C"],
-    "edges": ["A -> B", "B -> C"],  # Defines allowed paths
+    "agents": ["A", "B", "C"],
+    "flows": ["A -> B", "B -> C"],  # Defines allowed paths
     "rules": [...]  # Additional constraints
 }
 ```
