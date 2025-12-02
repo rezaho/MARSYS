@@ -93,7 +93,10 @@ Return to OrchestratorAgent when all URLs have been processed.""",
     web_search_agent = WebSearchAgent(
         model_config=model_config,
         name="WebSearchAgent",
+        goal="Find relevant sources using web and academic search",
+        instruction="Search for information using available search tools. Return relevant URLs and summaries.",
         enabled_tools=["google", "semantic_scholar"],
+        memory_retention="single_run",
     )
 
     # Create file tools for BrowserAgent:
