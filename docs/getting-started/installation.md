@@ -250,7 +250,7 @@ async def test():
     # Run a simple task
     result = await Orchestra.run(
         task="Say 'Hello, MARSYS is working!'",
-        topology={"nodes": ["TestAgent"], "edges": []}
+        topology={"agents": ["TestAgent"], "flows": []}
     )
 
     print("✅ Installation successful!")
@@ -482,7 +482,7 @@ Installation complete! Now you're ready to:
 - 📖 Check the [FAQ](../project/faq/)
 - 🐛 Report issues on [GitHub](https://github.com/rezaho/MARSYS/issues)
 - 💬 Join our [Discord Community](https://discord.gg/marsys)
-- 📧 Email support: [support@marsys.io](mailto:support@marsys.io)
+- 📧 Email support: [support@marsys.ai](mailto:support@marsys.ai)
 
 ---
 

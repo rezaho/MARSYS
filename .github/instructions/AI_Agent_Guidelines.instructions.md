@@ -10,7 +10,7 @@ These guidelines MUST be followed by any AI agent generating or modifying code w
 
 1.1. **Vigilant Code Exploration:**
     - Before modifying any existing file or writing new code that interacts with other modules, an agent MUST thoroughly examine all directly relevant source files.
-    - If a file `A` imports a module, class, or function from file `B` (e.g., `from src.module_b import MyClass`), the agent MUST request to read and understand the relevant sections of file `B` (e.g., `src/module_b.py`) before making changes to file `A` or implementing interactions with `MyClass`.
+    - If a file `A` imports a module, class, or function from file `B` (e.g., `from marsys.module_b import MyClass`), the agent MUST request to read and understand the relevant sections of file `B` (e.g., `src/module_b.py`) before making changes to file `A` or implementing interactions with `MyClass`.
     - For any task involving a specific class or function, the agent MUST locate its definition and analyze its existing usages (e.g., using `list_code_usages`) to understand its role, expected inputs/outputs, and interaction patterns.
     - Agents MUST utilize tools like `read_file`, `semantic_search`, `grep_search`, and `list_code_usages` proactively and extensively to gather this understanding. Do NOT rely solely on provided snippets or prior knowledge without verification against the current codebase.
 

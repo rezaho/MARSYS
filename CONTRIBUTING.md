@@ -2,7 +2,7 @@
 
 Thank you for your interest in contributing to the Marsys Multi-Agent Coordination Framework!
 
-Marsys is maintained by **rezaho** (reza@marsys.io).
+Marsys is maintained by **rezaho** (reza@marsys.ai).
 
 ---
 
@@ -88,7 +88,7 @@ The CLA ensures MARSYS can maintain flexible licensing while remaining open-sour
 ### Questions About the CLA?
 
 - Read the [CLA FAQ](docs/CLA.md)
-- Email: reza@marsys.io
+- Email: reza@marsys.ai
 - Open a discussion on GitHub
 
 ---
@@ -306,9 +306,9 @@ Closes #45
 
 - **General questions:** Open a GitHub Discussion
 - **Bug reports:** GitHub Issues
-- **Security issues:** Email reza@marsys.io (do not open public issues)
-- **CLA questions:** Email reza@marsys.io
-- **Other inquiries:** reza@marsys.io
+- **Security issues:** Email reza@marsys.ai (do not open public issues)
+- **CLA questions:** Email reza@marsys.ai
+- **Other inquiries:** reza@marsys.ai
 
 ---
 

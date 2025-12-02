@@ -91,8 +91,8 @@ Intelligent multi-tier support system with escalation.
 
 ```python
 topology = {
-    "nodes": ["User", "L1Support", "L2Support", "TicketManager"],
-    "edges": [
+    "agents": ["User", "L1Support", "L2Support", "TicketManager"],
+    "flows": [
         "User <-> L1Support",
         "L1Support -> L2Support",  # Escalation
         "L2Support -> TicketManager",
@@ -176,8 +176,8 @@ analyst_pool = await AgentPool.create_async(
 )
 
 topology = {
-    "nodes": ["MarketMonitor", "AnalystPool", "RiskAssessor", "ReportGenerator"],
-    "edges": [
+    "agents": ["MarketMonitor", "AnalystPool", "RiskAssessor", "ReportGenerator"],
+    "flows": [
         "MarketMonitor -> AnalystPool",
         "AnalystPool -> RiskAssessor",
         "RiskAssessor -> ReportGenerator"

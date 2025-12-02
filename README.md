@@ -6,12 +6,12 @@
 [![Python](https://img.shields.io/badge/python-3.12%2B-blue?style=for-the-badge)](https://www.python.org/)
 [![License](https://img.shields.io/badge/license-Apache%202.0-green?style=for-the-badge)](LICENSE)
 [![CLA assistant](https://cla-assistant.io/readme/badge/rezaho/MARSYS)](https://cla-assistant.io/rezaho/MARSYS)
-[![Documentation](https://img.shields.io/badge/docs-GitHub%20Pages-orange?style=for-the-badge)](https://marsys.io)
+[![Documentation](https://img.shields.io/badge/docs-GitHub%20Pages-orange?style=for-the-badge)](https://marsys.ai)
 [![Tests](https://img.shields.io/badge/tests-passing-brightgreen?style=for-the-badge)](tests/)
 
 **A powerful framework for orchestrating collaborative AI agents with sophisticated reasoning, planning, and autonomous capabilities**
 
-[📚 Documentation](https://marsys.io) | [🚀 Quick Start](#quick-start) | [💡 Examples](examples/) | [🤝 Contributing](#contributing)
+[📚 Documentation](https://marsys.ai) | [🚀 Quick Start](#quick-start) | [💡 Examples](examples/) | [🤝 Contributing](#contributing)
 
 </div>
 
@@ -19,17 +19,18 @@
 
 ## 📢 Latest News & Updates
 
-### 🎉 MARSYS v0.1 Beta Released! (26/11/2025)
+### 🎉 MARSYS v0.1 Beta Released! (02/12/2025)
 
 We're excited to announce the first beta release of MARSYS with major new features:
 
-- **🌐 Dynamic Branching System**: Revolutionary parallel execution with runtime branch spawning and convergence
-- **🔄 Three-Way Topology**: Define workflows using string notation, object-based, or pattern configurations
-- **💾 State Persistence**: Full pause/resume capability with checkpointing and recovery
-- **👥 User Interaction Nodes**: Built-in human-in-the-loop support for approval workflows and error recovery
-- **📊 Enhanced Monitoring**: Real-time execution tracking with StatusManager and comprehensive metrics
-- **🎯 Rules Engine**: Flexible constraint system for timeouts, resource limits, and custom business logic
-- **🔧 Tool System**: Automatic OpenAI-compatible schema generation from Python functions
+- **🔧 Flexibility**: Build any multi-agent AI system design with flexible topology definitions that adapt to your specific workflow needs.
+- **⚡ Speed**: Run agents in parallel with agent pools for true concurrency. No more waiting for sequential execution when tasks can run simultaneously.
+- **🧠 Smart Memory**: Context management that handles complex, long-running tasks without blowing up your token budget.
+- **🔄 Reliability**: Human-in-the-loop support for when things go wrong, with intelligent error recovery.
+- **🌐 Dynamic Branching**: Runtime parallel execution with branch spawning and convergence.
+- **👥 User Interaction**: Built-in human-in-the-loop support for approval workflows and error recovery.
+- **📊 Enhanced Monitoring**: Real-time execution tracking with StatusManager and comprehensive metrics.
+- **🎯 Rules Engine**: Flexible constraint system for timeouts, resource limits, and custom business logic.
 
 [Read the full release notes →](CHANGELOG.md)
 
@@ -286,8 +287,8 @@ async def main():
 
     # Define sequential workflow
     topology = {
-        "nodes": ["DataCollector", "Analyzer", "Reporter"],
-        "edges": [
+        "agents": ["DataCollector", "Analyzer", "Reporter"],
+        "flows": [
             "DataCollector -> Analyzer",
             "Analyzer -> Reporter"
         ]
@@ -310,26 +311,26 @@ asyncio.run(main())
 
 ## 📖 Documentation
 
-Comprehensive documentation is available at [https://marsys.io](https://marsys.io)
+Comprehensive documentation is available at [https://marsys.ai](https://marsys.ai)
 
 ### Quick Links
 
 - **Getting Started**
-  - [Installation Guide](https://marsys.io/getting-started/installation)
-  - [Quick Start Tutorial](https://marsys.io/getting-started/quick-start)
-  - [Your First Agent](https://marsys.io/getting-started/first-agent)
+  - [Installation Guide](https://marsys.ai/getting-started/installation)
+  - [Quick Start Tutorial](https://marsys.ai/getting-started/quick-start)
+  - [Your First Agent](https://marsys.ai/getting-started/first-agent)
 
 - **Core Concepts**
-  - [Agents & Memory](https://marsys.io/concepts/agents)
-  - [Topology System](https://marsys.io/api/topology)
-  - [Execution Flow](https://marsys.io/concepts/execution-flow)
-  - [Branching Model](https://marsys.io/concepts/branching)
+  - [Agents & Memory](https://marsys.ai/concepts/agents)
+  - [Topology System](https://marsys.ai/api/topology)
+  - [Execution Flow](https://marsys.ai/concepts/execution-flow)
+  - [Branching Model](https://marsys.ai/concepts/branching)
 
 - **API Reference**
-  - [Orchestra API](https://marsys.io/api/orchestra)
-  - [Agent API](https://marsys.io/api/agent-class)
-  - [Configuration API](https://marsys.io/api/configuration)
-  - [Complete API Docs](https://marsys.io/api/overview)
+  - [Orchestra API](https://marsys.ai/api/orchestra)
+  - [Agent API](https://marsys.ai/api/agent-class)
+  - [Configuration API](https://marsys.ai/api/configuration)
+  - [Complete API Docs](https://marsys.ai/api/overview)
 
 ---
 
@@ -362,7 +363,7 @@ graph TD
 - **State Manager**: Handles persistence and recovery
 - **Communication Manager**: Manages user interactions
 
-[Architecture documentation →](https://marsys.io/concepts/overview)
+[Architecture documentation →](https://marsys.ai/concepts/overview)
 
 ---
 
@@ -411,7 +412,7 @@ MARSYS excels in complex, multi-step workflows requiring coordination between sp
 - Multi-perspective storytelling
 - Design iteration with feedback
 
-[More use cases →](https://marsys.io/use-cases)
+[More use cases →](https://marsys.ai/use-cases)
 
 ---
 
@@ -509,7 +510,7 @@ MARSYS is released under the **Apache License 2.0**. See [LICENSE](LICENSE) for 
 ### Copyright & Ownership
 
 Copyright © 2025 **Marsys Project**
-Original Author: [rezaho](https://github.com/rezaho) (reza@marsys.io)
+Original Author: [rezaho](https://github.com/rezaho) (reza@marsys.ai)
 
 **Important:** The copyright is held solely by the original author. Contributors grant a license to their contributions but do not transfer copyright ownership. See [COPYRIGHT](COPYRIGHT) for details.
 
@@ -530,10 +531,10 @@ Special thanks to:
 
 ## 📮 Contact & Support
 
-- **Documentation**: [https://marsys.io](https://marsys.io)
+- **Documentation**: [https://marsys.ai](https://marsys.ai)
 - **GitHub Issues**: [Bug reports and feature requests](https://github.com/rezaho/MARSYS/issues)
 - **Discussions**: [Community forum](https://github.com/rezaho/MARSYS/discussions)
-- **Email**: reza.hosseini@marsys.io
+- **Email**: reza@marsys.ai
 - **Twitter**: [@marsys_ai](https://twitter.com/marsys_ai)
 
 ---
@@ -544,6 +545,6 @@ Special thanks to:
 
 ⭐ Star us on GitHub — it helps!
 
-[Website](https://marsys.io) • [Documentation](https://marsys.io/docs) • [Examples](examples/) • [Blog](https://marsys.io/blog)
+[Website](https://marsys.ai) • [Documentation](https://marsys.ai/docs) • [Examples](examples/) • [Blog](https://marsys.ai/blog)
 
 </div>

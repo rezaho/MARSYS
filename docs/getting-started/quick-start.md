@@ -112,7 +112,7 @@ async def main():
     # One-line execution
     result = await Orchestra.run(
         task="Write a haiku about artificial intelligence",
-        topology={"nodes": ["Poet"], "edges": []}
+        topology={"agents": ["Poet"], "flows": []}
     )
 
     print(result.final_response)
@@ -220,8 +220,8 @@ async def main():
 
     # Define sequential workflow
     topology = {
-        "nodes": ["DataCollector", "Analyzer", "Reporter"],
-        "edges": [
+        "agents": ["DataCollector", "Analyzer", "Reporter"],
+        "flows": [
             "DataCollector -> Analyzer",
             "Analyzer -> Reporter"
         ]
@@ -293,8 +293,8 @@ asyncio.run(main())
 The topology determines how agents communicate:
 ```python
 topology = {
-    "nodes": ["A", "B", "C"],
-    "edges": ["A -> B", "B -> C"]  # A calls B, B calls C
+    "agents": ["A", "B", "C"],
+    "flows": ["A -> B", "B -> C"]  # A calls B, B calls C
 }
 ```
 

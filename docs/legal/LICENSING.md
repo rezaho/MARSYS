@@ -70,7 +70,7 @@ Read the full Apache 2.0 license: [LICENSE](../../LICENSE)
 ### Who Owns MARSYS?
 
 **Copyright Holder**: Marsys Project
-**Original Author**: [rezaho](https://github.com/rezaho) (reza@marsys.io)
+**Original Author**: [rezaho](https://github.com/rezaho) (reza@marsys.ai)
 
 The copyright is held **solely** by the original author. This is clearly documented in:
 - [LICENSE](../../LICENSE) - Apache 2.0 with copyright notice
@@ -183,7 +183,7 @@ The CLA is based on widely-used templates (similar to Google's and Apache Founda
 
 ### Q: What if I'm contributing on behalf of my employer?
 
-If your employer owns the IP to your work, they need to sign a Corporate CLA. Contact reza@marsys.io for the corporate CLA template.
+If your employer owns the IP to your work, they need to sign a Corporate CLA. Contact reza@marsys.ai for the corporate CLA template.
 
 ---
 
@@ -230,7 +230,7 @@ MARSYS may explore dual-licensing options in the future to support sustainable d
 ## Contact
 
 For licensing questions:
-- **Email**: reza@marsys.io
+- **Email**: reza@marsys.ai
 - **GitHub Discussions**: [Ask questions](https://github.com/rezaho/MARSYS/discussions)
 - **GitHub Issues**: [Report licensing issues](https://github.com/rezaho/MARSYS/issues)
 

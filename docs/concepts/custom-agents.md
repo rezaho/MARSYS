@@ -680,8 +680,8 @@ async def test_agent_in_workflow():
 
     # Define test topology
     topology = {
-        "nodes": ["CustomTest"],
-        "edges": []
+        "agents": ["CustomTest"],
+        "flows": []
     }
 
     # Run in Orchestra

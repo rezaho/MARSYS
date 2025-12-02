@@ -213,8 +213,8 @@ Enable human-in-the-loop workflows:
 ```python
 # Topology with User node
 topology = {
-    "nodes": ["User", "Assistant", "Reviewer"],
-    "edges": [
+    "agents": ["User", "Assistant", "Reviewer"],
+    "flows": [
         "User -> Assistant",     # User provides input
         "Assistant -> Reviewer",  # Assistant processes
         "Reviewer -> User"        # User reviews result

@@ -43,7 +43,7 @@ The first public beta release of MARSYS - Multi-Agent Reasoning Systems framewor
 - **Vision Model Support**: Integration with vision-language models including Qwen-VL
 
 #### Developer Experience
-- **Comprehensive Documentation**: Full docs at marsys.io with tutorials and examples
+- **Comprehensive Documentation**: Full docs at marsys.ai with tutorials and examples
 - **10 Real-World Examples**: Practical examples covering common patterns
 - **Type Safety**: Full type hints throughout the codebase
 - **Testing Suite**: Comprehensive test coverage (11 core + 5 integration tests)
@@ -105,7 +105,7 @@ The first public beta release of MARSYS - Multi-Agent Reasoning Systems framewor
 
 ### 📚 Documentation
 
-- Complete framework documentation at [marsys.io](https://marsys.io)
+- Complete framework documentation at [marsys.ai](https://marsys.ai)
 - API reference for all public classes and methods
 - Architecture guides and design patterns
 - 10 fully documented real-world examples
