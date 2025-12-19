@@ -76,6 +76,7 @@ class HarmonizedResponse(BaseModel):
     tool_calls: List[ToolCall] = Field(default_factory=list)
     reasoning: Optional[str] = None  # For o1 models or reasoning traces
     thinking: Optional[str] = None  # For thinking/planning content
+    reasoning_details: Optional[List[Dict[str, Any]]] = None  # For Gemini 3 thought signatures
     metadata: ResponseMetadata
     
     @field_validator('role')
@@ -112,7 +113,11 @@ class HarmonizedResponse(BaseModel):
     def has_thinking(self) -> bool:
         """Check if response contains thinking content."""
         return self.thinking is not None
-    
+
+    def has_reasoning_details(self) -> bool:
+        """Check if response contains reasoning details (Gemini 3 thought signatures)."""
+        return self.reasoning_details is not None and len(self.reasoning_details) > 0
+
     def get_text_content(self) -> str:
         """Get all text content combined."""
         parts = []
