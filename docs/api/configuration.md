@@ -172,10 +172,22 @@ StatusConfig(
 **VerbosityLevel Enum:**
 ```python
 class VerbosityLevel(IntEnum):
-    QUIET = 0     # Minimal output
-    NORMAL = 1    # Standard output
-    VERBOSE = 2   # Detailed output
+    QUIET = 0     # Minimal output (no thinking, no tool calls)
+    NORMAL = 1    # Standard output (agent thinking, tool calls with reasoning)
+    VERBOSE = 2   # Detailed output (all of above + tool arguments, completion timings)
 ```
+
+**What Shows at Each Level:**
+
+| Event Type | QUIET | NORMAL | VERBOSE |
+|------------|-------|--------|---------|
+| Agent start/complete | ✓ | ✓ | ✓ |
+| Agent thinking | ✗ | ✓ | ✓ |
+| Tool call name | ✗ | ✓ | ✓ |
+| Tool reasoning | ✗ | ✓ | ✓ |
+| Tool arguments | ✗ | ✗ | ✓ |
+| Tool completion | ✗ | ✗ | ✓ |
+| Action type details | ✗ | ✗ | ✓ |
 
 **Example:**
 ```python
