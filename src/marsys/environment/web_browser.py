@@ -2118,20 +2118,34 @@ class BrowserTool:
 
         # Global download detection infrastructure
         self._download_queue: asyncio.Queue = asyncio.Queue()
-        self._setup_global_download_listener()
+        self._setup_global_listeners()
 
-    def _setup_global_download_listener(self):
+    def _setup_global_listeners(self):
         """
-        Set up a persistent global download listener that captures ALL downloads.
+        Set up global listeners for downloads and new tab handling.
 
-        This listener is registered once during initialization and persists across
-        all browser actions. Downloads are queued for methods to consume.
+        This method is called once during initialization and sets up:
+        1. Download listener - captures all downloads for methods to consume
+        2. New tab listener - auto-switches self.page when new tabs open
+
+        The new tab listener ensures that when a link with target="_blank" is clicked,
+        self.page is automatically updated to the new tab so screenshot captures and
+        interactions happen on the correct page.
         """
+        # Download listener for the initial page
         async def on_download(download):
             await self._download_queue.put(download)
 
-        # Register persistent download listener
         self.page.on("download", on_download)
+
+        # Auto-switch to new tabs when they open
+        def on_new_page(new_page):
+            self.page = new_page
+            logger.debug(f"Auto-switched to new tab: {new_page.url}")
+            # Re-register download listener on new page
+            new_page.on("download", on_download)
+
+        self.context.on("page", on_new_page)
 
     async def _check_for_download(self, timeout_ms: int = 500) -> Optional[Dict[str, str]]:
         """
@@ -2297,24 +2311,29 @@ class BrowserTool:
         }
         prefs_path.write_text(json.dumps(prefs))
 
-        # Set up persistent context options
+        # Set up persistent context options with anti-detection measures
         context_kwargs = {
             "user_data_dir": str(user_data_dir),
             "headless": headless,
             "accept_downloads": True,
             "java_script_enabled": True,
             "bypass_csp": True,  # Bypass Content Security Policy for better compatibility
+            # Anti-detection: Use a realistic user agent
+            "user_agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36",
+            # Anti-detection: Set realistic locale and timezone
+            "locale": "en-US",
+            "timezone_id": "America/New_York",
             "args": [
-                "--disable-web-security",
-                "--disable-features=VizDisplayCompositor",
-                "--disable-font-subpixel-positioning",
-                "--disable-remote-fonts",
-                "--disable-background-timer-throttling",
-                "--disable-backgrounding-occluded-windows",
-                "--disable-renderer-backgrounding",
-                "--no-sandbox",
+                # Essential stability flags (minimal set)
                 "--disable-dev-shm-usage",
-            ]
+                # Anti-detection flags - these help avoid bot detection
+                "--disable-blink-features=AutomationControlled",
+                "--disable-infobars",
+                "--no-first-run",
+                "--disable-component-update",
+            ],
+            # Anti-detection: Disable automation-related flags
+            "ignore_default_args": ["--enable-automation"],
         }
 
         # Add channel if specified
@@ -2339,6 +2358,41 @@ class BrowserTool:
                 if timeout:
                     context.set_default_navigation_timeout(timeout)
                     context.set_default_timeout(timeout)
+
+                # Anti-detection: Inject stealth scripts to hide automation markers
+                await context.add_init_script("""
+                    // Hide webdriver property
+                    Object.defineProperty(navigator, 'webdriver', {
+                        get: () => undefined
+                    });
+
+                    // Override plugins to look more realistic
+                    Object.defineProperty(navigator, 'plugins', {
+                        get: () => [
+                            { name: 'Chrome PDF Plugin', filename: 'internal-pdf-viewer' },
+                            { name: 'Chrome PDF Viewer', filename: 'mhjfbmdgcfjbbpaeojofohoefgiehjai' },
+                            { name: 'Native Client', filename: 'internal-nacl-plugin' }
+                        ]
+                    });
+
+                    // Override languages
+                    Object.defineProperty(navigator, 'languages', {
+                        get: () => ['en-US', 'en']
+                    });
+
+                    // Hide automation-related Chrome properties
+                    if (window.chrome) {
+                        window.chrome.runtime = {};
+                    }
+
+                    // Override permissions query
+                    const originalQuery = window.navigator.permissions.query;
+                    window.navigator.permissions.query = (parameters) => (
+                        parameters.name === 'notifications' ?
+                            Promise.resolve({ state: Notification.permission }) :
+                            originalQuery(parameters)
+                    );
+                """)
 
                 # Persistent context often starts with a default page, use it instead of creating a new one
                 existing_pages = context.pages
@@ -2434,6 +2488,208 @@ class BrowserTool:
                 "output": title,
             }
         )
+
+    # ==================== Tab Management Tools ====================
+
+    async def list_tabs(self, reasoning: Optional[str] = None) -> str:
+        """
+        List all open browser tabs with their index, title, and URL.
+
+        Use this tool to see all tabs currently open in the browser.
+        Use the index value with switch_to_tab(index=...) to switch tabs.
+
+        Parameters:
+            reasoning (Optional[str]): The reasoning for listing tabs.
+
+        Returns:
+            str: A formatted list of all open tabs with index, title, and URL.
+        """
+        r = reasoning or ""
+        tabs_info = []
+
+        for idx, page in enumerate(self.context.pages):
+            try:
+                title = await page.title()
+            except Exception:
+                title = "(unable to get title)"
+            url = page.url
+            is_active = " [ACTIVE]" if page == self.page else ""
+            tabs_info.append(f"  index={idx}{is_active}: {title}\n      URL: {url}")
+
+        result = f"Open tabs ({len(self.context.pages)} total):\n" + "\n".join(tabs_info)
+
+        self.history.append({
+            "action": "list_tabs",
+            "reasoning": r,
+            "tab_count": len(self.context.pages),
+        })
+
+        return result
+
+    async def get_active_tab(self, reasoning: Optional[str] = None) -> str:
+        """
+        Get information about the currently active tab.
+
+        Use this tool to check which tab is currently being controlled by the browser.
+
+        Parameters:
+            reasoning (Optional[str]): The reasoning for checking the active tab.
+
+        Returns:
+            str: Information about the active tab including index, title and URL.
+        """
+        r = reasoning or ""
+
+        try:
+            title = await self.page.title()
+        except Exception:
+            title = "(unable to get title)"
+        url = self.page.url
+
+        # Find the index of the active tab
+        active_idx = -1
+        for idx, page in enumerate(self.context.pages):
+            if page == self.page:
+                active_idx = idx
+                break
+
+        result = f"Active tab (index={active_idx}):\n  Title: {title}\n  URL: {url}"
+
+        self.history.append({
+            "action": "get_active_tab",
+            "reasoning": r,
+            "title": title,
+            "url": url,
+            "index": active_idx,
+        })
+
+        return result
+
+    async def switch_to_tab(
+        self,
+        index: int,
+        reasoning: Optional[str] = None,
+    ) -> str:
+        """
+        Switch to a different browser tab by its index.
+
+        Use this tool when you need to switch control to a different tab.
+        Use list_tabs() first to see available tabs and their indices.
+
+        Parameters:
+            index (int): The tab index (0-based). Use list_tabs() to see available indices.
+            reasoning (Optional[str]): The reasoning for switching tabs.
+
+        Returns:
+            str: Confirmation message with the new active tab's title and URL.
+
+        Examples:
+            - switch_to_tab(index=0) - Switch to first tab
+            - switch_to_tab(index=1) - Switch to second tab
+        """
+        r = reasoning or ""
+
+        if not isinstance(index, int) or index < 0 or index >= len(self.context.pages):
+            error_msg = f"Invalid index {index}. Available indices: 0 to {len(self.context.pages) - 1}. Use list_tabs() to see all tabs."
+            self.history.append({
+                "action": "switch_to_tab",
+                "reasoning": r,
+                "index": index,
+                "success": False,
+                "error": error_msg,
+            })
+            return error_msg
+
+        target_page = self.context.pages[index]
+
+        # Switch to the target tab
+        self.page = target_page
+        await self.page.bring_to_front()
+
+        # Re-register download listener on the new page
+        async def on_download(download):
+            await self._download_queue.put(download)
+        self.page.on("download", on_download)
+
+        # Reinject mouse helper on the new page
+        await self._reinject_mouse_helper()
+
+        try:
+            new_title = await self.page.title()
+        except Exception:
+            new_title = "(unable to get title)"
+        new_url = self.page.url
+
+        result = f"Switched to tab (index={index}):\n  Title: {new_title}\n  URL: {new_url}"
+
+        self.history.append({
+            "action": "switch_to_tab",
+            "reasoning": r,
+            "index": index,
+            "success": True,
+            "new_title": new_title,
+            "new_url": new_url,
+        })
+
+        return result
+
+    async def close_tab(
+        self,
+        index: Optional[int] = None,
+        reasoning: Optional[str] = None,
+    ) -> str:
+        """
+        Close a browser tab by its index. If no index provided, closes the current tab.
+
+        After closing, automatically switches to the most recent remaining tab.
+
+        Parameters:
+            index (Optional[int]): Tab index to close. If None, closes current tab.
+            reasoning (Optional[str]): The reasoning for closing the tab.
+
+        Returns:
+            str: Confirmation message about which tab was closed and the new active tab.
+        """
+        r = reasoning or ""
+        target_page = None
+
+        if index is None:
+            target_page = self.page
+        elif isinstance(index, int) and 0 <= index < len(self.context.pages):
+            target_page = self.context.pages[index]
+        else:
+            return f"Invalid index {index}. Available indices: 0 to {len(self.context.pages) - 1}"
+
+        # Get info before closing
+        try:
+            closed_title = await target_page.title()
+        except Exception:
+            closed_title = "(unknown)"
+
+        # Close the tab
+        await target_page.close()
+
+        # Switch to another tab if we closed the current one
+        if len(self.context.pages) > 0:
+            self.page = self.context.pages[-1]
+            await self.page.bring_to_front()
+            try:
+                new_title = await self.page.title()
+            except Exception:
+                new_title = "(unknown)"
+            result = f"Closed tab '{closed_title}'. Now on: '{new_title}'"
+        else:
+            result = f"Closed tab '{closed_title}'. No tabs remaining."
+
+        self.history.append({
+            "action": "close_tab",
+            "reasoning": r,
+            "closed_title": closed_title,
+        })
+
+        return result
+
+    # ==================== End Tab Management Tools ====================
 
     async def scroll_to_top(self, reasoning: Optional[str] = None) -> None:
         """

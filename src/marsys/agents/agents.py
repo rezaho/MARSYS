@@ -1186,6 +1186,12 @@ Example for `final_response`:
                     },  # Log Message content
                 )
             return result_message  # Return the Message object
+
+        # TODO: Test if AgentFrameworkError handling is needed here
+        # except AgentFrameworkError:
+        #     # Re-raise framework errors for step executor to handle
+        #     raise
+
         except Exception as e:
             log_entry_callee["status"] = "error"
             log_entry_callee["error"] = str(e)
@@ -4306,6 +4312,11 @@ class Agent(BaseAgent):
             )
 
             return assistant_message
+
+        # TODO: Test if AgentFrameworkError handling is needed here
+        # except AgentFrameworkError:
+        #     # Re-raise framework errors for step executor to handle
+        #     raise
 
         except Exception as e:
             # Extract all relevant error information
