@@ -56,6 +56,7 @@ class ToolCallEvent(StatusEvent):
     status: Literal["started", "completed", "failed"]
     duration: Optional[float] = None
     arguments: Optional[Dict[str, Any]] = None
+    reasoning: Optional[str] = None
 
 
 @dataclass

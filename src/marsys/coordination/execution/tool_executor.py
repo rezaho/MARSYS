@@ -151,6 +151,10 @@ class RealToolExecutor:
                     logger.error(f"Failed to parse tool arguments for {tool_name}: {e}")
                     tool_args = {}
 
+                # Separate reasoning from tool args for event emission
+                event_args = {**tool_args} if isinstance(tool_args, dict) else tool_args
+                reasoning = event_args.pop("reasoning", None) if isinstance(event_args, dict) else None
+
                 logger.info(f"Executing tool: {tool_name} with args: {tool_args}")
 
                 # Emit tool start event if event_bus is available
@@ -167,7 +171,8 @@ class RealToolExecutor:
                         agent_name=agent.name if hasattr(agent, 'name') else str(agent),
                         tool_name=tool_name,
                         status="started",
-                        arguments=tool_args
+                        arguments=event_args,
+                        reasoning=reasoning
                     ))
 
                 # Find and execute the tool
