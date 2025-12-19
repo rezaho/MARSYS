@@ -16,6 +16,7 @@ from collections import defaultdict
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any, Dict, List, Optional, Set, Tuple
 
+from ...agents.exceptions import ToolCallError
 from ...agents.registry import AgentRegistry
 
 if TYPE_CHECKING:
