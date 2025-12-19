@@ -35,7 +35,11 @@ class Message:
     structured_data: Optional[Dict[str, Any]] = None
     images: Optional[List[str]] = None  # For vision models
     tool_call_id: Optional[str] = None  # For tool response messages
+    reasoning_details: Optional[List[Dict[str, Any]]] = None  # For model thinking/reasoning traces
 ```
+
+!!! note "Reasoning Details"
+    The `reasoning_details` field preserves model thinking/reasoning traces (e.g., Gemini 3 thought signatures). This is critical for multi-turn tool calling with models that use extended thinking, as the reasoning context must be preserved across turns.
 
 ### ConversationMemory
 
