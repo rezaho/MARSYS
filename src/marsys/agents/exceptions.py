@@ -243,25 +243,27 @@ class ActionValidationError(MessageError):
 class ToolCallError(MessageError):
     """
     Raised when tool call format or execution is invalid.
-    
+
     Examples:
     - Invalid tool call structure
     - Missing required tool call fields
     - Tool not found or not callable
+    - Malformed tool call JSON from local models
     """
-    
+
     def __init__(
         self,
         message: str,
         tool_name: Optional[str] = None,
         available_tools: Optional[List[str]] = None,
         tool_call_index: Optional[int] = None,
+        suggested_action: Optional[str] = None,
         **kwargs
     ):
         self.tool_name = tool_name
         self.available_tools = available_tools
         self.tool_call_index = tool_call_index
-        
+
         context = kwargs.get("context", {})
         if tool_name:
             context["tool_name"] = tool_name
@@ -269,15 +271,23 @@ class ToolCallError(MessageError):
             context["available_tools"] = available_tools
         if tool_call_index is not None:
             context["tool_call_index"] = tool_call_index
-        
+
+        # Use suggested_action if provided, otherwise use default
+        suggestion = suggested_action or "Check tool name spelling, ensure proper tool call structure, and verify tool arguments are correct."
+
         super().__init__(
             message,
             error_code="TOOL_CALL_ERROR",
             context=context,
             user_message="The tool call is invalid or the tool is not available.",
-            suggestion="Check tool name spelling and ensure proper tool call structure.",
+            suggestion=suggestion,
             **kwargs
         )
+
+    @property
+    def suggested_action(self) -> Optional[str]:
+        """Provide suggested_action property for consistency with ModelAPIError."""
+        return self.suggestion
 
 
 class SchemaValidationError(MessageError):

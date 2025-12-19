@@ -98,19 +98,16 @@ BROWSER_MODE_DEFAULTS = {
             "You are a browser automation agent in ADVANCED mode for human-like web interaction.\n\n"
             "**Browser Viewport:** {viewport_width}x{viewport_height} pixels\n\n"
             "{auto_screenshot_section}"
-            "\n**Core workflow:**\n"
-            "1. **Observe**: {observation_method}\n"
-            "2. **Identify**: Locate elements of interest (buttons, links, text, forms, etc.) using bounding boxes or positions\n"
-            "3. **Interact**: Use mouse clicks (coordinates), keyboard typing, or scrolling\n"
-            "4. **Verify**: Check screenshot feedback after each action to confirm the result\n"
-            "5. **Adjust**: If action didn't achieve intended result, analyze the visual feedback and correct your approach\n\n"
+            # "\n**Core Interactions:**\n"
+            # "1. **Observe**: {observation_method}\n"
+            # "2. **Identify**: Locate elements of interest (buttons, links, text, forms, etc.) using bounding boxes or positions\n"
+            # "3. **Interact**: Use mouse clicks (coordinates), keyboard typing, or scrolling\n"
+            # "4. **Verify**: Check screenshot feedback after each action to confirm the result\n"
+            # "5. **Adjust**: If action didn't achieve intended result, analyze the visual feedback and correct your approach\n\n"
             "**CRITICAL - Visual Feedback Loop:**\n"
             "Human-like interaction requires continuous feedback and adjustment. After EVERY action, observe the screenshot to verify:\n"
+            "- **Decision Process**: Make decisions based on what you see in screenshots. Prefer using mouse, keyboard, and scrolling - the same tools a human would use - over programmatic approaches like reading raw page content.\n\n"
             "- **Mouse positioning**: If you clicked but missed the target, check where the pointer landed in the screenshot\n"
-            "  * Pointer too far LEFT of target? Increase x coordinate (move right)\n"
-            "  * Pointer too far RIGHT of target? Decrease x coordinate (move left)\n"
-            "  * Pointer ABOVE target? Increase y coordinate (move down)\n"
-            "  * Pointer BELOW target? Decrease y coordinate (move up)\n"
             "  Use mouse_move to reposition, then try the click again\n"
             "- **Form input verification**: After typing, check if correct text appears in the field\n"
             "  * Wrong text? Clear it (triple-click → Backspace) and re-type\n"
@@ -118,11 +115,7 @@ BROWSER_MODE_DEFAULTS = {
             "  * Field not focused? Click field again before typing\n"
             "- **Action outcomes**: Did the button press work? Did the dropdown open? Did the page scroll?\n"
             "  * If not, don't repeat the exact same action - analyze WHY it failed and adjust your approach\n"
-            "  * Example: Click didn't work? Check if element moved, if pointer was off-target, or if page state changed\n\n"
-            "**Never blindly repeat failed actions** - use the visual feedback to understand what went wrong and correct it.\n\n"
-            "**Reading text content with selectors:**\n"
-            "- get_page_elements: View all page elements with their CSS selectors\n"
-            "- extract_text_content: Extract text using a specific selector\n\n"
+            "**Never blindly repeat failed actions** - use the visual feedback and your reasoning to understand what went wrong and correct it.\n\n"
             "**Form filling:**\n"
             "- Text inputs: Click field coordinates → type with keyboard\n"
             "- Dropdowns: Click dropdown → wait for observation → scroll to option if needed → click option coordinates\n"
@@ -131,14 +124,14 @@ BROWSER_MODE_DEFAULTS = {
             "- Method 1 (recommended): Triple-click field coordinates → press 'Backspace' (reliably selects all text in single/multi-line inputs)\n"
             "- Method 2 (fallback): Click field → right-click → look for 'Select All' option in context menu → click it → press 'Backspace'\n\n"
             "**Searching for text on page:**\n"
-            "- Use search_page(\"term\") to find specific text on web pages - much more efficient than manual scrolling\n"
+            "- Use search_page(\"term\") to find specific text on web pages - when manual scrolling fails\n"
             "- Visual highlighting: All matches highlighted in YELLOW, current match in ORANGE (like Chrome's find)\n"
             "- Automatically scrolls to the current match (centered in viewport)\n"
             "- **Navigate to next matches**: Call search_page(\"term\") again with the SAME term to move to next occurrence\n"
             "- Wraps around: After last match, returns to first match\n"
             "- Returns match count (e.g., \"Match 3/10\") so you know progress\n"
-            "- Use screenshots to see highlighted results if needed\n"
-            "- **Important**: Does NOT work with PDFs (PDFs are automatically downloaded, not displayed in browser)\n"
+            "- Use screenshots to see highlighted results\n"
+            "- **Important**: Does NOT work with PDFs\n"
             "- When navigating to PDF URLs: The file downloads automatically and you get the file path\n\n"
             "**Scrolling:**\n"
             "- Use mouse_scroll with delta_y (positive = scroll down, negative = scroll up)\n"
@@ -959,6 +952,7 @@ class BrowserAgent(Agent):
         memory_retention: str = "session",
         memory_storage_path: Optional[str] = None,
         show_mouse_helper: bool = True,
+        session_path: Optional[str] = None,
     ) -> None:
         """
         Initialize the BrowserAgent.
@@ -998,6 +992,10 @@ class BrowserAgent(Agent):
             memory_storage_path: Path for persistent memory storage (if retention is "persistent")
             show_mouse_helper: Whether to show visual mouse cursor in browser (default: True in advanced mode, False in primitive mode).
                 Uses realistic cursor icons (pointer/hand) to visualize mouse movements and clicks.
+            session_path: Optional path to a session file (JSON) containing browser state (cookies, localStorage).
+                If provided and the file exists, the browser will be initialized with this session state
+                using Playwright's storage_state parameter, which properly loads both cookies AND localStorage.
+                This enables persistent authentication (e.g., LinkedIn, Google) across browser sessions.
         """
         # Validate and normalize mode
         mode_lower = mode.lower()
@@ -1160,6 +1158,9 @@ class BrowserAgent(Agent):
 
         self.browser_channel = browser_channel
 
+        # Session management
+        self._session_path = session_path
+
         # Initialize vision analysis agent
         # If vision_model_config not provided but auto_screenshot is True, use main model_config
         self.vision_agent: Optional[InteractiveElementsAgent] = None
@@ -1229,6 +1230,7 @@ class BrowserAgent(Agent):
         memory_type: str = "conversation_history",
         memory_retention: str = "session",
         memory_storage_path: Optional[str] = None,
+        session_path: Optional[str] = None,
     ) -> "BrowserAgent":
         """
         Safe factory method to create and initialize a BrowserAgent.
@@ -1260,10 +1262,16 @@ class BrowserAgent(Agent):
             memory_type=memory_type,
             memory_retention=memory_retention,
             memory_storage_path=memory_storage_path,
+            session_path=session_path,
         )
 
-        # Initialize browser using BrowserTool
-        await agent._initialize_browser()
+        # Initialize browser - use storage_state if session file exists
+        use_storage_state = session_path and Path(session_path).exists()
+        if use_storage_state:
+            logger.info(f"Initializing browser with session state from: {session_path}")
+            await agent._initialize_browser_with_storage_state(session_path)
+        else:
+            await agent._initialize_browser()
 
         # Now set up browser tools using BrowserTool methods
         agent._setup_browser_tools()
@@ -1338,6 +1346,100 @@ class BrowserAgent(Agent):
                     f"Original error: {error_message}"
                 ) from e
 
+    async def _initialize_browser_with_storage_state(self, session_path: str) -> None:
+        """
+        Initialize browser using storage_state parameter for proper session loading.
+
+        This uses browser.new_context(storage_state=path) which properly loads
+        both cookies AND localStorage, unlike add_cookies() which only loads cookies.
+
+        Args:
+            session_path: Path to the session JSON file containing storage state
+        """
+        try:
+            playwright = await async_playwright().start()
+
+            # Launch browser (not persistent context)
+            browser = await playwright.chromium.launch(
+                headless=self.headless,
+                channel=self.browser_channel or "chrome",
+                args=[
+                    "--disable-dev-shm-usage",
+                    "--disable-blink-features=AutomationControlled",
+                    "--disable-infobars",
+                    "--no-first-run",
+                    "--disable-component-update",
+                ],
+            )
+
+            # Create context with storage_state - this properly loads cookies AND localStorage
+            context = await browser.new_context(
+                storage_state=session_path,
+                viewport={"width": self.viewport_width, "height": self.viewport_height},
+                user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36",
+                locale="en-US",
+                timezone_id="America/New_York",
+                bypass_csp=True,
+                java_script_enabled=True,
+                accept_downloads=True,
+            )
+
+            # Add stealth scripts to avoid detection
+            await context.add_init_script("""
+                Object.defineProperty(navigator, 'webdriver', { get: () => undefined });
+                Object.defineProperty(navigator, 'plugins', {
+                    get: () => [
+                        { name: 'Chrome PDF Plugin', filename: 'internal-pdf-viewer' },
+                        { name: 'Chrome PDF Viewer', filename: 'mhjfbmdgcfjbbpaeojofohoefgiehjai' },
+                        { name: 'Native Client', filename: 'internal-nacl-plugin' }
+                    ]
+                });
+                Object.defineProperty(navigator, 'languages', { get: () => ['en-US', 'en'] });
+                if (window.chrome) { window.chrome.runtime = {}; }
+            """)
+
+            # Create page
+            page = await context.new_page()
+
+            # Create BrowserTool instance manually with the pre-configured browser
+            self.browser_tool = BrowserTool(
+                playwright=playwright,
+                browser=browser,
+                context=context,
+                page=page,
+                temp_dir=str(self.tmp_dir),
+                screenshot_dir=str(self.screenshots_dir),
+                downloads_path=str(self.downloads_dir),
+            )
+
+            # Apply stealth mode if available
+            if self._stealth_available:
+                try:
+                    from playwright_stealth import stealth_async
+                    await stealth_async(page)
+                    logger.info(f"Stealth mode enabled for {self.name}")
+                except Exception as e:
+                    logger.warning(f"Failed to apply stealth mode: {e}")
+
+            # Initialize visual mouse helper if enabled (advanced mode only)
+            if self.show_mouse_helper:
+                try:
+                    await self.browser_tool.show_mouse_helper()
+                    logger.info(f"Mouse helper enabled for {self.name}")
+                except Exception as e:
+                    logger.warning(f"Failed to enable mouse helper: {e}")
+
+            logger.info(
+                f"Browser initialized with storage_state for {self.name} (headless={self.headless}, session={session_path})"
+            )
+
+        except Exception as e:
+            error_message = str(e)
+            logger.error(f"Failed to initialize browser with storage_state: {error_message}")
+            # Fall back to regular initialization
+            logger.info("Falling back to regular browser initialization...")
+            await self._initialize_browser()
+
     def _setup_browser_tools(self) -> None:
         """Set up browser tools using BrowserTool methods, filtered by mode."""
         if not self.browser_tool:
@@ -1373,16 +1475,23 @@ class BrowserAgent(Agent):
                 "reload": self.browser_tool.reload,
                 "get_url": self.browser_tool.get_url,
                 "get_title": self.browser_tool.get_title,
-                "get_page_elements": self.browser_tool.get_page_elements,
-                "extract_text_content": self.browser_tool.extract_text_content,
+                # "get_page_elements": self.browser_tool.get_page_elements,  # Commented out to force visual interaction
+                # "extract_text_content": self.browser_tool.extract_text_content,  # Commented out to force visual interaction
                 "download_file": self.browser_tool.download_file,
+                # Tab management tools
+                "list_tabs": self.browser_tool.list_tabs,
+                "get_active_tab": self.browser_tool.get_active_tab,
+                "switch_to_tab": self.browser_tool.switch_to_tab,
+                "close_tab": self.browser_tool.close_tab,
             }
 
             # Only add screenshot tool if auto_screenshot is disabled
             if not self.auto_screenshot:
                 browser_tools["screenshot"] = self._screenshot_with_detection_mode
 
-        
+        # Add session management tool (available in both modes)
+        browser_tools["save_session"] = self._save_session
+
         # Update the agent's tools
         if hasattr(self, 'tools') and self.tools:
             self.tools.update(browser_tools)
@@ -1401,6 +1510,47 @@ class BrowserAgent(Agent):
                     logger.error(f"Failed to generate schema for tool {tool_name}: {e}")
         
         logger.info(f"Browser tools setup completed for agent {self.name}")
+
+    async def _save_session(self, file_path: str, reasoning: Optional[str] = None) -> str:
+        """
+        Save the current browser session state to a JSON file.
+
+        This saves cookies, localStorage, and sessionStorage using Playwright's
+        storage_state(), allowing the session to be restored later for maintaining
+        login state across browser sessions.
+
+        Args:
+            file_path: Path where to save the session state JSON file
+            reasoning: Optional explanation for this action
+
+        Returns:
+            Success message with the file path and counts, or error message
+        """
+        if not self.browser_tool or not self.browser_tool.context:
+            return "Error: Browser context not initialized"
+
+        try:
+            # Get storage state from Playwright context
+            storage_state = await self.browser_tool.context.storage_state()
+
+            # Ensure directory exists
+            path = Path(file_path)
+            path.parent.mkdir(parents=True, exist_ok=True)
+
+            # Write to file
+            with open(path, "w") as f:
+                json.dump(storage_state, f, indent=2)
+
+            cookie_count = len(storage_state.get("cookies", []))
+            origin_count = len(storage_state.get("origins", []))
+
+            logger.info(f"Session saved to {file_path}: {cookie_count} cookies, {origin_count} origins")
+            return f"Session saved successfully to {file_path}. Saved {cookie_count} cookies and {origin_count} origin storage entries."
+
+        except Exception as e:
+            error_msg = f"Error saving session: {str(e)}"
+            logger.error(error_msg)
+            return error_msg
 
     async def close(self) -> None:
         """Close the browser and clean up resources"""
@@ -1681,6 +1831,13 @@ class BrowserAgent(Agent):
         """
         if not self.browser_tool:
             raise RuntimeError("Browser not initialized")
+
+        # Wait for page to be stable before taking screenshot
+        try:
+            await self.browser_tool.page.wait_for_load_state("networkidle", timeout=1000)
+        except Exception:
+            # Fallback: wait a short time if networkidle times out
+            await self.browser_tool.page.wait_for_timeout(500)
 
         # Handle "none" mode: take raw screenshot without any element detection
         if not use_prediction and not use_rule_based:

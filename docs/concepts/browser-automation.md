@@ -63,12 +63,11 @@ BrowserAgent supports two distinct operation modes optimized for different use c
 - Optimized for speed and simplicity
 - Single-step operations
 
-**Available Tools** (5):
+**Available Tools** (4):
 - `fetch_url` - Navigate and extract content in one step
-- `get_page_elements` - Get interactive elements with CSS selectors
-- `extract_text_content` - Extract text from specific selectors
 - `get_page_metadata` - Get page title, URL, and links
 - `download_file` - Download files from URLs
+- `save_session` - Save browser session state for persistence
 
 **Best For**:
 - Web scraping and data extraction
@@ -87,18 +86,22 @@ BrowserAgent supports two distinct operation modes optimized for different use c
 - Multi-step navigation and interaction
 - Form filling and complex workflows
 
-**Available Tools** (15):
+**Available Tools** (18):
 - All PRIMITIVE mode tools, plus:
 - `goto` - Navigate to URL (auto-detects downloads)
 - `scroll_up` / `scroll_down` - Scroll the page
 - `mouse_click` - Click at specific coordinates (auto-detects downloads)
 - `type` - Type regular text into focused elements (letters, numbers, words)
 - `keyboard_press` - Press special keys (Enter, Tab, arrows, etc.) (auto-detects downloads)
-- `search_page` - **NEW!** Find text on page with Chrome-like highlighting
+- `search_page` - Find text on page with Chrome-like highlighting
 - `go_back` - Navigate back
 - `reload` - Reload current page
 - `get_url` / `get_title` - Get page information
 - `screenshot` - Take screenshot with element highlighting (returns multimodal ToolResponse)
+- `list_tabs` - List all open browser tabs
+- `get_active_tab` - Get currently active tab info
+- `switch_to_tab` - Switch to a specific tab by index
+- `close_tab` - Close a tab by index
 
 **Best For**:
 - Form automation with complex interactions
@@ -237,10 +240,9 @@ await browser_pool.cleanup()
 
 **PRIMITIVE Mode Tools** (Fast content extraction):
 - `fetch_url` - Navigate and extract content in one step (returns Dict with markdown/text)
-- `get_page_elements` - Get interactive elements with CSS selectors in flat structure
-- `extract_text_content` - Extract text from selectors without navigation
 - `get_page_metadata` - Get title, URL, and links quickly
 - `download_file` - Download files from URLs
+- `save_session` - Save browser session state for persistence
 
 **ADVANCED Mode Additional Tools** (Visual interaction):
 - `goto`, `go_back`, `reload` - Navigation control
@@ -251,6 +253,7 @@ await browser_pool.cleanup()
 - `search_page` - Search for text on page with visual highlighting (Chrome-like find)
 - `screenshot` - Multimodal response with numbered element detection (ToolResponse format)
 - `get_url`, `get_title` - Current page information
+- `list_tabs`, `get_active_tab`, `switch_to_tab`, `close_tab` - Tab management
 
 ### Navigation Tools
 
@@ -644,6 +647,69 @@ class DynamicContentAgent(BrowserAgent):
             Array.from(document.querySelectorAll('{item_selector}'))
                 .map(el => el.textContent.trim())
         """)
+```
+
+### Session Persistence
+
+!!! success "Browser Session Persistence"
+    BrowserAgent supports saving and loading browser sessions (cookies, localStorage) using Playwright's `storage_state` feature. This enables persistent authentication across browser sessions.
+
+#### Loading a Saved Session
+
+```python
+from marsys.agents import BrowserAgent
+
+# Create agent with existing session state
+agent = await BrowserAgent.create_safe(
+    model_config=config,
+    name="AuthenticatedBrowser",
+    mode="advanced",
+    session_path="./sessions/linkedin_session.json",  # Load existing session
+    headless=True
+)
+
+# Browser is now initialized with saved cookies and localStorage
+# Already logged in to LinkedIn, Google, etc.
+await agent.run("Go to linkedin.com/feed and extract posts")
+```
+
+#### Saving a Session
+
+```python
+# After logging in manually or programmatically, save the session
+result = await agent.browser_tool.save_session("./sessions/my_session.json")
+# Returns: "Session saved successfully to ./sessions/my_session.json. Saved 15 cookies and 3 origin storage entries."
+
+# The agent can also save sessions via tool calls
+result = await agent.run("Save the current session to ./sessions/backup.json")
+```
+
+#### Session File Format
+
+The session file is a JSON file compatible with Playwright's `storage_state`:
+
+```json
+{
+  "cookies": [
+    {
+      "name": "session_id",
+      "value": "abc123",
+      "domain": ".example.com",
+      "path": "/",
+      "expires": 1735689600,
+      "httpOnly": true,
+      "secure": true
+    }
+  ],
+  "origins": [
+    {
+      "origin": "https://example.com",
+      "localStorage": [
+        {"name": "user_token", "value": "xyz789"}
+      ]
+    }
+  ]
+}
 ```
 
 ### Authentication Handling
