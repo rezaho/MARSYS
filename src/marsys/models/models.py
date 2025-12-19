@@ -31,7 +31,7 @@ from marsys.models.response_models import (
     ToolCall,
     UsageInfo,
 )
-from marsys.models.utils import apply_tools_template
+from marsys.models.utils import apply_tools_template, parse_local_model_tool_calls
 
 # PEFT imports if used later in the file
 try:
@@ -1023,12 +1023,17 @@ class OpenRouterAdapter(APIProviderAdapter):
             ),
         )
 
+        # Extract reasoning_details for Gemini 3 thought signature preservation
+        # This is critical for multi-turn tool calling with Gemini 3 models
+        reasoning_details = message.get("reasoning_details")
+
         # Build harmonized response
         return HarmonizedResponse(
             role=message.get("role", "assistant"),
             content=content,
             tool_calls=tool_calls,
             reasoning=message.get("reasoning"),  # OpenRouter reasoning
+            reasoning_details=reasoning_details,  # Gemini 3 thought signatures
             metadata=metadata,
         )
 
@@ -1930,6 +1935,9 @@ class HuggingFaceLLMAdapter(LocalProviderAdapter):
                 thinking_content = think_match.group(1).strip()
                 final_content = re.sub(r"<think>.*?</think>", "", raw_content, flags=re.DOTALL).strip()
 
+        # Parse tool calls from <tool_call>...</tool_call> blocks
+        final_content, parsed_tool_calls = parse_local_model_tool_calls(final_content)
+
         if json_mode:
             final_content = "\n".join(final_content.split("```")[:-1]).strip()
             final_content = json.loads(final_content.replace("\n", ""))
@@ -1942,7 +1950,7 @@ class HuggingFaceLLMAdapter(LocalProviderAdapter):
             "role": "assistant",
             "content": result_content,
             "thinking": thinking_content,
-            "tool_calls": [],
+            "tool_calls": parsed_tool_calls,
         }
 
     async def arun(
@@ -1967,11 +1975,21 @@ class HuggingFaceLLMAdapter(LocalProviderAdapter):
             **kwargs,
         )
 
+        # Convert parsed tool calls to ToolCall objects
+        tool_calls = [
+            ToolCall(
+                id=tc.get("id", ""),
+                type=tc.get("type", "function"),
+                function=tc.get("function", {}),
+            )
+            for tc in raw_result.get("tool_calls", [])
+        ]
+
         return HarmonizedResponse(
             role=raw_result.get("role", "assistant"),
             content=raw_result.get("content"),
             thinking=raw_result.get("thinking"),
-            tool_calls=[],
+            tool_calls=tool_calls,
             metadata=ResponseMetadata(
                 provider="huggingface",
                 model=self.model.config.name_or_path if hasattr(self.model, 'config') else self.model_name,
@@ -2101,6 +2119,9 @@ class HuggingFaceVLMAdapter(LocalProviderAdapter):
                 thinking_content = think_match.group(1).strip()
                 final_content = re.sub(r"<think>.*?</think>", "", raw_content, flags=re.DOTALL).strip()
 
+        # Parse tool calls from <tool_call>...</tool_call> blocks
+        final_content, parsed_tool_calls = parse_local_model_tool_calls(final_content)
+
         if json_mode:
             final_content = "\n".join(final_content.split("```")[:-1]).strip()
             final_content = json.loads(final_content.replace("\n", ""))
@@ -2113,7 +2134,7 @@ class HuggingFaceVLMAdapter(LocalProviderAdapter):
             "role": role,
             "content": result_content,
             "thinking": thinking_content,
-            "tool_calls": [],
+            "tool_calls": parsed_tool_calls,
         }
 
     async def arun(
@@ -2140,11 +2161,21 @@ class HuggingFaceVLMAdapter(LocalProviderAdapter):
             **kwargs,
         )
 
+        # Convert parsed tool calls to ToolCall objects
+        tool_calls = [
+            ToolCall(
+                id=tc.get("id", ""),
+                type=tc.get("type", "function"),
+                function=tc.get("function", {}),
+            )
+            for tc in raw_result.get("tool_calls", [])
+        ]
+
         return HarmonizedResponse(
             role=raw_result.get("role", "assistant"),
             content=raw_result.get("content"),
             thinking=raw_result.get("thinking"),
-            tool_calls=[],
+            tool_calls=tool_calls,
             metadata=ResponseMetadata(
                 provider="huggingface",
                 model=self.model.config.name_or_path if hasattr(self.model, 'config') else self.model_name,
