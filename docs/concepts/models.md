@@ -31,7 +31,7 @@ graph TB
         OAI[OpenAI<br/>GPT-4, GPT-3.5]
         ANT[Anthropic<br/>Claude 3]
         GOO[Google<br/>Gemini]
-        GRQ[Groq<br/>Fast Inference]
+        XAI[xAI<br/>Grok Models]
         LOC[Local<br/>Llama, Mistral]
     end
 
@@ -72,7 +72,7 @@ class ModelConfig(BaseModel):
     # Core settings
     type: Literal["api", "local"]           # Model type
     name: str                               # Model identifier
-    provider: Optional[str] = None          # openai, anthropic, google, groq
+    provider: Optional[str] = None          # openai, anthropic, google, xai
 
     # API settings
     api_key: Optional[str] = None           # Auto-loaded from env if None

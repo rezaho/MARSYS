@@ -30,7 +30,7 @@ class ModelConfig(BaseModel):
     # API settings
     provider: Optional[str] = Field(
         default=None,
-        description="API provider (openai, anthropic, google, openrouter, groq)"
+        description="API provider (openai, anthropic, google, openrouter, xai)"
     )
     base_url: Optional[str] = Field(
         default=None,
