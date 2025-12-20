@@ -5897,7 +5897,53 @@ class BrowserTool:
         
         # Convert the deduplicated elements back to a list
         elements = list(seen_bboxes.values())
-        
+
+        # Post-processing: Filter out container elements that have interactive children
+        # This prevents large containers (like scrollable menus) from being detected
+        # when they contain more specific interactive elements
+        def bbox_contains(outer: List[int], inner: List[int], margin: int = 5) -> bool:
+            """Check if outer bbox fully contains inner bbox (with margin tolerance)."""
+            # bbox format: [x1, y1, x2, y2]
+            return (
+                outer[0] - margin <= inner[0] and
+                outer[1] - margin <= inner[1] and
+                outer[2] + margin >= inner[2] and
+                outer[3] + margin >= inner[3]
+            )
+
+        def get_bbox_area(bbox: List[int]) -> int:
+            """Calculate bbox area."""
+            return (bbox[2] - bbox[0]) * (bbox[3] - bbox[1])
+
+        # Find container elements to filter out
+        containers_to_remove = set()
+
+        for i, elem in enumerate(elements):
+            elem_bbox = elem['bbox']
+            elem_area = get_bbox_area(elem_bbox)
+
+            # Count how many other elements this element contains
+            children_count = 0
+            for j, other in enumerate(elements):
+                if i == j:
+                    continue
+                other_bbox = other['bbox']
+                other_area = get_bbox_area(other_bbox)
+
+                # Check if elem contains other and other is significantly smaller
+                if bbox_contains(elem_bbox, other_bbox) and other_area < elem_area * 0.8:
+                    children_count += 1
+
+            # If this element contains multiple interactive children, it's likely a container
+            # Remove it and keep the children instead
+            if children_count >= 2:
+                containers_to_remove.add(i)
+                logging.debug(f"Filtering out container element with {children_count} children: {elem.get('label', 'unknown')[:50]}")
+
+        # Filter out the containers
+        if containers_to_remove:
+            elements = [elem for i, elem in enumerate(elements) if i not in containers_to_remove]
+
         return elements
 
     async def predict_interactive_elements(self, reasoning: Optional[str] = None) -> List[Dict[str, Any]]:
@@ -6628,6 +6674,426 @@ class BrowserTool:
             self.history.append({
                 "action": "get_page_elements",
                 "reasoning": r,
+                "error": str(e)
+            })
+
+            return error_result
+
+    async def get_page_overview(
+        self,
+        max_text_length: int = 80,
+        max_depth: int = 4,
+        reasoning: Optional[str] = None,
+    ) -> Dict[str, Any]:
+        """
+        Get a hierarchical overview of the page DOM structure with truncated text.
+
+        Similar to FileOperationTools PDF overview - provides a tree structure
+        that allows the agent to understand the page layout and then drill down
+        into specific sections using inspect_element().
+
+        Parameters:
+            max_text_length: Maximum characters to show for each element's text (default: 80)
+            max_depth: Maximum depth of DOM tree to traverse (default: 4)
+            reasoning: Optional reasoning for this action
+
+        Returns:
+            Dictionary with hierarchical page structure:
+            {
+                "url": str,
+                "title": str,
+                "regions": {
+                    "header": { tree of elements },
+                    "nav": { tree of elements },
+                    "main": { tree of elements },
+                    "aside": { tree of elements },
+                    "footer": { tree of elements },
+                    "other": { tree of elements }
+                },
+                "summary": {
+                    "total_elements": int,
+                    "interactive_count": int,
+                    "text_heavy_regions": [str],
+                    "has_forms": bool,
+                    "has_tables": bool
+                },
+                "quick_access": [
+                    {"selector": str, "type": str, "preview": str},
+                    ...  # Top 10 most likely useful elements
+                ]
+            }
+        """
+        r = reasoning or ""
+
+        try:
+            # JavaScript to build hierarchical DOM tree with truncated text
+            overview_script = """
+            (config) => {
+                const maxTextLen = config.maxTextLength;
+                const maxDepth = config.maxDepth;
+
+                // Helper to truncate text
+                function truncateText(text, maxLen) {
+                    if (!text) return '';
+                    text = text.trim().replace(/\\s+/g, ' ');
+                    if (text.length <= maxLen) return text;
+                    return text.substring(0, maxLen) + '...';
+                }
+
+                // Helper to generate unique CSS selector
+                function generateSelector(element) {
+                    if (element.id) return `#${element.id}`;
+
+                    if (element.name && ['INPUT', 'SELECT', 'TEXTAREA'].includes(element.tagName)) {
+                        const nameMatch = document.querySelectorAll(`${element.tagName.toLowerCase()}[name="${element.name}"]`);
+                        if (nameMatch.length === 1) return `${element.tagName.toLowerCase()}[name="${element.name}"]`;
+                    }
+
+                    if (element.className && typeof element.className === 'string') {
+                        const classes = element.className.trim().split(/\\s+/).filter(c => c && !c.includes(':'));
+                        if (classes.length > 0) {
+                            const classSelector = element.tagName.toLowerCase() + '.' + classes.slice(0, 2).join('.');
+                            const classMatches = document.querySelectorAll(classSelector);
+                            if (classMatches.length === 1) return classSelector;
+                        }
+                    }
+
+                    // Build path
+                    const path = [];
+                    let current = element;
+                    while (current && current !== document.body && path.length < 3) {
+                        let selector = current.tagName.toLowerCase();
+                        if (current.parentElement) {
+                            const siblings = Array.from(current.parentElement.children)
+                                .filter(el => el.tagName === current.tagName);
+                            if (siblings.length > 1) {
+                                const index = siblings.indexOf(current) + 1;
+                                selector += `:nth-of-type(${index})`;
+                            }
+                        }
+                        path.unshift(selector);
+                        current = current.parentElement;
+                    }
+                    return path.join(' > ');
+                }
+
+                // Helper to check visibility
+                function isVisible(element) {
+                    const style = window.getComputedStyle(element);
+                    return style.display !== 'none' &&
+                           style.visibility !== 'hidden' &&
+                           style.opacity !== '0' &&
+                           element.offsetWidth > 0;
+                }
+
+                // Semantic tags for interactive elements
+                const interactiveTags = new Set(['a', 'button', 'input', 'select', 'textarea', 'details', 'summary']);
+                const semanticRoles = new Set(['button', 'link', 'menuitem', 'tab', 'checkbox', 'radio', 'textbox', 'combobox']);
+
+                // Build element node
+                function buildNode(element, depth) {
+                    if (depth > maxDepth) return null;
+                    if (!isVisible(element)) return null;
+
+                    const tagName = element.tagName.toLowerCase();
+
+                    // Skip script, style, svg internals
+                    if (['script', 'style', 'noscript', 'svg', 'path', 'g'].includes(tagName)) return null;
+
+                    const role = element.getAttribute('role');
+                    const isInteractive = interactiveTags.has(tagName) ||
+                                         (role && semanticRoles.has(role)) ||
+                                         element.hasAttribute('onclick') ||
+                                         element.hasAttribute('tabindex');
+
+                    // Get direct text content (not from children)
+                    let directText = '';
+                    for (const child of element.childNodes) {
+                        if (child.nodeType === Node.TEXT_NODE) {
+                            directText += child.textContent;
+                        }
+                    }
+                    directText = truncateText(directText, maxTextLen);
+
+                    // Get aria-label or other accessible names
+                    const accessibleName = element.getAttribute('aria-label') ||
+                                          element.getAttribute('title') ||
+                                          element.getAttribute('alt') ||
+                                          element.getAttribute('placeholder') || '';
+
+                    // Build children
+                    const children = [];
+                    let childCount = 0;
+                    for (const child of element.children) {
+                        if (childCount >= 20) {  // Limit children per node
+                            children.push({ tag: '...', text: `(${element.children.length - 20} more children)` });
+                            break;
+                        }
+                        const childNode = buildNode(child, depth + 1);
+                        if (childNode) {
+                            children.push(childNode);
+                            childCount++;
+                        }
+                    }
+
+                    // Skip empty containers
+                    if (!directText && !accessibleName && children.length === 0 && !isInteractive) {
+                        return null;
+                    }
+
+                    const node = {
+                        tag: tagName,
+                        selector: generateSelector(element)
+                    };
+
+                    if (directText) node.text = directText;
+                    if (accessibleName) node.label = truncateText(accessibleName, 50);
+                    if (isInteractive) node.interactive = true;
+                    if (role) node.role = role;
+                    if (element.type && tagName === 'input') node.type = element.type;
+                    if (element.href) node.href = truncateText(element.href, 60);
+                    if (children.length > 0) node.children = children;
+
+                    return node;
+                }
+
+                // Identify semantic regions
+                const regions = {
+                    header: null,
+                    nav: null,
+                    main: null,
+                    aside: null,
+                    footer: null,
+                    other: { tag: 'body', children: [] }
+                };
+
+                // Find semantic landmarks
+                const header = document.querySelector('header, [role="banner"]');
+                const nav = document.querySelector('nav, [role="navigation"]');
+                const main = document.querySelector('main, [role="main"], article, .main-content, #main, #content');
+                const aside = document.querySelector('aside, [role="complementary"]');
+                const footer = document.querySelector('footer, [role="contentinfo"]');
+
+                if (header) regions.header = buildNode(header, 0);
+                if (nav) regions.nav = buildNode(nav, 0);
+                if (main) regions.main = buildNode(main, 0);
+                if (aside) regions.aside = buildNode(aside, 0);
+                if (footer) regions.footer = buildNode(footer, 0);
+
+                // Get elements not in any region
+                const coveredElements = new Set([header, nav, main, aside, footer].filter(Boolean));
+                for (const child of document.body.children) {
+                    if (!coveredElements.has(child)) {
+                        const node = buildNode(child, 0);
+                        if (node) regions.other.children.push(node);
+                    }
+                }
+
+                // Count elements
+                const allInteractive = document.querySelectorAll('a, button, input, select, textarea, [role="button"], [role="link"]');
+                const visibleInteractive = Array.from(allInteractive).filter(isVisible);
+
+                // Summary statistics
+                const summary = {
+                    total_elements: document.querySelectorAll('*').length,
+                    interactive_count: visibleInteractive.length,
+                    text_heavy_regions: [],
+                    has_forms: document.querySelectorAll('form').length > 0,
+                    has_tables: document.querySelectorAll('table').length > 0,
+                    has_images: document.querySelectorAll('img').length > 0
+                };
+
+                // Identify text-heavy regions
+                if (main && main.textContent.length > 1000) summary.text_heavy_regions.push('main');
+                if (aside && aside.textContent.length > 500) summary.text_heavy_regions.push('aside');
+
+                // Quick access - top useful elements
+                const quickAccess = [];
+                const usefulSelectors = [
+                    'input[type="search"], input[name*="search"], [role="searchbox"]',
+                    'button[type="submit"], input[type="submit"]',
+                    'nav a',
+                    'main h1, main h2',
+                    'form',
+                    '[role="main"] > *:first-child'
+                ];
+
+                for (const sel of usefulSelectors) {
+                    try {
+                        const el = document.querySelector(sel);
+                        if (el && isVisible(el)) {
+                            quickAccess.push({
+                                selector: generateSelector(el),
+                                type: el.tagName.toLowerCase(),
+                                preview: truncateText(el.textContent || el.getAttribute('aria-label') || '', 50)
+                            });
+                        }
+                    } catch (e) {}
+                }
+
+                return { regions, summary, quickAccess };
+            }
+            """
+
+            result = await self.page.evaluate(overview_script, {
+                'maxTextLength': max_text_length,
+                'maxDepth': max_depth
+            })
+
+            result['url'] = self.page.url
+            result['title'] = await self.page.title()
+
+            self.history.append({
+                "action": "get_page_overview",
+                "reasoning": r,
+                "summary": result['summary']
+            })
+
+            return result
+
+        except Exception as e:
+            error_result = {
+                "url": self.page.url,
+                "title": await self.page.title() if self.page else "",
+                "regions": {},
+                "summary": {},
+                "quickAccess": [],
+                "error": f"Failed to get page overview: {str(e)}"
+            }
+
+            self.history.append({
+                "action": "get_page_overview",
+                "reasoning": r,
+                "error": str(e)
+            })
+
+            return error_result
+
+    async def inspect_element(
+        self,
+        selector: str,
+        output_format: str = "outer_html",
+        max_length: Optional[int] = None,
+        reasoning: Optional[str] = None,
+    ) -> Dict[str, Any]:
+        """
+        Inspect a specific element and get its HTML content or text.
+
+        Similar to Chrome DevTools "Inspect" feature - allows drilling down
+        into a specific element identified from get_page_overview().
+
+        Parameters:
+            selector: CSS selector for the element to inspect
+            output_format: What to return:
+                - "outer_html": Full HTML including the element itself (like right-click > Inspect)
+                - "inner_html": Just the content inside the element
+                - "text": Plain text content only
+                - "all": Return all formats
+            max_length: Maximum length of content to return (None = unlimited)
+            reasoning: Optional reasoning for this action
+
+        Returns:
+            Dictionary with element content:
+            {
+                "success": True,
+                "selector": str,
+                "tag": str,
+                "outer_html": str,  # If requested
+                "inner_html": str,  # If requested
+                "text": str,        # If requested
+                "attributes": {     # Always included
+                    "id": str,
+                    "class": str,
+                    "href": str,
+                    ...
+                },
+                "children_count": int,
+                "text_length": int,
+                "position": {x, y, width, height}
+            }
+        """
+        r = reasoning or ""
+
+        try:
+            locator = self.page.locator(selector).first
+
+            # Wait for element with short timeout
+            await locator.wait_for(state="attached", timeout=3000)
+
+            result = {
+                "success": True,
+                "selector": selector,
+            }
+
+            # Get tag name
+            tag = await locator.evaluate("el => el.tagName.toLowerCase()")
+            result["tag"] = tag
+
+            # Get attributes
+            attributes = await locator.evaluate("""el => {
+                const attrs = {};
+                for (const attr of el.attributes) {
+                    attrs[attr.name] = attr.value;
+                }
+                return attrs;
+            }""")
+            result["attributes"] = attributes
+
+            # Get children count
+            children_count = await locator.evaluate("el => el.children.length")
+            result["children_count"] = children_count
+
+            # Get position
+            bbox = await locator.bounding_box()
+            if bbox:
+                result["position"] = {
+                    "x": int(bbox["x"]),
+                    "y": int(bbox["y"]),
+                    "width": int(bbox["width"]),
+                    "height": int(bbox["height"])
+                }
+
+            # Get content based on format
+            if output_format in ("outer_html", "all"):
+                outer_html = await locator.evaluate("el => el.outerHTML")
+                if max_length and len(outer_html) > max_length:
+                    outer_html = outer_html[:max_length] + f"... (truncated, total: {len(outer_html)} chars)"
+                result["outer_html"] = outer_html
+
+            if output_format in ("inner_html", "all"):
+                inner_html = await locator.inner_html()
+                if max_length and len(inner_html) > max_length:
+                    inner_html = inner_html[:max_length] + f"... (truncated, total: {len(inner_html)} chars)"
+                result["inner_html"] = inner_html
+
+            if output_format in ("text", "all"):
+                text = await locator.text_content() or ""
+                result["text_length"] = len(text)
+                if max_length and len(text) > max_length:
+                    text = text[:max_length] + f"... (truncated, total: {len(text)} chars)"
+                result["text"] = text
+
+            self.history.append({
+                "action": "inspect_element",
+                "reasoning": r,
+                "selector": selector,
+                "output_format": output_format,
+                "tag": tag
+            })
+
+            return result
+
+        except Exception as e:
+            error_result = {
+                "success": False,
+                "selector": selector,
+                "error": f"Failed to inspect element: {str(e)}"
+            }
+
+            self.history.append({
+                "action": "inspect_element",
+                "reasoning": r,
+                "selector": selector,
                 "error": str(e)
             })
 
