@@ -900,7 +900,7 @@ class BrowserAgent(Agent):
 
         Different vision models have different optimal input sizes:
         - Claude (Anthropic): 1344x896 (optimized for their vision model)
-        - Gemini (Google): 1536x1536 (works well with square inputs)
+        - Gemini (Google): 1000x1000 (square input, works well with Gemini vision)
         - GPT-4V (OpenAI): 1024x1024 (optimized for their vision model)
 
         Args:
@@ -912,19 +912,19 @@ class BrowserAgent(Agent):
         provider = getattr(model_config, 'provider', '').lower()
         model_name = getattr(model_config, 'name', '').lower()
 
-        # Check for Claude/Anthropic models
-        if 'anthropic' in provider or 'claude' in model_name:
-            return (1344, 896)
+        # Check for Gemini/Google models (check first since OpenRouter may have 'google/gemini-*')
+        if 'google' in provider or 'gemini' in model_name:
+            return (1000, 1000)
 
-        # Check for Gemini/Google models
-        elif 'google' in provider or 'gemini' in model_name:
-            return (1536, 1536)
+        # Check for Claude/Anthropic models
+        elif 'anthropic' in provider or 'claude' in model_name:
+            return (1344, 896)
 
         # Check for GPT/OpenAI models
         elif 'openai' in provider or 'gpt' in model_name:
             return (1024, 1024)
 
-        # Default fallback (Gemini size - most permissive)
+        # Default fallback
         return (1536, 1536)
 
     def __init__(
@@ -1162,9 +1162,19 @@ class BrowserAgent(Agent):
         self._session_path = session_path
 
         # Initialize vision analysis agent
-        # If vision_model_config not provided but auto_screenshot is True, use main model_config
+        # Only create vision agent if element_detection_mode requires it (VISION or BOTH)
+        # Don't create for RULE_BASED or NONE modes even if auto_screenshot is True
         self.vision_agent: Optional[InteractiveElementsAgent] = None
-        actual_vision_config = vision_model_config or (model_config if auto_screenshot else None)
+
+        # Determine if vision agent is needed based on detection mode
+        needs_vision = self.element_detection_mode in [
+            ElementDetectionMode.VISION,
+            ElementDetectionMode.BOTH
+        ]
+
+        actual_vision_config = None
+        if needs_vision:
+            actual_vision_config = vision_model_config or (model_config if auto_screenshot else None)
 
         if actual_vision_config:
             # Validate vision model is vision-capable
@@ -1183,8 +1193,8 @@ class BrowserAgent(Agent):
             )
             logger.info(f"Vision agent initialized for {name or 'BrowserAgent'} using {'provided vision_model_config' if vision_model_config else 'main model_config'}")
 
-        # Store vision model config for potential future use
-        self._vision_model_config = vision_model_config or (model_config if auto_screenshot else None)
+        # Store vision model config for potential future use (only if vision is needed)
+        self._vision_model_config = actual_vision_config
         
         # Track last auto-generated message IDs for memory management
         self._last_auto_screenshot_message_id: Optional[str] = None
@@ -1491,6 +1501,13 @@ class BrowserAgent(Agent):
 
         # Add session management tool (available in both modes)
         browser_tools["save_session"] = self._save_session
+
+        # Add intelligent page content tools (available in both modes)
+        # These provide a FileOperationTools-like experience for web pages:
+        # - get_page_overview: Returns hierarchical DOM tree with truncated text
+        # - inspect_element: Get full HTML/text for a specific element (like Chrome DevTools Inspect)
+        browser_tools["get_page_overview"] = self.browser_tool.get_page_overview
+        browser_tools["inspect_element"] = self.browser_tool.inspect_element
 
         # Update the agent's tools
         if hasattr(self, 'tools') and self.tools:
@@ -1832,21 +1849,25 @@ class BrowserAgent(Agent):
         if not self.browser_tool:
             raise RuntimeError("Browser not initialized")
 
-        # Wait for page to be stable before taking screenshot
+        # Minimal wait for page stability - only wait for DOM to be ready
+        # Avoid networkidle as it can cause significant delays
         try:
-            await self.browser_tool.page.wait_for_load_state("networkidle", timeout=1000)
+            await self.browser_tool.page.wait_for_load_state("domcontentloaded", timeout=100)
         except Exception:
-            # Fallback: wait a short time if networkidle times out
-            await self.browser_tool.page.wait_for_timeout(500)
+            pass  # Continue without waiting if it times out
 
         # Handle "none" mode: take raw screenshot without any element detection
         if not use_prediction and not use_rule_based:
             # Take a plain screenshot without any element highlighting
-            screenshot_path = await self.browser_tool.screenshot(
+            # browser_tool.screenshot() returns a ToolResponse object, not a string path
+            # We need to extract the actual path from metadata for internal use
+            tool_response = await self.browser_tool.screenshot(
                 filename=screenshot_filename,
                 reasoning="Raw screenshot without element detection",
                 highlight_bbox=False
             )
+            # Extract the actual file path from ToolResponse metadata
+            screenshot_path = tool_response.metadata.get("screenshot_path") if tool_response.metadata else None
             return {
                 'screenshot_path': screenshot_path,
                 'elements': [],  # No elements detected
