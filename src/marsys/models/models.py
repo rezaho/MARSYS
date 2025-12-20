@@ -1182,8 +1182,54 @@ class AnthropicAdapter(APIProviderAdapter):
         for msg in messages:
             if msg.get("role") == "system":
                 system_message = msg.get("content")
+            elif msg.get("role") == "tool":
+                # Convert OpenAI tool response to Anthropic tool_result format
+                # OpenAI: {"role": "tool", "tool_call_id": "xxx", "content": "..."}
+                # Anthropic: {"role": "user", "content": [{"type": "tool_result", "tool_use_id": "xxx", "content": "..."}]}
+                tool_result_msg = {
+                    "role": "user",
+                    "content": [{
+                        "type": "tool_result",
+                        "tool_use_id": msg.get("tool_call_id"),
+                        "content": msg.get("content", "")
+                    }]
+                }
+                user_messages.append(tool_result_msg)
+            elif msg.get("role") == "assistant" and msg.get("tool_calls"):
+                # Convert assistant message with tool_calls to Anthropic format
+                # OpenAI: {"role": "assistant", "content": "...", "tool_calls": [...]}
+                # Anthropic: {"role": "assistant", "content": [{"type": "text", "text": "..."}, {"type": "tool_use", ...}]}
+                content_blocks = []
+
+                # Add text content if present
+                text_content = msg.get("content")
+                if text_content:
+                    content_blocks.append({"type": "text", "text": text_content})
+
+                # Add tool_use blocks
+                for tc in msg.get("tool_calls", []):
+                    import json
+                    func = tc.get("function", {})
+                    args = func.get("arguments", "{}")
+                    if isinstance(args, str):
+                        try:
+                            args = json.loads(args)
+                        except json.JSONDecodeError:
+                            args = {}
+
+                    content_blocks.append({
+                        "type": "tool_use",
+                        "id": tc.get("id"),
+                        "name": func.get("name"),
+                        "input": args
+                    })
+
+                user_messages.append({
+                    "role": "assistant",
+                    "content": content_blocks if content_blocks else [{"type": "text", "text": ""}]
+                })
             else:
-                # Convert None content to empty string for compatibility
+                # Regular message - convert None content to empty string for compatibility
                 cleaned_msg = msg.copy()
                 if cleaned_msg.get("content") is None:
                     cleaned_msg["content"] = ""
@@ -1227,6 +1273,27 @@ class AnthropicAdapter(APIProviderAdapter):
             last_msg = user_messages[-1]
             if last_msg.get("role") == "user":
                 last_msg["content"] += "\n\nPlease respond with valid JSON only."
+
+        # Handle tools - convert OpenAI format to Anthropic format
+        # OpenAI: {"type": "function", "function": {"name": ..., "description": ..., "parameters": ...}}
+        # Anthropic: {"name": ..., "description": ..., "input_schema": ...}
+        if kwargs.get("tools"):
+            anthropic_tools = []
+            for tool in kwargs["tools"]:
+                if isinstance(tool, dict):
+                    if tool.get("type") == "function" and "function" in tool:
+                        # Convert from OpenAI format
+                        func = tool["function"]
+                        anthropic_tools.append({
+                            "name": func.get("name"),
+                            "description": func.get("description", ""),
+                            "input_schema": func.get("parameters", {"type": "object", "properties": {}})
+                        })
+                    elif "name" in tool and "input_schema" in tool:
+                        # Already in Anthropic format
+                        anthropic_tools.append(tool)
+            if anthropic_tools:
+                payload["tools"] = anthropic_tools
 
         return payload
 
