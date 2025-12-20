@@ -794,18 +794,20 @@ class ModelAPIError(ModelError):
                     message = error_data.get("message", message)
                     api_error_code = error_data.get("code")
 
-                    if status_code == 429 or (error_data.get("status") == "RESOURCE_EXHAUSTED"):
-                        if "quota" in message.lower():
-                            classification = APIErrorClassification.INSUFFICIENT_CREDITS.value
-                        else:
-                            classification = APIErrorClassification.RATE_LIMIT.value
-                        is_retryable = True
-                        retry_after = 60
+                # 429 check must be OUTSIDE if error_data block (matches OpenAI/Anthropic pattern)
+                resource_exhausted = error_data.get("status") == "RESOURCE_EXHAUSTED" if error_data else False
+                if status_code == 429 or resource_exhausted:
+                    if "quota" in message.lower():
+                        classification = APIErrorClassification.INSUFFICIENT_CREDITS.value
+                    else:
+                        classification = APIErrorClassification.RATE_LIMIT.value
+                    is_retryable = True
+                    retry_after = 60
                 elif status_code == 401:
-                        classification = APIErrorClassification.AUTHENTICATION_FAILED.value
+                    classification = APIErrorClassification.AUTHENTICATION_FAILED.value
                 elif status_code >= 500:
-                        classification = APIErrorClassification.SERVICE_UNAVAILABLE.value
-                        is_retryable = True
+                    classification = APIErrorClassification.SERVICE_UNAVAILABLE.value
+                    is_retryable = True
 
             elif provider == "openrouter":
                 error_data = raw_response.get("error", {}) if raw_response else {}
