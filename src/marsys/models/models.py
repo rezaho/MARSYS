@@ -390,17 +390,47 @@ class OpenAIAdapter(APIProviderAdapter):
             re.match(r'^o[1-9]\d*-', model_lower)  # o1, o2, o3, o4, o5, o10+, etc.
         )
 
-        # Convert None content to empty string for compatibility
-        cleaned_messages = []
+        # Convert Chat Completions format messages to Responses API format
+        # The Responses API uses a different schema for tool calls and tool responses
+        converted_messages = []
         for msg in messages:
-            cleaned_msg = msg.copy()
-            if cleaned_msg.get("content") is None:
-                cleaned_msg["content"] = ""
-            cleaned_messages.append(cleaned_msg)
+            role = msg.get("role")
+
+            # Handle assistant messages with tool_calls -> function_call items
+            if role == "assistant" and msg.get("tool_calls"):
+                # First add any text content as a message
+                content = msg.get("content")
+                if content:
+                    converted_messages.append({
+                        "role": "assistant",
+                        "content": content
+                    })
+                # Convert each tool_call to a function_call item
+                for tc in msg["tool_calls"]:
+                    func = tc.get("function", {})
+                    converted_messages.append({
+                        "type": "function_call",
+                        "call_id": tc.get("id"),
+                        "name": func.get("name"),
+                        "arguments": func.get("arguments", "{}")
+                    })
+            # Handle tool role messages -> function_call_output items
+            elif role == "tool":
+                converted_messages.append({
+                    "type": "function_call_output",
+                    "call_id": msg.get("tool_call_id"),
+                    "output": msg.get("content", "")
+                })
+            # Regular messages - just ensure content is not None
+            else:
+                cleaned_msg = msg.copy()
+                if cleaned_msg.get("content") is None:
+                    cleaned_msg["content"] = ""
+                converted_messages.append(cleaned_msg)
 
         payload = {
             "model": self.model_name,
-            "input": cleaned_messages,  # Changed from 'messages' to 'input' for Responses API
+            "input": converted_messages,  # Changed from 'messages' to 'input' for Responses API
         }
 
         # Handle temperature - reasoning models (GPT-5, o1-*, o3-*, o4-*) don't support it
