@@ -1478,9 +1478,24 @@ class GoogleAdapter(APIProviderAdapter):
 
             # Handle different content types
             parts = []
+
+            # Get reasoning_details for thought signature lookup (Gemini 3)
+            # This is needed for both text and functionCall parts
+            reasoning_details = msg.get("reasoning_details", [])
+            # Find text thought signature if available
+            text_thought_sig = None
+            for rd in reasoning_details or []:
+                if rd.get("type") == "text" and rd.get("thought_signature"):
+                    text_thought_sig = rd.get("thought_signature")
+                    break
+
             if isinstance(content, str):
                 # Simple text content
-                parts.append({"text": content})
+                text_part = {"text": content}
+                # Add thought_signature for model messages if available (recommended for Gemini 3)
+                if msg_role in ["assistant", "model"] and text_thought_sig:
+                    text_part["thought_signature"] = text_thought_sig
+                parts.append(text_part)
             elif isinstance(content, (list, dict)):
                 # Check if this is a multi-part content (with type fields) or raw data
                 if isinstance(content, list) and content and isinstance(content[0], dict) and "type" in content[0]:
@@ -1488,7 +1503,11 @@ class GoogleAdapter(APIProviderAdapter):
                     for part in content:
                         if isinstance(part, dict):
                             if part.get("type") == "text":
-                                parts.append({"text": part.get("text", "")})
+                                text_part = {"text": part.get("text", "")}
+                                # Add thought_signature for model messages if available
+                                if msg_role in ["assistant", "model"] and text_thought_sig:
+                                    text_part["thought_signature"] = text_thought_sig
+                                parts.append(text_part)
                             elif part.get("type") == "image_url":
                                 # Handle OpenAI-style image URLs
                                 image_url = part.get("image_url", {})
@@ -1513,6 +1532,13 @@ class GoogleAdapter(APIProviderAdapter):
 
             # Add tool calls from assistant messages if present
             if msg_role in ["assistant", "model"] and msg.get("tool_calls"):
+                # Build a lookup map from reasoning_details: tool_call_id -> thought_signature
+                # (reasoning_details was extracted above for text parts)
+                thought_sig_map = {}
+                for rd in reasoning_details or []:
+                    if rd.get("type") == "function_call" and rd.get("tool_call_id"):
+                        thought_sig_map[rd["tool_call_id"]] = rd.get("thought_signature")
+
                 for tc in msg.get("tool_calls", []):
                     # Parse the tool call
                     if isinstance(tc, dict):
@@ -1524,14 +1550,19 @@ class GoogleAdapter(APIProviderAdapter):
                             func_args = json.loads(func_args_str) if isinstance(func_args_str, str) else func_args_str
                         except:
                             func_args = {}
-                        
-                        # Add functionCall part
-                        parts.append({
+
+                        # Build functionCall part
+                        func_call_part = {
                             "functionCall": {
                                 "name": func_name,
                                 "args": func_args
                             }
-                        })
+                        }
+                        # Add thoughtSignature if available (required for Gemini 3 multi-turn)
+                        tool_call_id = tc.get("id")
+                        if tool_call_id and tool_call_id in thought_sig_map:
+                            func_call_part["thoughtSignature"] = thought_sig_map[tool_call_id]
+                        parts.append(func_call_part)
             
             # Only add message if it has parts
             if parts:
@@ -1758,14 +1789,23 @@ class GoogleAdapter(APIProviderAdapter):
         content = candidate.get("content", {})
         parts = content.get("parts", [])
 
-        # Extract text content and function calls from all parts
+        # Extract text content, function calls, and thought signatures from all parts
+        # Gemini 3 includes thoughtSignature in parts for multi-turn tool calling
+        # See: https://ai.google.dev/gemini-api/docs/thought-signatures
         text_content = ""
         tool_calls = []
-        
+        reasoning_details = []  # Store thought signatures for Gemini 3
+
         for part in parts:
             if isinstance(part, dict):
                 if "text" in part:
                     text_content += part["text"]
+                    # Capture thought_signature from text parts (optional but recommended)
+                    if "thought_signature" in part:
+                        reasoning_details.append({
+                            "type": "text",
+                            "thought_signature": part["thought_signature"]
+                        })
                 elif "functionCall" in part:
                     # Parse native Google function call
                     import json
@@ -1783,6 +1823,14 @@ class GoogleAdapter(APIProviderAdapter):
                             }
                         )
                     )
+                    # Capture thoughtSignature from functionCall parts (required for Gemini 3)
+                    if "thoughtSignature" in part:
+                        reasoning_details.append({
+                            "type": "function_call",
+                            "tool_call_id": tool_id,
+                            "function_name": fc.get("name", ""),
+                            "thought_signature": part["thoughtSignature"]
+                        })
 
         # Build usage info
         usage_data = raw_response.get("usageMetadata", {})
@@ -1813,6 +1861,7 @@ class GoogleAdapter(APIProviderAdapter):
             role="assistant",
             content=text_content if text_content else None,
             tool_calls=tool_calls,  # Now includes native Google function calls
+            reasoning_details=reasoning_details if reasoning_details else None,  # Gemini 3 thought signatures
             metadata=metadata,
         )
 
