@@ -1883,7 +1883,7 @@ class ProviderAdapterFactory:
             "anthropic": AnthropicAdapter,
             "google": GoogleAdapter,
             "openrouter": OpenRouterAdapter,  # OpenRouter with additional headers support
-            "groq": OpenAIAdapter,  # Groq uses OpenAI format
+            "xai": OpenRouterAdapter,  # xAI Grok uses OpenAI-compatible /chat/completions
         }
 
         adapter_class = adapters.get(provider)
@@ -2580,7 +2580,7 @@ PROVIDER_BASE_URLS = {
     "openrouter": "https://openrouter.ai/api/v1",
     "google": "https://generativelanguage.googleapis.com/v1beta",  # Gemini API base URL
     "anthropic": "https://api.anthropic.com/v1",
-    "groq": "https://api.groq.com/openai/v1",
+    "xai": "https://api.x.ai/v1",  # xAI Grok API (OpenAI-compatible)
 }
 
 
@@ -2600,7 +2600,7 @@ class ModelConfig(BaseModel):
         description="Model identifier (e.g., 'gpt-4o', 'mistralai/Mistral-7B-Instruct-v0.1')",
     )
     provider: Optional[
-        Literal["openai", "openrouter", "google", "anthropic", "groq"]
+        Literal["openai", "openrouter", "google", "anthropic", "xai"]
     ] = Field(
         None, description="API provider name (used to determine base_url if not set)"
     )
@@ -2713,7 +2713,7 @@ class ModelConfig(BaseModel):
                 "openrouter": "OPENROUTER_API_KEY",
                 "google": "GOOGLE_API_KEY",
                 "anthropic": "ANTHROPIC_API_KEY",
-                "groq": "GROQ_API_KEY",
+                "xai": "XAI_API_KEY",
             }
             env_var = env_var_map.get(self.provider) if self.provider else None
 
