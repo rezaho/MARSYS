@@ -392,6 +392,51 @@ class OpenAIAdapter(APIProviderAdapter):
 
         # Convert Chat Completions format messages to Responses API format
         # The Responses API uses a different schema for tool calls and tool responses
+
+        def convert_content_types(content):
+            """Convert Chat Completions content types to Responses API content types.
+
+            Chat Completions format:
+                - {"type": "text", "text": "..."}
+                - {"type": "image_url", "image_url": {"url": "..."}}
+
+            Responses API format:
+                - {"type": "input_text", "text": "..."}
+                - {"type": "input_image", "image_url": "..."}
+            """
+            if isinstance(content, str):
+                return content
+            if isinstance(content, list):
+                converted = []
+                for item in content:
+                    if isinstance(item, dict):
+                        item_type = item.get("type")
+                        if item_type == "text":
+                            # Convert "text" -> "input_text"
+                            converted.append({
+                                "type": "input_text",
+                                "text": item.get("text", "")
+                            })
+                        elif item_type == "image_url":
+                            # Convert "image_url" -> "input_image"
+                            # Also flatten: {"image_url": {"url": "..."}} -> {"image_url": "..."}
+                            image_url_data = item.get("image_url", {})
+                            if isinstance(image_url_data, dict):
+                                url = image_url_data.get("url", "")
+                            else:
+                                url = image_url_data
+                            converted.append({
+                                "type": "input_image",
+                                "image_url": url
+                            })
+                        else:
+                            # Keep other types as-is (input_text, input_image already correct)
+                            converted.append(item)
+                    else:
+                        converted.append(item)
+                return converted
+            return content
+
         converted_messages = []
         for msg in messages:
             role = msg.get("role")
@@ -403,7 +448,7 @@ class OpenAIAdapter(APIProviderAdapter):
                 if content:
                     converted_messages.append({
                         "role": "assistant",
-                        "content": content
+                        "content": convert_content_types(content)
                     })
                 # Convert each tool_call to a function_call item
                 for tc in msg["tool_calls"]:
@@ -421,27 +466,29 @@ class OpenAIAdapter(APIProviderAdapter):
                     "call_id": msg.get("tool_call_id"),
                     "output": msg.get("content", "")
                 })
-            # Regular messages - just ensure content is not None
+            # Regular messages - convert content types and ensure content is not None
             else:
                 cleaned_msg = msg.copy()
                 if cleaned_msg.get("content") is None:
                     cleaned_msg["content"] = ""
+                else:
+                    # Convert content types (text -> input_text, image_url -> input_image)
+                    cleaned_msg["content"] = convert_content_types(cleaned_msg["content"])
+                # Remove 'name' field - not supported in Responses API
+                # (was supported in Chat Completions for multi-user/multi-persona dialogues)
+                cleaned_msg.pop("name", None)
                 converted_messages.append(cleaned_msg)
 
         payload = {
             "model": self.model_name,
             "input": converted_messages,  # Changed from 'messages' to 'input' for Responses API
+            "store": False,  # Don't store responses on OpenAI's servers
         }
 
         # Handle temperature - reasoning models (GPT-5, o1-*, o3-*, o4-*) don't support it
         if not is_reasoning_model:
             temperature = kwargs.get("temperature", self.temperature)
             payload["temperature"] = temperature
-        elif kwargs.get("temperature") is not None:
-            logger.warning(
-                f"OpenAI {self.model_name} is a reasoning model that does not support the temperature parameter. "
-                f"Temperature setting will be ignored."
-            )
 
         # Handle max tokens - Responses API uses max_output_tokens
         if "max_completion_tokens" in kwargs:
@@ -510,7 +557,11 @@ class OpenAIAdapter(APIProviderAdapter):
         # Handle OpenAI reasoning (effort-based for all models via Responses API)
         reasoning_effort = kwargs.get("reasoning_effort")
         if reasoning_effort and reasoning_effort.lower() in ["minimal", "low", "medium", "high"]:
-            payload["reasoning"] = {"effort": reasoning_effort.lower()}
+            effort_value = reasoning_effort.lower()
+            # Codex models don't support 'minimal' - map to 'low'
+            if "codex" in model_lower and effort_value == "minimal":
+                effort_value = "low"
+            payload["reasoning"] = {"effort": effort_value}
 
         # Only accept known OpenAI Responses API parameters - warn about unknown ones
         # Based on: https://platform.openai.com/docs/api-reference/responses/create
