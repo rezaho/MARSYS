@@ -603,7 +603,7 @@ async def get_interactive_elements(
             center_y = int(adjusted_bbox["y"] + adjusted_bbox["height"] / 2)
 
             if visible_only:
-                is_on_top = await page.evaluate(
+                is_on_top = await frame.evaluate(
                     """(arg) => {
                            const { element, centerX, centerY } = arg;
                            const topElement = document.elementFromPoint(centerX, centerY);
@@ -2118,20 +2118,34 @@ class BrowserTool:
 
         # Global download detection infrastructure
         self._download_queue: asyncio.Queue = asyncio.Queue()
-        self._setup_global_download_listener()
+        self._setup_global_listeners()
 
-    def _setup_global_download_listener(self):
+    def _setup_global_listeners(self):
         """
-        Set up a persistent global download listener that captures ALL downloads.
+        Set up global listeners for downloads and new tab handling.
 
-        This listener is registered once during initialization and persists across
-        all browser actions. Downloads are queued for methods to consume.
+        This method is called once during initialization and sets up:
+        1. Download listener - captures all downloads for methods to consume
+        2. New tab listener - auto-switches self.page when new tabs open
+
+        The new tab listener ensures that when a link with target="_blank" is clicked,
+        self.page is automatically updated to the new tab so screenshot captures and
+        interactions happen on the correct page.
         """
+        # Download listener for the initial page
         async def on_download(download):
             await self._download_queue.put(download)
 
-        # Register persistent download listener
         self.page.on("download", on_download)
+
+        # Auto-switch to new tabs when they open
+        def on_new_page(new_page):
+            self.page = new_page
+            logger.debug(f"Auto-switched to new tab: {new_page.url}")
+            # Re-register download listener on new page
+            new_page.on("download", on_download)
+
+        self.context.on("page", on_new_page)
 
     async def _check_for_download(self, timeout_ms: int = 500) -> Optional[Dict[str, str]]:
         """
@@ -2297,24 +2311,29 @@ class BrowserTool:
         }
         prefs_path.write_text(json.dumps(prefs))
 
-        # Set up persistent context options
+        # Set up persistent context options with anti-detection measures
         context_kwargs = {
             "user_data_dir": str(user_data_dir),
             "headless": headless,
             "accept_downloads": True,
             "java_script_enabled": True,
             "bypass_csp": True,  # Bypass Content Security Policy for better compatibility
+            # Anti-detection: Use a realistic user agent
+            "user_agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36",
+            # Anti-detection: Set realistic locale and timezone
+            "locale": "en-US",
+            "timezone_id": "America/New_York",
             "args": [
-                "--disable-web-security",
-                "--disable-features=VizDisplayCompositor",
-                "--disable-font-subpixel-positioning",
-                "--disable-remote-fonts",
-                "--disable-background-timer-throttling",
-                "--disable-backgrounding-occluded-windows",
-                "--disable-renderer-backgrounding",
-                "--no-sandbox",
+                # Essential stability flags (minimal set)
                 "--disable-dev-shm-usage",
-            ]
+                # Anti-detection flags - these help avoid bot detection
+                "--disable-blink-features=AutomationControlled",
+                "--disable-infobars",
+                "--no-first-run",
+                "--disable-component-update",
+            ],
+            # Anti-detection: Disable automation-related flags
+            "ignore_default_args": ["--enable-automation"],
         }
 
         # Add channel if specified
@@ -2339,6 +2358,41 @@ class BrowserTool:
                 if timeout:
                     context.set_default_navigation_timeout(timeout)
                     context.set_default_timeout(timeout)
+
+                # Anti-detection: Inject stealth scripts to hide automation markers
+                await context.add_init_script("""
+                    // Hide webdriver property
+                    Object.defineProperty(navigator, 'webdriver', {
+                        get: () => undefined
+                    });
+
+                    // Override plugins to look more realistic
+                    Object.defineProperty(navigator, 'plugins', {
+                        get: () => [
+                            { name: 'Chrome PDF Plugin', filename: 'internal-pdf-viewer' },
+                            { name: 'Chrome PDF Viewer', filename: 'mhjfbmdgcfjbbpaeojofohoefgiehjai' },
+                            { name: 'Native Client', filename: 'internal-nacl-plugin' }
+                        ]
+                    });
+
+                    // Override languages
+                    Object.defineProperty(navigator, 'languages', {
+                        get: () => ['en-US', 'en']
+                    });
+
+                    // Hide automation-related Chrome properties
+                    if (window.chrome) {
+                        window.chrome.runtime = {};
+                    }
+
+                    // Override permissions query
+                    const originalQuery = window.navigator.permissions.query;
+                    window.navigator.permissions.query = (parameters) => (
+                        parameters.name === 'notifications' ?
+                            Promise.resolve({ state: Notification.permission }) :
+                            originalQuery(parameters)
+                    );
+                """)
 
                 # Persistent context often starts with a default page, use it instead of creating a new one
                 existing_pages = context.pages
@@ -2434,6 +2488,208 @@ class BrowserTool:
                 "output": title,
             }
         )
+
+    # ==================== Tab Management Tools ====================
+
+    async def list_tabs(self, reasoning: Optional[str] = None) -> str:
+        """
+        List all open browser tabs with their index, title, and URL.
+
+        Use this tool to see all tabs currently open in the browser.
+        Use the index value with switch_to_tab(index=...) to switch tabs.
+
+        Parameters:
+            reasoning (Optional[str]): The reasoning for listing tabs.
+
+        Returns:
+            str: A formatted list of all open tabs with index, title, and URL.
+        """
+        r = reasoning or ""
+        tabs_info = []
+
+        for idx, page in enumerate(self.context.pages):
+            try:
+                title = await page.title()
+            except Exception:
+                title = "(unable to get title)"
+            url = page.url
+            is_active = " [ACTIVE]" if page == self.page else ""
+            tabs_info.append(f"  index={idx}{is_active}: {title}\n      URL: {url}")
+
+        result = f"Open tabs ({len(self.context.pages)} total):\n" + "\n".join(tabs_info)
+
+        self.history.append({
+            "action": "list_tabs",
+            "reasoning": r,
+            "tab_count": len(self.context.pages),
+        })
+
+        return result
+
+    async def get_active_tab(self, reasoning: Optional[str] = None) -> str:
+        """
+        Get information about the currently active tab.
+
+        Use this tool to check which tab is currently being controlled by the browser.
+
+        Parameters:
+            reasoning (Optional[str]): The reasoning for checking the active tab.
+
+        Returns:
+            str: Information about the active tab including index, title and URL.
+        """
+        r = reasoning or ""
+
+        try:
+            title = await self.page.title()
+        except Exception:
+            title = "(unable to get title)"
+        url = self.page.url
+
+        # Find the index of the active tab
+        active_idx = -1
+        for idx, page in enumerate(self.context.pages):
+            if page == self.page:
+                active_idx = idx
+                break
+
+        result = f"Active tab (index={active_idx}):\n  Title: {title}\n  URL: {url}"
+
+        self.history.append({
+            "action": "get_active_tab",
+            "reasoning": r,
+            "title": title,
+            "url": url,
+            "index": active_idx,
+        })
+
+        return result
+
+    async def switch_to_tab(
+        self,
+        index: int,
+        reasoning: Optional[str] = None,
+    ) -> str:
+        """
+        Switch to a different browser tab by its index.
+
+        Use this tool when you need to switch control to a different tab.
+        Use list_tabs() first to see available tabs and their indices.
+
+        Parameters:
+            index (int): The tab index (0-based). Use list_tabs() to see available indices.
+            reasoning (Optional[str]): The reasoning for switching tabs.
+
+        Returns:
+            str: Confirmation message with the new active tab's title and URL.
+
+        Examples:
+            - switch_to_tab(index=0) - Switch to first tab
+            - switch_to_tab(index=1) - Switch to second tab
+        """
+        r = reasoning or ""
+
+        if not isinstance(index, int) or index < 0 or index >= len(self.context.pages):
+            error_msg = f"Invalid index {index}. Available indices: 0 to {len(self.context.pages) - 1}. Use list_tabs() to see all tabs."
+            self.history.append({
+                "action": "switch_to_tab",
+                "reasoning": r,
+                "index": index,
+                "success": False,
+                "error": error_msg,
+            })
+            return error_msg
+
+        target_page = self.context.pages[index]
+
+        # Switch to the target tab
+        self.page = target_page
+        await self.page.bring_to_front()
+
+        # Re-register download listener on the new page
+        async def on_download(download):
+            await self._download_queue.put(download)
+        self.page.on("download", on_download)
+
+        # Reinject mouse helper on the new page
+        await self._reinject_mouse_helper()
+
+        try:
+            new_title = await self.page.title()
+        except Exception:
+            new_title = "(unable to get title)"
+        new_url = self.page.url
+
+        result = f"Switched to tab (index={index}):\n  Title: {new_title}\n  URL: {new_url}"
+
+        self.history.append({
+            "action": "switch_to_tab",
+            "reasoning": r,
+            "index": index,
+            "success": True,
+            "new_title": new_title,
+            "new_url": new_url,
+        })
+
+        return result
+
+    async def close_tab(
+        self,
+        index: Optional[int] = None,
+        reasoning: Optional[str] = None,
+    ) -> str:
+        """
+        Close a browser tab by its index. If no index provided, closes the current tab.
+
+        After closing, automatically switches to the most recent remaining tab.
+
+        Parameters:
+            index (Optional[int]): Tab index to close. If None, closes current tab.
+            reasoning (Optional[str]): The reasoning for closing the tab.
+
+        Returns:
+            str: Confirmation message about which tab was closed and the new active tab.
+        """
+        r = reasoning or ""
+        target_page = None
+
+        if index is None:
+            target_page = self.page
+        elif isinstance(index, int) and 0 <= index < len(self.context.pages):
+            target_page = self.context.pages[index]
+        else:
+            return f"Invalid index {index}. Available indices: 0 to {len(self.context.pages) - 1}"
+
+        # Get info before closing
+        try:
+            closed_title = await target_page.title()
+        except Exception:
+            closed_title = "(unknown)"
+
+        # Close the tab
+        await target_page.close()
+
+        # Switch to another tab if we closed the current one
+        if len(self.context.pages) > 0:
+            self.page = self.context.pages[-1]
+            await self.page.bring_to_front()
+            try:
+                new_title = await self.page.title()
+            except Exception:
+                new_title = "(unknown)"
+            result = f"Closed tab '{closed_title}'. Now on: '{new_title}'"
+        else:
+            result = f"Closed tab '{closed_title}'. No tabs remaining."
+
+        self.history.append({
+            "action": "close_tab",
+            "reasoning": r,
+            "closed_title": closed_title,
+        })
+
+        return result
+
+    # ==================== End Tab Management Tools ====================
 
     async def scroll_to_top(self, reasoning: Optional[str] = None) -> None:
         """
@@ -5641,7 +5897,53 @@ class BrowserTool:
         
         # Convert the deduplicated elements back to a list
         elements = list(seen_bboxes.values())
-        
+
+        # Post-processing: Filter out container elements that have interactive children
+        # This prevents large containers (like scrollable menus) from being detected
+        # when they contain more specific interactive elements
+        def bbox_contains(outer: List[int], inner: List[int], margin: int = 5) -> bool:
+            """Check if outer bbox fully contains inner bbox (with margin tolerance)."""
+            # bbox format: [x1, y1, x2, y2]
+            return (
+                outer[0] - margin <= inner[0] and
+                outer[1] - margin <= inner[1] and
+                outer[2] + margin >= inner[2] and
+                outer[3] + margin >= inner[3]
+            )
+
+        def get_bbox_area(bbox: List[int]) -> int:
+            """Calculate bbox area."""
+            return (bbox[2] - bbox[0]) * (bbox[3] - bbox[1])
+
+        # Find container elements to filter out
+        containers_to_remove = set()
+
+        for i, elem in enumerate(elements):
+            elem_bbox = elem['bbox']
+            elem_area = get_bbox_area(elem_bbox)
+
+            # Count how many other elements this element contains
+            children_count = 0
+            for j, other in enumerate(elements):
+                if i == j:
+                    continue
+                other_bbox = other['bbox']
+                other_area = get_bbox_area(other_bbox)
+
+                # Check if elem contains other and other is significantly smaller
+                if bbox_contains(elem_bbox, other_bbox) and other_area < elem_area * 0.8:
+                    children_count += 1
+
+            # If this element contains multiple interactive children, it's likely a container
+            # Remove it and keep the children instead
+            if children_count >= 2:
+                containers_to_remove.add(i)
+                logging.debug(f"Filtering out container element with {children_count} children: {elem.get('label', 'unknown')[:50]}")
+
+        # Filter out the containers
+        if containers_to_remove:
+            elements = [elem for i, elem in enumerate(elements) if i not in containers_to_remove]
+
         return elements
 
     async def predict_interactive_elements(self, reasoning: Optional[str] = None) -> List[Dict[str, Any]]:
@@ -6372,6 +6674,426 @@ class BrowserTool:
             self.history.append({
                 "action": "get_page_elements",
                 "reasoning": r,
+                "error": str(e)
+            })
+
+            return error_result
+
+    async def get_page_overview(
+        self,
+        max_text_length: int = 80,
+        max_depth: int = 4,
+        reasoning: Optional[str] = None,
+    ) -> Dict[str, Any]:
+        """
+        Get a hierarchical overview of the page DOM structure with truncated text.
+
+        Similar to FileOperationTools PDF overview - provides a tree structure
+        that allows the agent to understand the page layout and then drill down
+        into specific sections using inspect_element().
+
+        Parameters:
+            max_text_length: Maximum characters to show for each element's text (default: 80)
+            max_depth: Maximum depth of DOM tree to traverse (default: 4)
+            reasoning: Optional reasoning for this action
+
+        Returns:
+            Dictionary with hierarchical page structure:
+            {
+                "url": str,
+                "title": str,
+                "regions": {
+                    "header": { tree of elements },
+                    "nav": { tree of elements },
+                    "main": { tree of elements },
+                    "aside": { tree of elements },
+                    "footer": { tree of elements },
+                    "other": { tree of elements }
+                },
+                "summary": {
+                    "total_elements": int,
+                    "interactive_count": int,
+                    "text_heavy_regions": [str],
+                    "has_forms": bool,
+                    "has_tables": bool
+                },
+                "quick_access": [
+                    {"selector": str, "type": str, "preview": str},
+                    ...  # Top 10 most likely useful elements
+                ]
+            }
+        """
+        r = reasoning or ""
+
+        try:
+            # JavaScript to build hierarchical DOM tree with truncated text
+            overview_script = """
+            (config) => {
+                const maxTextLen = config.maxTextLength;
+                const maxDepth = config.maxDepth;
+
+                // Helper to truncate text
+                function truncateText(text, maxLen) {
+                    if (!text) return '';
+                    text = text.trim().replace(/\\s+/g, ' ');
+                    if (text.length <= maxLen) return text;
+                    return text.substring(0, maxLen) + '...';
+                }
+
+                // Helper to generate unique CSS selector
+                function generateSelector(element) {
+                    if (element.id) return `#${element.id}`;
+
+                    if (element.name && ['INPUT', 'SELECT', 'TEXTAREA'].includes(element.tagName)) {
+                        const nameMatch = document.querySelectorAll(`${element.tagName.toLowerCase()}[name="${element.name}"]`);
+                        if (nameMatch.length === 1) return `${element.tagName.toLowerCase()}[name="${element.name}"]`;
+                    }
+
+                    if (element.className && typeof element.className === 'string') {
+                        const classes = element.className.trim().split(/\\s+/).filter(c => c && !c.includes(':'));
+                        if (classes.length > 0) {
+                            const classSelector = element.tagName.toLowerCase() + '.' + classes.slice(0, 2).join('.');
+                            const classMatches = document.querySelectorAll(classSelector);
+                            if (classMatches.length === 1) return classSelector;
+                        }
+                    }
+
+                    // Build path
+                    const path = [];
+                    let current = element;
+                    while (current && current !== document.body && path.length < 3) {
+                        let selector = current.tagName.toLowerCase();
+                        if (current.parentElement) {
+                            const siblings = Array.from(current.parentElement.children)
+                                .filter(el => el.tagName === current.tagName);
+                            if (siblings.length > 1) {
+                                const index = siblings.indexOf(current) + 1;
+                                selector += `:nth-of-type(${index})`;
+                            }
+                        }
+                        path.unshift(selector);
+                        current = current.parentElement;
+                    }
+                    return path.join(' > ');
+                }
+
+                // Helper to check visibility
+                function isVisible(element) {
+                    const style = window.getComputedStyle(element);
+                    return style.display !== 'none' &&
+                           style.visibility !== 'hidden' &&
+                           style.opacity !== '0' &&
+                           element.offsetWidth > 0;
+                }
+
+                // Semantic tags for interactive elements
+                const interactiveTags = new Set(['a', 'button', 'input', 'select', 'textarea', 'details', 'summary']);
+                const semanticRoles = new Set(['button', 'link', 'menuitem', 'tab', 'checkbox', 'radio', 'textbox', 'combobox']);
+
+                // Build element node
+                function buildNode(element, depth) {
+                    if (depth > maxDepth) return null;
+                    if (!isVisible(element)) return null;
+
+                    const tagName = element.tagName.toLowerCase();
+
+                    // Skip script, style, svg internals
+                    if (['script', 'style', 'noscript', 'svg', 'path', 'g'].includes(tagName)) return null;
+
+                    const role = element.getAttribute('role');
+                    const isInteractive = interactiveTags.has(tagName) ||
+                                         (role && semanticRoles.has(role)) ||
+                                         element.hasAttribute('onclick') ||
+                                         element.hasAttribute('tabindex');
+
+                    // Get direct text content (not from children)
+                    let directText = '';
+                    for (const child of element.childNodes) {
+                        if (child.nodeType === Node.TEXT_NODE) {
+                            directText += child.textContent;
+                        }
+                    }
+                    directText = truncateText(directText, maxTextLen);
+
+                    // Get aria-label or other accessible names
+                    const accessibleName = element.getAttribute('aria-label') ||
+                                          element.getAttribute('title') ||
+                                          element.getAttribute('alt') ||
+                                          element.getAttribute('placeholder') || '';
+
+                    // Build children
+                    const children = [];
+                    let childCount = 0;
+                    for (const child of element.children) {
+                        if (childCount >= 20) {  // Limit children per node
+                            children.push({ tag: '...', text: `(${element.children.length - 20} more children)` });
+                            break;
+                        }
+                        const childNode = buildNode(child, depth + 1);
+                        if (childNode) {
+                            children.push(childNode);
+                            childCount++;
+                        }
+                    }
+
+                    // Skip empty containers
+                    if (!directText && !accessibleName && children.length === 0 && !isInteractive) {
+                        return null;
+                    }
+
+                    const node = {
+                        tag: tagName,
+                        selector: generateSelector(element)
+                    };
+
+                    if (directText) node.text = directText;
+                    if (accessibleName) node.label = truncateText(accessibleName, 50);
+                    if (isInteractive) node.interactive = true;
+                    if (role) node.role = role;
+                    if (element.type && tagName === 'input') node.type = element.type;
+                    if (element.href) node.href = truncateText(element.href, 60);
+                    if (children.length > 0) node.children = children;
+
+                    return node;
+                }
+
+                // Identify semantic regions
+                const regions = {
+                    header: null,
+                    nav: null,
+                    main: null,
+                    aside: null,
+                    footer: null,
+                    other: { tag: 'body', children: [] }
+                };
+
+                // Find semantic landmarks
+                const header = document.querySelector('header, [role="banner"]');
+                const nav = document.querySelector('nav, [role="navigation"]');
+                const main = document.querySelector('main, [role="main"], article, .main-content, #main, #content');
+                const aside = document.querySelector('aside, [role="complementary"]');
+                const footer = document.querySelector('footer, [role="contentinfo"]');
+
+                if (header) regions.header = buildNode(header, 0);
+                if (nav) regions.nav = buildNode(nav, 0);
+                if (main) regions.main = buildNode(main, 0);
+                if (aside) regions.aside = buildNode(aside, 0);
+                if (footer) regions.footer = buildNode(footer, 0);
+
+                // Get elements not in any region
+                const coveredElements = new Set([header, nav, main, aside, footer].filter(Boolean));
+                for (const child of document.body.children) {
+                    if (!coveredElements.has(child)) {
+                        const node = buildNode(child, 0);
+                        if (node) regions.other.children.push(node);
+                    }
+                }
+
+                // Count elements
+                const allInteractive = document.querySelectorAll('a, button, input, select, textarea, [role="button"], [role="link"]');
+                const visibleInteractive = Array.from(allInteractive).filter(isVisible);
+
+                // Summary statistics
+                const summary = {
+                    total_elements: document.querySelectorAll('*').length,
+                    interactive_count: visibleInteractive.length,
+                    text_heavy_regions: [],
+                    has_forms: document.querySelectorAll('form').length > 0,
+                    has_tables: document.querySelectorAll('table').length > 0,
+                    has_images: document.querySelectorAll('img').length > 0
+                };
+
+                // Identify text-heavy regions
+                if (main && main.textContent.length > 1000) summary.text_heavy_regions.push('main');
+                if (aside && aside.textContent.length > 500) summary.text_heavy_regions.push('aside');
+
+                // Quick access - top useful elements
+                const quickAccess = [];
+                const usefulSelectors = [
+                    'input[type="search"], input[name*="search"], [role="searchbox"]',
+                    'button[type="submit"], input[type="submit"]',
+                    'nav a',
+                    'main h1, main h2',
+                    'form',
+                    '[role="main"] > *:first-child'
+                ];
+
+                for (const sel of usefulSelectors) {
+                    try {
+                        const el = document.querySelector(sel);
+                        if (el && isVisible(el)) {
+                            quickAccess.push({
+                                selector: generateSelector(el),
+                                type: el.tagName.toLowerCase(),
+                                preview: truncateText(el.textContent || el.getAttribute('aria-label') || '', 50)
+                            });
+                        }
+                    } catch (e) {}
+                }
+
+                return { regions, summary, quickAccess };
+            }
+            """
+
+            result = await self.page.evaluate(overview_script, {
+                'maxTextLength': max_text_length,
+                'maxDepth': max_depth
+            })
+
+            result['url'] = self.page.url
+            result['title'] = await self.page.title()
+
+            self.history.append({
+                "action": "get_page_overview",
+                "reasoning": r,
+                "summary": result['summary']
+            })
+
+            return result
+
+        except Exception as e:
+            error_result = {
+                "url": self.page.url,
+                "title": await self.page.title() if self.page else "",
+                "regions": {},
+                "summary": {},
+                "quickAccess": [],
+                "error": f"Failed to get page overview: {str(e)}"
+            }
+
+            self.history.append({
+                "action": "get_page_overview",
+                "reasoning": r,
+                "error": str(e)
+            })
+
+            return error_result
+
+    async def inspect_element(
+        self,
+        selector: str,
+        output_format: str = "outer_html",
+        max_length: Optional[int] = None,
+        reasoning: Optional[str] = None,
+    ) -> Dict[str, Any]:
+        """
+        Inspect a specific element and get its HTML content or text.
+
+        Similar to Chrome DevTools "Inspect" feature - allows drilling down
+        into a specific element identified from get_page_overview().
+
+        Parameters:
+            selector: CSS selector for the element to inspect
+            output_format: What to return:
+                - "outer_html": Full HTML including the element itself (like right-click > Inspect)
+                - "inner_html": Just the content inside the element
+                - "text": Plain text content only
+                - "all": Return all formats
+            max_length: Maximum length of content to return (None = unlimited)
+            reasoning: Optional reasoning for this action
+
+        Returns:
+            Dictionary with element content:
+            {
+                "success": True,
+                "selector": str,
+                "tag": str,
+                "outer_html": str,  # If requested
+                "inner_html": str,  # If requested
+                "text": str,        # If requested
+                "attributes": {     # Always included
+                    "id": str,
+                    "class": str,
+                    "href": str,
+                    ...
+                },
+                "children_count": int,
+                "text_length": int,
+                "position": {x, y, width, height}
+            }
+        """
+        r = reasoning or ""
+
+        try:
+            locator = self.page.locator(selector).first
+
+            # Wait for element with short timeout
+            await locator.wait_for(state="attached", timeout=3000)
+
+            result = {
+                "success": True,
+                "selector": selector,
+            }
+
+            # Get tag name
+            tag = await locator.evaluate("el => el.tagName.toLowerCase()")
+            result["tag"] = tag
+
+            # Get attributes
+            attributes = await locator.evaluate("""el => {
+                const attrs = {};
+                for (const attr of el.attributes) {
+                    attrs[attr.name] = attr.value;
+                }
+                return attrs;
+            }""")
+            result["attributes"] = attributes
+
+            # Get children count
+            children_count = await locator.evaluate("el => el.children.length")
+            result["children_count"] = children_count
+
+            # Get position
+            bbox = await locator.bounding_box()
+            if bbox:
+                result["position"] = {
+                    "x": int(bbox["x"]),
+                    "y": int(bbox["y"]),
+                    "width": int(bbox["width"]),
+                    "height": int(bbox["height"])
+                }
+
+            # Get content based on format
+            if output_format in ("outer_html", "all"):
+                outer_html = await locator.evaluate("el => el.outerHTML")
+                if max_length and len(outer_html) > max_length:
+                    outer_html = outer_html[:max_length] + f"... (truncated, total: {len(outer_html)} chars)"
+                result["outer_html"] = outer_html
+
+            if output_format in ("inner_html", "all"):
+                inner_html = await locator.inner_html()
+                if max_length and len(inner_html) > max_length:
+                    inner_html = inner_html[:max_length] + f"... (truncated, total: {len(inner_html)} chars)"
+                result["inner_html"] = inner_html
+
+            if output_format in ("text", "all"):
+                text = await locator.text_content() or ""
+                result["text_length"] = len(text)
+                if max_length and len(text) > max_length:
+                    text = text[:max_length] + f"... (truncated, total: {len(text)} chars)"
+                result["text"] = text
+
+            self.history.append({
+                "action": "inspect_element",
+                "reasoning": r,
+                "selector": selector,
+                "output_format": output_format,
+                "tag": tag
+            })
+
+            return result
+
+        except Exception as e:
+            error_result = {
+                "success": False,
+                "selector": selector,
+                "error": f"Failed to inspect element: {str(e)}"
+            }
+
+            self.history.append({
+                "action": "inspect_element",
+                "reasoning": r,
+                "selector": selector,
                 "error": str(e)
             })
 

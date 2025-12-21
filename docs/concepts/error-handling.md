@@ -77,6 +77,7 @@ from marsys.agents.exceptions import (
     AgentFrameworkError,
     AgentError,
     ToolExecutionError,
+    ToolCallError,
     ModelError
 )
 
@@ -88,6 +89,10 @@ class AgentError(AgentFrameworkError):
 # Tool execution errors
 class ToolExecutionError(AgentFrameworkError):
     """Tool function execution failures."""
+    pass
+
+class ToolCallError(AgentFrameworkError):
+    """Tool call format errors (malformed arguments, missing required fields)."""
     pass
 
 class ActionValidationError(ValidationError):
@@ -177,6 +182,13 @@ async def execute_agent_task(agent, task, context):
         if e.recoverable and context.get("retry_count", 0) < 3:
             context["retry_count"] = context.get("retry_count", 0) + 1
             return await execute_agent_task(agent, task, context)
+        raise
+
+    except ToolCallError as e:
+        # Tool call format errors - need steering, not blind retries
+        # The framework automatically sets error context for the agent
+        logger.warning(f"Tool call format error: {e}")
+        # Let the steering system guide the agent to fix the tool call
         raise
 
     except MarsysError as e:

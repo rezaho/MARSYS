@@ -31,7 +31,7 @@ from marsys.models.response_models import (
     ToolCall,
     UsageInfo,
 )
-from marsys.models.utils import apply_tools_template
+from marsys.models.utils import apply_tools_template, parse_local_model_tool_calls
 
 # PEFT imports if used later in the file
 try:
@@ -390,28 +390,105 @@ class OpenAIAdapter(APIProviderAdapter):
             re.match(r'^o[1-9]\d*-', model_lower)  # o1, o2, o3, o4, o5, o10+, etc.
         )
 
-        # Convert None content to empty string for compatibility
-        cleaned_messages = []
+        # Convert Chat Completions format messages to Responses API format
+        # The Responses API uses a different schema for tool calls and tool responses
+
+        def convert_content_types(content):
+            """Convert Chat Completions content types to Responses API content types.
+
+            Chat Completions format:
+                - {"type": "text", "text": "..."}
+                - {"type": "image_url", "image_url": {"url": "..."}}
+
+            Responses API format:
+                - {"type": "input_text", "text": "..."}
+                - {"type": "input_image", "image_url": "..."}
+            """
+            if isinstance(content, str):
+                return content
+            if isinstance(content, list):
+                converted = []
+                for item in content:
+                    if isinstance(item, dict):
+                        item_type = item.get("type")
+                        if item_type == "text":
+                            # Convert "text" -> "input_text"
+                            converted.append({
+                                "type": "input_text",
+                                "text": item.get("text", "")
+                            })
+                        elif item_type == "image_url":
+                            # Convert "image_url" -> "input_image"
+                            # Also flatten: {"image_url": {"url": "..."}} -> {"image_url": "..."}
+                            image_url_data = item.get("image_url", {})
+                            if isinstance(image_url_data, dict):
+                                url = image_url_data.get("url", "")
+                            else:
+                                url = image_url_data
+                            converted.append({
+                                "type": "input_image",
+                                "image_url": url
+                            })
+                        else:
+                            # Keep other types as-is (input_text, input_image already correct)
+                            converted.append(item)
+                    else:
+                        converted.append(item)
+                return converted
+            return content
+
+        converted_messages = []
         for msg in messages:
-            cleaned_msg = msg.copy()
-            if cleaned_msg.get("content") is None:
-                cleaned_msg["content"] = ""
-            cleaned_messages.append(cleaned_msg)
+            role = msg.get("role")
+
+            # Handle assistant messages with tool_calls -> function_call items
+            if role == "assistant" and msg.get("tool_calls"):
+                # First add any text content as a message
+                content = msg.get("content")
+                if content:
+                    converted_messages.append({
+                        "role": "assistant",
+                        "content": convert_content_types(content)
+                    })
+                # Convert each tool_call to a function_call item
+                for tc in msg["tool_calls"]:
+                    func = tc.get("function", {})
+                    converted_messages.append({
+                        "type": "function_call",
+                        "call_id": tc.get("id"),
+                        "name": func.get("name"),
+                        "arguments": func.get("arguments", "{}")
+                    })
+            # Handle tool role messages -> function_call_output items
+            elif role == "tool":
+                converted_messages.append({
+                    "type": "function_call_output",
+                    "call_id": msg.get("tool_call_id"),
+                    "output": msg.get("content", "")
+                })
+            # Regular messages - convert content types and ensure content is not None
+            else:
+                cleaned_msg = msg.copy()
+                if cleaned_msg.get("content") is None:
+                    cleaned_msg["content"] = ""
+                else:
+                    # Convert content types (text -> input_text, image_url -> input_image)
+                    cleaned_msg["content"] = convert_content_types(cleaned_msg["content"])
+                # Remove 'name' field - not supported in Responses API
+                # (was supported in Chat Completions for multi-user/multi-persona dialogues)
+                cleaned_msg.pop("name", None)
+                converted_messages.append(cleaned_msg)
 
         payload = {
             "model": self.model_name,
-            "input": cleaned_messages,  # Changed from 'messages' to 'input' for Responses API
+            "input": converted_messages,  # Changed from 'messages' to 'input' for Responses API
+            "store": False,  # Don't store responses on OpenAI's servers
         }
 
         # Handle temperature - reasoning models (GPT-5, o1-*, o3-*, o4-*) don't support it
         if not is_reasoning_model:
             temperature = kwargs.get("temperature", self.temperature)
             payload["temperature"] = temperature
-        elif kwargs.get("temperature") is not None:
-            logger.warning(
-                f"OpenAI {self.model_name} is a reasoning model that does not support the temperature parameter. "
-                f"Temperature setting will be ignored."
-            )
 
         # Handle max tokens - Responses API uses max_output_tokens
         if "max_completion_tokens" in kwargs:
@@ -480,7 +557,11 @@ class OpenAIAdapter(APIProviderAdapter):
         # Handle OpenAI reasoning (effort-based for all models via Responses API)
         reasoning_effort = kwargs.get("reasoning_effort")
         if reasoning_effort and reasoning_effort.lower() in ["minimal", "low", "medium", "high"]:
-            payload["reasoning"] = {"effort": reasoning_effort.lower()}
+            effort_value = reasoning_effort.lower()
+            # Codex models don't support 'minimal' - map to 'low'
+            if "codex" in model_lower and effort_value == "minimal":
+                effort_value = "low"
+            payload["reasoning"] = {"effort": effort_value}
 
         # Only accept known OpenAI Responses API parameters - warn about unknown ones
         # Based on: https://platform.openai.com/docs/api-reference/responses/create
@@ -1023,12 +1104,17 @@ class OpenRouterAdapter(APIProviderAdapter):
             ),
         )
 
+        # Extract reasoning_details for Gemini 3 thought signature preservation
+        # This is critical for multi-turn tool calling with Gemini 3 models
+        reasoning_details = message.get("reasoning_details")
+
         # Build harmonized response
         return HarmonizedResponse(
             role=message.get("role", "assistant"),
             content=content,
             tool_calls=tool_calls,
             reasoning=message.get("reasoning"),  # OpenRouter reasoning
+            reasoning_details=reasoning_details,  # Gemini 3 thought signatures
             metadata=metadata,
         )
 
@@ -1147,8 +1233,54 @@ class AnthropicAdapter(APIProviderAdapter):
         for msg in messages:
             if msg.get("role") == "system":
                 system_message = msg.get("content")
+            elif msg.get("role") == "tool":
+                # Convert OpenAI tool response to Anthropic tool_result format
+                # OpenAI: {"role": "tool", "tool_call_id": "xxx", "content": "..."}
+                # Anthropic: {"role": "user", "content": [{"type": "tool_result", "tool_use_id": "xxx", "content": "..."}]}
+                tool_result_msg = {
+                    "role": "user",
+                    "content": [{
+                        "type": "tool_result",
+                        "tool_use_id": msg.get("tool_call_id"),
+                        "content": msg.get("content", "")
+                    }]
+                }
+                user_messages.append(tool_result_msg)
+            elif msg.get("role") == "assistant" and msg.get("tool_calls"):
+                # Convert assistant message with tool_calls to Anthropic format
+                # OpenAI: {"role": "assistant", "content": "...", "tool_calls": [...]}
+                # Anthropic: {"role": "assistant", "content": [{"type": "text", "text": "..."}, {"type": "tool_use", ...}]}
+                content_blocks = []
+
+                # Add text content if present
+                text_content = msg.get("content")
+                if text_content:
+                    content_blocks.append({"type": "text", "text": text_content})
+
+                # Add tool_use blocks
+                for tc in msg.get("tool_calls", []):
+                    import json
+                    func = tc.get("function", {})
+                    args = func.get("arguments", "{}")
+                    if isinstance(args, str):
+                        try:
+                            args = json.loads(args)
+                        except json.JSONDecodeError:
+                            args = {}
+
+                    content_blocks.append({
+                        "type": "tool_use",
+                        "id": tc.get("id"),
+                        "name": func.get("name"),
+                        "input": args
+                    })
+
+                user_messages.append({
+                    "role": "assistant",
+                    "content": content_blocks if content_blocks else [{"type": "text", "text": ""}]
+                })
             else:
-                # Convert None content to empty string for compatibility
+                # Regular message - convert None content to empty string for compatibility
                 cleaned_msg = msg.copy()
                 if cleaned_msg.get("content") is None:
                     cleaned_msg["content"] = ""
@@ -1192,6 +1324,27 @@ class AnthropicAdapter(APIProviderAdapter):
             last_msg = user_messages[-1]
             if last_msg.get("role") == "user":
                 last_msg["content"] += "\n\nPlease respond with valid JSON only."
+
+        # Handle tools - convert OpenAI format to Anthropic format
+        # OpenAI: {"type": "function", "function": {"name": ..., "description": ..., "parameters": ...}}
+        # Anthropic: {"name": ..., "description": ..., "input_schema": ...}
+        if kwargs.get("tools"):
+            anthropic_tools = []
+            for tool in kwargs["tools"]:
+                if isinstance(tool, dict):
+                    if tool.get("type") == "function" and "function" in tool:
+                        # Convert from OpenAI format
+                        func = tool["function"]
+                        anthropic_tools.append({
+                            "name": func.get("name"),
+                            "description": func.get("description", ""),
+                            "input_schema": func.get("parameters", {"type": "object", "properties": {}})
+                        })
+                    elif "name" in tool and "input_schema" in tool:
+                        # Already in Anthropic format
+                        anthropic_tools.append(tool)
+            if anthropic_tools:
+                payload["tools"] = anthropic_tools
 
         return payload
 
@@ -1376,9 +1529,24 @@ class GoogleAdapter(APIProviderAdapter):
 
             # Handle different content types
             parts = []
+
+            # Get reasoning_details for thought signature lookup (Gemini 3)
+            # This is needed for both text and functionCall parts
+            reasoning_details = msg.get("reasoning_details", [])
+            # Find text thought signature if available
+            text_thought_sig = None
+            for rd in reasoning_details or []:
+                if rd.get("type") == "text" and rd.get("thought_signature"):
+                    text_thought_sig = rd.get("thought_signature")
+                    break
+
             if isinstance(content, str):
                 # Simple text content
-                parts.append({"text": content})
+                text_part = {"text": content}
+                # Add thought_signature for model messages if available (recommended for Gemini 3)
+                if msg_role in ["assistant", "model"] and text_thought_sig:
+                    text_part["thought_signature"] = text_thought_sig
+                parts.append(text_part)
             elif isinstance(content, (list, dict)):
                 # Check if this is a multi-part content (with type fields) or raw data
                 if isinstance(content, list) and content and isinstance(content[0], dict) and "type" in content[0]:
@@ -1386,7 +1554,11 @@ class GoogleAdapter(APIProviderAdapter):
                     for part in content:
                         if isinstance(part, dict):
                             if part.get("type") == "text":
-                                parts.append({"text": part.get("text", "")})
+                                text_part = {"text": part.get("text", "")}
+                                # Add thought_signature for model messages if available
+                                if msg_role in ["assistant", "model"] and text_thought_sig:
+                                    text_part["thought_signature"] = text_thought_sig
+                                parts.append(text_part)
                             elif part.get("type") == "image_url":
                                 # Handle OpenAI-style image URLs
                                 image_url = part.get("image_url", {})
@@ -1411,6 +1583,13 @@ class GoogleAdapter(APIProviderAdapter):
 
             # Add tool calls from assistant messages if present
             if msg_role in ["assistant", "model"] and msg.get("tool_calls"):
+                # Build a lookup map from reasoning_details: tool_call_id -> thought_signature
+                # (reasoning_details was extracted above for text parts)
+                thought_sig_map = {}
+                for rd in reasoning_details or []:
+                    if rd.get("type") == "function_call" and rd.get("tool_call_id"):
+                        thought_sig_map[rd["tool_call_id"]] = rd.get("thought_signature")
+
                 for tc in msg.get("tool_calls", []):
                     # Parse the tool call
                     if isinstance(tc, dict):
@@ -1422,14 +1601,19 @@ class GoogleAdapter(APIProviderAdapter):
                             func_args = json.loads(func_args_str) if isinstance(func_args_str, str) else func_args_str
                         except:
                             func_args = {}
-                        
-                        # Add functionCall part
-                        parts.append({
+
+                        # Build functionCall part
+                        func_call_part = {
                             "functionCall": {
                                 "name": func_name,
                                 "args": func_args
                             }
-                        })
+                        }
+                        # Add thoughtSignature if available (required for Gemini 3 multi-turn)
+                        tool_call_id = tc.get("id")
+                        if tool_call_id and tool_call_id in thought_sig_map:
+                            func_call_part["thoughtSignature"] = thought_sig_map[tool_call_id]
+                        parts.append(func_call_part)
             
             # Only add message if it has parts
             if parts:
@@ -1656,14 +1840,23 @@ class GoogleAdapter(APIProviderAdapter):
         content = candidate.get("content", {})
         parts = content.get("parts", [])
 
-        # Extract text content and function calls from all parts
+        # Extract text content, function calls, and thought signatures from all parts
+        # Gemini 3 includes thoughtSignature in parts for multi-turn tool calling
+        # See: https://ai.google.dev/gemini-api/docs/thought-signatures
         text_content = ""
         tool_calls = []
-        
+        reasoning_details = []  # Store thought signatures for Gemini 3
+
         for part in parts:
             if isinstance(part, dict):
                 if "text" in part:
                     text_content += part["text"]
+                    # Capture thought_signature from text parts (optional but recommended)
+                    if "thought_signature" in part:
+                        reasoning_details.append({
+                            "type": "text",
+                            "thought_signature": part["thought_signature"]
+                        })
                 elif "functionCall" in part:
                     # Parse native Google function call
                     import json
@@ -1681,6 +1874,14 @@ class GoogleAdapter(APIProviderAdapter):
                             }
                         )
                     )
+                    # Capture thoughtSignature from functionCall parts (required for Gemini 3)
+                    if "thoughtSignature" in part:
+                        reasoning_details.append({
+                            "type": "function_call",
+                            "tool_call_id": tool_id,
+                            "function_name": fc.get("name", ""),
+                            "thought_signature": part["thoughtSignature"]
+                        })
 
         # Build usage info
         usage_data = raw_response.get("usageMetadata", {})
@@ -1711,6 +1912,7 @@ class GoogleAdapter(APIProviderAdapter):
             role="assistant",
             content=text_content if text_content else None,
             tool_calls=tool_calls,  # Now includes native Google function calls
+            reasoning_details=reasoning_details if reasoning_details else None,  # Gemini 3 thought signatures
             metadata=metadata,
         )
 
@@ -1732,7 +1934,7 @@ class ProviderAdapterFactory:
             "anthropic": AnthropicAdapter,
             "google": GoogleAdapter,
             "openrouter": OpenRouterAdapter,  # OpenRouter with additional headers support
-            "groq": OpenAIAdapter,  # Groq uses OpenAI format
+            "xai": OpenRouterAdapter,  # xAI Grok uses OpenAI-compatible /chat/completions
         }
 
         adapter_class = adapters.get(provider)
@@ -1930,6 +2132,9 @@ class HuggingFaceLLMAdapter(LocalProviderAdapter):
                 thinking_content = think_match.group(1).strip()
                 final_content = re.sub(r"<think>.*?</think>", "", raw_content, flags=re.DOTALL).strip()
 
+        # Parse tool calls from <tool_call>...</tool_call> blocks
+        final_content, parsed_tool_calls = parse_local_model_tool_calls(final_content)
+
         if json_mode:
             final_content = "\n".join(final_content.split("```")[:-1]).strip()
             final_content = json.loads(final_content.replace("\n", ""))
@@ -1942,7 +2147,7 @@ class HuggingFaceLLMAdapter(LocalProviderAdapter):
             "role": "assistant",
             "content": result_content,
             "thinking": thinking_content,
-            "tool_calls": [],
+            "tool_calls": parsed_tool_calls,
         }
 
     async def arun(
@@ -1967,11 +2172,21 @@ class HuggingFaceLLMAdapter(LocalProviderAdapter):
             **kwargs,
         )
 
+        # Convert parsed tool calls to ToolCall objects
+        tool_calls = [
+            ToolCall(
+                id=tc.get("id", ""),
+                type=tc.get("type", "function"),
+                function=tc.get("function", {}),
+            )
+            for tc in raw_result.get("tool_calls", [])
+        ]
+
         return HarmonizedResponse(
             role=raw_result.get("role", "assistant"),
             content=raw_result.get("content"),
             thinking=raw_result.get("thinking"),
-            tool_calls=[],
+            tool_calls=tool_calls,
             metadata=ResponseMetadata(
                 provider="huggingface",
                 model=self.model.config.name_or_path if hasattr(self.model, 'config') else self.model_name,
@@ -2101,6 +2316,9 @@ class HuggingFaceVLMAdapter(LocalProviderAdapter):
                 thinking_content = think_match.group(1).strip()
                 final_content = re.sub(r"<think>.*?</think>", "", raw_content, flags=re.DOTALL).strip()
 
+        # Parse tool calls from <tool_call>...</tool_call> blocks
+        final_content, parsed_tool_calls = parse_local_model_tool_calls(final_content)
+
         if json_mode:
             final_content = "\n".join(final_content.split("```")[:-1]).strip()
             final_content = json.loads(final_content.replace("\n", ""))
@@ -2113,7 +2331,7 @@ class HuggingFaceVLMAdapter(LocalProviderAdapter):
             "role": role,
             "content": result_content,
             "thinking": thinking_content,
-            "tool_calls": [],
+            "tool_calls": parsed_tool_calls,
         }
 
     async def arun(
@@ -2140,11 +2358,21 @@ class HuggingFaceVLMAdapter(LocalProviderAdapter):
             **kwargs,
         )
 
+        # Convert parsed tool calls to ToolCall objects
+        tool_calls = [
+            ToolCall(
+                id=tc.get("id", ""),
+                type=tc.get("type", "function"),
+                function=tc.get("function", {}),
+            )
+            for tc in raw_result.get("tool_calls", [])
+        ]
+
         return HarmonizedResponse(
             role=raw_result.get("role", "assistant"),
             content=raw_result.get("content"),
             thinking=raw_result.get("thinking"),
-            tool_calls=[],
+            tool_calls=tool_calls,
             metadata=ResponseMetadata(
                 provider="huggingface",
                 model=self.model.config.name_or_path if hasattr(self.model, 'config') else self.model_name,
@@ -2403,7 +2631,7 @@ PROVIDER_BASE_URLS = {
     "openrouter": "https://openrouter.ai/api/v1",
     "google": "https://generativelanguage.googleapis.com/v1beta",  # Gemini API base URL
     "anthropic": "https://api.anthropic.com/v1",
-    "groq": "https://api.groq.com/openai/v1",
+    "xai": "https://api.x.ai/v1",  # xAI Grok API (OpenAI-compatible)
 }
 
 
@@ -2423,7 +2651,7 @@ class ModelConfig(BaseModel):
         description="Model identifier (e.g., 'gpt-4o', 'mistralai/Mistral-7B-Instruct-v0.1')",
     )
     provider: Optional[
-        Literal["openai", "openrouter", "google", "anthropic", "groq"]
+        Literal["openai", "openrouter", "google", "anthropic", "xai"]
     ] = Field(
         None, description="API provider name (used to determine base_url if not set)"
     )
@@ -2536,7 +2764,7 @@ class ModelConfig(BaseModel):
                 "openrouter": "OPENROUTER_API_KEY",
                 "google": "GOOGLE_API_KEY",
                 "anthropic": "ANTHROPIC_API_KEY",
-                "groq": "GROQ_API_KEY",
+                "xai": "XAI_API_KEY",
             }
             env_var = env_var_map.get(self.provider) if self.provider else None
 

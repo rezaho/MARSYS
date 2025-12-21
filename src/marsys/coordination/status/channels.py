@@ -132,7 +132,7 @@ class CLIChannel(ChannelAdapter):
     async def _print_agent_thinking(self, event: 'AgentThinkingEvent', ts: str, verbosity: int):
         """Print agent thinking event."""
         from ..config import VerbosityLevel
-        if verbosity < VerbosityLevel.VERBOSE:
+        if verbosity < VerbosityLevel.NORMAL:
             return
 
         c = self.colors
@@ -150,9 +150,9 @@ class CLIChannel(ChannelAdapter):
 
         indent = "    " if in_parallel else "  "
         thought = event.thought[:200] + "..." if len(event.thought) > 200 else event.thought
-        print(f"{indent}{ts} {c['yellow']}💭 Thinking:{c['reset']} {thought}")
+        print(f"{indent}{c['dim']}💭 Thinking:{c['reset']} {c['gray']}{thought}{c['reset']}")
 
-        if event.action_type:
+        if verbosity >= VerbosityLevel.VERBOSE and event.action_type:
             print(f"{indent}  {c['gray']}→ Action: {event.action_type}{c['reset']}")
 
     async def _print_agent_complete(self, event: 'AgentCompleteEvent', ts: str, verbosity: int):
@@ -194,7 +194,7 @@ class CLIChannel(ChannelAdapter):
     async def _print_tool_call(self, event: 'ToolCallEvent', ts: str, verbosity: int):
         """Print tool call event."""
         from ..config import VerbosityLevel
-        if verbosity < VerbosityLevel.VERBOSE:
+        if verbosity < VerbosityLevel.NORMAL:
             return
 
         c = self.colors
@@ -213,13 +213,19 @@ class CLIChannel(ChannelAdapter):
         indent = "    " if in_parallel else "  "
 
         if event.status == "started":
+            if event.reasoning:
+                reasoning_text = event.reasoning[:200] + "..." if len(event.reasoning) > 200 else event.reasoning
+                print(f"{indent}{c['dim']}💭 Thinking:{c['reset']} {c['gray']}{reasoning_text}{c['reset']}")
+
             print(f"{indent}{ts} {c['cyan']}🔧 Tool:{c['reset']} {event.tool_name}")
-            if event.arguments:
+
+            if verbosity >= VerbosityLevel.VERBOSE and event.arguments:
                 args = str(event.arguments)[:100]
                 print(f"{indent}  {c['gray']}Args: {args}{c['reset']}")
         elif event.status == "completed":
-            duration = f" ({event.duration:.2f}s)" if event.duration else ""
-            print(f"{indent}{ts} {c['green']}✓ Tool completed{c['reset']}{duration}")
+            if verbosity >= VerbosityLevel.VERBOSE:
+                duration = f" ({event.duration:.2f}s)" if event.duration else ""
+                print(f"{indent}{ts} {c['green']}✓ Tool completed{c['reset']}{duration}")
         else:  # failed
             print(f"{indent}{ts} {c['red']}✗ Tool failed{c['reset']}")
 
@@ -519,16 +525,16 @@ class PrefixedCLIChannel(ChannelAdapter):
     async def _print_agent_thinking(self, event: 'AgentThinkingEvent', ts: str, verbosity: int):
         """Print agent thinking event with prefix."""
         from ..config import VerbosityLevel
-        if verbosity < VerbosityLevel.VERBOSE:
+        if verbosity < VerbosityLevel.NORMAL:
             return
 
         c = self.colors
         prefix = self._format_prefix(event.agent_name)
 
-        thought = event.thought[:60] + "..." if len(event.thought) > 60 else event.thought
-        print(f"{prefix}{ts} {c['yellow']}💭 {thought}{c['reset']}")
+        thought = event.thought[:200] + "..." if len(event.thought) > 200 else event.thought
+        print(f"{prefix}{c['dim']}💭 Thinking:{c['reset']} {c['gray']}{thought}{c['reset']}")
 
-        if event.action_type:
+        if verbosity >= VerbosityLevel.VERBOSE and event.action_type:
             print(f"{prefix}    {c['gray']}→ Action: {event.action_type}{c['reset']}")
 
     async def _print_agent_complete(self, event: 'AgentCompleteEvent', ts: str, verbosity: int):
@@ -559,20 +565,26 @@ class PrefixedCLIChannel(ChannelAdapter):
     async def _print_tool_call(self, event: 'ToolCallEvent', ts: str, verbosity: int):
         """Print tool call event with prefix."""
         from ..config import VerbosityLevel
-        if verbosity < VerbosityLevel.VERBOSE:
+        if verbosity < VerbosityLevel.NORMAL:
             return
 
         c = self.colors
         prefix = self._format_prefix(event.agent_name)
 
         if event.status == "started":
+            if event.reasoning:
+                reasoning_text = event.reasoning[:200] + "..." if len(event.reasoning) > 200 else event.reasoning
+                print(f"{prefix}{c['dim']}💭 Thinking:{c['reset']} {c['gray']}{reasoning_text}{c['reset']}")
+
             print(f"{prefix}{ts} {c['cyan']}🔧 Tool:{c['reset']} {event.tool_name}")
-            if event.arguments:
+
+            if verbosity >= VerbosityLevel.VERBOSE and event.arguments:
                 args = str(event.arguments)[:100]
                 print(f"{prefix}    {c['gray']}Args: {args}{c['reset']}")
         elif event.status == "completed":
-            duration = f" ({event.duration:.2f}s)" if event.duration else ""
-            print(f"{prefix}{ts} {c['green']}✓ Tool completed{c['reset']}{duration}")
+            if verbosity >= VerbosityLevel.VERBOSE:
+                duration = f" ({event.duration:.2f}s)" if event.duration else ""
+                print(f"{prefix}{ts} {c['green']}✓ Tool completed{c['reset']}{duration}")
         else:  # failed
             print(f"{prefix}{ts} {c['red']}✗ Tool failed{c['reset']}")
 

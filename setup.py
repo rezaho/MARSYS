@@ -89,7 +89,7 @@ dev_deps = [
 
 setup(
     name="marsys",
-    version="0.1.0",
+    version="0.1.2",
 
     # Author information
     author="Reza Hosseini",
