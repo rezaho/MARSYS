@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "marsys"
-version = "0.1.1"
+version = "0.1.2"
 description = "A powerful framework for orchestrating collaborative AI agents with sophisticated reasoning, planning, and autonomous capabilities"
 readme = "README.md"
 requires-python = ">=3.12"
