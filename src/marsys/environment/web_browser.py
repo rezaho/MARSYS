@@ -603,7 +603,7 @@ async def get_interactive_elements(
             center_y = int(adjusted_bbox["y"] + adjusted_bbox["height"] / 2)
 
             if visible_only:
-                is_on_top = await page.evaluate(
+                is_on_top = await frame.evaluate(
                     """(arg) => {
                            const { element, centerX, centerY } = arg;
                            const topElement = document.elementFromPoint(centerX, centerY);
