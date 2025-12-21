@@ -75,6 +75,7 @@ class Message:
     # Additional data
     structured_data: Optional[Dict] = None         # Structured responses
     images: Optional[List[str]] = None            # For vision models
+    reasoning_details: Optional[List[Dict]] = None # Model thinking/reasoning traces
 
     # Methods
     def to_llm_dict(self) -> Dict[str, Any]

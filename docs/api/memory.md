@@ -214,9 +214,13 @@ Message(
     agent_calls: Optional[List[AgentCallMsg]] = None,
     structured_data: Optional[Dict[str, Any]] = None,
     images: Optional[List[str]] = None,
-    tool_call_id: Optional[str] = None
+    tool_call_id: Optional[str] = None,
+    reasoning_details: Optional[List[Dict[str, Any]]] = None
 )
 ```
+
+!!! note "Reasoning Details"
+    The `reasoning_details` field preserves model thinking/reasoning traces (e.g., Gemini 3 thought signatures). This is critical for multi-turn tool calling with models that use extended thinking.
 
 **Role Values:**
 - `"system"` - System instructions

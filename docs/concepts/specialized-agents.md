@@ -21,12 +21,14 @@ Autonomous browser automation with vision-based interaction and screenshot analy
 
 **Key Features**:
 - Vision-based element interaction (no selectors needed)
-- Multi-mode operation (basic, cdp, stealth, vision)
+- Multi-mode operation (primitive, advanced)
 - Screenshot analysis with multimodal models
 - JavaScript execution and console monitoring
 - Auto-screenshot management with sliding window
+- **Session persistence**: Save and load browser sessions (cookies, localStorage) for persistent authentication
+- **Tab management**: List, switch, and close browser tabs programmatically
 
-**Tools**: Browser navigation, interaction, JavaScript execution, screenshot analysis
+**Tools**: Browser navigation, interaction, JavaScript execution, screenshot analysis, session management, tab management
 
 ```python
 from marsys.agents import BrowserAgent
@@ -36,7 +38,8 @@ agent = await BrowserAgent.create_safe(
     model_config=config,
     name="WebAutomation",
     mode="advanced",  # "primitive" or "advanced"
-    headless=True
+    headless=True,
+    session_path="./sessions/my_session.json"  # Optional: load existing session
 )
 ```
 

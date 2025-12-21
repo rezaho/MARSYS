@@ -192,6 +192,7 @@ class Message:
     structured_data: Optional[Dict[str, Any]] = None  # For storing structured data when agent returns a dictionary from auto_run
     images: Optional[List[str]] = None  # For storing image paths/URLs for vision models
     tool_call_id: Optional[str] = None  # For tool response messages, links to the original tool call
+    reasoning_details: Optional[List[Dict[str, Any]]] = None  # For Gemini 3 thought signatures (must be preserved for multi-turn tool calling)
 
     def __post_init__(self):
         """Automatically convert dictionaries to proper dataclasses with validation."""
@@ -390,6 +391,11 @@ class Message:
         if self.tool_calls:
             result["tool_calls"] = [tc.to_dict() for tc in self.tool_calls]
 
+        # Add reasoning_details for Gemini 3 thought signature preservation
+        # This is critical for multi-turn tool calling with Gemini 3 models
+        if self.reasoning_details:
+            result["reasoning_details"] = self.reasoning_details
+
         return result
 
 
@@ -562,8 +568,9 @@ class Message:
             name=name or harmonized_response.metadata.model,
             tool_calls=tool_calls,
             images=images,
+            reasoning_details=harmonized_response.reasoning_details,  # Preserve for Gemini 3
         )
-    
+
     def to_api_format(self) -> Dict[str, Any]:
         """Convert message to OpenAI API format."""
         msg_dict = {"role": self.role}
@@ -598,7 +605,11 @@ class Message:
         # Add tool_call_id for tool response messages
         if self.role == "tool" and self.tool_call_id:
             msg_dict["tool_call_id"] = self.tool_call_id
-        
+
+        # Add reasoning_details for Gemini 3 thought signature preservation
+        if self.reasoning_details:
+            msg_dict["reasoning_details"] = self.reasoning_details
+
         return msg_dict
 
 
@@ -1687,7 +1698,7 @@ class MemoryManager:
                 raise AgentConfigurationError(
                     "KGMemory requires a 'model' instance for fact extraction.",
                     agent_name="MemoryManager",
-                    config_key="model",
+                    config_field="model",
                     config_value=None
                 )
             self.memory_module = KGMemory(model=model, description=description)
@@ -1695,7 +1706,7 @@ class MemoryManager:
             raise AgentConfigurationError(
                 f"Unknown memory_type: {memory_type}",
                 agent_name="MemoryManager",
-                config_key="memory_type",
+                config_field="memory_type",
                 config_value=memory_type
             )
 

@@ -7,6 +7,33 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
+## [0.1.2] - 2025-12-21
+
+### ✨ Added
+- OpenAI Responses API migration with multimodal content support
+- xAI provider (replacing Groq)
+- Gemini 3 thought signature support for multi-turn tool calling
+- Tool calling support for local HuggingFace models
+- Browser session persistence and tab management
+- `get_page_overview()` and `inspect_element()` browser tools
+- Error-category-based steering system
+- Provider integration tests (OpenAI, Anthropic, Google, OpenRouter, xAI)
+
+### 🔄 Changed
+- Domain updated from marsys.io to marsys.ai
+- Topology keys renamed from nodes/edges to agents/flows
+- Default convergence policy changed to strict (1.0)
+- Examples updated to use Claude Sonnet 4.5 via OpenRouter
+
+### 🔧 Fixed
+- Google API 429 rate limit handling
+- Cross-document element handle errors in browser agent
+- Parallel branch execution and continuation state management
+- Vision agent initialization and screenshot handling
+- aiohttp session cleanup in auto_run()
+
+---
+
 ## [0.1.0-beta] - 2025-01-XX
 
 ### 🎉 Initial Beta Release

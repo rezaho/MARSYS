@@ -30,6 +30,9 @@ from ...agents.exceptions import (
     # Model/API errors
     ModelAPIError,
 
+    # Message errors (includes ToolCallError)
+    ToolCallError,
+
     # Resource errors
     PoolExhaustedError,
     TimeoutError as FrameworkTimeoutError,  # Avoid conflict with asyncio.TimeoutError
@@ -553,6 +556,12 @@ class StepExecutor:
             except (TopologyError, RoutingError, AgentPermissionError) as e:
                 # Configuration errors are terminal
                 logger.error(f"Configuration error in {agent_name}: {str(e)}")
+                raise
+
+            except ToolCallError as e:
+                # Tool call format errors need steering, not blind retries
+                # Re-raise immediately so BranchExecutor can set error context
+                logger.warning(f"Tool call error in {agent_name}: {str(e)}")
                 raise
 
             except AgentFrameworkError as e:
