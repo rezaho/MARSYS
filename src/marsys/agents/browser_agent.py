@@ -87,7 +87,12 @@ BROWSER_MODE_DEFAULTS = {
             "- get_page_elements: Get page structure with element selectors (requires page to be already loaded)\n"
             "- extract_text_content: Extract text from specific selectors on current page\n"
             "- get_page_metadata: Get title, URL, and links from current page\n"
-            "- download_file: Download files\n\n"
+            "- download_file: Download files\n"
+            "- inspect_element: Get details about a specific element by selector (limited text preview)\n\n"
+            "**Content extraction workflow**:\n"
+            "- Use get_page_elements to discover selectors for elements on the page\n"
+            "- Use inspect_element with a selector for element details (returns truncated text preview)\n"
+            "- Use extract_text_content with a selector to get the full text content of an element\n\n"
             "**Note**: The browser maintains state - after fetch_url loads a page, you can use other tools on that loaded page if needed. "
             "However, fetch_url already returns the content, so additional steps are rarely necessary. Focus on speed and simplicity."
         )
@@ -149,6 +154,11 @@ BROWSER_MODE_DEFAULTS = {
             "- **Unexpected state**: Review past actions and adjust\n"
             "- **Page errors**: May restart from initial URL (avoid loops)\n"
             "- **Scrolling not working**: Click on the content area first (text/images/background) to focus it, then use mouse_scroll\n\n"
+            "**Content extraction tools**:\n"
+            "- get_page_elements: Discover selectors for elements on the page\n"
+            "- inspect_at_position: Get element info at screen coordinates (returns truncated text preview)\n"
+            "- inspect_element: Get element info by selector (returns truncated text preview)\n"
+            "- extract_text_content: Get full text content of an element by selector\n\n"
             "**When stuck**: If repeated attempts fail, report the issue to the requestor with details about what was tried."
         ),
         "auto_screenshot_enabled": (
@@ -632,35 +642,32 @@ class BrowserAgent(Agent):
         # Convert string to enum
         mode = ElementDetectionMode[detection_mode_lower.upper()]
 
-        # Resolve AUTO mode based on vision model availability
+        # Resolve AUTO mode based on explicit vision_model_config
         if mode == ElementDetectionMode.AUTO:
-            # Determine if vision model will be available
-            effective_vision_config = vision_model_config or (
-                model_config if auto_screenshot and model_config.type == "api" else None
-            )
-
-            if effective_vision_config:
-                # Vision model available: use BOTH for best coverage
+            if vision_model_config:
+                # Vision model explicitly provided: use BOTH for best coverage
                 mode = ElementDetectionMode.BOTH
-                logger.debug(f"{agent_name}: AUTO mode selected BOTH detection (vision model available)")
+                logger.debug(f"{agent_name}: AUTO mode selected BOTH detection (vision_model_config provided)")
             else:
-                # No vision model: use RULE_BASED
+                # No vision_model_config: default to RULE_BASED
                 mode = ElementDetectionMode.RULE_BASED
-                logger.debug(f"{agent_name}: AUTO mode selected RULE_BASED detection (no vision model)")
+                logger.debug(f"{agent_name}: AUTO mode selected RULE_BASED detection (no vision_model_config)")
 
         # Validate vision model requirement for vision-based modes
+        # For VISION or BOTH: fall back to main model if no vision_model_config (requires API model)
         if mode in [ElementDetectionMode.VISION, ElementDetectionMode.BOTH]:
-            # Check if vision model will be available
-            will_have_vision = vision_model_config or (auto_screenshot and model_config.type == "api")
-
-            if not will_have_vision:
-                raise AgentConfigurationError(
-                    f"element_detection_mode='{detection_mode_lower}' requires vision_model_config to be provided",
-                    agent_name=agent_name,
-                    config_field="element_detection_mode",
-                    config_value=element_detection_mode,
-                    suggestion="Either provide vision_model_config parameter or set element_detection_mode='rule_based'"
-                )
+            if not vision_model_config:
+                # No explicit vision config - check if main model can be used as fallback
+                if model_config.type == "api":
+                    logger.debug(f"{agent_name}: Using main model as vision model fallback for {mode.value} mode")
+                else:
+                    raise AgentConfigurationError(
+                        f"element_detection_mode='{detection_mode_lower}' requires vision_model_config when using local models",
+                        agent_name=agent_name,
+                        config_field="element_detection_mode",
+                        config_value=element_detection_mode,
+                        suggestion="Either provide vision_model_config parameter or set element_detection_mode='rule_based'"
+                    )
 
         return mode
 
@@ -1464,6 +1471,7 @@ class BrowserAgent(Agent):
                 "extract_text_content": self.browser_tool.extract_text_content,
                 "get_page_metadata": self.browser_tool.get_page_metadata,
                 "download_file": self.browser_tool.download_file,
+                "inspect_element": self.browser_tool.inspect_element,
             }
         else:
             # ADVANCED mode: Low-level visual interaction tools
@@ -1478,36 +1486,29 @@ class BrowserAgent(Agent):
                 "mouse_down": self.mouse_down,  # Wrapper with coordinate conversion
                 "mouse_up": self.mouse_up,  # Wrapper with coordinate conversion
                 "mouse_move": self.mouse_move,  # Wrapper with coordinate conversion
-                "type_text": self.browser_tool.type_text,
+                "keyboard_input": self.browser_tool.keyboard_input,
                 "keyboard_press": self.browser_tool.keyboard_press,
                 "search_page": self.browser_tool.search_page,
                 "go_back": self.browser_tool.go_back,
                 "reload": self.browser_tool.reload,
                 "get_url": self.browser_tool.get_url,
                 "get_title": self.browser_tool.get_title,
-                # "get_page_elements": self.browser_tool.get_page_elements,  # Commented out to force visual interaction
-                # "extract_text_content": self.browser_tool.extract_text_content,  # Commented out to force visual interaction
                 "download_file": self.browser_tool.download_file,
                 # Tab management tools
                 "list_tabs": self.browser_tool.list_tabs,
                 "get_active_tab": self.browser_tool.get_active_tab,
                 "switch_to_tab": self.browser_tool.switch_to_tab,
                 "close_tab": self.browser_tool.close_tab,
+                # Session management (advanced mode only)
+                "save_session": self._save_session,
+                # Element inspection tools
+                "inspect_element": self.browser_tool.inspect_element,
+                "inspect_at_position": self.browser_tool.inspect_at_position,
             }
 
             # Only add screenshot tool if auto_screenshot is disabled
             if not self.auto_screenshot:
                 browser_tools["screenshot"] = self._screenshot_with_detection_mode
-
-        # Add session management tool (available in both modes)
-        browser_tools["save_session"] = self._save_session
-
-        # Add intelligent page content tools (available in both modes)
-        # These provide a FileOperationTools-like experience for web pages:
-        # - get_page_overview: Returns hierarchical DOM tree with truncated text
-        # - inspect_element: Get full HTML/text for a specific element (like Chrome DevTools Inspect)
-        browser_tools["get_page_overview"] = self.browser_tool.get_page_overview
-        browser_tools["inspect_element"] = self.browser_tool.inspect_element
 
         # Update the agent's tools
         if hasattr(self, 'tools') and self.tools:
