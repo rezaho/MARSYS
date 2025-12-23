@@ -63,11 +63,12 @@ BrowserAgent supports two distinct operation modes optimized for different use c
 - Optimized for speed and simplicity
 - Single-step operations
 
-**Available Tools** (4):
+**Available Tools** (5):
 - `fetch_url` - Navigate and extract content in one step
 - `get_page_metadata` - Get page title, URL, and links
 - `download_file` - Download files from URLs
-- `save_session` - Save browser session state for persistence
+- `get_page_elements` - Get interactive elements with selectors (token-efficient format)
+- `inspect_element` - Get element details by selector (truncated text preview)
 
 **Best For**:
 - Web scraping and data extraction
@@ -86,22 +87,25 @@ BrowserAgent supports two distinct operation modes optimized for different use c
 - Multi-step navigation and interaction
 - Form filling and complex workflows
 
-**Available Tools** (18):
+**Available Tools** (20+):
 - All PRIMITIVE mode tools, plus:
 - `goto` - Navigate to URL (auto-detects downloads)
 - `scroll_up` / `scroll_down` - Scroll the page
 - `mouse_click` - Click at specific coordinates (auto-detects downloads)
-- `type` - Type regular text into focused elements (letters, numbers, words)
+- `keyboard_input` - Type text into focused input fields (search boxes, forms)
 - `keyboard_press` - Press special keys (Enter, Tab, arrows, etc.) (auto-detects downloads)
 - `search_page` - Find text on page with Chrome-like highlighting
 - `go_back` - Navigate back
 - `reload` - Reload current page
 - `get_url` / `get_title` - Get page information
 - `screenshot` - Take screenshot with element highlighting (returns multimodal ToolResponse)
+- `inspect_element` - Get element details by selector (truncated text preview)
+- `inspect_at_position` - Get element info at screen coordinates (x, y)
 - `list_tabs` - List all open browser tabs
 - `get_active_tab` - Get currently active tab info
 - `switch_to_tab` - Switch to a specific tab by index
 - `close_tab` - Close a tab by index
+- `save_session` - Save browser session state for persistence
 
 **Best For**:
 - Form automation with complex interactions
@@ -242,18 +246,20 @@ await browser_pool.cleanup()
 - `fetch_url` - Navigate and extract content in one step (returns Dict with markdown/text)
 - `get_page_metadata` - Get title, URL, and links quickly
 - `download_file` - Download files from URLs
-- `save_session` - Save browser session state for persistence
+- `inspect_element` - Get element details by selector
 
 **ADVANCED Mode Additional Tools** (Visual interaction):
 - `goto`, `go_back`, `reload` - Navigation control
 - `scroll_up`, `scroll_down` - Page scrolling
 - `mouse_click` - Click at coordinates
-- `type` - Type regular text into focused elements (letters, numbers, sentences)
+- `keyboard_input` - Type text into focused input fields (search boxes, forms)
 - `keyboard_press` - Press special keys (Enter, Tab, Escape, arrows, etc.)
 - `search_page` - Search for text on page with visual highlighting (Chrome-like find)
 - `screenshot` - Multimodal response with numbered element detection (ToolResponse format)
 - `get_url`, `get_title` - Current page information
 - `list_tabs`, `get_active_tab`, `switch_to_tab`, `close_tab` - Tab management
+- `save_session` - Save browser session state for persistence
+- `inspect_at_position` - Get element info at screen coordinates (x, y)
 
 ### Navigation Tools
 
