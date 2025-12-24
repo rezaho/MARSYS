@@ -45,6 +45,9 @@ ExecutionConfig(
     auto_cleanup_agents: bool = True,
     cleanup_scope: Literal["topology_nodes", "used_agents"] = "topology_nodes",
 
+    # Response format
+    response_format: str = "json",
+
     # Sub-configurations
     status: StatusConfig = field(default_factory=StatusConfig),
     error_handling: Optional[ErrorHandlingConfig] = None
@@ -69,6 +72,7 @@ ExecutionConfig(
 | `user_interaction` | `str` | User interaction type | `"terminal"` |
 | `auto_cleanup_agents` | `bool` | Automatically cleanup agents after run | `True` |
 | `cleanup_scope` | `str` | Which agents to cleanup | `"topology_nodes"` |
+| `response_format` | `str` | Response format for agent outputs | `"json"` |
 | `status` | `StatusConfig` | Status configuration | `StatusConfig()` |
 
 **Methods:**
@@ -528,6 +532,68 @@ if agent:
 
 ---
 
+### Response Format Configuration
+
+The `response_format` parameter controls how agents structure their outputs and how the system builds agent system prompts.
+
+**Available Formats:**
+
+| Format | Description |
+|--------|-------------|
+| `json` | Default JSON format with `next_action`/`action_input` structure |
+
+**How It Works:**
+
+1. **System Prompt Building**: The format determines how coordination instructions are included in agent system prompts
+2. **Response Parsing**: Each format has an associated processor for parsing agent responses
+3. **Parallel Invocation Examples**: Format-specific examples guide agents on correct parallel invocation patterns
+
+**Example:**
+```python
+# Default JSON format (recommended)
+config = ExecutionConfig(response_format="json")
+
+# The JSON format produces system prompts with instructions like:
+# --- STRICT JSON OUTPUT FORMAT ---
+# Your response MUST be a single, valid JSON object...
+# ```json
+# {
+#   "thought": "reasoning...",
+#   "next_action": "invoke_agent",
+#   "action_input": [...]
+# }
+# ```
+```
+
+**Custom Formats:**
+
+To implement a custom format (e.g., XML):
+
+```python
+from marsys.coordination.formats import BaseResponseFormat, register_format
+
+class XMLResponseFormat(BaseResponseFormat):
+    def get_format_name(self) -> str:
+        return "xml"
+
+    def build_format_instructions(self, actions, descriptions) -> str:
+        # Build XML-specific instructions
+        ...
+
+    def get_parallel_invocation_examples(self, context) -> str:
+        # Provide XML examples for parallel invocation
+        ...
+
+    def create_processor(self):
+        return XMLProcessor()
+
+# Register and use
+register_format("xml", XMLResponseFormat)
+config = ExecutionConfig(response_format="xml")
+```
+
+---
+
 ### Configuration Merging
 
 ```python
@@ -632,6 +698,7 @@ result = await orchestra.execute(
 
 - [Orchestra API](orchestra.md) - Main orchestration interface
 - [Execution API](execution.md) - Execution system using configs
+- [Validation API](validation.md) - Response format system and processors
 - [Status System](../concepts/monitoring.md) - Status and monitoring details
 - [Error Handling](../concepts/error-handling.md) - Error recovery patterns
 
