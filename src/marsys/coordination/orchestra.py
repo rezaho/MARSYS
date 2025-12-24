@@ -42,6 +42,7 @@ from .execution.branch_executor import BranchExecutor
 from .execution.branch_spawner import DynamicBranchSpawner
 from .execution.step_executor import StepExecutor
 from .validation.response_validator import ValidationProcessor
+from .formats import SystemPromptBuilder
 from .routing.router import Router
 from .routing.types import RoutingContext
 from .rules.rule_factory import RuleFactory, RuleFactoryConfig
@@ -213,16 +214,24 @@ class Orchestra:
             logger.info("Status updates enabled with verbosity: %s",
                        execution_config.status.verbosity)
 
+        # Create SystemPromptBuilder (doesn't need topology)
+        response_format = execution_config.response_format
+        self.system_prompt_builder = SystemPromptBuilder(response_format)
+
         # Create execution components
         if self.communication_manager:
             from .communication.user_node_handler import UserNodeHandler
             user_node_handler = UserNodeHandler(self.communication_manager, self.event_bus)
             self.step_executor = StepExecutor(
                 user_node_handler=user_node_handler,
-                event_bus=self.event_bus  # Pass event_bus at creation
+                event_bus=self.event_bus,
+                system_prompt_builder=self.system_prompt_builder,
             )
         else:
-            self.step_executor = StepExecutor(event_bus=self.event_bus)  # Pass event_bus at creation
+            self.step_executor = StepExecutor(
+                event_bus=self.event_bus,
+                system_prompt_builder=self.system_prompt_builder,
+            )
 
         self.topology_analyzer = TopologyAnalyzer()
 
@@ -622,7 +631,11 @@ class Orchestra:
             )
             
             # Create per-session components with the topology
-            self.validation_processor = ValidationProcessor(self.topology_graph)
+            response_format = execution_config.response_format if execution_config else "json"
+            self.validation_processor = ValidationProcessor(
+                self.topology_graph,
+                response_format=response_format
+            )
             self.router = Router(self.topology_graph)
             self.branch_executor = BranchExecutor(
                 agent_registry=self.agent_registry,
