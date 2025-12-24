@@ -31,6 +31,8 @@ from typing import (
 logger = logging.getLogger(__name__)
 
 from marsys.coordination.context_manager import ContextSelector
+from marsys.coordination.formats.context import AgentContext, CoordinationContext
+from marsys.coordination.formats import SystemPromptBuilder
 
 # --- New Imports ---
 from marsys.environment.utils import generate_openai_tool_schema
@@ -1587,114 +1589,120 @@ Example for `final_response`:
         clean_data = convert(data)
         return json.dumps(clean_data, indent=2)
 
-    def _prepare_messages_for_llm(
-        self,
-        memory_messages: List[Dict[str, Any]],
-        run_mode: str,
-        rebuild_system: bool = True,
-        override_system_prompt: Optional[str] = None,
-    ) -> List[Dict[str, Any]]:
+    def _build_agent_context(self) -> AgentContext:
         """
-        Prepare messages for LLM by adding/updating system prompt.
+        Build AgentContext dataclass from agent's properties.
 
-        This method handles all the logic for system prompt construction and
-        message preparation, with optimization to avoid unnecessary rebuilding.
-
-        Args:
-            memory_messages: Messages from memory in LLM format
-            run_mode: The execution mode (e.g., 'auto_step', 'chat', 'plan')
-            rebuild_system: Whether to rebuild the system prompt
-            override_system_prompt: Optional system prompt to use instead of generating one
+        This method extracts all agent-specific information needed for
+        building system prompts into a single dataclass.
 
         Returns:
-            List of messages ready to send to the LLM
+            AgentContext with agent's name, goal, instruction, tools, and schemas
         """
-        # If override_system_prompt is provided, use it directly
-        if override_system_prompt:
-            system_prompt = override_system_prompt
-            self.logger.debug(f"Using override system prompt for {self.name}")
-        else:
-            # Determine if we should rebuild the system prompt
-            should_rebuild = (
-                rebuild_system
-                or not hasattr(self, "_last_system_prompt_context")
-                or self._last_system_prompt_context.get("run_mode") != run_mode
-                or self._last_system_prompt_context.get("tools_count") != len(self.tools_schema)
-                or self._last_system_prompt_context.get("can_return_final") != self.can_return_final_response()
-            )
-            
-            # If we need to rebuild the system prompt
-            if should_rebuild:
-                # Use default system prompt construction
-                # Get base instruction for this run mode
-                base_instruction = getattr(
-                    self,
-                    f"instruction_{run_mode}",
-                    self.instruction,  # Use mode-specific or default instruction
-                )
+        return AgentContext(
+            name=self.name,
+            goal=self.goal,
+            instruction=self.instruction,
+            tools=self.tools,
+            tools_schema=self.tools_schema,
+            input_schema=getattr(self, "_compiled_input_schema", None),
+            output_schema=getattr(self, "_compiled_output_schema", None),
+            memory_retention=self._memory_retention,
+        )
 
-                # Determine JSON mode settings
-                json_mode_for_output = run_mode == "auto_step"
+    def _clean_orphaned_tool_calls(
+        self,
+        messages: List[Dict[str, Any]]
+    ) -> List[Dict[str, Any]]:
+        """
+        Remove orphaned tool_calls from assistant messages.
 
-                # Construct the system prompt normally
-                system_prompt = self._construct_full_system_prompt(
-                    base_description=base_instruction,
-                    json_mode_for_output=json_mode_for_output,
-                )
+        When assistant messages have tool_calls without corresponding tool responses,
+        this can cause API errors. This method removes such orphaned tool_calls.
 
-                # Cache the context for future checks
-                self._last_system_prompt_context = {
-                    "run_mode": run_mode,
-                    "tools_count": len(self.tools_schema),
-                    "can_return_final": self.can_return_final_response(),
-                    "system_prompt": system_prompt,
-                }
-            else:
-                # Use cached system prompt
-                system_prompt = self._last_system_prompt_context["system_prompt"]
+        Args:
+            messages: List of messages to clean
 
-        # Filter out error messages as they are not valid roles for LLM APIs
-        # OpenAI and other providers only accept: 'system', 'assistant', 'user', 'function', 'tool'
-        valid_roles_for_llm = {"system", "assistant", "user", "function", "tool"}
-        filtered_messages = [
-            msg for msg in memory_messages 
-            if msg.get("role") in valid_roles_for_llm
-        ]
-
-        # Clean orphaned tool_calls from messages inline
-        # This prevents API errors when assistant messages have tool_calls without corresponding tool responses
+        Returns:
+            List of messages with orphaned tool_calls removed
+        """
         cleaned_messages = []
-        for i, msg in enumerate(filtered_messages):
+        for i, msg in enumerate(messages):
             msg_copy = msg.copy()
-            
+
             # Remove orphaned tool_calls from assistant messages
             if msg.get("role") == "assistant" and msg.get("tool_calls"):
                 # Check if tool responses exist
-                tool_ids = [tc.get("id") for tc in msg["tool_calls"] if isinstance(tc, dict) and tc.get("id")]
+                tool_ids = [
+                    tc.get("id") for tc in msg["tool_calls"]
+                    if isinstance(tc, dict) and tc.get("id")
+                ]
                 has_orphaned = False
-                
+
                 for tool_id in tool_ids:
                     # Look for corresponding tool response
                     found = False
-                    for j in range(i + 1, len(filtered_messages)):
-                        next_msg = filtered_messages[j]
+                    for j in range(i + 1, len(messages)):
+                        next_msg = messages[j]
                         if next_msg.get("role") == "tool" and next_msg.get("tool_call_id") == tool_id:
                             found = True
                             break
                         # Stop if we hit another assistant/user message
                         if next_msg.get("role") in ["assistant", "user"]:
                             break
-                    
+
                     if not found:
                         has_orphaned = True
                         break
-                
+
                 # Remove tool_calls if orphaned
                 if has_orphaned:
                     msg_copy = {k: v for k, v in msg_copy.items() if k != "tool_calls"}
                     self.logger.debug(f"Removed orphaned tool_calls from message at index {i}")
-            
+
             cleaned_messages.append(msg_copy)
+
+        return cleaned_messages
+
+    def _prepare_messages_for_llm(
+        self,
+        memory_messages: List[Dict[str, Any]],
+        system_prompt_builder: SystemPromptBuilder,
+        coordination_context: CoordinationContext,
+    ) -> List[Dict[str, Any]]:
+        """
+        Prepare messages for LLM by building and inserting the system prompt.
+
+        This method uses the centralized SystemPromptBuilder to construct the
+        system prompt from agent context and coordination context.
+
+        Args:
+            memory_messages: Messages from memory in LLM format
+            system_prompt_builder: Builder for creating the system prompt
+            coordination_context: Coordination context from topology
+
+        Returns:
+            List of messages ready to send to the LLM
+        """
+        # Build agent context from self
+        agent_context = self._build_agent_context()
+
+        # Build the system prompt using the centralized builder
+        system_prompt = system_prompt_builder.build(
+            agent_context=agent_context,
+            coordination_context=coordination_context
+        )
+
+        # Filter out error messages as they are not valid roles for LLM APIs
+        # OpenAI and other providers only accept: 'system', 'assistant', 'user', 'function', 'tool'
+        valid_roles_for_llm = {"system", "assistant", "user", "function", "tool"}
+        filtered_messages = [
+            msg for msg in memory_messages
+            if msg.get("role") in valid_roles_for_llm
+        ]
+
+        # Clean orphaned tool_calls from messages
+        cleaned_messages = self._clean_orphaned_tool_calls(filtered_messages)
 
         # Prepare messages - don't modify the input
         prepared_messages = cleaned_messages.copy()
@@ -1888,26 +1896,26 @@ Example for `final_response`:
         # Get memory messages and prepare them for the model
         memory_messages = self.memory.get_messages() if hasattr(self, "memory") else []
 
-        # Check if we need to rebuild the system prompt
-        # Rebuild if: first call, mode changed, tools changed, or final_response permission changed
-        should_rebuild_system = (
-            not hasattr(self, "_last_system_prompt_context")
-            or self._last_system_prompt_context.get("run_mode") != execution_mode
-            or self._last_system_prompt_context.get("tools_count")
-            != len(self.tools_schema)
-            or self._last_system_prompt_context.get("can_return_final")
-            != self.can_return_final_response()
-        )
+        # Extract coordination context and system prompt builder from run_context
+        # These are provided by Orchestra via StepExecutor
+        coordination_context = context.get("coordination_context")
+        system_prompt_builder = context.get("system_prompt_builder")
 
-        # Extract format instructions from context if available
-        format_instructions = context.get("format_instructions")
-        
-        # Prepare messages with system prompt
+        # Validate required context - agents must run through Orchestra
+        if coordination_context is None or system_prompt_builder is None:
+            raise AgentConfigurationError(
+                f"Agent '{self.name}' run_step() called without coordination context. "
+                "Agents must be executed through Orchestra or auto_run().",
+                agent_name=self.name,
+                config_field="coordination_context" if coordination_context is None else "system_prompt_builder",
+                suggestion="Use Orchestra.run() or agent.auto_run() instead of calling run_step() directly.",
+            )
+
+        # Prepare messages with system prompt built from formats architecture
         prepared_messages = self._prepare_messages_for_llm(
-            memory_messages, 
-            execution_mode, 
-            rebuild_system=should_rebuild_system,
-            override_system_prompt=format_instructions
+            memory_messages,
+            system_prompt_builder,
+            coordination_context,
         )
         
         # Extract steering prompt from context
