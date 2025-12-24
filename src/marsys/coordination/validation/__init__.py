@@ -6,12 +6,16 @@ from .response_validator import (
     ValidationProcessor,
     ValidationResult,
     ActionType,
+)
+from .types import AgentInvocation, ValidationError, ValidationErrorCategory
+
+# Re-export processors from formats module for backward compatibility
+from ..formats import (
     ResponseProcessor,
     StructuredJSONProcessor,
     ToolCallProcessor,
-    NaturalLanguageProcessor
+    ErrorMessageProcessor,
 )
-from .types import AgentInvocation, ValidationError, ValidationErrorCategory
 
 __all__ = [
     "ValidationProcessor",
@@ -20,7 +24,7 @@ __all__ = [
     "ResponseProcessor",
     "StructuredJSONProcessor",
     "ToolCallProcessor",
-    "NaturalLanguageProcessor",
+    "ErrorMessageProcessor",
     "AgentInvocation",
     "ValidationError",
     "ValidationErrorCategory",
