@@ -381,6 +381,7 @@ state = await state_manager.resume_execution(session_id)
 - **`src.coordination.execution`** - Execution engine
 - **`src.coordination.validation`** - Response validation
 - **`src.coordination.routing`** - Request routing
+- **`src.coordination.formats`** - Response format handling (system prompts & processors)
 - **`src.coordination.state`** - State management
 - **`src.coordination.rules`** - Rules engine
 - **`src.coordination.communication`** - User interaction
