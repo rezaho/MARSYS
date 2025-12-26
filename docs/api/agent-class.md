@@ -243,38 +243,6 @@ async def auto_run(
     """
 ```
 
-#### `invoke_agent(agent_name, task, context=None)` ⚠️ DEPRECATED
-
-!!! warning "Deprecated Method"
-    This method is **DEPRECATED**. Agents should not directly invoke other agents.
-    Use Orchestra with topology-based agent coordination instead.
-
-```python
-async def invoke_agent(
-    self,
-    agent_name: str,
-    task: str,
-    context: Optional[RequestContext] = None
-) -> Message:
-    """
-    DEPRECATED: Invoke another agent to perform a task.
-
-    This method raises DeprecationWarning. Use Orchestra.run()
-    with proper topology configuration for multi-agent coordination.
-
-    Args:
-        agent_name: Name of agent to invoke
-        task: Task description
-        context: Request context
-
-    Returns:
-        Response from invoked agent
-
-    Raises:
-        DeprecationWarning: Always raised - use Orchestra instead
-    """
-```
-
 ### Usage Examples
 
 ```python
