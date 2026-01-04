@@ -141,7 +141,12 @@ class BaseResponseFormat(ABC):
         if schema_instructions:
             parts.append(schema_instructions)
 
-        # 7. Response format guidelines (format-specific)
+        # 7. Planning instructions (if enabled)
+        planning_instructions = self._build_planning_instructions(context.agent)
+        if planning_instructions:
+            parts.append(planning_instructions)
+
+        # 8. Response format guidelines (format-specific)
         available_actions = self._determine_available_actions(context)
         if not available_actions:
             raise ValueError(
@@ -155,12 +160,39 @@ class BaseResponseFormat(ABC):
         )
         parts.append(format_instructions)
 
-        # 8. Examples (format-specific)
+        # 9. Examples (format-specific)
         examples = self.get_examples(available_actions, context)
         if examples:
             parts.append(examples)
 
         return "\n\n".join(filter(None, parts))
+
+    def _build_planning_instructions(self, agent_ctx: AgentContext) -> str:
+        """
+        Build planning instructions for the system prompt.
+
+        Args:
+            agent_ctx: Agent context with planning fields
+
+        Returns:
+            Planning instructions string or empty string if planning disabled
+        """
+        if not agent_ctx.planning_enabled:
+            return ""
+
+        parts = []
+
+        # Add planning instruction (usage guidelines)
+        if agent_ctx.planning_instruction:
+            parts.append(agent_ctx.planning_instruction)
+
+        # Add current plan context if available
+        if agent_ctx.plan_context:
+            parts.append("--- CURRENT PLAN ---")
+            parts.append(agent_ctx.plan_context)
+            parts.append("--- END CURRENT PLAN ---")
+
+        return "\n".join(parts) if parts else ""
 
     def _determine_available_actions(
         self, context: SystemPromptContext

@@ -14,9 +14,10 @@ LearnableAgent only supports local models (not API models) because:
 from __future__ import annotations
 
 from abc import ABC
-from typing import TYPE_CHECKING, Any, Callable, Dict, List, Optional
+from typing import TYPE_CHECKING, Any, Callable, Dict, List, Optional, Union
 
 from .agents import BaseAgent
+from .planning import PlanningConfig
 from .memory import MemoryManager, Message
 from .utils import RequestContext
 
@@ -60,6 +61,7 @@ class BaseLearnableAgent(BaseAgent, ABC):
         output_schema: Optional[Any] = None,
         memory_retention: str = "session",
         memory_storage_path: Optional[str] = None,
+        plan_config: Optional[Union[PlanningConfig, Dict, bool]] = None,
         **kwargs: Any,
     ) -> None:
         """
@@ -80,6 +82,8 @@ class BaseLearnableAgent(BaseAgent, ABC):
             output_schema: Optional schema for validating agent output.
             memory_retention: Memory retention policy - "single_run", "session", or "persistent"
             memory_storage_path: Path for persistent memory storage (if retention is "persistent")
+            plan_config: Planning configuration - PlanningConfig, dict, True/None (enabled with defaults),
+                or False (disabled). Enabled by default.
             **kwargs: Additional arguments.
 
         Raises:
@@ -158,6 +162,7 @@ class BaseLearnableAgent(BaseAgent, ABC):
             output_schema=output_schema,
             memory_retention=memory_retention,
             memory_storage_path=memory_storage_path,
+            plan_config=plan_config,
         )
 
         self._learning_head_name = learning_head

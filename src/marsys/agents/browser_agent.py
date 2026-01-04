@@ -6,7 +6,7 @@ import re
 import uuid
 from enum import Enum
 from pathlib import Path
-from typing import Any, Callable, Dict, List, Optional
+from typing import Any, Callable, Dict, List, Optional, Union
 from urllib.parse import urlparse
 
 from PIL import Image as PILImage
@@ -16,6 +16,7 @@ from marsys.environment.web_browser import BrowserTool
 from marsys.models.models import ModelConfig
 
 from .agents import Agent
+from .planning import PlanningConfig
 from .memory import Message
 from .utils import LogLevel, RequestContext
 from .exceptions import (
@@ -960,6 +961,7 @@ class BrowserAgent(Agent):
         memory_storage_path: Optional[str] = None,
         show_mouse_helper: bool = True,
         session_path: Optional[str] = None,
+        plan_config: Optional[Union[PlanningConfig, Dict, bool]] = None,
     ) -> None:
         """
         Initialize the BrowserAgent.
@@ -1003,6 +1005,8 @@ class BrowserAgent(Agent):
                 If provided and the file exists, the browser will be initialized with this session state
                 using Playwright's storage_state parameter, which properly loads both cookies AND localStorage.
                 This enables persistent authentication (e.g., LinkedIn, Google) across browser sessions.
+            plan_config: Planning configuration - PlanningConfig, dict, True/None (enabled with defaults),
+                or False (disabled). Enabled by default.
         """
         # Validate and normalize mode
         mode_lower = mode.lower()
@@ -1145,6 +1149,7 @@ class BrowserAgent(Agent):
             memory_type=memory_type,
             memory_retention=memory_retention,
             memory_storage_path=memory_storage_path,
+            plan_config=plan_config,
         )
 
         # Browser settings

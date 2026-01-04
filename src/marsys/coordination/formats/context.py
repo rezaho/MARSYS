@@ -26,6 +26,10 @@ class AgentContext:
     input_schema: Optional[Dict[str, Any]] = None
     output_schema: Optional[Dict[str, Any]] = None
     memory_retention: str = "session"
+    # Planning fields
+    planning_enabled: bool = False
+    planning_instruction: Optional[str] = None
+    plan_context: Optional[str] = None
 
 
 @dataclass
