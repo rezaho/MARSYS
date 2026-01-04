@@ -643,7 +643,8 @@ class Orchestra:
                 response_validator=self.validation_processor,
                 router=self.router,
                 rules_engine=self.rules_engine,
-                topology_graph=self.topology_graph
+                topology_graph=self.topology_graph,
+                event_bus=self.event_bus
             )
             # Get convergence timeout and policy from execution config
             convergence_timeout = execution_config.convergence_timeout if execution_config else 600.0

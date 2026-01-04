@@ -207,7 +207,7 @@ class StepExecutor:
         step_context = StepContext(
             session_id=context.get("session_id", ""),
             branch_id=context.get("branch_id", ""),
-            step_number=context.get("step_number", 1),
+            step_number=context.get("step_number", 0),  # 0-based: first step is step 0
             agent_name=agent_name,
             memory=[],  # Empty - not used for injection anymore
             tools_enabled=context.get("tools_enabled", True),
@@ -238,7 +238,13 @@ class StepExecutor:
         while retry_count <= self.max_retries:
             try:
                 # Execute pure agent logic (agent maintains its own memory)
-                run_context = {"request_context": step_context.to_request_context()}
+                run_context = {
+                    "request_context": step_context.to_request_context(),
+                    "event_bus": self.event_bus,  # Pass event_bus for planning/memory events
+                    "step_number": step_context.step_number,  # Pass step_number for planning triggers
+                    "session_id": step_context.session_id,  # Required for planning events emission
+                    "branch_id": step_context.branch_id,  # For consistent event tracking
+                }
 
                 # Mark as continuation if this is a tool continuation
                 if context.get('tool_continuation'):
