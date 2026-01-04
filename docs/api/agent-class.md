@@ -15,6 +15,7 @@ Abstract base class that all agents must inherit from.
 from abc import ABC, abstractmethod
 from typing import Optional, Dict, List, Any, Union, Callable
 from marsys.agents.memory import ConversationMemory, Message
+from marsys.agents.planning import PlanningConfig
 
 class BaseAgent(ABC):
     """Abstract base class for all agents."""
@@ -33,7 +34,8 @@ class BaseAgent(ABC):
         input_schema: Optional[Any] = None,
         output_schema: Optional[Any] = None,
         memory_retention: str = "session",
-        memory_storage_path: Optional[str] = None
+        memory_storage_path: Optional[str] = None,
+        plan_config: Optional[Union[PlanningConfig, Dict, bool]] = None
     ):
         """
         Initialize base agent.
@@ -49,6 +51,9 @@ class BaseAgent(ABC):
             memory_retention: Memory policy (single_run, session, persistent)
             input_schema: Pydantic schema for input validation
             output_schema: Pydantic schema for output validation
+            plan_config: Planning configuration. PlanningConfig instance, dict of
+                config values, True/None (enabled with defaults), or False (disabled).
+                Planning is enabled by default. See [Task Planning](../concepts/planning.md).
         """
 ```
 
@@ -183,7 +188,8 @@ class Agent(BaseAgent):
         input_schema: Optional[Any] = None,
         output_schema: Optional[Any] = None,
         memory_retention: str = "session",
-        memory_storage_path: Optional[str] = None
+        memory_storage_path: Optional[str] = None,
+        plan_config: Optional[Union[PlanningConfig, Dict, bool]] = None
     ):
         """
         Initialize agent with model configuration.
@@ -202,6 +208,9 @@ class Agent(BaseAgent):
             output_schema: Output validation schema
             memory_retention: Memory persistence policy (single_run, session, persistent)
             memory_storage_path: Path for persistent memory storage
+            plan_config: Planning configuration. PlanningConfig instance, dict of
+                config values, True/None (enabled with defaults), or False (disabled).
+                Planning is enabled by default. See [Task Planning](../concepts/planning.md).
         """
 ```
 
@@ -309,6 +318,7 @@ class BrowserAgent(Agent):
         tmp_dir: Optional[str] = None,
         viewport_width: int = 1920,
         viewport_height: int = 1080,
+        plan_config: Optional[Union[PlanningConfig, Dict, bool]] = None,
         **kwargs
     ):
         """
@@ -323,6 +333,9 @@ class BrowserAgent(Agent):
             tmp_dir: Directory for screenshots
             viewport_width: Browser viewport width
             viewport_height: Browser viewport height
+            plan_config: Planning configuration. PlanningConfig instance, dict of
+                config values, True/None (enabled with defaults), or False (disabled).
+                Planning is enabled by default. See [Task Planning](../concepts/planning.md).
             **kwargs: Additional parameters
         """
 ```
