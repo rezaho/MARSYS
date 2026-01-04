@@ -35,11 +35,12 @@ from marsys.coordination.formats.context import AgentContext, CoordinationContex
 from marsys.coordination.formats import SystemPromptBuilder
 
 # --- New Imports ---
-from marsys.environment.utils import generate_openai_tool_schema
+from marsys.environment.utils import generate_openai_tool_schema, ObservableToolsDict
 from marsys.models.models import BaseAPIModel, BaseLocalModel, ModelConfig
 from marsys.utils.monitoring import default_progress_monitor
 
 from .memory import MemoryManager, Message, ToolCallMsg
+from .planning import PlanningConfig, PlanningState, create_planning_tools, get_planning_instruction
 from .registry import AgentRegistry
 from .utils import (
     LogLevel,
@@ -141,6 +142,7 @@ class BaseAgent(ABC):
         output_schema: Optional[Any] = None,
         memory_retention: str = "session",  # New parameter
         memory_storage_path: Optional[str] = None,  # New parameter
+        plan_config: Optional[Union[PlanningConfig, Dict, bool]] = None,  # Planning configuration
     ) -> None:
         """
         Initializes the BaseAgent.
@@ -159,6 +161,8 @@ class BaseAgent(ABC):
             output_schema: Optional schema for validating agent output.
             memory_retention: Memory retention policy - "single_run", "session", or "persistent"
             memory_storage_path: Path for persistent memory storage (if retention is "persistent")
+            plan_config: Planning configuration - PlanningConfig, dict, True/None (enabled with defaults),
+                        or False (disabled). Enabled by default.
 
         Raises:
             ValueError: If tools are provided without schema or vice-versa.
@@ -171,7 +175,19 @@ class BaseAgent(ABC):
         self.model = model
         self.goal = goal
         self.instruction = instruction
-        self.tools = tools or {}  # Ensure self.tools is a dict
+
+        # Store planning config for later initialization
+        self._planning_config = PlanningConfig.from_value(plan_config)
+        self._planning_state: Optional[PlanningState] = None
+
+        # Tool version tracking for cache invalidation
+        self._tools_version = 0
+
+        # Use ObservableToolsDict for automatic schema regeneration
+        self.tools = ObservableToolsDict(
+            tools or {},
+            on_change=self._on_tools_changed
+        )
         self.tools_schema: List[Dict[str, Any]] = []  # Initialize as empty list
 
         # Initialize logger for the agent instance early
@@ -280,7 +296,33 @@ class BaseAgent(ABC):
             )
         except Exception:
             pass  # Silently ignore logging errors during shutdown
-    
+
+    # ============== Tool Schema Management ==============
+
+    def _on_tools_changed(self) -> None:
+        """
+        Called when tools dict is modified.
+        Regenerates tool schemas and increments version for cache invalidation.
+        """
+        self._tools_version += 1
+        self._regenerate_tool_schemas()
+        self.logger.debug(
+            f"Tools changed for '{self.name}', regenerated schemas (version {self._tools_version})"
+        )
+
+    def _regenerate_tool_schemas(self) -> None:
+        """Regenerate tool schemas from current tools dict."""
+        self.tools_schema = []
+        for tool_name, tool_func in self.tools.items():
+            try:
+                schema = generate_openai_tool_schema(tool_func, tool_name)
+                self.tools_schema.append(schema)
+            except Exception as e:
+                self.logger.error(
+                    f"Failed to generate schema for tool {tool_name}: {e}",
+                    exc_info=True,
+                )
+
     @property
     def allowed_peers(self) -> Set[str]:
         """Get allowed peers from topology if available, otherwise from init value."""
@@ -937,6 +979,32 @@ class BaseAgent(ABC):
                 except Exception as e:
                     self.logger.warning(f"Failed to load persistent memory for agent '{self.name}': {e}")
 
+        # Initialize planning if enabled
+        self._init_planning()
+
+    def _init_planning(self) -> None:
+        """
+        Initialize planning state and tools if planning is enabled.
+
+        Called during agent initialization to set up planning functionality.
+        """
+        if not self._planning_config.enabled:
+            return
+
+        # Create planning state
+        self._planning_state = PlanningState(
+            config=self._planning_config,
+            agent_name=self.name
+        )
+
+        # Add planning tools to the agent
+        planning_tools = create_planning_tools(self._planning_state)
+        self.tools.update(planning_tools)
+
+        self.logger.info(
+            f"Planning enabled for '{self.name}' with {len(planning_tools)} planning tools"
+        )
+
     # ============== Resource Management Methods for Unified Acquisition ==============
 
     def acquire_instance(self, branch_id: str) -> Optional["BaseAgent"]:
@@ -1139,16 +1207,42 @@ class BaseAgent(ABC):
         clean_data = convert(data)
         return json.dumps(clean_data, indent=2)
 
-    def _build_agent_context(self) -> AgentContext:
+    def _build_agent_context(
+        self,
+        execution_context: Optional[Dict[str, Any]] = None
+    ) -> AgentContext:
         """
         Build AgentContext dataclass from agent's properties.
 
         This method extracts all agent-specific information needed for
         building system prompts into a single dataclass.
 
+        Args:
+            execution_context: Optional execution context containing step_number,
+                              is_continuation, metadata for trigger checking
+
         Returns:
             AgentContext with agent's name, goal, instruction, tools, and schemas
         """
+        # Build planning fields if planning is enabled
+        planning_enabled = self._planning_config.enabled
+        planning_instruction = None
+        plan_context = None
+
+        if planning_enabled and self._planning_state:
+            # Always include planning instruction so agent knows about plan tools
+            planning_instruction = get_planning_instruction(
+                self._planning_config.custom_instruction
+            )
+
+            # Check if any injection trigger matches
+            should_inject_plan = self._should_inject_plan_context(execution_context)
+
+            if should_inject_plan:
+                plan_context = self._planning_state.format_for_injection(
+                    verbose=not self._planning_config.compact_mode
+                )
+
         return AgentContext(
             name=self.name,
             goal=self.goal,
@@ -1158,7 +1252,60 @@ class BaseAgent(ABC):
             input_schema=getattr(self, "_compiled_input_schema", None),
             output_schema=getattr(self, "_compiled_output_schema", None),
             memory_retention=self._memory_retention,
+            planning_enabled=planning_enabled,
+            planning_instruction=planning_instruction,
+            plan_context=plan_context,
         )
+
+    def _should_inject_plan_context(
+        self,
+        execution_context: Optional[Dict[str, Any]]
+    ) -> bool:
+        """
+        Check if plan context should be injected based on configured triggers.
+
+        Args:
+            execution_context: Execution context with step_number, is_continuation, etc.
+
+        Returns:
+            True if any enabled trigger matches current execution state
+        """
+        from .planning import InjectionTrigger
+
+        # No plan to inject
+        if self._planning_state.is_empty():
+            return False
+
+        triggers = self._planning_config.inject_triggers
+
+        # If no context provided, default to injecting (backward compatible)
+        if not execution_context:
+            return True
+
+        step_number = execution_context.get("step_number", 0)
+        is_continuation = execution_context.get("is_continuation", False)
+        metadata = execution_context.get("metadata", {})
+        has_error_context = bool(metadata.get("agent_error_context"))
+
+        # Check SESSION_START trigger
+        if InjectionTrigger.SESSION_START in triggers:
+            is_session_start = (step_number == 0 and not is_continuation)
+            if is_session_start:
+                return True
+
+        # Check STEP_START trigger
+        if InjectionTrigger.STEP_START in triggers:
+            inject_after = self._planning_config.inject_after_step
+            is_step_start = (step_number >= inject_after and not is_continuation)
+            if is_step_start:
+                return True
+
+        # Check ERROR_RECOVERY trigger
+        if InjectionTrigger.ERROR_RECOVERY in triggers:
+            if has_error_context:
+                return True
+
+        return False
 
     def _clean_orphaned_tool_calls(
         self,
@@ -1219,6 +1366,7 @@ class BaseAgent(ABC):
         memory_messages: List[Dict[str, Any]],
         system_prompt_builder: SystemPromptBuilder,
         coordination_context: CoordinationContext,
+        execution_context: Optional[Dict[str, Any]] = None,
     ) -> List[Dict[str, Any]]:
         """
         Prepare messages for LLM by building and inserting the system prompt.
@@ -1230,12 +1378,13 @@ class BaseAgent(ABC):
             memory_messages: Messages from memory in LLM format
             system_prompt_builder: Builder for creating the system prompt
             coordination_context: Coordination context from topology
+            execution_context: Optional execution context for plan injection triggers
 
         Returns:
             List of messages ready to send to the LLM
         """
-        # Build agent context from self
-        agent_context = self._build_agent_context()
+        # Build agent context from self (passing execution_context for trigger checking)
+        agent_context = self._build_agent_context(execution_context)
 
         # Build the system prompt using the centralized builder
         system_prompt = system_prompt_builder.build(
@@ -1325,6 +1474,21 @@ class BaseAgent(ABC):
             )
         else:
             request_context = request_context_raw
+
+        # Bind EventBus to memory and planning (if available)
+        # This allows memory reset events to trigger plan clearing
+        event_bus = context.get("event_bus")
+        if event_bus:
+            # Set up memory's event context for emitting MemoryResetEvent
+            if hasattr(self, "memory"):
+                self.memory.set_event_context(self.name, event_bus)
+
+            # Set up planning state's event bus for receiving MemoryResetEvent
+            # and session_id for emitting planning events
+            if self._planning_state:
+                self._planning_state.set_event_bus(event_bus)
+                if session_id:
+                    self._planning_state.set_session_id(session_id)
 
         # Apply memory retention policy
         if self._memory_retention == "single_run" and not is_continuation:
@@ -1461,11 +1625,19 @@ class BaseAgent(ABC):
                 suggestion="Use Orchestra.run() or agent.auto_run() instead of calling run_step() directly.",
             )
 
+        # Build execution context for plan injection trigger checking
+        execution_context = {
+            "step_number": context.get("step_number", 0),
+            "is_continuation": is_continuation,
+            "metadata": context.get("metadata", {}),
+        }
+
         # Prepare messages with system prompt built from formats architecture
         prepared_messages = self._prepare_messages_for_llm(
             memory_messages,
             system_prompt_builder,
             coordination_context,
+            execution_context,
         )
         
         # Extract steering prompt from context
@@ -1937,6 +2109,78 @@ class BaseAgent(ABC):
                     to_visit.update(agent._allowed_peers_init - visited)
 
         return False
+
+    def save_state(self, filepath: str) -> None:
+        """
+        Save agent state including memory and planning state.
+
+        Args:
+            filepath: Path to save the state file
+        """
+        additional_state = {}
+
+        # Save planning state if enabled
+        if self._planning_state is not None:
+            additional_state["planning"] = {
+                "plan": self._planning_state.get_plan().to_dict() if self._planning_state.get_plan() else None,
+                "config": {
+                    "enabled": self._planning_config.enabled,
+                    "min_plan_items": self._planning_config.min_plan_items,
+                    "inject_after_step": self._planning_config.inject_after_step,
+                    "inject_triggers": [t.value for t in self._planning_config.inject_triggers],
+                    "compact_mode": self._planning_config.compact_mode,
+                    "max_items_in_compact": self._planning_config.max_items_in_compact,
+                    "max_plan_items": self._planning_config.max_plan_items,
+                    "max_item_content_length": self._planning_config.max_item_content_length,
+                    "custom_instruction": self._planning_config.custom_instruction,
+                } if self._planning_config else None
+            }
+
+        # Save tools version for cache invalidation on restore
+        additional_state["tools_version"] = self._tools_version
+
+        # Delegate to memory manager
+        self.memory.save_to_file(filepath, additional_state)
+        self.logger.debug(f"Saved agent state to {filepath}")
+
+    def load_state(self, filepath: str) -> None:
+        """
+        Load agent state including memory and planning state.
+
+        Uses unsubscribe/resubscribe pattern to prevent race conditions
+        with emit_nowait() during state loading.
+
+        Args:
+            filepath: Path to load the state file from
+        """
+        # Unsubscribe planning state from EventBus to prevent
+        # MemoryResetEvent triggering plan clear during load
+        if self._planning_state is not None:
+            self._planning_state.unsubscribe()
+
+        try:
+            # Load memory state and get additional state
+            additional_state = self.memory.load_from_file(filepath)
+
+            if additional_state:
+                # Restore planning state
+                if "planning" in additional_state and self._planning_state is not None:
+                    planning_data = additional_state["planning"]
+                    if planning_data.get("plan"):
+                        from .planning import Plan
+                        restored_plan = Plan.from_dict(planning_data["plan"])
+                        self._planning_state._plan = restored_plan
+
+                # Restore tools version
+                if "tools_version" in additional_state:
+                    self._tools_version = additional_state["tools_version"]
+
+            self.logger.debug(f"Loaded agent state from {filepath}")
+
+        finally:
+            # Resubscribe to EventBus
+            if self._planning_state is not None:
+                self._planning_state.resubscribe()
 
     async def cleanup(self) -> None:
         """
@@ -2417,6 +2661,7 @@ class Agent(BaseAgent):
         output_schema: Optional[Any] = None,
         memory_retention: str = "session",  # New parameter
         memory_storage_path: Optional[str] = None,  # New parameter
+        plan_config: Optional[Union[PlanningConfig, Dict, bool]] = None,  # Planning configuration
     ) -> None:
         """
         Initializes the Agent.
@@ -2435,6 +2680,8 @@ class Agent(BaseAgent):
             output_schema: Optional schema for validating agent output.
             memory_retention: Memory retention policy - "single_run", "session", or "persistent"
             memory_storage_path: Path for persistent memory storage (if retention is "persistent")
+            plan_config: Planning configuration - PlanningConfig, dict, True/None (enabled with defaults),
+                        or False (disabled). Enabled by default.
 
         Raises:
             ValueError: If model_config is invalid or required keys are missing.
@@ -2461,6 +2708,7 @@ class Agent(BaseAgent):
             output_schema=output_schema,
             memory_retention=memory_retention,  # Pass memory retention
             memory_storage_path=memory_storage_path,  # Pass storage path
+            plan_config=plan_config,  # Pass planning configuration
         )
         self.memory = MemoryManager(
             memory_type=memory_type or "conversation_history",
