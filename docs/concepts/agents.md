@@ -396,6 +396,56 @@ agent = Agent(
 
 For more details, see [Memory Documentation](memory.md).
 
+## 📋 Task Planning
+
+Agents can use task planning to organize complex multi-step operations. Planning is **enabled by default**.
+
+```python
+from marsys.agents import Agent
+from marsys.agents.planning import PlanningConfig
+
+# Default: planning enabled
+agent = Agent(
+    model_config=config,
+    name="Researcher",
+    goal="Research and analyze topics",
+    instruction="..."
+)
+
+# Disable planning for simple agents
+simple_agent = Agent(
+    model_config=config,
+    name="Calculator",
+    goal="Perform calculations",
+    instruction="...",
+    plan_config=False  # Disable planning
+)
+
+# Custom configuration
+custom_agent = Agent(
+    model_config=config,
+    name="Analyst",
+    goal="Analyze data",
+    instruction="...",
+    plan_config=PlanningConfig(
+        min_plan_items=3,
+        max_plan_items=15,
+        compact_mode=True
+    )
+)
+```
+
+Planning provides:
+
+- **Progress tracking** during multi-step tasks
+- **Error recovery** context for retries
+- **Status visualization** in CLI/web interfaces
+- **Automatic cleanup** when memory resets
+
+When planning is enabled, agents have access to tools like `plan_create`, `plan_read`, `plan_update`, `plan_add_item`, `plan_remove_item`, and `plan_clear`.
+
+For detailed documentation, see [Task Planning](planning.md).
+
 ## 🔧 Agent Configuration
 
 ### Model Configuration

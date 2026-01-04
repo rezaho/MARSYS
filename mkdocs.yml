@@ -125,6 +125,7 @@ nav:
       - Registry: concepts/registry.md
       - Messages: concepts/messages.md
       - Communication: concepts/communication.md
+      - Planning: concepts/planning.md
     - Specialized Agents:
       - Overview: concepts/specialized-agents.md
       - Browser Agent: concepts/browser-automation.md
@@ -133,7 +134,6 @@ nav:
       - State Management: concepts/state-management.md
       - Error Handling: concepts/error-handling.md
       - Learning Agents: concepts/learning-agents.md
-      - Memory Patterns: concepts/memory-patterns.md
       - Custom Agents: concepts/custom-agents.md
     
   - API Reference:
