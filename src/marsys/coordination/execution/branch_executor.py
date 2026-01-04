@@ -20,6 +20,7 @@ from ...agents.exceptions import ToolCallError
 from ...agents.registry import AgentRegistry
 
 if TYPE_CHECKING:
+    from ..event_bus import EventBus
     from ..routing.router import Router
     from ..topology.graph import TopologyGraph
     from .step_executor import StepExecutor
@@ -97,7 +98,8 @@ class BranchExecutor:
         router: Optional['Router'] = None,
         rules_engine: Optional[RulesEngine] = None,
         topology_graph: Optional['TopologyGraph'] = None,
-        max_retries: int = 10
+        max_retries: int = 10,
+        event_bus: Optional['EventBus'] = None
     ):
         self.agent_registry = agent_registry
         self.step_executor = step_executor
@@ -106,6 +108,7 @@ class BranchExecutor:
         self.rules_engine = rules_engine
         self.topology_graph = topology_graph
         self.max_retries = max_retries
+        self.event_bus = event_bus
         
         # Track execution metrics
         self.execution_metrics = defaultdict(lambda: {
