@@ -70,7 +70,9 @@ class CLIChannel(ChannelAdapter):
         from .events import (
             AgentStartEvent, AgentThinkingEvent, AgentCompleteEvent,
             ToolCallEvent, BranchEvent, ParallelGroupEvent,
-            UserInteractionEvent, FinalResponseEvent
+            UserInteractionEvent, FinalResponseEvent,
+            PlanCreatedEvent, PlanUpdatedEvent, PlanItemAddedEvent,
+            PlanItemRemovedEvent, PlanClearedEvent
         )
         from ..config import VerbosityLevel
 
@@ -100,6 +102,17 @@ class CLIChannel(ChannelAdapter):
             await self._print_user_interaction(event, timestamp, verbosity)
         elif isinstance(event, FinalResponseEvent):
             await self._print_final_response(event, timestamp, verbosity)
+        # Planning events
+        elif isinstance(event, PlanCreatedEvent):
+            await self._print_plan_created(event, timestamp, verbosity)
+        elif isinstance(event, PlanUpdatedEvent):
+            await self._print_plan_updated(event, timestamp, verbosity)
+        elif isinstance(event, PlanItemAddedEvent):
+            await self._print_plan_item_added(event, timestamp, verbosity)
+        elif isinstance(event, PlanItemRemovedEvent):
+            await self._print_plan_item_removed(event, timestamp, verbosity)
+        elif isinstance(event, PlanClearedEvent):
+            await self._print_plan_cleared(event, timestamp, verbosity)
 
     async def _print_agent_start(self, event: 'AgentStartEvent', ts: str, verbosity: int):
         """Print agent start event."""
@@ -328,6 +341,97 @@ class CLIChannel(ChannelAdapter):
             summary = getattr(event, 'final_response', getattr(event, 'response_summary', ''))
             print(summary)
 
+    # ==================== Planning Events ====================
+
+    async def _print_plan_created(self, event, ts: str, verbosity: int):
+        """Print plan created event."""
+        from ..config import VerbosityLevel
+        c = self.colors
+
+        if verbosity == VerbosityLevel.QUIET:
+            return
+
+        print(f"\n{c['bold']}{c['cyan']}📋 Plan Created{c['reset']}")
+        print(f"  {ts} Agent: {event.agent_name}")
+        if event.goal:
+            print(f"  {c['gray']}Goal: {event.goal}{c['reset']}")
+        print(f"  {c['gray']}Items: {event.item_count}{c['reset']}")
+
+        if verbosity >= VerbosityLevel.VERBOSE and event.item_titles:
+            for i, title in enumerate(event.item_titles[:5], 1):
+                print(f"    {i}. {title}")
+            if len(event.item_titles) > 5:
+                print(f"    ... and {len(event.item_titles) - 5} more")
+
+    async def _print_plan_updated(self, event, ts: str, verbosity: int):
+        """Print plan item updated event."""
+        from ..config import VerbosityLevel
+        c = self.colors
+
+        if verbosity == VerbosityLevel.QUIET:
+            return
+
+        # At NORMAL verbosity, skip non-status updates (show them only at VERBOSE)
+        if event.new_status is None and verbosity < VerbosityLevel.VERBOSE:
+            return
+
+        # Determine icon and color based on status change
+        if event.new_status == "completed":
+            icon = "✓"
+            color = c['green']
+            status_text = "Completed"
+        elif event.new_status == "in_progress":
+            icon = "▶"
+            color = c['cyan']
+            status_text = event.active_form or "In Progress"
+        elif event.new_status == "blocked":
+            icon = "⚠"
+            color = c['yellow']
+            status_text = "Blocked"
+        elif event.new_status is None:
+            # Non-status update (only shown at VERBOSE)
+            icon = "✎"
+            color = c['gray']
+            updated_fields = event.metadata.get("updated_fields", []) if event.metadata else []
+            status_text = f"Updated: {', '.join(updated_fields)}" if updated_fields else "Updated"
+        else:
+            icon = "○"
+            color = c['gray']
+            status_text = event.new_status or "Updated"
+
+        print(f"  {ts} {color}{icon} {event.item_title}: {status_text}{c['reset']}")
+
+    async def _print_plan_item_added(self, event, ts: str, verbosity: int):
+        """Print plan item added event."""
+        from ..config import VerbosityLevel
+        c = self.colors
+
+        if verbosity == VerbosityLevel.QUIET:
+            return
+
+        print(f"  {ts} {c['cyan']}+ Added to plan: {event.item_title} (#{event.position}){c['reset']}")
+
+    async def _print_plan_item_removed(self, event, ts: str, verbosity: int):
+        """Print plan item removed event."""
+        from ..config import VerbosityLevel
+        c = self.colors
+
+        if verbosity == VerbosityLevel.QUIET:
+            return
+
+        print(f"  {ts} {c['gray']}- Removed from plan: {event.item_title}{c['reset']}")
+
+    async def _print_plan_cleared(self, event, ts: str, verbosity: int):
+        """Print plan cleared event."""
+        from ..config import VerbosityLevel
+        c = self.colors
+
+        if verbosity == VerbosityLevel.QUIET:
+            return
+
+        reason_text = f" ({event.reason})" if event.reason else ""
+        print(f"  {ts} {c['gray']}📋 Plan cleared{reason_text}{c['reset']}")
+
 
 class PrefixedCLIChannel(ChannelAdapter):
     """
@@ -461,8 +565,9 @@ class PrefixedCLIChannel(ChannelAdapter):
         from .events import (
             AgentStartEvent, AgentThinkingEvent, AgentCompleteEvent,
             ToolCallEvent, BranchEvent, ParallelGroupEvent,
-            UserInteractionEvent,
-            FinalResponseEvent
+            UserInteractionEvent, FinalResponseEvent,
+            PlanCreatedEvent, PlanUpdatedEvent, PlanItemAddedEvent,
+            PlanItemRemovedEvent, PlanClearedEvent
         )
         from ..config import VerbosityLevel
 
@@ -495,6 +600,17 @@ class PrefixedCLIChannel(ChannelAdapter):
             await self._print_branch_event(event, timestamp, verbosity)
         elif isinstance(event, UserInteractionEvent):
             await self._print_user_interaction(event, timestamp, verbosity)
+        # Planning events
+        elif isinstance(event, PlanCreatedEvent):
+            await self._print_plan_created(event, timestamp, verbosity)
+        elif isinstance(event, PlanUpdatedEvent):
+            await self._print_plan_updated(event, timestamp, verbosity)
+        elif isinstance(event, PlanItemAddedEvent):
+            await self._print_plan_item_added(event, timestamp, verbosity)
+        elif isinstance(event, PlanItemRemovedEvent):
+            await self._print_plan_item_removed(event, timestamp, verbosity)
+        elif isinstance(event, PlanClearedEvent):
+            await self._print_plan_cleared(event, timestamp, verbosity)
 
     async def _print_agent_start(self, event: 'AgentStartEvent', ts: str, verbosity: int):
         """Print agent start event with prefix."""
@@ -673,3 +789,157 @@ class PrefixedCLIChannel(ChannelAdapter):
 
             if self.config.show_timings:
                 print(f"{prefix}Duration: {event.total_duration:.2f}s")
+
+    # ==================== Planning Events ====================
+
+    async def _print_plan_created(self, event, ts: str, verbosity: int):
+        """Print plan created event with prefix."""
+        from ..config import VerbosityLevel
+        c = self.colors
+
+        if verbosity == VerbosityLevel.QUIET:
+            return
+
+        prefix = self._format_prefix(event.agent_name)
+        print(f"\n{prefix}{c['bold']}{c['cyan']}📋 Plan Created{c['reset']}")
+        if event.goal:
+            print(f"{prefix}  {c['gray']}Goal: {event.goal}{c['reset']}")
+        print(f"{prefix}  {c['gray']}Items: {event.item_count}{c['reset']}")
+
+        if verbosity >= VerbosityLevel.VERBOSE and event.item_titles:
+            for i, title in enumerate(event.item_titles[:5], 1):
+                print(f"{prefix}    {i}. {title}")
+            if len(event.item_titles) > 5:
+                print(f"{prefix}    ... and {len(event.item_titles) - 5} more")
+
+    async def _print_plan_updated(self, event, ts: str, verbosity: int):
+        """Print plan item updated event with prefix."""
+        from ..config import VerbosityLevel
+        c = self.colors
+
+        if verbosity == VerbosityLevel.QUIET:
+            return
+
+        # At NORMAL verbosity, skip non-status updates (show them only at VERBOSE)
+        if event.new_status is None and verbosity < VerbosityLevel.VERBOSE:
+            return
+
+        prefix = self._format_prefix(event.agent_name)
+
+        # Determine icon and color based on status change
+        if event.new_status == "completed":
+            icon = "✓"
+            color = c['green']
+            status_text = "Completed"
+        elif event.new_status == "in_progress":
+            icon = "▶"
+            color = c['cyan']
+            status_text = event.active_form or "In Progress"
+        elif event.new_status == "blocked":
+            icon = "⚠"
+            color = c['yellow']
+            status_text = "Blocked"
+        elif event.new_status is None:
+            # Non-status update (only shown at VERBOSE)
+            icon = "✎"
+            color = c['gray']
+            updated_fields = event.metadata.get("updated_fields", []) if event.metadata else []
+            status_text = f"Updated: {', '.join(updated_fields)}" if updated_fields else "Updated"
+        else:
+            icon = "○"
+            color = c['gray']
+            status_text = event.new_status or "Updated"
+
+        print(f"{prefix}{ts} {color}{icon} {event.item_title}: {status_text}{c['reset']}")
+
+    async def _print_plan_item_added(self, event, ts: str, verbosity: int):
+        """Print plan item added event with prefix."""
+        from ..config import VerbosityLevel
+        c = self.colors
+
+        if verbosity == VerbosityLevel.QUIET:
+            return
+
+        prefix = self._format_prefix(event.agent_name)
+        print(f"{prefix}{ts} {c['cyan']}+ Added to plan: {event.item_title} (#{event.position}){c['reset']}")
+
+    async def _print_plan_item_removed(self, event, ts: str, verbosity: int):
+        """Print plan item removed event with prefix."""
+        from ..config import VerbosityLevel
+        c = self.colors
+
+        if verbosity == VerbosityLevel.QUIET:
+            return
+
+        prefix = self._format_prefix(event.agent_name)
+        print(f"{prefix}{ts} {c['gray']}- Removed from plan: {event.item_title}{c['reset']}")
+
+    async def _print_plan_cleared(self, event, ts: str, verbosity: int):
+        """Print plan cleared event with prefix."""
+        from ..config import VerbosityLevel
+        c = self.colors
+
+        if verbosity == VerbosityLevel.QUIET:
+            return
+
+        prefix = self._format_prefix(event.agent_name)
+        reason_text = f" ({event.reason})" if event.reason else ""
+        print(f"{prefix}{ts} {c['gray']}📋 Plan cleared{reason_text}{c['reset']}")
+
+
+class StatusWebChannel(ChannelAdapter):
+    """
+    Channel adapter that bridges StatusManager to WebChannel for web client support.
+
+    This adapter receives status events (including planning events) and forwards them
+    to the WebChannel for WebSocket push and API polling.
+
+    Usage:
+        from marsys.coordination.communication.channels import WebChannel
+        from marsys.coordination.status.channels import StatusWebChannel
+
+        web_channel = WebChannel()
+        status_web = StatusWebChannel(web_channel)
+        status_manager.add_channel(status_web)
+    """
+
+    def __init__(self, web_channel, enabled: bool = True):
+        """
+        Initialize StatusWebChannel.
+
+        Args:
+            web_channel: WebChannel instance to forward events to
+            enabled: Whether the channel is enabled
+        """
+        super().__init__("status_web", enabled)
+        self.web_channel = web_channel
+
+    async def send(self, event: 'StatusEvent') -> None:
+        """Convert and forward status event to WebChannel."""
+        if not self.web_channel:
+            return
+
+        # Convert event to serializable dict
+        event_data = self._event_to_dict(event)
+
+        # Forward to WebChannel
+        await self.web_channel.push_status_event(event_data)
+
+    def _event_to_dict(self, event: 'StatusEvent') -> dict:
+        """Convert a StatusEvent to a serializable dictionary."""
+        from dataclasses import asdict, is_dataclass
+
+        if is_dataclass(event):
+            data = asdict(event)
+        else:
+            # Fallback for non-dataclass events
+            data = {
+                "session_id": getattr(event, "session_id", None),
+                "event_id": getattr(event, "event_id", None),
+                "timestamp": getattr(event, "timestamp", None),
+            }
+
+        # Add event type
+        data["event_type"] = event.__class__.__name__
+
+        return data
