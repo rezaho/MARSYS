@@ -19,6 +19,7 @@ from marsys.models.response_models import HarmonizedResponse
 # Type-only imports for optional local model support (requires marsys[local-models])
 if TYPE_CHECKING:
     from marsys.models.models import BaseLocalModel, LocalProviderAdapter
+    from marsys.coordination.event_bus import EventBus
 
 # Import the new exception classes
 from .exceptions import (
@@ -26,6 +27,15 @@ from .exceptions import (
     AgentFrameworkError,
     MessageError,
 )
+
+# --- Event Classes ---
+
+@dataclasses.dataclass
+class MemoryResetEvent:
+    """Event emitted when agent memory is reset."""
+    agent_name: str
+    timestamp: float = dataclasses.field(default_factory=time.time)
+
 
 # --- Structured Content Data Classes ---
 
@@ -627,6 +637,33 @@ class BaseMemory(ABC):
             memory_type: String identifier for the type of memory (e.g., 'conversation_history').
         """
         self.memory_type = memory_type
+        self._event_bus: Optional['EventBus'] = None
+        self._agent_name: Optional[str] = None
+
+    def set_event_context(
+        self,
+        agent_name: str,
+        event_bus: Optional['EventBus'] = None
+    ) -> None:
+        """
+        Configure event emission for memory reset notifications.
+
+        Called by the agent during run_step() when EventBus becomes available.
+
+        Args:
+            agent_name: Name of the owning agent (used for event filtering)
+            event_bus: EventBus instance for emitting events
+        """
+        self._agent_name = agent_name
+        if event_bus is not None:
+            self._event_bus = event_bus
+
+    def _emit_reset_event(self) -> None:
+        """Emit MemoryResetEvent if configured."""
+        if self._event_bus and self._agent_name:
+            self._event_bus.emit_nowait(
+                MemoryResetEvent(agent_name=self._agent_name)
+            )
 
     @abstractmethod
     def add(
@@ -973,6 +1010,7 @@ class ConversationMemory(BaseMemory):
         self.memory.clear()
         if system_message:
             self.memory.append(system_message)
+        self._emit_reset_event()
 
 
 
@@ -1212,6 +1250,7 @@ class KGMemory(BaseMemory):
         # Re-add system prompt if it was part of the initial setup logic
         # This depends on how system_prompt was handled in __init__
         # For now, simple clear. If system_prompt was stored as a fact, it's gone.
+        self._emit_reset_event()
 
 
     async def extract_and_update_from_text(
@@ -1593,6 +1632,7 @@ class ManagedConversationMemory(BaseMemory):
         self._tokens_since_last_retrieval = 0
         self._messages_since_last_retrieval = 0
         self.metadata.clear()
+        self._emit_reset_event()
 
     # === Secondary Methods (ACM-specific) ===
 
@@ -1709,6 +1749,14 @@ class MemoryManager:
                 config_field="memory_type",
                 config_value=memory_type
             )
+
+    def set_event_context(
+        self,
+        agent_name: str,
+        event_bus: Optional['EventBus'] = None
+    ) -> None:
+        """Delegate event context setup to the underlying memory module."""
+        self.memory_module.set_event_context(agent_name, event_bus)
 
     def add(
         self,
@@ -1838,53 +1886,65 @@ class MemoryManager:
                 "extract_and_update_from_text is only available for KGMemory."
             )
 
-    def save_to_file(self, filepath: str) -> None:
+    def save_to_file(
+        self,
+        filepath: str,
+        additional_state: Optional[Dict[str, Any]] = None
+    ) -> None:
         """
         Save the current memory state to a file for persistent storage.
-        
+
         Args:
             filepath: Path to save the memory state
+            additional_state: Optional dict of additional state to save (e.g., planning state)
         """
         import json
         from pathlib import Path
-        
+
         # Ensure directory exists
         Path(filepath).parent.mkdir(parents=True, exist_ok=True)
-        
+
         # Get all messages from memory
         all_messages = self.memory_module.retrieve_all()
-        
+
         # Prepare data for serialization
         data = {
             "memory_type": self.memory_type,
             "messages": all_messages,
             "timestamp": time.time()
         }
-        
+
+        # Include additional state if provided
+        if additional_state:
+            data["additional_state"] = additional_state
+
         # Save to file
         with open(filepath, 'w') as f:
             json.dump(data, f, indent=2)
-        
+
         logging.info(f"Memory saved to {filepath}")
 
-    def load_from_file(self, filepath: str) -> None:
+    def load_from_file(self, filepath: str) -> Optional[Dict[str, Any]]:
         """
         Load memory state from a file.
-        
+
         Args:
             filepath: Path to load the memory state from
+
+        Returns:
+            additional_state dict if present in file, None otherwise
         """
         import json
         from pathlib import Path
-        
+
         if not Path(filepath).exists():
             logging.warning(f"Memory file {filepath} does not exist. Starting with empty memory.")
-            return
-        
+            return None
+
         try:
             with open(filepath, 'r') as f:
                 data = json.load(f)
-            
+
             # Validate memory type matches
             if data.get("memory_type") != self.memory_type:
                 logging.warning(
@@ -1892,10 +1952,10 @@ class MemoryManager:
                     f"but MemoryManager is configured for '{self.memory_type}'. "
                     "Loading anyway but this may cause issues."
                 )
-            
+
             # Clear existing memory
             self.memory_module.reset_memory()
-            
+
             # Reload messages
             messages = data.get("messages", [])
             for msg_dict in messages:
@@ -1908,7 +1968,7 @@ class MemoryManager:
                     tool_calls = msg_dict.get("tool_calls")
                     agent_calls = msg_dict.get("agent_calls")
                     images = msg_dict.get("images")
-                    
+
                     # Add message to memory
                     self.memory_module.add(
                         role=role,
@@ -1918,9 +1978,12 @@ class MemoryManager:
                         agent_calls=agent_calls,
                         images=images
                     )
-            
+
             logging.info(f"Memory loaded from {filepath} with {len(messages)} messages")
-            
+
+            # Return additional state if present
+            return data.get("additional_state")
+
         except Exception as e:
             logging.error(f"Failed to load memory from {filepath}: {e}")
             raise AgentFrameworkError(
