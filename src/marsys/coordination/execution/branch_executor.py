@@ -1170,8 +1170,14 @@ class BranchExecutor:
                     return True
         
         # Check max steps as safety
-        max_steps = branch.topology.metadata.get("max_steps", 100)
-        return branch.state.current_step >= max_steps
+        # Prefer explicit per-branch setting, otherwise fall back to shared context
+        # (Orchestra sets context["max_steps"] for the session).
+        max_steps = (
+            branch.topology.metadata.get("max_steps")
+            or context.shared_context.get("max_steps")
+            or 100
+        )
+        return branch.state.current_step >= int(max_steps)
     
     async def _should_hold_for_convergence(
         self,
