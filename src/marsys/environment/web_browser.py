@@ -3379,7 +3379,7 @@ class BrowserTool:
         }})();
         """
         await self.page.evaluate(mouse_helper_script)
-        print("✓ Mouse helper enabled - cursor should be visible in browser window")
+        logger.debug("Mouse helper enabled - cursor should be visible in browser window")
 
         # Store that helper is enabled and cache the script for reinjection
         self._mouse_helper_enabled = True
@@ -3394,7 +3394,7 @@ class BrowserTool:
                     async def reinject():
                         await self.page.wait_for_timeout(100)
                         await self._reinject_mouse_helper()
-                        print("✓ Mouse helper reinjected after navigation")
+                        logger.debug("Mouse helper reinjected after navigation")
 
                     # Schedule the coroutine
                     try:
@@ -3405,7 +3405,7 @@ class BrowserTool:
 
             self.page.on("domcontentloaded", on_load_handler_sync)
             self._mouse_helper_listener_attached = True
-            print("✓ Mouse helper event listener attached")
+            logger.debug("Mouse helper event listener attached")
 
     async def _reinject_mouse_helper(self) -> None:
         """
