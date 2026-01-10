@@ -20,9 +20,16 @@ from marsys.coordination.validation import ValidationProcessor
 **Constructor:**
 ```python
 ValidationProcessor(
-    topology_graph: TopologyGraph
+    topology_graph: TopologyGraph,
+    response_format: str = "json"
 )
 ```
+
+**Constructor Parameters:**
+| Parameter | Type | Description | Default |
+|-----------|------|-------------|---------|
+| `topology_graph` | `TopologyGraph` | The topology graph for permission validation | Required |
+| `response_format` | `str` | Response format name (e.g., "json") | `"json"` |
 
 **Key Methods:**
 
@@ -349,6 +356,184 @@ class StepType(Enum):
 
 ---
 
+## 📐 Response Format System
+
+MARSYS uses a pluggable response format architecture that separates system prompt building from response parsing.
+
+### Architecture Overview
+
+The format system consists of:
+- **BaseResponseFormat**: Abstract base class defining the format interface
+- **SystemPromptBuilder**: Builds system prompts using the configured format
+- **ResponseProcessor**: Base class for response parsing
+- **Format Registry**: Registry for available formats
+
+```python
+from marsys.coordination.formats import (
+    SystemPromptBuilder,
+    BaseResponseFormat,
+    JSONResponseFormat,
+    AgentContext,
+    CoordinationContext,
+)
+```
+
+---
+
+### SystemPromptBuilder
+
+Builds system prompts for agents using the configured response format.
+
+**Import:**
+```python
+from marsys.coordination.formats import SystemPromptBuilder
+```
+
+**Constructor:**
+```python
+SystemPromptBuilder(response_format: str = "json")
+```
+
+**Key Methods:**
+
+#### build
+```python
+def build(
+    agent_context: AgentContext,
+    coordination_context: CoordinationContext,
+    environmental: Optional[dict] = None
+) -> str
+```
+
+**Parameters:**
+| Parameter | Type | Description | Default |
+|-----------|------|-------------|---------|
+| `agent_context` | `AgentContext` | Agent-specific context | Required |
+| `coordination_context` | `CoordinationContext` | Topology context | Required |
+| `environmental` | `Optional[dict]` | Environmental data (date, etc.) | `None` |
+
+**Example:**
+```python
+builder = SystemPromptBuilder(response_format="json")
+
+system_prompt = builder.build(
+    agent_context=AgentContext(
+        name="Coordinator",
+        goal="Coordinate tasks",
+        instruction="You coordinate worker agents..."
+    ),
+    coordination_context=CoordinationContext(
+        next_agents=["Worker1", "Worker2"],
+        can_return_final_response=True
+    )
+)
+```
+
+---
+
+### AgentContext
+
+Context derived from the agent for prompt building.
+
+**Import:**
+```python
+from marsys.coordination.formats import AgentContext
+```
+
+**Attributes:**
+| Attribute | Type | Description |
+|-----------|------|-------------|
+| `name` | `str` | Agent name |
+| `goal` | `str` | Agent goal description |
+| `instruction` | `str` | Agent behavior instructions |
+| `tools` | `Optional[Dict]` | Available tools |
+| `tools_schema` | `Optional[List[Dict]]` | Tool schemas for prompt |
+| `input_schema` | `Optional[Dict]` | Expected input format |
+| `output_schema` | `Optional[Dict]` | Expected output format |
+| `memory_retention` | `str` | Memory retention policy |
+
+---
+
+### CoordinationContext
+
+Context from the coordination system for prompt building.
+
+**Import:**
+```python
+from marsys.coordination.formats import CoordinationContext
+```
+
+**Attributes:**
+| Attribute | Type | Description |
+|-----------|------|-------------|
+| `next_agents` | `List[str]` | Agents this agent can invoke |
+| `can_return_final_response` | `bool` | Whether agent can return final response |
+
+---
+
+### Format Registry
+
+Functions for managing available response formats.
+
+**Import:**
+```python
+from marsys.coordination.formats import (
+    register_format,
+    get_format,
+    list_formats,
+    set_default_format,
+    is_format_registered
+)
+```
+
+**Functions:**
+
+| Function | Description | Returns |
+|----------|-------------|---------|
+| `register_format(name, format_class)` | Register a new format | `None` |
+| `get_format(name)` | Get format instance | `BaseResponseFormat` |
+| `list_formats()` | List registered formats | `List[str]` |
+| `set_default_format(name)` | Set default format | `None` |
+| `is_format_registered(name)` | Check if format exists | `bool` |
+
+**Example:**
+```python
+# List available formats
+formats = list_formats()  # ["json"]
+
+# Get specific format
+json_format = get_format("json")
+
+# Register custom format
+register_format("xml", XMLResponseFormat)
+```
+
+---
+
+### BaseResponseFormat
+
+Abstract base class for implementing response formats.
+
+**Import:**
+```python
+from marsys.coordination.formats import BaseResponseFormat
+```
+
+**Abstract Methods:**
+| Method | Description |
+|--------|-------------|
+| `get_format_name()` | Return format name (e.g., "json") |
+| `build_format_instructions(actions, descriptions)` | Build format-specific instructions |
+| `build_action_descriptions(actions, context)` | Build action descriptions |
+| `get_examples(actions, context)` | Generate format-specific examples |
+| `get_parallel_invocation_examples(context)` | Examples for parallel invocation |
+| `create_processor()` | Create response processor for this format |
+
+**Built-in Format:**
+- `JSONResponseFormat` - Default JSON format with `next_action`/`action_input` structure
+
+---
+
 ## 🔧 Response Processors
 
 ### Built-in Processors
@@ -362,7 +547,7 @@ class StructuredJSONProcessor(ResponseProcessor):
         return isinstance(response, dict) and "next_action" in response
 
     def priority(self) -> int:
-        return 100  # High priority
+        return 80  # Below error and tool processors
 
 # Tool Call Processor
 class ToolCallProcessor(ResponseProcessor):
@@ -374,21 +559,21 @@ class ToolCallProcessor(ResponseProcessor):
     def priority(self) -> int:
         return 90
 
-# Text Response Processor
-class TextResponseProcessor(ResponseProcessor):
-    """Handles plain text responses."""
+# Error Message Processor
+class ErrorMessageProcessor(ResponseProcessor):
+    """Handles error Messages from agents."""
 
     def can_process(self, response: Any) -> bool:
-        return isinstance(response, str)
+        return isinstance(response, Message) and response.role == "error"
 
     def priority(self) -> int:
-        return 10  # Low priority
+        return 100  # Highest priority
 ```
 
 ### Custom Processor
 
 ```python
-from marsys.coordination.validation import ResponseProcessor
+from marsys.coordination.formats import ResponseProcessor
 
 class CustomFormatProcessor(ResponseProcessor):
     """Process custom response format."""
@@ -403,7 +588,7 @@ class CustomFormatProcessor(ResponseProcessor):
         }
 
     def priority(self) -> int:
-        return 80  # Between JSON and tool processors
+        return 75  # Between JSON and tool processors
 
 # Register processor
 validation_processor.register_processor(CustomFormatProcessor())

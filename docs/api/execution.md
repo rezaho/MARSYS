@@ -135,33 +135,46 @@ from marsys.coordination.execution import StepExecutor
 **Constructor:**
 ```python
 StepExecutor(
-    agent_registry: Optional[Any] = None,
+    config: Optional[ExecutionConfig] = None,
     tool_executor: Optional[ToolExecutor] = None,
-    config: Optional[ExecutionConfig] = None
+    user_node_handler: Optional[UserNodeHandler] = None,
+    event_bus: Optional[EventBus] = None,
+    system_prompt_builder: Optional[SystemPromptBuilder] = None,
+    max_retries: int = 5,
+    retry_delay: float = 1.0
 )
 ```
+
+**Parameters:**
+| Parameter | Type | Description | Default |
+|-----------|------|-------------|---------|
+| `config` | `Optional[ExecutionConfig]` | Execution configuration | `None` |
+| `tool_executor` | `Optional[ToolExecutor]` | Tool execution handler | `None` |
+| `user_node_handler` | `Optional[UserNodeHandler]` | User interaction handler | `None` |
+| `event_bus` | `Optional[EventBus]` | Event bus for status updates | `None` |
+| `system_prompt_builder` | `Optional[SystemPromptBuilder]` | Builds agent system prompts using response format | `None` |
+| `max_retries` | `int` | Maximum retry attempts | `5` |
+| `retry_delay` | `float` | Delay between retries (seconds) | `1.0` |
 
 **Key Methods:**
 
 #### execute_step
 ```python
 async def execute_step(
-    agent_name: str,
+    agent: Union[BaseAgent, str],
     request: Any,
-    context: Dict[str, Any],
-    branch: ExecutionBranch,
-    memory: List[Message]
+    memory: List[Dict[str, Any]],
+    context: Dict[str, Any]
 ) -> StepResult
 ```
 
 **Parameters:**
 | Parameter | Type | Description | Default |
 |-----------|------|-------------|---------|
-| `agent_name` | `str` | Agent to execute | Required |
+| `agent` | `Union[BaseAgent, str]` | Agent instance or name to execute | Required |
 | `request` | `Any` | Input for agent | Required |
+| `memory` | `List[Dict[str, Any]]` | Conversation memory | Required |
 | `context` | `Dict[str, Any]` | Execution context | Required |
-| `branch` | `ExecutionBranch` | Current branch | Required |
-| `memory` | `List[Message]` | Conversation memory | Required |
 
 **Returns:** `StepResult` with step outcome
 
@@ -169,28 +182,46 @@ async def execute_step(
 ```python
 @dataclass
 class StepResult:
-    success: bool
+    """Result of executing a single step within a branch."""
+    # Core execution fields (set by StepExecutor)
     agent_name: str
-    response: Any
+    success: bool
+    response: Any = None
+
+    # Execution metadata (set by StepExecutor)
+    step_id: Optional[str] = None
+    memory_updates: List[Dict[str, Any]] = field(default_factory=list)
+    tool_calls: List[Dict[str, Any]] = field(default_factory=list)
+    tool_results: List[Dict[str, Any]] = field(default_factory=list)
     error: Optional[str] = None
+    requires_retry: bool = False
+    context_selection: Optional[Dict[str, Any]] = None
     metadata: Dict[str, Any] = field(default_factory=dict)
-    execution_time: float = 0.0
-    memory_used: List[Message] = field(default_factory=list)
+
+    # Routing decision fields (set by BranchExecutor ONLY)
+    action_type: Optional[str] = None
+    parsed_response: Optional[Dict[str, Any]] = None
+    next_agent: Optional[str] = None
+    should_end_branch: bool = False
+    waiting_for_children: bool = False
+    child_branch_ids: List[str] = field(default_factory=list)
+    convergence_target: Optional[str] = None
 ```
 
 **Example:**
 ```python
+from marsys.coordination.formats import SystemPromptBuilder
+
 step_executor = StepExecutor(
-    agent_registry=AgentRegistry,
-    config=exec_config
+    config=exec_config,
+    system_prompt_builder=SystemPromptBuilder(response_format="json")
 )
 
 result = await step_executor.execute_step(
-    name="Analyzer",
+    agent="Analyzer",
     request="Analyze sales data",
-    context={"session": "123"},
-    branch=current_branch,
-    memory=conversation_memory
+    memory=conversation_memory,
+    context={"session": "123"}
 )
 ```
 

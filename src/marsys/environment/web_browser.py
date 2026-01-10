@@ -50,6 +50,14 @@ from pathlib import Path
 import markdownify
 from bs4 import BeautifulSoup, Comment
 
+# Import shared element detection logic
+from marsys.environment.element_detector import (
+    ElementDetector,
+    DetectionConfig,
+    to_bbox_format,
+    to_compact_format,
+)
+
 # Build the absolute path to the assets directory (assuming the repo structure provided)
 CURRENT_DIR = os.path.dirname(os.path.abspath(__file__))
 ASSETS_DIR = os.path.join(CURRENT_DIR, "..", "assets")
@@ -3371,7 +3379,7 @@ class BrowserTool:
         }})();
         """
         await self.page.evaluate(mouse_helper_script)
-        print("✓ Mouse helper enabled - cursor should be visible in browser window")
+        logger.debug("Mouse helper enabled - cursor should be visible in browser window")
 
         # Store that helper is enabled and cache the script for reinjection
         self._mouse_helper_enabled = True
@@ -3386,7 +3394,7 @@ class BrowserTool:
                     async def reinject():
                         await self.page.wait_for_timeout(100)
                         await self._reinject_mouse_helper()
-                        print("✓ Mouse helper reinjected after navigation")
+                        logger.debug("Mouse helper reinjected after navigation")
 
                     # Schedule the coroutine
                     try:
@@ -3397,7 +3405,7 @@ class BrowserTool:
 
             self.page.on("domcontentloaded", on_load_handler_sync)
             self._mouse_helper_listener_attached = True
-            print("✓ Mouse helper event listener attached")
+            logger.debug("Mouse helper event listener attached")
 
     async def _reinject_mouse_helper(self) -> None:
         """
@@ -5729,220 +5737,57 @@ class BrowserTool:
 
     # Add missing methods to BrowserTool class
 
-    async def detect_interactive_elements_rule_based(self, visible_only: bool = True, reasoning: Optional[str] = None) -> List[Dict[str, Any]]:
+    async def detect_interactive_elements_rule_based(
+        self,
+        visible_only: bool = True,
+        reasoning: Optional[str] = None,
+        pierce_shadow_dom: bool = True,
+        include_iframes: bool = True,
+        check_occlusion: bool = True,
+        filter_containers: bool = True,
+    ) -> List[Dict[str, Any]]:
         """
         Detect interactive elements on the page using rule-based approach.
-        
+
         This method finds clickable elements like buttons, links, inputs, etc. using
-        CSS selectors and DOM analysis.
-        
+        CSS selectors and DOM analysis. Supports Shadow DOM and iframe traversal.
+
         Args:
             visible_only: If True, only return visible elements
             reasoning: Optional reasoning for this detection
-            
+            pierce_shadow_dom: If True, detect elements inside Shadow DOM (default: True)
+            include_iframes: If True, detect elements inside iframes (default: True)
+            check_occlusion: If True, filter out elements covered by overlays (default: True)
+            filter_containers: If True, remove container elements with multiple children (default: True)
+
         Returns:
-            List of interactive elements with their properties and positions
+            List of interactive elements with their properties and positions:
+            [{'label': str, 'href': str, 'bbox': [x1,y1,x2,y2], 'center': [x,y], 'selector': str, 'source': str}]
         """
         if reasoning:
             logging.info(f"BrowserTool Detect Interactive Elements: {reasoning}")
-        
-        # Define selectors for interactive elements
-        interactive_selectors = [
-            'button',
-            'input[type="button"]',
-            'input[type="submit"]',
-            'input[type="reset"]',
-            'input[type="image"]',
-            'input[type="checkbox"]',
-            'input[type="radio"]',
-            'input[type="text"]',
-            'input[type="password"]',
-            'input[type="email"]',
-            'input[type="number"]',
-            'input[type="tel"]',
-            'input[type="url"]',
-            'input[type="search"]',
-            'input[type="date"]',
-            'input[type="time"]',
-            'input[type="datetime-local"]',
-            'input[type="file"]',
-            'textarea',
-            'select',
-            'option',  # Individual dropdown options (visible when select is opened)
-            'a[href]',
-            '[onclick]',
-            '[role="button"]',
-            '[role="link"]',
-            '[tabindex]',
-            '.btn',
-            '.button',
-            '.link'
-        ]
-        
-        elements = []
-        seen_bboxes = {}  # Track elements by bounding box to prevent duplicates
-        
-        for selector in interactive_selectors:
-            try:
-                # Get all elements matching this selector
-                element_handles = await self.page.query_selector_all(selector)
-                
-                for element in element_handles:
-                    try:
-                        # Get bounding box first (needed for both visibility and positioning)
-                        bbox = await element.bounding_box()
-                        if not bbox:
-                            continue
-                        
-                        # Calculate center point (needed for both visibility checks and element info)
-                        center_x = int(bbox['x'] + bbox['width'] / 2)
-                        center_y = int(bbox['y'] + bbox['height'] / 2)
-                        
-                        # Check if element is visible if required
-                        if visible_only:
-                            # First check basic DOM visibility
-                            is_visible = await element.is_visible()
-                            if not is_visible:
-                                continue
-                        
-                            # Then check if element is actually on top (not obscured by modals/overlays)
-                            # Use document.elementFromPoint to check if this element is on top
-                            is_on_top = await self.page.evaluate(
-                                """(args) => {
-                                    const { element, centerX, centerY } = args;
-                                    const topElement = document.elementFromPoint(centerX, centerY);
-                                    return topElement === element || element.contains(topElement);
-                                }""",
-                                {"element": element, "centerX": center_x, "centerY": center_y}
-                            )
-                            if not is_on_top:
-                                continue
-                        
-                        # Create a unique key for the bounding box (rounded to avoid floating point issues)
-                        bbox_key = (
-                            round(bbox['x'], 2), 
-                            round(bbox['y'], 2), 
-                            round(bbox['x'] + bbox['width'], 2), 
-                            round(bbox['y'] + bbox['height'], 2)
-                        )
-                        
-                        # Get element attributes
-                        tag_name = await element.evaluate('el => el.tagName.toLowerCase()')
-                        element_type = await element.evaluate('el => el.type || ""')
-                        text_content = await element.evaluate('el => el.textContent || el.value || el.alt || el.title || ""')
-                        href = await element.evaluate('el => el.href || ""')
-                        
-                        # Create label from tag name and text content
-                        text_content_trimmed = text_content.strip()[:100]  # Limit text length
-                        if text_content_trimmed:
-                            label = f"{element_type}: {text_content_trimmed}"
-                        else:
-                            label = element_type
-                        
-                        element_info = {
-                            'label': label,
-                            'href': href,
-                            'bbox': [int(bbox['x']), int(bbox['y']), int(bbox['x'] + bbox['width']), int(bbox['y'] + bbox['height'])],
-                            'center': [center_x, center_y],
-                            'selector': selector,
-                            'source': 'rule_based'  # Mark as rule-based
-                        }
-                        
-                        # Check if we've already seen this bounding box
-                        if bbox_key in seen_bboxes:
-                            # Element already exists - decide which one to keep based on selector priority
-                            existing_element = seen_bboxes[bbox_key]
-                            
-                            # Define selector priority (more specific selectors are preferred)
-                            selector_priority = {
-                                'button': 10,
-                                'input[type="button"]': 9,
-                                'input[type="submit"]': 9,
-                                'a[href]': 8,
-                                '[role="button"]': 7,
-                                '[role="link"]': 6,
-                                '[onclick]': 5,
-                                'input[type="text"]': 5,
-                                'input[type="password"]': 5,
-                                'select': 5,
-                                'option': 4,  # Dropdown options (lower priority than select itself)
-                                'textarea': 5,
-                                '[tabindex]': 3,
-                                '.btn': 2,
-                                '.button': 2,
-                                '.link': 1
-                            }
-                            
-                            current_priority = selector_priority.get(selector, 0)
-                            existing_priority = selector_priority.get(existing_element['selector'], 0)
-                            
-                            # Keep the element with higher priority selector
-                            if current_priority > existing_priority:
-                                seen_bboxes[bbox_key] = element_info
-                            # If same priority, prefer the one with more descriptive label
-                            elif current_priority == existing_priority:
-                                if len(element_info['label']) > len(existing_element['label']):
-                                    seen_bboxes[bbox_key] = element_info
-                        else:
-                            # New element - add it
-                            seen_bboxes[bbox_key] = element_info
-                        
-                    except Exception as e:
-                        logging.debug(f"Error processing element: {e}")
-                        continue
-                        
-            except Exception as e:
-                logging.debug(f"Error with selector {selector}: {e}")
-                continue
-        
-        # Convert the deduplicated elements back to a list
-        elements = list(seen_bboxes.values())
 
-        # Post-processing: Filter out container elements that have interactive children
-        # This prevents large containers (like scrollable menus) from being detected
-        # when they contain more specific interactive elements
-        def bbox_contains(outer: List[int], inner: List[int], margin: int = 5) -> bool:
-            """Check if outer bbox fully contains inner bbox (with margin tolerance)."""
-            # bbox format: [x1, y1, x2, y2]
-            return (
-                outer[0] - margin <= inner[0] and
-                outer[1] - margin <= inner[1] and
-                outer[2] + margin >= inner[2] and
-                outer[3] + margin >= inner[3]
-            )
+        # Use shared ElementDetector for core detection
+        detector = ElementDetector(self.page)
+        config = DetectionConfig(
+            visible_only=visible_only,
+            check_occlusion=check_occlusion,
+            pierce_shadow_dom=pierce_shadow_dom,
+            include_iframes=include_iframes,
+            dedupe_by_bbox=True,
+            max_elements=500,
+            max_text_length=100,
+        )
 
-        def get_bbox_area(bbox: List[int]) -> int:
-            """Calculate bbox area."""
-            return (bbox[2] - bbox[0]) * (bbox[3] - bbox[1])
+        # Detect elements using shared logic
+        raw_elements = await detector.detect(config)
 
-        # Find container elements to filter out
-        containers_to_remove = set()
+        # Filter containers if enabled
+        if filter_containers:
+            raw_elements = detector.filter_containers(raw_elements, min_children=2)
 
-        for i, elem in enumerate(elements):
-            elem_bbox = elem['bbox']
-            elem_area = get_bbox_area(elem_bbox)
-
-            # Count how many other elements this element contains
-            children_count = 0
-            for j, other in enumerate(elements):
-                if i == j:
-                    continue
-                other_bbox = other['bbox']
-                other_area = get_bbox_area(other_bbox)
-
-                # Check if elem contains other and other is significantly smaller
-                if bbox_contains(elem_bbox, other_bbox) and other_area < elem_area * 0.8:
-                    children_count += 1
-
-            # If this element contains multiple interactive children, it's likely a container
-            # Remove it and keep the children instead
-            if children_count >= 2:
-                containers_to_remove.add(i)
-                logging.debug(f"Filtering out container element with {children_count} children: {elem.get('label', 'unknown')[:50]}")
-
-        # Filter out the containers
-        if containers_to_remove:
-            elements = [elem for i, elem in enumerate(elements) if i not in containers_to_remove]
+        # Convert to bbox format for backward compatibility
+        elements = to_bbox_format(raw_elements)
 
         return elements
 
@@ -6106,8 +5951,9 @@ class BrowserTool:
             # Draw the bounding box with the assigned color on base image
             bbox_draw.rectangle([(x, y), (x2, y2)], outline=color, width=2)
 
-            # Use only the element number as label (simple and clean)
-            label = f"{i+1}"
+            # Use the element's 'number' field if present, otherwise fall back to loop index
+            # This ensures consistency between screenshot labels and returned element list
+            label = str(element.get('number', i + 1))
 
             # Calculate text dimensions
             bbox_text = font.getbbox(label)
@@ -6314,7 +6160,7 @@ class BrowserTool:
         logger.info(f"Pixel grid screenshot saved to: {save_path}")
         return save_path
 
-    async def type_text(
+    async def keyboard_input(
         self,
         text: str,
         reasoning: Optional[str] = None,
@@ -6323,29 +6169,23 @@ class BrowserTool:
         variation_factor: Optional[float] = 0.3,
     ) -> None:
         """
-        Type regular text (letters, numbers, punctuation) with realistic human-like behavior.
+        Type text into the currently focused input field (search box, form field, text area).
 
-        Use this method for typing words, sentences, URLs, or any text content into the currently focused element.
-        For special keys like Enter, Escape, Tab, or arrow keys, use keyboard_press instead.
+        Prerequisites: An input element must be focused first (click on it before calling this).
 
-        This method simulates natural human typing patterns by introducing random delays between
-        keystrokes and slight variations in typing speed to make the interaction appear more
-        human-like and less detectable as automated input.
+        Use cases: Fill form fields, enter search queries, type into text areas.
+
+        For special keys (Enter, Tab, Escape, arrows), use keyboard_press() instead.
 
         Parameters:
-            text (str): The text to type (letters, numbers, punctuation, etc.). Each character will be typed
-                       individually with realistic delays.
-            reasoning (Optional[str]): The reasoning chain for this action. Defaults to empty string.
-            min_delay (Optional[int]): Minimum delay between keystrokes in milliseconds. Defaults to 50ms.
-            max_delay (Optional[int]): Maximum delay between keystrokes in milliseconds. Defaults to 150ms.
-            variation_factor (Optional[float]): Factor to add randomness to delays (0.0 = no variation, 1.0 = high variation).
-                                               Defaults to 0.3 for natural variation.
+            text (str): Characters to type into the focused input field.
+            reasoning (Optional[str]): Reasoning for this action.
+            min_delay (Optional[int]): Min delay between keystrokes in ms. Defaults to 50.
+            max_delay (Optional[int]): Max delay between keystrokes in ms. Defaults to 150.
+            variation_factor (Optional[float]): Randomness factor for typing speed. Defaults to 0.3.
 
         Returns:
             None
-
-        Raises:
-            ActionValidationError: If min_delay >= max_delay or variation_factor is negative.
         """
         import asyncio
         import random
@@ -6389,7 +6229,7 @@ class BrowserTool:
         
         self.history.append(
             {
-                "action": "type_text",
+                "action": "keyboard_input",
                 "reasoning": r,
                 "text": text,
                 "character_count": len(text),
@@ -6404,242 +6244,72 @@ class BrowserTool:
         self,
         reasoning: Optional[str] = None,
         include_hidden: bool = False,
+        max_elements: int = 200,
+        max_text_length: int = 100,
     ) -> Dict[str, Any]:
         """
-        Get interactive elements and page structure in a flat, easy-to-parse format.
+        Get interactive elements and page structure in a compact, token-efficient format.
 
         Returns all interactive elements (buttons, links, inputs, etc.) with their
-        selectors, positions, and states. Optimized for AI agents to quickly find
-        and interact with page elements.
+        selectors, positions, and states. Optimized for AI agents with minimal token usage.
+
+        Note: Only returns elements in the main document (not Shadow DOM or iframes)
+        because returned selectors must be usable with standard interaction tools.
+        For elements in Shadow DOM/iframes, use position-based interactions if available.
+
+        Uses compact format with short keys:
+        - i: element index (use with inspect_element)
+        - t: type (button, link, input, etc.)
+        - tx: text content (truncated)
+        - s: CSS selector
+        - p: position as [x, y, width, height] array
+        - h: href (only if present)
+        - v: value (only if present, for inputs)
+        - st: state flags (only non-default values)
 
         Parameters:
             reasoning: Optional reasoning for this action
             include_hidden: Whether to include hidden/invisible elements (default: False)
+            max_elements: Maximum number of elements to return (default: 200)
+            max_text_length: Maximum characters for text per element (default: 100)
 
         Returns:
-            Dictionary with flat structure:
             {
                 "url": str,
                 "title": str,
-                "interactive_elements": [
-                    {
-                        "id": str,              # Unique ID for this element
-                        "type": str,            # button, link, input, select, etc.
-                        "text": str,            # Visible text or label
-                        "selector": str,        # CSS selector to target this element
-                        "position": {           # Coordinates for clicking
-                            "x": int,
-                            "y": int,
-                            "width": int,
-                            "height": int
-                        },
-                        "href": str,            # For links/buttons (if applicable)
-                        "value": str,           # Current value (for inputs)
-                        "state": {              # Interactive states
-                            "disabled": bool,
-                            "checked": bool,
-                            "selected": bool,
-                            "required": bool,
-                            "readonly": bool
-                        }
-                    },
+                "elements": [
+                    {"i": 0, "t": "button", "tx": "Submit", "s": "#btn", "p": [100,200,80,40]},
+                    {"i": 1, "t": "link", "tx": "Home", "s": "a.nav", "p": [0,0,50,20], "h": "/home"},
                     ...
                 ],
-                "headings": [
-                    {"level": int, "text": str, "selector": str},
-                    ...
-                ],
-                "summary": {
-                    "total_interactive": int,
-                    "buttons": int,
-                    "links": int,
-                    "inputs": int,
-                    "selects": int
-                }
+                "headings": [{"l": 1, "tx": "Title", "s": "h1"}, ...],
+                "summary": {"total": int, "buttons": int, "links": int, "inputs": int, "selects": int}
             }
         """
         r = reasoning or ""
 
         try:
-            # JavaScript to extract all interactive elements with selectors
-            extract_script = """
-            (includeHidden) => {
-                // Helper function to generate unique CSS selector for an element
-                function generateSelector(element) {
-                    // Try ID first (most specific)
-                    if (element.id) {
-                        return `#${element.id}`;
-                    }
+            # Use shared ElementDetector for core detection
+            # Note: pierce_shadow_dom=False, include_iframes=False because selectors
+            # from Shadow DOM/iframes won't work with standard interaction tools.
+            # Agent should use position-based interaction for those elements.
+            detector = ElementDetector(self.page)
+            config = DetectionConfig(
+                visible_only=not include_hidden,
+                check_occlusion=False,  # Don't check occlusion for agent tools (faster)
+                pierce_shadow_dom=False,  # Selectors won't work across shadow boundaries
+                include_iframes=False,    # Selectors won't work across frame boundaries
+                include_headings=True,
+                dedupe_by_bbox=False,  # No deduplication needed for agent tools
+                max_elements=max_elements,
+                max_text_length=max_text_length,
+            )
 
-                    // Try name attribute for inputs
-                    if (element.name && ['INPUT', 'SELECT', 'TEXTAREA'].includes(element.tagName)) {
-                        const nameMatch = document.querySelectorAll(`${element.tagName.toLowerCase()}[name="${element.name}"]`);
-                        if (nameMatch.length === 1) {
-                            return `${element.tagName.toLowerCase()}[name="${element.name}"]`;
-                        }
-                    }
+            # Detect elements using shared logic
+            raw_elements = await detector.detect(config)
 
-                    // Try unique class combination
-                    if (element.className && typeof element.className === 'string') {
-                        const classes = element.className.trim().split(/\\s+/).filter(c => c);
-                        if (classes.length > 0) {
-                            const classSelector = element.tagName.toLowerCase() + '.' + classes.join('.');
-                            const classMatches = document.querySelectorAll(classSelector);
-                            if (classMatches.length === 1) {
-                                return classSelector;
-                            }
-                        }
-                    }
-
-                    // Build path from root
-                    const path = [];
-                    let current = element;
-
-                    while (current && current !== document.body) {
-                        let selector = current.tagName.toLowerCase();
-
-                        // Add nth-child if there are siblings with same tag
-                        if (current.parentElement) {
-                            const siblings = Array.from(current.parentElement.children)
-                                .filter(el => el.tagName === current.tagName);
-                            if (siblings.length > 1) {
-                                const index = siblings.indexOf(current) + 1;
-                                selector += `:nth-of-type(${index})`;
-                            }
-                        }
-
-                        path.unshift(selector);
-                        current = current.parentElement;
-
-                        // Stop if we have enough specificity (max 4 levels)
-                        if (path.length >= 4) break;
-                    }
-
-                    return path.join(' > ');
-                }
-
-                // Helper to check visibility
-                function isVisible(element) {
-                    if (includeHidden) return true;
-
-                    const style = window.getComputedStyle(element);
-                    return style.display !== 'none' &&
-                           style.visibility !== 'hidden' &&
-                           style.opacity !== '0' &&
-                           element.offsetWidth > 0 &&
-                           element.offsetHeight > 0;
-                }
-
-                // Helper to get element position
-                function getPosition(element) {
-                    const rect = element.getBoundingClientRect();
-                    return {
-                        x: Math.round(rect.left + window.scrollX),
-                        y: Math.round(rect.top + window.scrollY),
-                        width: Math.round(rect.width),
-                        height: Math.round(rect.height)
-                    };
-                }
-
-                // Helper to get text content
-                function getText(element) {
-                    // Try various text sources
-                    let text = element.getAttribute('aria-label') ||
-                               element.getAttribute('title') ||
-                               element.getAttribute('alt') ||
-                               element.getAttribute('placeholder') ||
-                               element.textContent ||
-                               element.innerText ||
-                               '';
-
-                    return text.trim().replace(/\\s+/g, ' ');
-                }
-
-                const interactive = [];
-                const headings = [];
-
-                // Extract interactive elements
-                const interactiveSelectors = [
-                    'a[href]',
-                    'button',
-                    'input:not([type="hidden"])',
-                    'select',
-                    'textarea',
-                    '[role="button"]',
-                    '[role="link"]',
-                    '[role="menuitem"]',
-                    '[role="tab"]',
-                    '[onclick]'
-                ];
-
-                const elements = document.querySelectorAll(interactiveSelectors.join(', '));
-
-                elements.forEach((element, index) => {
-                    if (!isVisible(element)) return;
-
-                    const tagName = element.tagName.toLowerCase();
-                    let type = tagName;
-
-                    // Determine element type
-                    if (tagName === 'input') {
-                        type = element.type || 'text';
-                    } else if (tagName === 'a') {
-                        type = 'link';
-                    } else if (element.getAttribute('role')) {
-                        type = element.getAttribute('role');
-                    }
-
-                    const item = {
-                        id: `elem_${index}`,
-                        type: type,
-                        text: getText(element),
-                        selector: generateSelector(element),
-                        position: getPosition(element),
-                        href: element.href || element.getAttribute('href') || null,
-                        value: element.value || '',
-                        state: {
-                            disabled: element.disabled || false,
-                            checked: element.checked || false,
-                            selected: element.selected || false,
-                            required: element.required || false,
-                            readonly: element.readOnly || false
-                        }
-                    };
-
-                    interactive.push(item);
-                });
-
-                // Extract headings
-                const headingElements = document.querySelectorAll('h1, h2, h3, h4, h5, h6');
-                headingElements.forEach(heading => {
-                    if (!isVisible(heading)) return;
-
-                    headings.push({
-                        level: parseInt(heading.tagName[1]),
-                        text: heading.textContent.trim().replace(/\\s+/g, ' '),
-                        selector: generateSelector(heading)
-                    });
-                });
-
-                // Generate summary
-                const summary = {
-                    total_interactive: interactive.length,
-                    buttons: interactive.filter(el => el.type === 'button' || el.type === 'submit').length,
-                    links: interactive.filter(el => el.type === 'link').length,
-                    inputs: interactive.filter(el => ['text', 'email', 'password', 'search', 'tel', 'url', 'number'].includes(el.type)).length,
-                    selects: interactive.filter(el => el.type === 'select').length
-                };
-
-                return {
-                    interactive_elements: interactive,
-                    headings: headings,
-                    summary: summary
-                };
-            }
-            """
-
-            # Execute JavaScript to extract elements
-            result = await self.page.evaluate(extract_script, include_hidden)
+            # Convert to compact format
+            result = to_compact_format(raw_elements)
 
             # Add URL and title
             result['url'] = self.page.url
@@ -6650,6 +6320,8 @@ class BrowserTool:
                 "action": "get_page_elements",
                 "reasoning": r,
                 "include_hidden": include_hidden,
+                "max_elements": max_elements,
+                "element_count": len(result['elements']),
                 "summary": result['summary']
             })
 
@@ -6659,310 +6331,20 @@ class BrowserTool:
             error_result = {
                 "url": self.page.url,
                 "title": await self.page.title(),
-                "interactive_elements": [],
+                "elements": [],
                 "headings": [],
                 "summary": {
-                    "total_interactive": 0,
+                    "total": 0,
                     "buttons": 0,
                     "links": 0,
                     "inputs": 0,
                     "selects": 0
                 },
-                "error": f"Failed to get accessibility tree: {str(e)}"
+                "error": f"Failed to get page elements: {str(e)}"
             }
 
             self.history.append({
                 "action": "get_page_elements",
-                "reasoning": r,
-                "error": str(e)
-            })
-
-            return error_result
-
-    async def get_page_overview(
-        self,
-        max_text_length: int = 80,
-        max_depth: int = 4,
-        reasoning: Optional[str] = None,
-    ) -> Dict[str, Any]:
-        """
-        Get a hierarchical overview of the page DOM structure with truncated text.
-
-        Similar to FileOperationTools PDF overview - provides a tree structure
-        that allows the agent to understand the page layout and then drill down
-        into specific sections using inspect_element().
-
-        Parameters:
-            max_text_length: Maximum characters to show for each element's text (default: 80)
-            max_depth: Maximum depth of DOM tree to traverse (default: 4)
-            reasoning: Optional reasoning for this action
-
-        Returns:
-            Dictionary with hierarchical page structure:
-            {
-                "url": str,
-                "title": str,
-                "regions": {
-                    "header": { tree of elements },
-                    "nav": { tree of elements },
-                    "main": { tree of elements },
-                    "aside": { tree of elements },
-                    "footer": { tree of elements },
-                    "other": { tree of elements }
-                },
-                "summary": {
-                    "total_elements": int,
-                    "interactive_count": int,
-                    "text_heavy_regions": [str],
-                    "has_forms": bool,
-                    "has_tables": bool
-                },
-                "quick_access": [
-                    {"selector": str, "type": str, "preview": str},
-                    ...  # Top 10 most likely useful elements
-                ]
-            }
-        """
-        r = reasoning or ""
-
-        try:
-            # JavaScript to build hierarchical DOM tree with truncated text
-            overview_script = """
-            (config) => {
-                const maxTextLen = config.maxTextLength;
-                const maxDepth = config.maxDepth;
-
-                // Helper to truncate text
-                function truncateText(text, maxLen) {
-                    if (!text) return '';
-                    text = text.trim().replace(/\\s+/g, ' ');
-                    if (text.length <= maxLen) return text;
-                    return text.substring(0, maxLen) + '...';
-                }
-
-                // Helper to generate unique CSS selector
-                function generateSelector(element) {
-                    if (element.id) return `#${element.id}`;
-
-                    if (element.name && ['INPUT', 'SELECT', 'TEXTAREA'].includes(element.tagName)) {
-                        const nameMatch = document.querySelectorAll(`${element.tagName.toLowerCase()}[name="${element.name}"]`);
-                        if (nameMatch.length === 1) return `${element.tagName.toLowerCase()}[name="${element.name}"]`;
-                    }
-
-                    if (element.className && typeof element.className === 'string') {
-                        const classes = element.className.trim().split(/\\s+/).filter(c => c && !c.includes(':'));
-                        if (classes.length > 0) {
-                            const classSelector = element.tagName.toLowerCase() + '.' + classes.slice(0, 2).join('.');
-                            const classMatches = document.querySelectorAll(classSelector);
-                            if (classMatches.length === 1) return classSelector;
-                        }
-                    }
-
-                    // Build path
-                    const path = [];
-                    let current = element;
-                    while (current && current !== document.body && path.length < 3) {
-                        let selector = current.tagName.toLowerCase();
-                        if (current.parentElement) {
-                            const siblings = Array.from(current.parentElement.children)
-                                .filter(el => el.tagName === current.tagName);
-                            if (siblings.length > 1) {
-                                const index = siblings.indexOf(current) + 1;
-                                selector += `:nth-of-type(${index})`;
-                            }
-                        }
-                        path.unshift(selector);
-                        current = current.parentElement;
-                    }
-                    return path.join(' > ');
-                }
-
-                // Helper to check visibility
-                function isVisible(element) {
-                    const style = window.getComputedStyle(element);
-                    return style.display !== 'none' &&
-                           style.visibility !== 'hidden' &&
-                           style.opacity !== '0' &&
-                           element.offsetWidth > 0;
-                }
-
-                // Semantic tags for interactive elements
-                const interactiveTags = new Set(['a', 'button', 'input', 'select', 'textarea', 'details', 'summary']);
-                const semanticRoles = new Set(['button', 'link', 'menuitem', 'tab', 'checkbox', 'radio', 'textbox', 'combobox']);
-
-                // Build element node
-                function buildNode(element, depth) {
-                    if (depth > maxDepth) return null;
-                    if (!isVisible(element)) return null;
-
-                    const tagName = element.tagName.toLowerCase();
-
-                    // Skip script, style, svg internals
-                    if (['script', 'style', 'noscript', 'svg', 'path', 'g'].includes(tagName)) return null;
-
-                    const role = element.getAttribute('role');
-                    const isInteractive = interactiveTags.has(tagName) ||
-                                         (role && semanticRoles.has(role)) ||
-                                         element.hasAttribute('onclick') ||
-                                         element.hasAttribute('tabindex');
-
-                    // Get direct text content (not from children)
-                    let directText = '';
-                    for (const child of element.childNodes) {
-                        if (child.nodeType === Node.TEXT_NODE) {
-                            directText += child.textContent;
-                        }
-                    }
-                    directText = truncateText(directText, maxTextLen);
-
-                    // Get aria-label or other accessible names
-                    const accessibleName = element.getAttribute('aria-label') ||
-                                          element.getAttribute('title') ||
-                                          element.getAttribute('alt') ||
-                                          element.getAttribute('placeholder') || '';
-
-                    // Build children
-                    const children = [];
-                    let childCount = 0;
-                    for (const child of element.children) {
-                        if (childCount >= 20) {  // Limit children per node
-                            children.push({ tag: '...', text: `(${element.children.length - 20} more children)` });
-                            break;
-                        }
-                        const childNode = buildNode(child, depth + 1);
-                        if (childNode) {
-                            children.push(childNode);
-                            childCount++;
-                        }
-                    }
-
-                    // Skip empty containers
-                    if (!directText && !accessibleName && children.length === 0 && !isInteractive) {
-                        return null;
-                    }
-
-                    const node = {
-                        tag: tagName,
-                        selector: generateSelector(element)
-                    };
-
-                    if (directText) node.text = directText;
-                    if (accessibleName) node.label = truncateText(accessibleName, 50);
-                    if (isInteractive) node.interactive = true;
-                    if (role) node.role = role;
-                    if (element.type && tagName === 'input') node.type = element.type;
-                    if (element.href) node.href = truncateText(element.href, 60);
-                    if (children.length > 0) node.children = children;
-
-                    return node;
-                }
-
-                // Identify semantic regions
-                const regions = {
-                    header: null,
-                    nav: null,
-                    main: null,
-                    aside: null,
-                    footer: null,
-                    other: { tag: 'body', children: [] }
-                };
-
-                // Find semantic landmarks
-                const header = document.querySelector('header, [role="banner"]');
-                const nav = document.querySelector('nav, [role="navigation"]');
-                const main = document.querySelector('main, [role="main"], article, .main-content, #main, #content');
-                const aside = document.querySelector('aside, [role="complementary"]');
-                const footer = document.querySelector('footer, [role="contentinfo"]');
-
-                if (header) regions.header = buildNode(header, 0);
-                if (nav) regions.nav = buildNode(nav, 0);
-                if (main) regions.main = buildNode(main, 0);
-                if (aside) regions.aside = buildNode(aside, 0);
-                if (footer) regions.footer = buildNode(footer, 0);
-
-                // Get elements not in any region
-                const coveredElements = new Set([header, nav, main, aside, footer].filter(Boolean));
-                for (const child of document.body.children) {
-                    if (!coveredElements.has(child)) {
-                        const node = buildNode(child, 0);
-                        if (node) regions.other.children.push(node);
-                    }
-                }
-
-                // Count elements
-                const allInteractive = document.querySelectorAll('a, button, input, select, textarea, [role="button"], [role="link"]');
-                const visibleInteractive = Array.from(allInteractive).filter(isVisible);
-
-                // Summary statistics
-                const summary = {
-                    total_elements: document.querySelectorAll('*').length,
-                    interactive_count: visibleInteractive.length,
-                    text_heavy_regions: [],
-                    has_forms: document.querySelectorAll('form').length > 0,
-                    has_tables: document.querySelectorAll('table').length > 0,
-                    has_images: document.querySelectorAll('img').length > 0
-                };
-
-                // Identify text-heavy regions
-                if (main && main.textContent.length > 1000) summary.text_heavy_regions.push('main');
-                if (aside && aside.textContent.length > 500) summary.text_heavy_regions.push('aside');
-
-                // Quick access - top useful elements
-                const quickAccess = [];
-                const usefulSelectors = [
-                    'input[type="search"], input[name*="search"], [role="searchbox"]',
-                    'button[type="submit"], input[type="submit"]',
-                    'nav a',
-                    'main h1, main h2',
-                    'form',
-                    '[role="main"] > *:first-child'
-                ];
-
-                for (const sel of usefulSelectors) {
-                    try {
-                        const el = document.querySelector(sel);
-                        if (el && isVisible(el)) {
-                            quickAccess.push({
-                                selector: generateSelector(el),
-                                type: el.tagName.toLowerCase(),
-                                preview: truncateText(el.textContent || el.getAttribute('aria-label') || '', 50)
-                            });
-                        }
-                    } catch (e) {}
-                }
-
-                return { regions, summary, quickAccess };
-            }
-            """
-
-            result = await self.page.evaluate(overview_script, {
-                'maxTextLength': max_text_length,
-                'maxDepth': max_depth
-            })
-
-            result['url'] = self.page.url
-            result['title'] = await self.page.title()
-
-            self.history.append({
-                "action": "get_page_overview",
-                "reasoning": r,
-                "summary": result['summary']
-            })
-
-            return result
-
-        except Exception as e:
-            error_result = {
-                "url": self.page.url,
-                "title": await self.page.title() if self.page else "",
-                "regions": {},
-                "summary": {},
-                "quickAccess": [],
-                "error": f"Failed to get page overview: {str(e)}"
-            }
-
-            self.history.append({
-                "action": "get_page_overview",
                 "reasoning": r,
                 "error": str(e)
             })
@@ -6980,7 +6362,7 @@ class BrowserTool:
         Inspect a specific element and get its HTML content or text.
 
         Similar to Chrome DevTools "Inspect" feature - allows drilling down
-        into a specific element identified from get_page_overview().
+        into a specific element.
 
         Parameters:
             selector: CSS selector for the element to inspect
@@ -6989,7 +6371,7 @@ class BrowserTool:
                 - "inner_html": Just the content inside the element
                 - "text": Plain text content only
                 - "all": Return all formats
-            max_length: Maximum length of content to return (None = unlimited)
+            max_length: Maximum text length (default: 800, max: 1500). HTML = 4x this.
             reasoning: Optional reasoning for this action
 
         Returns:
@@ -7012,7 +6394,27 @@ class BrowserTool:
                 "position": {x, y, width, height}
             }
         """
+        # Limits to prevent context consumption
+        DEFAULT_TEXT_LENGTH = 800
+        MAX_TEXT_LENGTH = 1500
+
         r = reasoning or ""
+
+        # Validate and set defaults
+        if max_length is None:
+            max_length = DEFAULT_TEXT_LENGTH
+        elif max_length > MAX_TEXT_LENGTH:
+            return {
+                "success": False,
+                "error": (
+                    f"max_length ({max_length}) exceeds limit ({MAX_TEXT_LENGTH}). "
+                    "This tool is for element inspection. To get full text content, "
+                    "use selector that you get from this tool with extract_text_content()."
+                )
+            }
+
+        # HTML limit is 4x text limit
+        max_html_length = max_length * 4
 
         try:
             locator = self.page.locator(selector).first
@@ -7056,21 +6458,21 @@ class BrowserTool:
             # Get content based on format
             if output_format in ("outer_html", "all"):
                 outer_html = await locator.evaluate("el => el.outerHTML")
-                if max_length and len(outer_html) > max_length:
-                    outer_html = outer_html[:max_length] + f"... (truncated, total: {len(outer_html)} chars)"
+                if len(outer_html) > max_html_length:
+                    outer_html = outer_html[:max_html_length] + "... (truncated)"
                 result["outer_html"] = outer_html
 
             if output_format in ("inner_html", "all"):
                 inner_html = await locator.inner_html()
-                if max_length and len(inner_html) > max_length:
-                    inner_html = inner_html[:max_length] + f"... (truncated, total: {len(inner_html)} chars)"
+                if len(inner_html) > max_html_length:
+                    inner_html = inner_html[:max_html_length] + "... (truncated)"
                 result["inner_html"] = inner_html
 
             if output_format in ("text", "all"):
                 text = await locator.text_content() or ""
                 result["text_length"] = len(text)
-                if max_length and len(text) > max_length:
-                    text = text[:max_length] + f"... (truncated, total: {len(text)} chars)"
+                if len(text) > max_length:
+                    text = text[:max_length] + "... (truncated)"
                 result["text"] = text
 
             self.history.append({
@@ -7094,6 +6496,320 @@ class BrowserTool:
                 "action": "inspect_element",
                 "reasoning": r,
                 "selector": selector,
+                "error": str(e)
+            })
+
+            return error_result
+
+    async def inspect_at_position(
+        self,
+        x: int,
+        y: int,
+        output_format: str = "summary",
+        max_length: Optional[int] = None,
+        reasoning: Optional[str] = None,
+    ) -> Dict[str, Any]:
+        """
+        Inspect the element at a specific screen position (x, y coordinates).
+
+        This is like hovering over an element in Chrome DevTools to see what's there.
+        The agent can look at a screenshot, identify coordinates of interest, and
+        call this method to get information about the element at that position.
+
+        Parameters:
+            x: X coordinate (pixels from left edge of viewport)
+            y: Y coordinate (pixels from top edge of viewport)
+            output_format: What to return:
+                - "summary": Tag, text preview, selector, attributes (default, most compact)
+                - "outer_html": Full HTML including the element itself
+                - "text": Plain text content only
+                - "all": Return all formats
+            max_length: Maximum text length (default: 800, max: 1500). outer_html = 4x this.
+            reasoning: Optional reasoning for this action
+
+        Returns:
+            Dictionary with element information:
+            {
+                "success": True,
+                "position": {"x": int, "y": int},
+                "tag": str,
+                "selector": str,           # CSS selector for this element
+                "text": str,               # Text preview (truncated)
+                "attributes": {...},       # Element attributes
+                "interactive": bool,       # Is it clickable/interactive?
+                "outer_html": str,         # If requested
+                "parent_context": str,     # Brief parent chain for context
+            }
+        """
+        # Limits to prevent context consumption
+        DEFAULT_TEXT_LENGTH = 800
+        MAX_TEXT_LENGTH = 1500
+
+        r = reasoning or ""
+
+        # Validate and set defaults
+        if max_length is None:
+            max_length = DEFAULT_TEXT_LENGTH
+        elif max_length > MAX_TEXT_LENGTH:
+            return {
+                "success": False,
+                "error": (
+                    f"max_length ({max_length}) exceeds limit ({MAX_TEXT_LENGTH}). "
+                    "This tool is for element inspection. To get full text content, "
+                    "use selector that you get from this tool with extract_text_content()."
+                )
+            }
+
+        # outer_html limit is 4x text limit
+        max_html_length = max_length * 4
+
+        try:
+            # Use document.elementFromPoint to find element at coordinates
+            element_info = await self.page.evaluate("""
+            ({x, y, maxLen, maxHtml}) => {
+                const element = document.elementFromPoint(x, y);
+                if (!element) {
+                    return { found: false };
+                }
+
+                const tagName = element.tagName.toLowerCase();
+                const rect = element.getBoundingClientRect();
+                const viewportWidth = window.innerWidth;
+                const viewportHeight = window.innerHeight;
+
+                // Calculate viewport coverage
+                const coverage = (rect.width * rect.height) / (viewportWidth * viewportHeight);
+
+                // Detect container elements (large coverage or known containers)
+                const containerTags = new Set(['body', 'html', 'main', 'article', 'section']);
+                const isLargeContainer = (coverage > 0.5 && containerTags.has(tagName)) ||
+                                        (tagName === 'div' && coverage > 0.7);
+                const isBodyOrHtml = tagName === 'body' || tagName === 'html';
+
+                // Generate CSS selector
+                function generateSelector(el) {
+                    if (el.id) return `#${el.id}`;
+
+                    if (el.name && ['INPUT', 'SELECT', 'TEXTAREA'].includes(el.tagName)) {
+                        const nameMatch = document.querySelectorAll(`${el.tagName.toLowerCase()}[name="${el.name}"]`);
+                        if (nameMatch.length === 1) return `${el.tagName.toLowerCase()}[name="${el.name}"]`;
+                    }
+
+                    if (el.className && typeof el.className === 'string') {
+                        const classes = el.className.trim().split(/\\s+/).filter(c => c && !c.includes(':'));
+                        if (classes.length > 0) {
+                            const classSelector = el.tagName.toLowerCase() + '.' + classes.slice(0, 2).join('.');
+                            const classMatches = document.querySelectorAll(classSelector);
+                            if (classMatches.length === 1) return classSelector;
+                        }
+                    }
+
+                    // Build path
+                    const path = [];
+                    let current = el;
+                    while (current && current !== document.body && path.length < 4) {
+                        let selector = current.tagName.toLowerCase();
+                        if (current.parentElement) {
+                            const siblings = Array.from(current.parentElement.children)
+                                .filter(e => e.tagName === current.tagName);
+                            if (siblings.length > 1) {
+                                const index = siblings.indexOf(current) + 1;
+                                selector += `:nth-of-type(${index})`;
+                            }
+                        }
+                        path.unshift(selector);
+                        current = current.parentElement;
+                    }
+                    return path.join(' > ');
+                }
+
+                // Check if interactive
+                const interactiveTags = new Set(['a', 'button', 'input', 'select', 'textarea', 'summary']);
+                const interactiveRoles = new Set(['button', 'link', 'menuitem', 'tab', 'checkbox', 'radio', 'textbox']);
+                const role = element.getAttribute('role');
+                const isInteractive = interactiveTags.has(tagName) ||
+                                     (role && interactiveRoles.has(role)) ||
+                                     element.hasAttribute('onclick') ||
+                                     element.hasAttribute('tabindex');
+
+                // Get text content - for containers, only get direct text or aria-label
+                let text = '';
+                if (isLargeContainer || isBodyOrHtml) {
+                    // For large containers, only get aria-label/title (not inner text)
+                    text = element.getAttribute('aria-label') ||
+                          element.getAttribute('title') ||
+                          element.getAttribute('placeholder') || '';
+                } else {
+                    // For regular elements, get text normally
+                    text = element.getAttribute('aria-label') ||
+                          element.getAttribute('title') ||
+                          element.getAttribute('alt') ||
+                          element.getAttribute('placeholder') ||
+                          element.innerText ||
+                          element.textContent ||
+                          '';
+                }
+                text = text.trim().replace(/\\s+/g, ' ');
+                if (maxLen && text.length > maxLen) {
+                    text = text.substring(0, maxLen) + '...';
+                }
+
+                // Get attributes (limit total size)
+                const attrs = {};
+                let attrSize = 0;
+                for (const attr of element.attributes) {
+                    if (attr.value && attr.value.length < 200 && attrSize < 1000) {
+                        attrs[attr.name] = attr.value;
+                        attrSize += attr.name.length + attr.value.length;
+                    }
+                }
+
+                // Get parent context (for understanding where this element is)
+                let parentContext = [];
+                let parent = element.parentElement;
+                let depth = 0;
+                while (parent && parent !== document.body && depth < 3) {
+                    let desc = parent.tagName.toLowerCase();
+                    if (parent.id) desc += `#${parent.id}`;
+                    else if (parent.className && typeof parent.className === 'string') {
+                        const cls = parent.className.split(' ')[0];
+                        if (cls) desc += `.${cls}`;
+                    }
+                    parentContext.unshift(desc);
+                    parent = parent.parentElement;
+                    depth++;
+                }
+
+                // Get outerHTML only for non-container elements, with size limit
+                let outerHTML = null;
+                if (!isLargeContainer && !isBodyOrHtml) {
+                    outerHTML = element.outerHTML;
+                    if (outerHTML.length > maxHtml) {
+                        outerHTML = outerHTML.substring(0, maxHtml) + '... (truncated)';
+                    }
+                }
+
+                // Count child elements for containers (useful context)
+                const childCount = element.children.length;
+
+                return {
+                    found: true,
+                    tag: tagName,
+                    selector: generateSelector(element),
+                    text: text,
+                    attributes: attrs,
+                    interactive: isInteractive,
+                    role: role || null,
+                    href: element.href || element.getAttribute('href') || null,
+                    parentContext: parentContext.join(' > '),
+                    outerHTML: outerHTML,
+                    isContainer: isLargeContainer || isBodyOrHtml,
+                    coverage: Math.round(coverage * 100),
+                    childCount: childCount,
+                    boundingBox: {
+                        x: Math.round(rect.left),
+                        y: Math.round(rect.top),
+                        width: Math.round(rect.width),
+                        height: Math.round(rect.height)
+                    }
+                };
+            }
+            """, {"x": x, "y": y, "maxLen": max_length, "maxHtml": max_html_length})
+
+            if not element_info.get("found"):
+                result = {
+                    "success": False,
+                    "position": {"x": x, "y": y},
+                    "error": f"No element found at position ({x}, {y})"
+                }
+                self.history.append({
+                    "action": "inspect_at_position",
+                    "reasoning": r,
+                    "position": {"x": x, "y": y},
+                    "error": "No element found"
+                })
+                return result
+
+            # Check if this is a container element
+            is_container = element_info.get("isContainer", False)
+            coverage = element_info.get("coverage", 0)
+            child_count = element_info.get("childCount", 0)
+
+            # Build result based on output format
+            result = {
+                "success": True,
+                "position": {"x": x, "y": y},
+                "tag": element_info["tag"],
+                "selector": element_info["selector"],
+                "text": element_info["text"],
+                "interactive": element_info["interactive"],
+                "attributes": element_info["attributes"],
+                "parent_context": element_info["parentContext"],
+                "bounding_box": element_info["boundingBox"],
+            }
+
+            # Add container warning if applicable
+            if is_container:
+                result["is_container"] = True
+                result["coverage_percent"] = coverage
+                result["child_count"] = child_count
+                result["warning"] = (
+                    f"Position ({x}, {y}) is on a container element ({element_info['tag']}) "
+                    f"covering {coverage}% of viewport with {child_count} children. "
+                    "Try clicking on a more specific element. Use get_page_elements() to find selectors."
+                )
+
+            if element_info.get("role"):
+                result["role"] = element_info["role"]
+            if element_info.get("href"):
+                result["href"] = element_info["href"]
+
+            # Only include outer_html if not a container and explicitly requested
+            if output_format in ("outer_html", "all") and not is_container:
+                outer_html = element_info.get("outerHTML")
+                if outer_html:
+                    if len(outer_html) > max_html_length:
+                        outer_html = outer_html[:max_html_length] + "... (truncated)"
+                    result["outer_html"] = outer_html
+
+            if output_format == "text":
+                # Already have text, just ensure it's the focus
+                result = {
+                    "success": True,
+                    "position": {"x": x, "y": y},
+                    "tag": element_info["tag"],
+                    "selector": element_info["selector"],
+                    "text": element_info["text"],
+                    "interactive": element_info["interactive"],
+                }
+                if is_container:
+                    result["is_container"] = True
+                    result["warning"] = (
+                        f"Container element at ({x}, {y}). Use get_page_elements() for selectors."
+                    )
+
+            self.history.append({
+                "action": "inspect_at_position",
+                "reasoning": r,
+                "position": {"x": x, "y": y},
+                "tag": element_info["tag"],
+                "selector": element_info["selector"],
+                "interactive": element_info["interactive"]
+            })
+
+            return result
+
+        except Exception as e:
+            error_result = {
+                "success": False,
+                "position": {"x": x, "y": y},
+                "error": f"Failed to inspect element at position: {str(e)}"
+            }
+
+            self.history.append({
+                "action": "inspect_at_position",
+                "reasoning": r,
+                "position": {"x": x, "y": y},
                 "error": str(e)
             })
 

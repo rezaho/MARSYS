@@ -262,6 +262,9 @@ class ExecutionConfig:
     auto_cleanup_agents: bool = True  # Automatically cleanup agents after run (closes resources, unregisters)
     cleanup_scope: Literal["topology_nodes", "used_agents"] = "topology_nodes"  # Which agents to cleanup
 
+    # Response format for agent outputs
+    response_format: str = "json"  # Format name (e.g., "json", "xml")
+
     def should_apply_steering(self, is_retry: bool = False, has_error: bool = False) -> bool:
         """
         Determine if steering should be applied.

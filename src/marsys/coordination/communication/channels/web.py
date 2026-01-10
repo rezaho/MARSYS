@@ -40,6 +40,10 @@ class WebChannel(AsyncChannel):
         # Topics for pub/sub
         self.interaction_topic = f"web_channel_{channel_id}_interactions"
         self.response_topic = f"web_channel_{channel_id}_responses"
+
+        # Status/planning events queue for web clients
+        self.status_queue: asyncio.Queue = asyncio.Queue()
+        self.status_callbacks: List[Callable] = []
         
     async def start(self) -> None:
         """Start the web channel."""
@@ -221,12 +225,12 @@ class WebChannel(AsyncChannel):
         """Push interaction to all WebSocket connections."""
         if not self.websocket_connections:
             return
-        
+
         message = json.dumps({
             "type": "interaction",
             "data": interaction.to_display_dict()
         })
-        
+
         # Send to all connections
         disconnected = []
         for conn_id, websocket in self.websocket_connections.items():
@@ -235,10 +239,96 @@ class WebChannel(AsyncChannel):
             except Exception as e:
                 logger.error(f"Error sending to WebSocket {conn_id}: {e}")
                 disconnected.append(conn_id)
-        
+
         # Remove disconnected connections
         for conn_id in disconnected:
             await self.unregister_websocket(conn_id)
+
+    # ==================== Status Event Support ====================
+
+    async def push_status_event(self, event_data: Dict[str, Any]) -> None:
+        """
+        Push a status event (including planning events) to web clients.
+
+        Args:
+            event_data: Serialized event data with 'event_type' key
+        """
+        if not self.active:
+            return
+
+        # Put in status queue for polling
+        await self.status_queue.put(event_data)
+
+        # Push to WebSocket connections
+        await self._push_status_to_websockets(event_data)
+
+        # Call status callbacks
+        for callback in self.status_callbacks:
+            try:
+                if asyncio.iscoroutinefunction(callback):
+                    await callback(event_data)
+                else:
+                    loop = asyncio.get_event_loop()
+                    await loop.run_in_executor(None, callback, event_data)
+            except Exception as e:
+                logger.error(f"Error in status callback: {e}")
+
+    async def _push_status_to_websockets(self, event_data: Dict[str, Any]) -> None:
+        """Push status event to all WebSocket connections."""
+        if not self.websocket_connections:
+            return
+
+        message = json.dumps({
+            "type": "status",
+            "data": event_data
+        })
+
+        disconnected = []
+        for conn_id, websocket in self.websocket_connections.items():
+            try:
+                await websocket.send(message)
+            except Exception as e:
+                logger.error(f"Error sending status to WebSocket {conn_id}: {e}")
+                disconnected.append(conn_id)
+
+        for conn_id in disconnected:
+            await self.unregister_websocket(conn_id)
+
+    def subscribe_status_events(self, callback: Callable[[Dict[str, Any]], None]) -> None:
+        """Subscribe to status events (including planning events)."""
+        self.status_callbacks.append(callback)
+
+    async def get_status_events(
+        self,
+        limit: int = 100,
+        timeout: float = 0.0
+    ) -> List[Dict[str, Any]]:
+        """
+        Get status events for API polling.
+
+        Args:
+            limit: Maximum number of events to return
+            timeout: Timeout for waiting (0 = no wait)
+
+        Returns:
+            List of status event dictionaries
+        """
+        events = []
+
+        try:
+            while len(events) < limit:
+                if timeout > 0 and len(events) == 0:
+                    event = await asyncio.wait_for(
+                        self.status_queue.get(),
+                        timeout=timeout
+                    )
+                else:
+                    event = self.status_queue.get_nowait()
+                events.append(event)
+        except (asyncio.TimeoutError, asyncio.QueueEmpty):
+            pass
+
+        return events
     
     # API helper methods for web frameworks
     

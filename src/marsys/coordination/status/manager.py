@@ -63,7 +63,14 @@ class StatusManager:
 
             # Existing events from BranchSpawner
             'BranchCreatedEvent',    # Already emitted by DynamicBranchSpawner
-            'BranchCompletedEvent'   # Already emitted by DynamicBranchSpawner
+            'BranchCompletedEvent',  # Already emitted by DynamicBranchSpawner
+
+            # Planning events
+            'PlanCreatedEvent',
+            'PlanUpdatedEvent',
+            'PlanItemAddedEvent',
+            'PlanItemRemovedEvent',
+            'PlanClearedEvent',
         ]
 
         for event_type in event_types:

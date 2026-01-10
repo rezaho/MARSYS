@@ -61,11 +61,21 @@ class RealToolExecutor:
     def _get_agent_tools(self, agent: 'BaseAgent') -> Dict[str, Callable]:
         """Extract tools from agent if it has any."""
         agent_id = id(agent)
-        
-        # Check cache first
+
+        # Get agent's tools version for cache invalidation
+        current_version = getattr(agent, '_tools_version', 0)
+
+        # Check cache first - include version check
         if agent_id in self.agent_tool_cache:
-            return self.agent_tool_cache[agent_id]
-        
+            cached_tools, cached_version = self.agent_tool_cache[agent_id]
+            if cached_version == current_version:
+                return cached_tools
+            else:
+                logger.debug(
+                    f"Cache invalidated for {agent.__class__.__name__} "
+                    f"(version {cached_version} -> {current_version})"
+                )
+
         agent_tools = {}
         
         # Check if agent has tools attribute
@@ -96,9 +106,9 @@ class RealToolExecutor:
                         agent_tools[method_name] = method
                         logger.debug(f"Added BrowserAgent method: {method_name}")
         
-        # Cache the result
-        self.agent_tool_cache[agent_id] = agent_tools
-        
+        # Cache the result with version
+        self.agent_tool_cache[agent_id] = (agent_tools, current_version)
+
         return agent_tools
     
     async def execute_tools(

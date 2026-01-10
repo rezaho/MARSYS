@@ -74,6 +74,7 @@ The MARSYS API is organized into several key modules:
 | [`BrowserAgent`](agent-class/#browseragent) | `src.agents` | Web automation agent |
 | [`LearnableAgent`](agent-class/#learnableagent) | `src.agents` | Fine-tunable agent |
 | [`AgentPool`](agent-class/#agentpool) | `src.agents.agent_pool` | Agent pool for parallelism |
+| [`PlanningConfig`](../concepts/planning/#planningconfig) | `src.agents.planning` | Task planning configuration |
 
 ### Model Layer
 
@@ -381,6 +382,7 @@ state = await state_manager.resume_execution(session_id)
 - **`src.coordination.execution`** - Execution engine
 - **`src.coordination.validation`** - Response validation
 - **`src.coordination.routing`** - Request routing
+- **`src.coordination.formats`** - Response format handling (system prompts & processors)
 - **`src.coordination.state`** - State management
 - **`src.coordination.rules`** - Rules engine
 - **`src.coordination.communication`** - User interaction
@@ -392,6 +394,7 @@ state = await state_manager.resume_execution(session_id)
 - **`src.agents.agent_pool`** - Pool implementation
 - **`src.agents.registry`** - Agent registry
 - **`src.agents.browser_agent`** - Browser automation
+- **`src.agents.planning`** - Task planning system
 
 ## 🔍 Type Definitions
 
