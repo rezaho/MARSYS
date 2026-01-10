@@ -578,9 +578,10 @@ class Orchestra:
         print_marsys_banner()
 
         start_time = time.time()
-        session_id = str(uuid.uuid4())
         context = context or {}
+        session_id = context.get("session_id") or str(uuid.uuid4())
         context["session_id"] = session_id
+        context.setdefault("max_steps", max_steps)
 
         logger.info(f"Starting orchestration session {session_id}")
         
