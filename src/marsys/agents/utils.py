@@ -62,6 +62,7 @@ def init_agent_logging(
     clear_existing_handlers: bool = True,
     log_file: Optional[str] = None,
     file_level: Optional[int] = None,
+    file_mode: str = "w",
 ) -> None:
     """
     Sets up a standardized logging configuration for agent-based systems.
@@ -79,6 +80,8 @@ def init_agent_logging(
                   to this file in addition to console output.
         file_level: Logging level for the file handler. Defaults to logging.DEBUG if
                     log_file is provided.
+        file_mode: File open mode for the file handler. Use "a" to append when resuming
+                   a previous run (default: "w").
     """
     root_logger = logging.getLogger()
 
@@ -101,7 +104,7 @@ def init_agent_logging(
 
     # Optionally add a file handler for detailed debug logging
     if log_file:
-        file_handler = logging.FileHandler(log_file, mode='w', encoding='utf-8')
+        file_handler = logging.FileHandler(log_file, mode=file_mode, encoding='utf-8')
         file_handler.setLevel(file_level if file_level is not None else logging.DEBUG)
         file_handler.setFormatter(logging.Formatter(
             "%(asctime)s | %(levelname)-8s | %(name)s | [%(agent_name)s] %(message)s",
