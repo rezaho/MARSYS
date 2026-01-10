@@ -59,6 +59,27 @@ class EventBus:
                         logger.warning(f"Removing failing listener for {event_type} after {self._max_listener_errors} errors")
                         self.listeners[event_type].remove(listener)
 
+    def emit_nowait(self, event: Any) -> None:
+        """
+        Emit an event without awaiting completion.
+
+        Use this from synchronous contexts (like Memory.reset_memory()) where
+        you cannot await. The event will be processed asynchronously if an
+        event loop is running.
+
+        Args:
+            event: The event object to emit
+        """
+        try:
+            loop = asyncio.get_running_loop()
+            loop.create_task(self.emit(event))
+        except RuntimeError:
+            # No running event loop - log warning but don't fail
+            logger.warning(
+                f"Cannot emit {type(event).__name__} - no running event loop. "
+                "Event will not be processed."
+            )
+
     def subscribe(self, event_type: str, listener: Callable) -> None:
         """
         Subscribe to events of a specific type.

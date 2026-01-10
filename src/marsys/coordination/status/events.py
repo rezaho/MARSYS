@@ -131,3 +131,52 @@ class ResourceLimitEvent(StatusEvent):
 
     def get_event_type(self) -> str:
         return "resource_limit"
+
+
+# ==============================================================================
+# Planning Events
+# ==============================================================================
+
+
+@dataclass
+class PlanCreatedEvent(StatusEvent):
+    """Event emitted when a new plan is created."""
+    agent_name: str
+    goal: Optional[str] = None
+    item_count: int = 0
+    item_titles: Optional[List[str]] = None
+
+
+@dataclass
+class PlanUpdatedEvent(StatusEvent):
+    """Event emitted when a plan item is updated."""
+    agent_name: str
+    item_id: str
+    item_title: str
+    old_status: Optional[str] = None
+    new_status: Optional[str] = None
+    active_form: Optional[str] = None  # e.g., "Running tests"
+
+
+@dataclass
+class PlanItemAddedEvent(StatusEvent):
+    """Event emitted when a new item is added to plan."""
+    agent_name: str
+    item_id: str
+    item_title: str
+    position: int  # 1-based position in plan
+
+
+@dataclass
+class PlanItemRemovedEvent(StatusEvent):
+    """Event emitted when an item is removed from plan."""
+    agent_name: str
+    item_id: str
+    item_title: str
+
+
+@dataclass
+class PlanClearedEvent(StatusEvent):
+    """Event emitted when plan is cleared."""
+    agent_name: str
+    reason: Optional[str] = None  # "completed", "abandoned", "reset"

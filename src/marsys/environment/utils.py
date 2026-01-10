@@ -1,10 +1,71 @@
 import inspect
 import json
-from typing import Callable, Dict, Any, List, get_type_hints, Union, Literal
+from typing import Callable, Dict, Any, List, Optional, get_type_hints, Union, Literal
 import re
 import logging
 
 logger = logging.getLogger(__name__)
+
+
+# --- Observable Tools Dict ---
+
+class ObservableToolsDict(dict):
+    """
+    A dict subclass that notifies its owner when tools are modified.
+
+    This enables automatic:
+    - Tool schema regeneration when tools change
+    - Tool executor cache invalidation
+
+    Usage:
+        tools = ObservableToolsDict(
+            initial_tools,
+            on_change=self._on_tools_changed
+        )
+    """
+
+    def __init__(self, *args, on_change: Optional[Callable[[], None]] = None, **kwargs):
+        super().__init__(*args, **kwargs)
+        self._on_change = on_change
+
+    def _notify(self) -> None:
+        """Notify owner that tools have changed."""
+        if self._on_change:
+            self._on_change()
+
+    def __setitem__(self, key: str, value: Any) -> None:
+        super().__setitem__(key, value)
+        self._notify()
+
+    def __delitem__(self, key: str) -> None:
+        super().__delitem__(key)
+        self._notify()
+
+    def update(self, *args, **kwargs) -> None:
+        super().update(*args, **kwargs)
+        self._notify()
+
+    def pop(self, key: str, *args) -> Any:
+        result = super().pop(key, *args)
+        self._notify()
+        return result
+
+    def popitem(self) -> tuple:
+        result = super().popitem()
+        self._notify()
+        return result
+
+    def clear(self) -> None:
+        super().clear()
+        self._notify()
+
+    def setdefault(self, key: str, default: Any = None) -> Any:
+        if key not in self:
+            self._notify()
+        return super().setdefault(key, default)
+
+
+# --- End Observable Tools Dict ---
 
 def _parse_docstring(docstring: str) -> Dict[str, Any]:
     """
