@@ -121,6 +121,7 @@ nav:
       - Agents: concepts/agents.md
       - Memory: concepts/memory.md
       - Tools: concepts/tools.md
+      - Run Filesystem: concepts/run-filesystem.md
       - Models: concepts/models.md
       - Registry: concepts/registry.md
       - Messages: concepts/messages.md
@@ -180,5 +181,4 @@ extra:
   analytics:
     provider: google
     property: YOUR_MEASUREMENT_ID
-
 

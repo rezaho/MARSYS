@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "marsys"
-version = "0.1.2"
+version = "0.2.1"
 description = "A powerful framework for orchestrating collaborative AI agents with sophisticated reasoning, planning, and autonomous capabilities"
 readme = "README.md"
 requires-python = ">=3.12"
@@ -40,6 +40,7 @@ dependencies = [
     # Framework core
     "pydantic>=2.11.9",
     "requests>=2.32.3",
+    "click>=8.1.0",  # CLI framework
     "psutil>=7.1.0",
     "packaging>=25.0",
     "aiohttp>=3.12.15",
@@ -131,6 +132,9 @@ Repository = "https://github.com/rezaho/MARSYS"
 Issues = "https://github.com/rezaho/MARSYS/issues"
 Changelog = "https://github.com/rezaho/MARSYS/blob/main/CHANGELOG.md"
 Discussions = "https://github.com/rezaho/MARSYS/discussions"
+
+[project.scripts]
+marsys = "marsys.cli:main"
 
 [tool.setuptools]
 package-dir = {"" = "src"}
