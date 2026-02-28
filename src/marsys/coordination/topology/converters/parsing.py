@@ -89,7 +89,7 @@ def parse_edge(edge: Union[str, Edge, Tuple, dict]) -> Edge:
     
     Args:
         edge: Can be:
-            - String: Edge notation (e.g., "A -> B", "A <-> B", "A <=> B")
+            - String: Edge notation (e.g., "A -> B", "A <-> B")
             - Edge: Returned as-is
             - Tuple: (source, target) or (source, target, edge_type)
             - Dict: {"source": "...", "target": "...", "type": "...", ...}

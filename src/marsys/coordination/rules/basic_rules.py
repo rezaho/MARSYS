@@ -483,7 +483,12 @@ class MaxBranchDepthRule(Rule):
     async def check(self, context: RuleContext) -> RuleResult:
         """Check if spawning would exceed nesting depth."""
         # Calculate current depth from parent chain
-        current_depth = context.metadata.get("branch_depth", 0)
+        # Check both metadata and spawn_request_metadata since spawn control
+        # context is passed via spawn_request_metadata in check_spawn_allowed
+        current_depth = (
+            context.metadata.get("branch_depth", 0)
+            or context.spawn_request_metadata.get("branch_depth", 0)
+        )
         
         if current_depth >= self.max_depth:
             return RuleResult(

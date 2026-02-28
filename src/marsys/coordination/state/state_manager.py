@@ -63,7 +63,7 @@ class StateSnapshot:
             "active_branches": sorted(self.active_branches),
             "completed_branches": sorted(self.completed_branches)
         }
-        data_str = json.dumps(data, sort_keys=True)
+        data_str = json.dumps(data, sort_keys=True, default=str)
         return hashlib.sha256(data_str.encode()).hexdigest()
     
     def validate_checksum(self) -> bool:
@@ -330,23 +330,26 @@ class StateManager:
         Returns:
             Checkpoint ID
         """
-        # Load current state
-        state = await self.load_session(session_id)
-        if not state:
+        # Load raw data from storage (already JSON-serializable) to avoid
+        # lossy round-trip through deserialization/re-serialization
+        raw_data = await self.storage.load(f"session_{session_id}")
+        if not raw_data:
             raise SessionNotFoundError(
                 f"Session {session_id} not found",
                 session_id=session_id
             )
-        
+
         # Create checkpoint ID
         checkpoint_id = f"checkpoint_{session_id}_{checkpoint_name}_{int(time.time())}"
-        
-        # Add checkpoint metadata
-        state["metadata"]["checkpoint_name"] = checkpoint_name
-        state["metadata"]["checkpoint_time"] = datetime.now().isoformat()
-        
+
+        # Add checkpoint metadata (copy to avoid mutating stored data)
+        checkpoint_data = raw_data.copy()
+        checkpoint_data["metadata"] = raw_data.get("metadata", {}).copy()
+        checkpoint_data["metadata"]["checkpoint_name"] = checkpoint_name
+        checkpoint_data["metadata"]["checkpoint_time"] = datetime.now().isoformat()
+
         # Save checkpoint
-        await self.storage.save(checkpoint_id, state)
+        await self.storage.save(checkpoint_id, checkpoint_data)
         
         logger.info(f"Created checkpoint {checkpoint_id} for session {session_id}")
         return checkpoint_id
@@ -462,8 +465,11 @@ class StateManager:
     def _serialize_branches(self, branches: Dict[str, ExecutionBranch]) -> Dict[str, Dict[str, Any]]:
         """Serialize ExecutionBranch objects to dicts."""
         serialized = {}
-        
+
         for branch_id, branch in branches.items():
+            # Sanitize metadata to be JSON-safe by filtering out non-serializable objects
+            safe_metadata = self._make_json_safe(branch.metadata) if branch.metadata else {}
+
             serialized[branch_id] = {
                 "id": branch.id,
                 "name": branch.name,
@@ -488,9 +494,9 @@ class StateManager:
                     "completed_agents": list(branch.state.completed_agents)
                 },
                 "parent_branch": branch.parent_branch,
-                "metadata": branch.metadata
+                "metadata": safe_metadata
             }
-        
+
         return serialized
     
     def _deserialize_branches(self, serialized: Dict[str, Dict[str, Any]]) -> Dict[str, ExecutionBranch]:
@@ -535,6 +541,30 @@ class StateManager:
         
         return branches
     
+    @staticmethod
+    def _make_json_safe(obj: Any) -> Any:
+        """Recursively convert an object to be JSON-serializable."""
+        if obj is None or isinstance(obj, (str, int, float, bool)):
+            return obj
+        if isinstance(obj, dict):
+            safe = {}
+            for k, v in obj.items():
+                try:
+                    safe[str(k)] = StateManager._make_json_safe(v)
+                except Exception:
+                    safe[str(k)] = str(v)
+            return safe
+        if isinstance(obj, (list, tuple)):
+            return [StateManager._make_json_safe(item) for item in obj]
+        if isinstance(obj, set):
+            return list(obj)
+        # For other objects, convert to string representation
+        try:
+            json.dumps(obj)
+            return obj
+        except (TypeError, ValueError):
+            return str(obj)
+
     def _serialize_results(self, results: Dict[str, BranchResult]) -> Dict[str, Dict[str, Any]]:
         """Serialize BranchResult objects."""
         serialized = {}
