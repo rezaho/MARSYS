@@ -8,11 +8,10 @@ capabilities with pagination and filtering.
 import asyncio
 import logging
 import os
-import platform
 import re
 import time
 from pathlib import Path
-from typing import List, Optional, Pattern, Set
+from typing import List, Optional, Pattern
 
 from .config import FileOperationConfig
 from .data_models import SearchResults, SearchMatch, SearchType
@@ -20,56 +19,10 @@ from .handlers.base import FileHandler, SearchableHandler
 
 logger = logging.getLogger(__name__)
 
-# Default search limits
+# Default search limits (performance safeguards)
 DEFAULT_MAX_DEPTH = 3
 DEFAULT_SEARCH_TIMEOUT = 15.0  # seconds
 DEFAULT_MAX_FILES = 1000
-
-# Dangerous paths that should never be searched at root level
-# These are system directories that can cause performance issues
-DANGEROUS_ROOT_PATHS: Set[str] = {
-    # Linux/Unix
-    "/",
-    "/home",
-    "/usr",
-    "/etc",
-    "/var",
-    "/sys",
-    "/proc",
-    "/dev",
-    # macOS
-    "/System",
-    "/Library",
-    "/Applications",
-    "/Users",
-    # Windows
-    "C:\\",
-    "C:/",
-    "D:\\",
-    "D:/",
-    "E:\\",
-    "E:/",
-}
-
-# System directories that should always be blocked from search
-BLOCKED_SYSTEM_DIRS: Set[str] = {
-    # Linux/Unix
-    "/sys",
-    "/proc",
-    "/dev",
-    "/run",
-    "/tmp",
-    # macOS
-    "/System",
-    "/Library/Application Support",
-    "/private",
-    # Windows
-    "Windows",
-    "Program Files",
-    "Program Files (x86)",
-    "ProgramData",
-    "$Recycle.Bin",
-}
 
 
 class FileSearchEngine:
@@ -89,47 +42,6 @@ class FileSearchEngine:
         """
         self.config = config
         self.handler_registry = handler_registry
-
-    def _is_dangerous_path(self, path: Path) -> tuple[bool, str]:
-        """
-        Check if path is dangerous for filesystem-wide search.
-
-        Args:
-            path: Path to check
-
-        Returns:
-            Tuple of (is_dangerous, reason)
-        """
-        try:
-            # Resolve to absolute path for comparison
-            resolved = path.resolve()
-            path_str = str(resolved)
-
-            # Normalize path separators for cross-platform comparison
-            path_normalized = path_str.replace('\\', '/')
-
-            # Check if exact match with dangerous root paths
-            if path_normalized in DANGEROUS_ROOT_PATHS or path_str in DANGEROUS_ROOT_PATHS:
-                return True, f"Searching from root directory '{path}' is not allowed. Please specify a subdirectory."
-
-            # Check if path starts with blocked system directory
-            for blocked_dir in BLOCKED_SYSTEM_DIRS:
-                blocked_normalized = blocked_dir.replace('\\', '/')
-                if path_normalized.startswith(blocked_normalized) or path_normalized.startswith(f"/{blocked_normalized}"):
-                    return True, f"Searching system directory '{blocked_dir}' is not allowed for safety and performance."
-
-            # Additional check: warn if searching from user home root on macOS/Linux
-            if platform.system() in ['Darwin', 'Linux']:
-                home = Path.home()
-                if resolved == home:
-                    return True, f"Searching entire home directory '{home}' is not recommended. Please specify a subdirectory (e.g., ~/Documents, ~/projects)."
-
-            return False, ""
-
-        except Exception as e:
-            logger.warning(f"Error checking path safety: {e}")
-            # Err on the side of caution
-            return True, f"Unable to validate path safety: {e}"
 
     def _get_limited_file_iterator(
         self,
@@ -250,24 +162,6 @@ class FileSearchEngine:
                 truncated=False,
                 files_searched=0,
                 metadata={'error': f'Path does not exist: {path}'}
-            )
-
-        # Safety check: Block dangerous paths
-        is_dangerous, danger_reason = self._is_dangerous_path(path)
-        if is_dangerous:
-            logger.warning(f"Blocked dangerous search path: {path}. Reason: {danger_reason}")
-            return SearchResults(
-                query=query,
-                search_type=search_type,
-                matches=[],
-                total_matches=0,
-                truncated=False,
-                files_searched=0,
-                metadata={
-                    'error': f'Search blocked for safety: {danger_reason}',
-                    'blocked_path': str(path),
-                    'suggestion': 'Please specify a more specific subdirectory to search within.'
-                }
             )
 
         # Get safety limits from kwargs or use defaults

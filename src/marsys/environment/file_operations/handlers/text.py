@@ -94,6 +94,123 @@ class TextFileHandler(FileHandler):
             except Exception as fallback_error:
                 raise ValueError(f"Could not read file with encoding {encoding} or {fallback_encoding}: {fallback_error}")
 
+    async def read_partial(
+        self,
+        path: Path,
+        start_line: int,
+        end_line: Optional[int],
+        **kwargs
+    ) -> FileContent:
+        """
+        Read a specific line range without loading the full file into memory.
+
+        This avoids full-file character limit failures when the caller requests
+        a small range from a large file.
+        """
+        encoding = kwargs.get('encoding') or self._detect_encoding(path)
+        start_line = max(1, start_line)
+
+        if end_line is None:
+            max_lines = kwargs.get('max_lines_per_read', 1000)
+            end_line = start_line + max_lines - 1
+
+        used_encoding = encoding
+        fallback_error_message = None
+
+        try:
+            partial_content, total_lines = self._read_line_range(
+                path=path,
+                encoding=encoding,
+                start_line=start_line,
+                end_line=end_line
+            )
+        except UnicodeDecodeError as decode_error:
+            # Retry with fallback encoding on decode errors
+            fallback_encoding = kwargs.get('fallback_encoding', 'latin-1')
+            fallback_error_message = str(decode_error)
+            try:
+                partial_content, total_lines = self._read_line_range(
+                    path=path,
+                    encoding=fallback_encoding,
+                    start_line=start_line,
+                    end_line=end_line
+                )
+                used_encoding = fallback_encoding
+            except Exception as fallback_error:
+                raise ValueError(
+                    f"Could not read file with encoding {encoding} or {fallback_encoding}: {fallback_error}"
+                )
+
+        # Safety check: absolute character limit on returned range only
+        max_chars = kwargs.get('max_characters_absolute', 120_000)
+        check_character_limit(
+            content=partial_content,
+            max_chars=max_chars,
+            request_description=f"lines {start_line}-{end_line}",
+            solution_hint="Request fewer lines (e.g., reduce the line range)."
+        )
+
+        metadata = {
+            'type': 'text',
+            'extension': self.get_file_extension(path),
+            'explicit_range_request': True,
+        }
+
+        if 'max_lines_per_read' in kwargs:
+            metadata['max_lines_per_read'] = kwargs['max_lines_per_read']
+
+        if used_encoding != encoding:
+            metadata['encoding_fallback'] = True
+            if fallback_error_message:
+                metadata['original_error'] = fallback_error_message
+
+        file_size = path.stat().st_size
+
+        return FileContent(
+            path=path,
+            content=partial_content,
+            partial=True,
+            encoding=used_encoding,
+            line_range=(start_line, end_line),
+            total_lines=total_lines,
+            file_size=file_size,
+            character_count=len(partial_content),
+            estimated_tokens=len(partial_content) // 4,  # Rough estimate: 1 token ≈ 4 chars
+            metadata=metadata
+        )
+
+    def _read_line_range(
+        self,
+        path: Path,
+        encoding: str,
+        start_line: int,
+        end_line: int
+    ) -> tuple[str, int]:
+        """
+        Read the requested line range in a single streaming pass.
+
+        Returns:
+            Tuple of (selected_content, total_line_count)
+        """
+        selected_lines = []
+        total_lines = 0
+        last_line_ended_with_newline = False
+
+        with open(path, 'r', encoding=encoding) as f:
+            for line_number, line in enumerate(f, start=1):
+                total_lines = line_number
+                last_line_ended_with_newline = line.endswith('\n')
+                if start_line <= line_number <= end_line:
+                    selected_lines.append(line.rstrip('\n'))
+
+        # Preserve count('\n') + 1 semantics used by full reads.
+        if total_lines > 0 and last_line_ended_with_newline:
+            total_lines += 1
+            if start_line <= total_lines <= end_line:
+                selected_lines.append("")
+
+        return '\n'.join(selected_lines), total_lines
+
     async def get_structure(self, path: Path, **kwargs) -> DocumentStructure:
         """
         Extract structure from text file.
