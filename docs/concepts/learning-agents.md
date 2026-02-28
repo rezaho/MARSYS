@@ -244,7 +244,7 @@ Use `LearnableAgent` when you need:
 Use `Agent` (with API models) when you need:
 
 - Quick setup without GPU requirements
-- Latest model capabilities (GPT-5, Claude Sonnet 4.5)
+- Latest model capabilities (GPT-5.3 Codex, Claude Opus 4.6, Gemini 3 Flash/Pro Preview)
 - Pay-per-use pricing
 - No infrastructure management
 

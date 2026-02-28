@@ -147,7 +147,7 @@ from marsys.models import ModelConfig
 agent = Agent(
     model_config=ModelConfig(
         type="api",
-        name="anthropic/claude-haiku-4.5",
+        name="anthropic/claude-opus-4.6",
         provider="openrouter",
         max_tokens=12000
     ),
@@ -440,6 +440,8 @@ def parse_csv(
 
 ### File System Tools
 
+File tool paths are **virtual POSIX paths** resolved by the run filesystem. See [Run Filesystem](run-filesystem.md).
+
 ```python
 async def read_file(
     path: str,
@@ -595,7 +597,9 @@ tools = file_ops.get_tool_wrappers()
 agent = Agent(
     model_config=gpt4_vision_config,
     name="DocumentAnalyzer",
-    tools=[tools['read_file']]  # Auto-generates schema with extract_images param
+    goal="Analyze document sections with text and figures",
+    instruction="Use read_file to inspect requested pages and summarize findings.",
+    tools={"read_file": tools["read_file"]}  # Auto-generates schema with extract_images param
 )
 
 # Agent can now call:
@@ -636,7 +640,12 @@ result = await read_file_wrapper("paper.pdf", extract_images=True)
 result = await read_file_wrapper("paper.pdf", extract_images=True, max_images_per_page=5)
 
 # Use vision-capable models (GPT-4V, Claude 3, Gemini Pro Vision)
-agent = Agent(model_config=gpt4_vision_config, tools=[read_file_wrapper])
+agent = Agent(
+    model_config=gpt4_vision_config,
+    goal="Analyze multimodal document content",
+    instruction="Use read_file_wrapper when extracting PDF sections and images.",
+    tools={"read_file_wrapper": read_file_wrapper}
+)
 ```
 
 ❌ **DON'T**:
@@ -663,8 +672,9 @@ tools = file_ops.get_tool_wrappers()
 analyst = Agent(
     model_config=gpt4_vision_config,
     name="PaperAnalyst",
+    goal="Analyze research papers including text, figures, and tables",
     instruction="Analyze research papers including figures and tables.",
-    tools=[tools['read_file']]
+    tools={"read_file": tools["read_file"]}
 )
 
 # Agent prompt
@@ -868,9 +878,11 @@ image_block = ToolResponseContent(
 # Image from file path (auto-converted to base64)
 image_from_file = ToolResponseContent(
     type="image",
-    image_path="/tmp/diagram.png"
+    image_path="./outputs/diagram.png"
 )
 ```
+
+Use virtual paths from the run filesystem (e.g., `./outputs`, `./downloads`, `./screenshots`) so other agents can access the same artifacts. See [Run Filesystem](run-filesystem.md).
 
 #### Validation Rules
 
@@ -896,7 +908,7 @@ def analyze_document(path: str) -> ToolResponse:
     content_blocks = [
         ToolResponseContent(type="text", text="Section 1: Overview"),
         ToolResponseContent(type="text", text="The architecture consists of..."),
-        ToolResponseContent(type="image", image_path="/tmp/architecture.png"),
+        ToolResponseContent(type="image", image_path="./outputs/architecture.png"),
         ToolResponseContent(type="text", text="Figure 1: System architecture"),
         ToolResponseContent(type="text", text="Section 2: Implementation"),
         # ... more blocks

@@ -286,6 +286,8 @@ Unified interface for file system operations.
 **Prerequisites:**
 - File system access permissions
 
+**Note:** This tool uses a simple sandboxed workspace path. For shared, virtual paths across agents, use [FileOperationTools](file-operations.md) and the [Run Filesystem](../concepts/run-filesystem.md).
+
 **Usage:**
 ```python
 from marsys.environment.tools import file_operations
@@ -415,7 +417,7 @@ from marsys.environment.tools import (
 agent = Agent(
     model_config=ModelConfig(
         type="api",
-        name="anthropic/claude-haiku-4.5",
+        name="anthropic/claude-opus-4.6",
         provider="openrouter",
         max_tokens=12000
     ),
