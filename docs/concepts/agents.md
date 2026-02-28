@@ -105,7 +105,7 @@ from marsys.models import ModelConfig
 agent = Agent(
     model_config=ModelConfig(
         type="api",
-        name="anthropic/claude-haiku-4.5",
+        name="anthropic/claude-opus-4.6",
         provider="openrouter",
         api_key=os.getenv("OPENROUTER_API_KEY"),
         parameters={"temperature": 0.7},
@@ -215,7 +215,7 @@ from marsys.models import ModelConfig
 assistant = Agent(
     model_config=ModelConfig(
         type="api",
-        name="anthropic/claude-haiku-4.5",
+        name="anthropic/claude-opus-4.6",
         provider="openrouter",
         max_tokens=12000
     ),
@@ -385,6 +385,8 @@ Each agent maintains its conversation history through a `ConversationMemory`:
 agent = Agent(
     model_config=config,
     name="Assistant",
+    goal="Provide general assistance",
+    instruction="Answer user requests clearly and accurately.",
     memory_retention="session"  # Options: single_run, session, persistent
 )
 
@@ -457,7 +459,7 @@ from marsys.models import ModelConfig
 api_config = ModelConfig(
     type="api",
     provider="openrouter",
-    name="anthropic/claude-haiku-4.5",
+    name="anthropic/claude-opus-4.6",
     api_key=os.getenv("OPENROUTER_API_KEY"),
     parameters={
         "temperature": 0.7
@@ -481,7 +483,7 @@ local_config = ModelConfig(
 vlm_config = ModelConfig(
     type="api",
     provider="openrouter",
-    name="google/gemini-2.5-pro",
+    name="google/gemini-3-pro-preview",
     max_tokens=12000
 )
 ```
@@ -594,7 +596,12 @@ results = await asyncio.gather(*[
 ])
 
 # ❌ BAD - Reusing single instance
-agent = BrowserAgent(...)
+agent = await BrowserAgent.create_safe(
+    model_config=config,
+    name="SharedBrowser",
+    mode="advanced",
+    headless=True,
+)
 # This will have conflicts with parallel execution
 results = await asyncio.gather(*[
     agent.scrape(url) for url in tasks
@@ -675,8 +682,10 @@ class AnalysisOutput(BaseModel):
     metadata: Dict[str, Any]
 
 validator_agent = Agent(
-    config,
+    model_config=config,
     name="ValidatedAnalyzer",
+    goal="Run validated statistical analysis",
+    instruction="Validate inputs and return structured analysis outputs.",
     input_schema=AnalysisInput,
     output_schema=AnalysisOutput
 )

@@ -101,7 +101,7 @@ async def main():
     poet = Agent(
         model_config=ModelConfig(
             type="api",
-            name="anthropic/claude-sonnet-4.5",
+            name="anthropic/claude-opus-4.6",
             provider="openrouter"
         ),
         name="Poet",
@@ -140,7 +140,7 @@ async def main():
     # Create a single model configuration
     model_config = ModelConfig(
         type="api",
-        name="anthropic/claude-haiku-4.5",
+        name="anthropic/claude-opus-4.6",
         provider="openrouter"
     )
 
@@ -192,7 +192,7 @@ async def main():
     # Use a single model configuration
     model_config = ModelConfig(
         type="api",
-        name="anthropic/claude-haiku-4.5",
+        name="anthropic/claude-opus-4.6",
         provider="openrouter"
     )
 

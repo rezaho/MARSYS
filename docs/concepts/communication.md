@@ -238,45 +238,44 @@ result = await Orchestra.run(
 Decoupled pub/sub messaging:
 
 ```python
-from marsys.coordination.communication import EventBus
+from dataclasses import dataclass
+from marsys.coordination.event_bus import EventBus
 
-class EventBus:
-    """Publish/subscribe event system."""
-
-    def __init__(self):
-        self.subscribers: Dict[str, List[Callable]] = {}
-
-    def subscribe(self, event_type: str, handler: Callable):
-        """Subscribe to event type."""
-        if event_type not in self.subscribers:
-            self.subscribers[event_type] = []
-        self.subscribers[event_type].append(handler)
-
-    async def publish(self, event_type: str, data: Any):
-        """Publish event to subscribers."""
-        if event_type in self.subscribers:
-            for handler in self.subscribers[event_type]:
-                try:
-                    if asyncio.iscoroutinefunction(handler):
-                        await handler(data)
-                    else:
-                        handler(data)
-                except Exception as e:
-                    logger.error(f"Event handler error: {e}")
+@dataclass
+class CustomEvent:
+    session_id: str
+    payload: str
 
 # Usage
 event_bus = EventBus()
 
-# Subscribe to events
-event_bus.subscribe("agent.completed", handle_completion)
-event_bus.subscribe("error.occurred", handle_error)
+# Subscribe to events by class name
+async def on_custom_event(event: CustomEvent):
+    print(f"Event payload: {event.payload}")
 
-# Publish events
-await event_bus.publish("agent.completed", {
-    "agent": "DataAnalyzer",
-    "result": analysis_result
-})
+event_bus.subscribe("CustomEvent", on_custom_event)
+
+# Emit events (async)
+await event_bus.emit(CustomEvent(session_id="123", payload="hello"))
+
+# Emit from sync contexts (fire-and-forget)
+event_bus.emit_nowait(CustomEvent(session_id="123", payload="background"))
 ```
+
+### Web Status Streaming
+
+Forward status and planning events to web clients via `WebChannel`:
+
+```python
+from marsys.coordination.communication.channels import WebChannel
+from marsys.coordination.status.channels import StatusWebChannel
+
+web_channel = WebChannel()
+status_web = StatusWebChannel(web_channel)
+status_manager.add_channel(status_web)
+```
+
+Web clients can receive updates via WebSocket or poll `WebChannel.get_status_events()`.
 
 ### Status Aggregation Pattern
 

@@ -244,12 +244,14 @@ tool_result_msg = Message(
     name="extract_pdf_content",
     tool_call_id="call_123",
     images=[
-        "/tmp/pdf_page_1.png",
-        "/tmp/pdf_page_2.png",
-        "/tmp/pdf_page_3.png"
+        "./outputs/pdf_page_1.png",
+        "./outputs/pdf_page_2.png",
+        "./outputs/pdf_page_3.png"
     ]
 )
 ```
+
+Use virtual paths from the run filesystem (e.g., `./outputs`, `./downloads`, `./screenshots`) so other agents can access the same files. See [Run Filesystem](run-filesystem.md).
 
 #### Task Descriptions with Images
 

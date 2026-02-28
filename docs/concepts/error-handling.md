@@ -206,6 +206,32 @@ async def execute_agent_task(agent, task, context):
         raise wrapped
 ```
 
+### Agent Name Used as Tool Call
+
+When an agent emits a `tool_calls` entry whose name matches a peer agent, MARSYS returns a targeted error instead of a generic "tool not found" message.
+
+Current behavior:
+- The executor checks next-hop peer agents from topology context.
+- If the name is a peer agent, the response explains that peer agents are not tools.
+- The response includes the correct JSON pattern for agent invocation.
+
+Use this form for peer-agent handoff:
+
+```json
+{
+  "thought": "Need specialized processing from another agent",
+  "next_action": "invoke_agent",
+  "action_input": [
+    {
+      "agent_name": "Analyzer",
+      "request": "Analyze the uploaded dataset and report anomalies"
+    }
+  ]
+}
+```
+
+Do not place peer-agent names inside `tool_calls`.
+
 ### Automatic Retry in API Adapters
 
 !!! success "Built-in Retry Logic"
@@ -231,8 +257,8 @@ All API adapters (`APIProviderAdapter` and `AsyncBaseAPIAdapter`) automatically 
 
 **Example Log Output:**
 ```
-2025-11-05 00:58:46 - WARNING - Server error 503 from gpt-4. Retry 1/3 after 1.0s
-2025-11-05 00:58:47 - WARNING - Server error 503 from gpt-4. Retry 2/3 after 2.0s
+2025-11-05 00:58:46 - WARNING - Server error 503 from gpt-5.3-codex. Retry 1/3 after 1.0s
+2025-11-05 00:58:47 - WARNING - Server error 503 from gpt-5.3-codex. Retry 2/3 after 2.0s
 2025-11-05 00:58:49 - INFO - Request successful after 2 retries
 ```
 
@@ -295,6 +321,30 @@ All API adapters (`APIProviderAdapter` and `AsyncBaseAPIAdapter`) automatically 
     - 403: PERMISSION_DENIED
     - 404: NOT_FOUND
     ```
+
+### Payload Too Large Recovery (`REQUEST_TOO_LARGE`)
+
+MARSYS has a dedicated recovery path for oversized request payloads (commonly image-heavy traces).
+
+Classification rules:
+- **HTTP 413** is classified provider-agnostically as `request_too_large`
+- Message-text override also classifies `request_too_large` when payload hints appear, including:
+  - `"request_too_large"`
+  - `"payload too large"`
+  - `"request exceeds the maximum"`
+  - `"request body is too large"`
+
+Execution flow:
+1. Provider adapter / `BaseAPIModel` raises `ModelAPIError` with classification `request_too_large`
+2. `Agent._run()` re-raises this specific error (instead of converting to an error `Message`)
+3. `Agent.run_step()` catches it, triggers `memory.compact_for_payload_error(...)`, re-prepares messages, and retries
+4. Retry is **bounded** to a hard cap of **2 attempts** (`_MAX_PAYLOAD_RETRIES = 2`)
+5. If compaction does not reduce payload enough (or retries are exhausted), the agent returns an error `Message`
+6. Coordination treats `request_too_large` as terminal (`terminal_error`) to avoid endless retry loops
+
+Notes:
+- The payload compaction path is separate from adapter-level transient retries (5xx/429)
+- Recovery compaction success is measured by payload-byte reduction, not just token estimates
 
 #### When to Use Manual Retry
 
@@ -595,7 +645,7 @@ class FallbackHandler:
 
         for agent_name in agents_to_try:
             try:
-                agent = AgentRegistry.get_agent(agent_name)
+                agent = AgentRegistry.get(agent_name)
                 if not agent:
                     continue
 

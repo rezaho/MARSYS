@@ -1,6 +1,6 @@
 # Agent Class API Reference
 
-Complete API documentation for the Agent classes in MARSYS, including BaseAgent, Agent, BrowserAgent, and AgentPool.
+Complete API documentation for the Agent classes in MARSYS, including BaseAgent, Agent, BrowserAgent, CodeExecutionAgent, DataAnalysisAgent, and AgentPool.
 
 !!! tip "Architecture & Patterns"
     For architectural overview, design patterns, and best practices, see [Agents Concept Guide](../concepts/agents.md).
@@ -161,6 +161,31 @@ from marsys.agents.registry import AgentRegistry
 AgentRegistry.unregister_if_same("my_agent", agent)
 ```
 
+#### `save_state(filepath: str) -> None`
+
+Save agent state to disk, including memory and planning state.
+
+```python
+agent.save_state("./state/agent_state.json")
+```
+
+What gets saved:
+- Memory contents
+- Planning state (current plan + planning config)
+- Tool schema version for cache invalidation
+
+#### `load_state(filepath: str) -> None`
+
+Load agent state from disk. This restores memory and planning state.
+
+```python
+agent.load_state("./state/agent_state.json")
+```
+
+Notes:
+- Planning state temporarily unsubscribes from `MemoryResetEvent` during load to avoid race conditions.
+- If planning is disabled (`plan_config=False`), only memory is restored.
+
 ## 🤖 Agent
 
 Standard agent implementation with built-in capabilities.
@@ -180,7 +205,9 @@ class Agent(BaseAgent):
         goal: str,
         instruction: str,
         tools: Optional[Dict[str, Callable[..., Any]]] = None,
-        memory_type: Optional[str] = "conversation_history",
+        memory_type: Optional[str] = "managed_conversation",
+        memory_config: Optional[ManagedMemoryConfig] = None,
+        compaction_model_config: Optional[ModelConfig] = None,
         max_tokens: Optional[int] = None,
         name: Optional[str] = None,
         allowed_peers: Optional[List[str]] = None,
@@ -199,7 +226,9 @@ class Agent(BaseAgent):
             goal: 1-2 sentence summary of what this agent accomplishes
             instruction: Detailed instructions on how the agent should behave
             tools: Dictionary of tool functions
-            memory_type: Type of memory module to use
+            memory_type: Type of memory module to use (default: managed_conversation)
+            memory_config: Optional configuration for managed memory behavior
+            compaction_model_config: Optional ModelConfig for a separate compaction model
             max_tokens: Maximum response tokens (None uses ModelConfig default)
             name: Unique identifier for registration
             allowed_peers: List of agent names this agent can invoke
@@ -263,7 +292,7 @@ assistant = Agent(
     model_config=ModelConfig(
         type="api",
         provider="openrouter",
-        name="anthropic/claude-haiku-4.5",
+        name="anthropic/claude-opus-4.6",
         temperature=0.7,
         max_tokens=12000
     ),
@@ -293,6 +322,22 @@ coordinator = Agent(
     instruction="I coordinate tasks between specialized agents and synthesize results",
     allowed_peers=["researcher", "writer", "calculator"]
 )
+
+# Agent with separate compaction model
+agent_with_compaction_model = Agent(
+    model_config=ModelConfig(
+        type="api",
+        provider="openrouter",
+        name="anthropic/claude-opus-4.6",
+    ),
+    compaction_model_config=ModelConfig(
+        type="api",
+        provider="openrouter",
+        name="anthropic/claude-haiku-4.5",
+    ),
+    goal="Long-running research and synthesis",
+    instruction="You are a research assistant."
+)
 ```
 
 ## 🌐 BrowserAgent
@@ -303,7 +348,7 @@ Specialized agent for web automation and scraping.
 
 ```python
 from marsys.agents import BrowserAgent
-from marsys.environment.browser_tool import BrowserTool
+from marsys.models import ModelConfig
 
 class BrowserAgent(Agent):
     """Agent with browser automation capabilities."""
@@ -314,10 +359,21 @@ class BrowserAgent(Agent):
         name: str,
         goal: Optional[str] = None,
         instruction: Optional[str] = None,
+        mode: str = "advanced",
         headless: bool = True,
+        viewport_width: Optional[int] = None,
+        viewport_height: Optional[int] = None,
         tmp_dir: Optional[str] = None,
-        viewport_width: int = 1920,
-        viewport_height: int = 1080,
+        vision_model_config: Optional[ModelConfig] = None,
+        auto_screenshot: bool = False,
+        element_detection_mode: str = "auto",
+        timeout: int = 5000,
+        show_mouse_helper: bool = True,
+        session_path: Optional[str] = None,
+        filesystem: Optional["RunFileSystem"] = None,
+        downloads_subdir: str = "downloads",
+        downloads_virtual_dir: str = "./downloads",
+        fetch_file_tool_name: str = "download_file",
         plan_config: Optional[Union[PlanningConfig, Dict, bool]] = None,
         **kwargs
     ):
@@ -329,10 +385,21 @@ class BrowserAgent(Agent):
             name: Unique identifier
             goal: Agent's purpose (defaults to web automation)
             instruction: Detailed behavior instructions
+            mode: Browser mode ("primitive" for extraction, "advanced" for visual interaction)
             headless: Run without UI
-            tmp_dir: Directory for screenshots
-            viewport_width: Browser viewport width
-            viewport_height: Browser viewport height
+            viewport_width: Optional viewport width (auto-detected if omitted)
+            viewport_height: Optional viewport height (auto-detected if omitted)
+            tmp_dir: Run root directory for downloads/screenshots/artifacts
+            vision_model_config: Optional dedicated vision model config
+            auto_screenshot: Auto-screenshot after actions (advanced mode only)
+            element_detection_mode: "auto", "rule_based", "vision", or "both"
+            timeout: Browser operation timeout in milliseconds
+            show_mouse_helper: Visual cursor helper in advanced mode
+            session_path: Optional storage-state JSON for restoring browser session
+            filesystem: Optional shared RunFileSystem for unified path resolution
+            downloads_subdir: Host downloads subdirectory under tmp_dir
+            downloads_virtual_dir: Virtual path returned to the agent for downloads
+            fetch_file_tool_name: Tool name alias for file-download action
             plan_config: Planning configuration. PlanningConfig instance, dict of
                 config values, True/None (enabled with defaults), or False (disabled).
                 Planning is enabled by default. See [Task Planning](../concepts/planning.md).
@@ -350,8 +417,21 @@ async def create_safe(
     name: str,
     goal: Optional[str] = None,
     instruction: Optional[str] = None,
+    mode: str = "advanced",
     headless: bool = True,
+    viewport_width: Optional[int] = None,
+    viewport_height: Optional[int] = None,
     tmp_dir: Optional[str] = None,
+    vision_model_config: Optional[ModelConfig] = None,
+    auto_screenshot: bool = False,
+    element_detection_mode: str = "auto",
+    timeout: int = 5000,
+    session_path: Optional[str] = None,
+    filesystem: Optional["RunFileSystem"] = None,
+    show_mouse_helper: bool = True,
+    downloads_subdir: str = "downloads",
+    downloads_virtual_dir: str = "./downloads",
+    fetch_file_tool_name: str = "download_file",
     **kwargs
 ) -> "BrowserAgent":
     """
@@ -369,34 +449,41 @@ async def create_safe(
     """
 ```
 
+Artifact path notes:
+- `tmp_dir` acts as the run root for browser artifacts.
+- `downloads_subdir` controls host folder placement under `tmp_dir`.
+- `downloads_virtual_dir` controls the virtual path shown to agents.
+- `fetch_file_tool_name` lets you expose `download_file` under a custom tool name.
+
+Viewport auto-detection (when width/height are omitted):
+- Google/Gemini models: `1000x1000`
+- Anthropic/Claude models: `1344x896`
+- OpenAI/GPT models: `1024x768`
+- Fallback: `1536x1536`
+
 ### Browser-Specific Methods
 
 ```python
 # Navigation
-await browser.browser_tool.navigate_to_url("https://example.com")
-await browser.browser_tool.go_back_in_history()
-await browser.browser_tool.refresh_page()
+await browser.browser_tool.goto("https://example.com")
+await browser.browser_tool.go_back()
+await browser.browser_tool.reload()
 
 # Interaction
-await browser.browser_tool.click_element("#submit-button")
-await browser.browser_tool.fill_form_field("input[name='email']", "test@example.com")
-await browser.browser_tool.select_option_in_dropdown("select#country", "US")
+await browser.browser_tool.mouse_click(450, 300)
+await browser.browser_tool.keyboard_input("search term")
+await browser.browser_tool.keyboard_press("Enter")
 
 # Extraction
-text = await browser.browser_tool.get_text_content("h1.title")
-data = await browser.browser_tool.extract_multiple_elements_data(
-    main_selector="div.product",
-    properties={
-        "name": "h2.name",
-        "price": "span.price"
-    }
-)
+metadata = await browser.browser_tool.get_page_metadata()
+elements = await browser.browser_tool.get_page_elements()
 
-# Screenshots
-await browser.browser_tool.take_screenshot_of_page("screenshot.png", full_page=True)
+# Downloads and screenshots
+downloads = await browser.browser_tool.list_downloads()
+shot = await browser.browser_tool.screenshot()
 
 # Cleanup
-await browser.browser_tool.close_browser()
+await browser.cleanup()
 ```
 
 ### Usage Example
@@ -405,20 +492,111 @@ await browser.browser_tool.close_browser()
 browser_agent = await BrowserAgent.create_safe(
     model_config=config,
     name="scraper",
-    goal="Extract data from websites",
-    instruction="You are a web scraping specialist. Navigate to websites, extract requested data, and return structured results.",
-    headless=True
+    mode="primitive",
+    headless=True,
+    tmp_dir="./runs/run-20260206",
+    downloads_virtual_dir="./downloads",
+    fetch_file_tool_name="fetch_file",
 )
 
 try:
-    # Use browser agent
-    result = await browser_agent.auto_run(
-        "Go to example.com and extract all product names and prices",
-        max_steps=3
-    )
+    result = await browser_agent.auto_run("Go to example.com and summarize key content", max_steps=3)
 finally:
-    # Always cleanup
-    await browser_agent.browser_tool.close_browser()
+    await browser_agent.cleanup()
+```
+
+## 💻 CodeExecutionAgent
+
+Specialized agent that combines file operations with controlled Python/shell execution.
+
+### Class Definition
+
+```python
+from marsys.agents import CodeExecutionAgent
+from marsys.environment.code import CodeExecutionConfig
+
+class CodeExecutionAgent(Agent):
+    def __init__(
+        self,
+        model_config: ModelConfig,
+        name: str,
+        goal: Optional[str] = None,
+        instruction: Optional[str] = None,
+        working_directory: Optional[str] = None,  # Deprecated
+        base_directory: Optional[Path] = None,
+        code_config: Optional[CodeExecutionConfig] = None,
+        filesystem: Optional["RunFileSystem"] = None,
+        **kwargs
+    ):
+        ...
+```
+
+Behavior notes:
+- Combines `FileOperationTools` with `CodeExecutionTools`.
+- Exposes `python_execute` and `shell_execute`.
+- Uses shared `RunFileSystem` when `filesystem` is provided.
+
+### Usage Example
+
+```python
+agent = CodeExecutionAgent(
+    model_config=config,
+    name="CodeRunner",
+    code_config=CodeExecutionConfig(
+        timeout_default=30,
+        max_memory_mb=1024,
+        allow_network=False,
+    ),
+)
+
+result = await agent.auto_run("Run unit tests and summarize failures", max_steps=6)
+await agent.cleanup()
+```
+
+## 📊 DataAnalysisAgent
+
+Specialized agent for iterative data-science style workflows.
+
+### Class Definition
+
+```python
+from marsys.agents import DataAnalysisAgent
+from marsys.environment.code import CodeExecutionConfig
+
+class DataAnalysisAgent(Agent):
+    def __init__(
+        self,
+        model_config: ModelConfig,
+        name: str,
+        goal: Optional[str] = None,
+        instruction: Optional[str] = None,
+        working_directory: Optional[str] = None,  # Deprecated
+        base_directory: Optional[Path] = None,
+        code_config: Optional[CodeExecutionConfig] = None,
+        filesystem: Optional["RunFileSystem"] = None,
+        **kwargs
+    ):
+        ...
+```
+
+Behavior notes:
+- Forces persistent Python session (`session_persistent_python=True`).
+- Keeps notebook-like state across `python_execute` calls.
+- Includes file and shell tools alongside persistent Python execution.
+
+### Usage Example
+
+```python
+agent = DataAnalysisAgent(
+    model_config=config,
+    name="Analyst",
+)
+
+result = await agent.auto_run(
+    "Load sales.csv, find trends, and save a chart to ./outputs",
+    max_steps=8
+)
+await agent.cleanup()
 ```
 
 ## 🏊 AgentPool
@@ -437,11 +615,10 @@ class AgentPool:
 
     def __init__(
         self,
-        agent_class: Type[BaseAgent],
+        agent_class: Type,
         num_instances: int,
-        model_config: ModelConfig,
-        agent_name: str,
-        **agent_kwargs
+        *args,
+        **kwargs
     ):
         """
         Initialize agent pool.
@@ -449,9 +626,8 @@ class AgentPool:
         Args:
             agent_class: Agent class to instantiate
             num_instances: Number of pool instances
-            model_config: Model configuration
-            agent_name: Base name for agents
-            **agent_kwargs: Additional agent parameters
+            *args: Positional constructor arguments passed to each agent instance
+            **kwargs: Keyword constructor arguments passed to each agent instance
         """
 ```
 
@@ -641,12 +817,16 @@ def search(query: str, limit: int = 5) -> List[str]:
 # Auto-schema generation
 agent = Agent(
     model_config=config,
-    tools=[search]  # Schema auto-generated
+    goal="Search for relevant information",
+    instruction="Use search for retrieval requests.",
+    tools={"search": search}  # Schema auto-generated
 )
 
 # Or with custom names
 agent = Agent(
     model_config=config,
+    goal="Search the web for evidence",
+    instruction="Use web_search for web retrieval requests.",
     tools={"web_search": search}
 )
 ```

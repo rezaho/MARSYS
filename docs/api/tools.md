@@ -224,42 +224,31 @@ def calculate_tool(expression: str) -> float:
 agent = Agent(
     model_config=model_config,
     name="Assistant",
-    tools=[search_tool, calculate_tool],  # Auto-generates schemas
-    goal="Assistant with search and calculation capabilities"
+    goal="Assistant with search and calculation capabilities",
+    instruction="Use search_tool for lookup tasks and calculate_tool for math.",
+    tools={"search_tool": search_tool, "calculate_tool": calculate_tool},
 )
 
 # Tools are automatically available to the agent
 ```
 
-### Manual Tool Schema
+### Custom Tool Name Mapping
 
 ```python
-# Define tool with manual schema
-manual_schema = {
-    "type": "function",
-    "function": {
-        "name": "custom_tool",
-        "description": "Custom tool with specific schema",
-        "parameters": {
-            "type": "object",
-            "properties": {
-                "input": {"type": "string"},
-                "mode": {
-                    "type": "string",
-                    "enum": ["fast", "accurate"]
-                }
-            },
-            "required": ["input"]
-        }
-    }
-}
+from typing import Literal
 
-# Add to agent
+# Define tool function
+def custom_tool_func(input_text: str, mode: Literal["fast", "accurate"] = "fast") -> str:
+    """Custom tool with explicit mode selection."""
+    return f"{mode}: {input_text}"
+
+# Map to a custom public tool name
 agent = Agent(
     model_config=model_config,
     name="CustomAgent",
-    tool_schemas=[manual_schema],  # Provide schemas directly
-    tool_functions={"custom_tool": custom_tool_func}
+    goal="Run custom processing tasks",
+    instruction="Use custom_tool when the request needs this specialized processing.",
+    tools={"custom_tool": custom_tool_func}
 )
 ```
 
@@ -439,7 +428,10 @@ class StatefulTool:
 stateful_tool = StatefulTool()
 agent = Agent(
     model_config=config,
-    tools=[stateful_tool.process_with_memory]
+    name="StatefulProcessor",
+    goal="Process text with cached state",
+    instruction="Use stateful_process for repeated inputs and report cache usage.",
+    tools={"stateful_process": stateful_tool.process_with_memory},
 )
 ```
 

@@ -69,7 +69,7 @@ from marsys.models import ModelConfig
 config = ModelConfig(
     type="api",                    # "api" or "local"
     provider="openrouter",         # Provider name
-    name="anthropic/claude-haiku-4.5",  # Model name
+    name="anthropic/claude-opus-4.6",  # Model name
     api_key=None,                  # Auto-loads from env
     base_url=None,                 # Custom endpoint
     temperature=0.7,               # Sampling temperature
@@ -86,7 +86,7 @@ Common provider examples:
 config = ModelConfig(
     type="api",
     provider="openrouter",
-    name="anthropic/claude-haiku-4.5",  # or gpt-5, gemini-2.5-pro, etc.
+    name="anthropic/claude-opus-4.6",  # or openai/gpt-5-codex, google/gemini-3-flash-preview, etc.
     api_key=os.getenv("OPENROUTER_API_KEY"),
     temperature=0.7,
     max_tokens=12000
@@ -100,6 +100,54 @@ config = ModelConfig(
     base_url="http://localhost:11434"
 )
 ```
+
+### OAuth Providers (No API Keys)
+
+You can also use subscription-based OAuth providers that rely on CLI logins and `marsys oauth` profile management:
+
+```python
+# OpenAI ChatGPT OAuth (Codex CLI)
+config = ModelConfig(
+    type="api",
+    provider="openai-oauth",
+    name="gpt-5.3-codex",
+    oauth_profile="personal-openai",  # Optional: explicit profile
+)
+
+# Anthropic Claude OAuth (Claude CLI)
+config = ModelConfig(
+    type="api",
+    provider="anthropic-oauth",
+    name="claude-opus-4-6",
+    oauth_profile="work-claude",  # Optional: explicit profile
+)
+```
+
+These providers load credentials from:
+
+- `~/.codex/auth.json` (override with `CODEX_AUTH_PATH`)
+- `~/.claude/.credentials.json` (override with `CLAUDE_AUTH_PATH`)
+
+Profile resolution order:
+1. `credentials_path` in `ModelConfig` (if provided)
+2. `oauth_profile` in `ModelConfig` (if provided)
+3. Default profile for that provider (`marsys oauth set-default ...`)
+
+Useful OAuth CLI commands:
+
+```bash
+marsys oauth add <name> --provider openai-oauth
+marsys oauth add <name> --provider anthropic-oauth
+marsys oauth list
+marsys oauth set-default <provider> <name>
+marsys oauth refresh <name> [--force]
+```
+
+!!! warning "Use At Your Own Risk (Anthropic OAuth)"
+    `anthropic-oauth` relies on a non-official integration path and may violate provider Terms of Service. Use at your own risk.
+
+!!! note "OpenAI OAuth Compliance"
+    MARSYS does not make a legal determination about OpenAI ToS coverage for this OAuth path. Review OpenAI terms for your use case.
 
 !!! info "Provider-Specific Parameters"
     Each provider supports unique parameters (reasoning_effort, thinking_budget, safety_settings, etc.).
@@ -295,13 +343,13 @@ error_config = ErrorHandlingConfig(
             "max_retries": 3,
             "base_retry_delay": 60,
             "insufficient_quota_action": "raise",  # or "fallback"
-            "fallback_model": "gpt-5-mini"
+            "fallback_model": "gpt-5.3-codex"
         },
         "anthropic": {
             "max_retries": 2,
             "base_retry_delay": 30,
             "insufficient_quota_action": "fallback",
-            "fallback_model": "anthropic/claude-haiku-4.5"
+            "fallback_model": "anthropic/claude-opus-4.6"
         },
         "google": {
             "max_retries": 3,
@@ -393,7 +441,7 @@ def create_production_config():
                 "max_retries": 3,
                 "base_retry_delay": 60,
                 "insufficient_quota_action": "fallback",
-                "fallback_model": "gpt-5-mini"
+                "fallback_model": "gpt-5.3-codex"
             }
         }
     )

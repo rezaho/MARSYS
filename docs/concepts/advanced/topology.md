@@ -66,7 +66,7 @@ from marsys.models import ModelConfig
 # Configure the model
 model_config = ModelConfig(
     type="api",
-    name="anthropic/claude-sonnet-4.5",
+    name="anthropic/claude-opus-4.6",
     provider="openrouter"
 )
 
@@ -111,7 +111,7 @@ from marsys.agents import Agent
 from marsys.models import ModelConfig
 
 # Create the same agents
-model_config = ModelConfig(type="api", name="anthropic/claude-sonnet-4.5", provider="openrouter")
+model_config = ModelConfig(type="api", name="anthropic/claude-opus-4.6", provider="openrouter")
 
 researcher = Agent(
     model_config=model_config,
@@ -158,7 +158,7 @@ from marsys.agents import Agent
 from marsys.models import ModelConfig
 
 # Create the same agents
-model_config = ModelConfig(type="api", name="anthropic/claude-sonnet-4.5", provider="openrouter")
+model_config = ModelConfig(type="api", name="anthropic/claude-opus-4.6", provider="openrouter")
 
 researcher = Agent(
     model_config=model_config,
@@ -225,7 +225,7 @@ from marsys.agents import Agent
 from marsys.models import ModelConfig
 
 # Create the same agents
-model_config = ModelConfig(type="api", name="anthropic/claude-sonnet-4.5", provider="openrouter")
+model_config = ModelConfig(type="api", name="anthropic/claude-opus-4.6", provider="openrouter")
 
 researcher = Agent(
     model_config=model_config,

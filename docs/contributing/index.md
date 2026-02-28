@@ -258,7 +258,9 @@ async def test_agent_creation():
     """Test agent can be created with config."""
     agent = Agent(
         model_config=test_config,
-        agent_name="TestAgent"
+        name="TestAgent",
+        goal="Handle test tasks",
+        instruction="Return deterministic outputs for tests."
     )
 
     assert agent.name == "TestAgent"
