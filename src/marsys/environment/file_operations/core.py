@@ -8,6 +8,7 @@ import logging
 from pathlib import Path
 from typing import Optional, Dict, Any, Callable, List, Union
 
+from ..filesystem import ResolvedPath, RunFileSystem
 from ..tool_response import ToolResponse
 from .config import FileOperationConfig
 from .data_models import (
@@ -56,10 +57,12 @@ class FileOperationTools:
         if config is None:
             config = FileOperationConfig(
                 base_directory=Path.cwd(),
-                force_base_directory=False
             )
 
         self.config = config
+
+        # Initialize virtual filesystem (auto-created in config if not provided)
+        self.fs: RunFileSystem = config.run_filesystem
 
         # Initialize security manager
         self.security = SecurityManager(config)
@@ -74,6 +77,41 @@ class FileOperationTools:
         self.search_engine = FileSearchEngine(config, self.handler_registry)
 
         logger.info(f"FileOperationTools initialized with {len(self.handler_registry)} handlers")
+
+    def _resolve(self, path: Union[str, Path, None]) -> ResolvedPath:
+        """
+        Resolve a virtual path using the virtual filesystem.
+
+        All paths are virtual (e.g., "/downloads/file.txt", "./data.csv").
+        The virtual filesystem confines all operations to the run root
+        and configured mount points. The working directory is determined
+        by RunFileSystem.cwd.
+
+        Args:
+            path: The virtual path to resolve (relative or absolute)
+
+        Returns:
+            ResolvedPath with virtual_path, host_path, and mount_prefix
+        """
+        raw = str(path) if path is not None else "."
+        return self.fs.resolve(raw)
+
+    def _to_virtual_path(self, host_path: Path) -> Path:
+        """
+        Convert a host path to a virtual Path object.
+
+        Args:
+            host_path: The host filesystem path (must be within a mount)
+
+        Returns:
+            Path object representing the virtual path
+        """
+        return Path(self.fs.to_virtual(host_path))
+
+    def _sanitize_error(self, message: str) -> str:
+        """Strip host path prefix from error messages to prevent path leakage to agents."""
+        base = str(self.config.base_directory)
+        return message.replace(base, "")
 
     def _build_handler_registry(self) -> Dict[str, Any]:
         """Build registry of file type handlers."""
@@ -116,7 +154,7 @@ class FileOperationTools:
         Read file with intelligent strategy selection.
 
         Args:
-            path: File path to read
+            path: File path to read (virtual path)
             strategy: Reading strategy (AUTO, FULL, PARTIAL, OVERVIEW, PROGRESSIVE)
             **kwargs: Additional arguments:
                 - start_line: Starting line number (for PARTIAL)
@@ -132,15 +170,18 @@ class FileOperationTools:
             ValueError: If path is invalid or unauthorized
             FileNotFoundError: If file doesn't exist
         """
-        # Convert to Path and resolve relative to base_directory
-        path = Path(path)
-        if not path.is_absolute() and self.config.base_directory:
-            path = self.config.base_directory / path
+        # Resolve path through virtual filesystem
+        resolved = self._resolve(path)
+        host_path = resolved.host_path
 
         # Security check
-        validation = await self.security.authorize_operation("read", path)
+        validation = await self.security.authorize_operation("read", host_path)
         if not validation.allowed:
-            raise ValueError(f"Read not allowed: {validation.reason}")
+            raise ValueError(f"Read not allowed: {self._sanitize_error(validation.reason)}")
+
+        # Existence check
+        if not host_path.exists():
+            raise FileNotFoundError(f"File not found: {resolved.virtual_path}")
 
         # Convert strategy string to enum
         if isinstance(strategy, str):
@@ -148,16 +189,19 @@ class FileOperationTools:
 
         # Pass max_pixels config to kwargs for single image files only
         # Note: PDFs use page limits, not pixel limits
-        if path.suffix.lower() in ['.jpg', '.jpeg', '.png', '.gif', '.webp', '.bmp', '.tiff', '.tif']:
+        if host_path.suffix.lower() in ['.jpg', '.jpeg', '.png', '.gif', '.webp', '.bmp', '.tiff', '.tif']:
             if 'max_pixels' not in kwargs:
                 kwargs['max_pixels'] = self.config.max_image_pixels
 
         # Read file
-        content = await self.reader.read(path, strategy, **kwargs)
+        content = await self.reader.read(host_path, strategy, **kwargs)
+
+        # Set path to virtual path for agent visibility
+        content.path = self._to_virtual_path(host_path)
 
         # Validate image pixel limits ONLY for single image files (not PDFs)
         # PDFs are limited by page count (max_pages_per_read), not total pixels
-        if path.suffix.lower() in ['.jpg', '.jpeg', '.png', '.gif', '.webp', '.bmp', '.tiff', '.tif']:
+        if host_path.suffix.lower() in ['.jpg', '.jpeg', '.png', '.gif', '.webp', '.bmp', '.tiff', '.tif']:
             max_pixels_limit = kwargs.get('max_pixels', self.config.max_image_pixels)
             if content.total_image_pixels is not None and content.total_image_pixels > 0:
                 if content.total_image_pixels > max_pixels_limit:
@@ -166,9 +210,10 @@ class FileOperationTools:
                     )
 
         # Log operation
-        self.security.log_operation("read", path, True, {
+        self.security.log_operation("read", host_path, True, {
             'strategy': strategy.value,
-            'partial': content.partial
+            'partial': content.partial,
+            'virtual_path': resolved.virtual_path,
         })
 
         return content
@@ -185,7 +230,7 @@ class FileOperationTools:
         Write or append content to a file.
 
         Args:
-            path: File path to write
+            path: File path to write (virtual path)
             content: Content to write
             mode: Write mode - "write" (overwrite) or "append" (add to end)
             create_parents: Whether to create parent directories
@@ -194,14 +239,16 @@ class FileOperationTools:
         Returns:
             EditResult indicating success/failure
         """
-        path = Path(path)
+        # Resolve path through virtual filesystem
+        resolved = self._resolve(path)
+        host_path = resolved.host_path
 
         # Validate mode
         mode_lower = mode.lower()
         if mode_lower not in ("write", "append"):
             return EditResult(
                 success=False,
-                path=path,
+                path=self._to_virtual_path(host_path),
                 error=f"Invalid mode '{mode}'. Must be 'write' or 'append'."
             )
 
@@ -209,41 +256,48 @@ class FileOperationTools:
         file_mode = 'w' if mode_lower == "write" else 'a'
 
         # Security check
-        validation = await self.security.authorize_operation("write", path)
+        validation = await self.security.authorize_operation("write", host_path)
         if not validation.allowed:
-            raise PermissionError(f"Write not allowed: {validation.reason}")
+            raise PermissionError(f"Write not allowed: {self._sanitize_error(validation.reason)}")
+
+        # Check parent directory exists when not auto-creating
+        if not create_parents and not host_path.parent.exists():
+            raise FileNotFoundError(
+                f"Parent directory not found: {self.fs.to_virtual(host_path.parent)}"
+            )
 
         try:
             # Create parent directories if needed
-            if create_parents and not path.parent.exists():
-                path.parent.mkdir(parents=True, exist_ok=True)
+            if create_parents and not host_path.parent.exists():
+                host_path.parent.mkdir(parents=True, exist_ok=True)
 
             # Write/append to file
-            with open(path, file_mode, encoding=kwargs.get('encoding', 'utf-8')) as f:
+            with open(host_path, file_mode, encoding=kwargs.get('encoding', 'utf-8')) as f:
                 f.write(content)
 
             # Count lines
             lines_written = content.count('\n') + 1
 
             # Log operation
-            self.security.log_operation("write", path, True, {
+            self.security.log_operation("write", host_path, True, {
                 'mode': mode_lower,
                 'lines': lines_written,
-                'size': len(content)
+                'size': len(content),
+                'virtual_path': resolved.virtual_path,
             })
 
             return EditResult(
                 success=True,
-                path=path,
+                path=self._to_virtual_path(host_path),
                 lines_changed=lines_written
             )
 
         except Exception as e:
-            logger.error(f"Error writing {path}: {e}", exc_info=True)
-            self.security.log_operation("write", path, False, {'error': str(e)})
+            logger.error(f"Error writing {host_path}: {e}", exc_info=True)
+            self.security.log_operation("write", host_path, False, {'error': str(e)})
             return EditResult(
                 success=False,
-                path=path,
+                path=self._to_virtual_path(host_path),
                 error=str(e)
             )
 
@@ -259,7 +313,7 @@ class FileOperationTools:
         Edit file using unified diff or search/replace.
 
         Args:
-            path: File path to edit
+            path: File path to edit (virtual path)
             changes: Either unified diff string or dict with 'search' and 'replace' keys
             edit_format: Format of changes (unified_diff or search_replace)
             dry_run: If True, preview changes without applying
@@ -268,7 +322,10 @@ class FileOperationTools:
         Returns:
             EditResult with operation results
         """
-        path = Path(path)
+        # Resolve path through virtual filesystem
+        resolved = self._resolve(path)
+        host_path = resolved.host_path
+        virtual_path = self._to_virtual_path(host_path)
 
         # Auto-detect format if not specified
         if edit_format is None:
@@ -293,73 +350,78 @@ class FileOperationTools:
 
             validation = await self.security.authorize_operation(
                 "edit",
-                path,
+                host_path,
                 preview=preview[:500]  # Limit preview size
             )
 
             if not validation.allowed:
-                raise PermissionError(f"Edit not allowed: {validation.reason}")
+                raise PermissionError(f"Edit not allowed: {self._sanitize_error(validation.reason)}")
 
         # Check if file exists
-        if not path.exists():
-            raise FileNotFoundError(f"File not found: {path}")
+        if not host_path.exists():
+            raise FileNotFoundError(f"File not found: {resolved.virtual_path}")
 
         # Apply edit
         try:
             if edit_format == EditFormat.UNIFIED_DIFF:
                 result = await self.diff_editor.apply_diff(
-                    path,
+                    host_path,
                     changes if isinstance(changes, str) else str(changes),
                     dry_run=dry_run,
                     **kwargs
                 )
+                # Convert path to virtual
+                result.path = virtual_path
             else:  # SEARCH_REPLACE
                 if not isinstance(changes, dict):
                     return EditResult(
                         success=False,
-                        path=path,
+                        path=virtual_path,
                         error="Search/replace format requires dict with 'search' and 'replace' keys"
                     )
 
                 if dry_run:
                     # For dry run, just validate search exists
-                    with open(path, 'r') as f:
+                    with open(host_path, 'r') as f:
                         content = f.read()
                     if changes['search'] not in content:
                         return EditResult(
                             success=False,
-                            path=path,
+                            path=virtual_path,
                             dry_run=True,
                             error=f"Search text not found: {changes['search'][:50]}"
                         )
                     return EditResult(
                         success=True,
-                        path=path,
+                        path=virtual_path,
                         dry_run=True,
                         preview=f"Would replace: {changes['search']}\nWith: {changes['replace']}"
                     )
 
                 result = await self.replace_editor.edit(
-                    path,
+                    host_path,
                     changes['search'],
                     changes['replace'],
                     kwargs.get('replace_all', False)
                 )
+                # Convert path to virtual
+                result.path = virtual_path
 
             # Log operation if not dry run
             if not dry_run:
-                self.security.log_operation("edit", path, result.success, {
+                self.security.log_operation("edit", host_path, result.success, {
                     'format': edit_format.value,
-                    'lines_changed': result.lines_changed
+                    'lines_changed': result.lines_changed,
+                    'virtual_path': resolved.virtual_path,
                 })
 
             return result
 
         except Exception as e:
-            logger.error(f"Error editing {path}: {e}", exc_info=True)
+            logger.error(f"Error editing {host_path}: {e}", exc_info=True)
             return EditResult(
                 success=False,
-                path=path,
+                path=virtual_path,
                 error=str(e)
             )
 
@@ -376,37 +438,42 @@ class FileOperationTools:
         Args:
             query: Search query
             search_type: Type of search (content, filename, structure)
-            path: Root path to search (default: base_directory)
+            path: Root path to search (virtual path, default: /)
             **kwargs: Additional search parameters
 
         Returns:
             SearchResults with matches
         """
-        # Convert to Path
-        if path:
-            path = Path(path)
+        # Resolve path through virtual filesystem
+        resolved = self._resolve(path or ".")
+        host_path = resolved.host_path
 
         # Convert search type
         if isinstance(search_type, str):
             search_type = SearchType(search_type.lower())
 
-        # Use base directory if no path specified
-        if path is None:
-            path = self.config.base_directory or Path.cwd()
-
         # Security check
-        validation = self.security.validate_path(path, "search")
+        validation = self.security.validate_path(host_path, "search")
         if not validation.allowed:
             return SearchResults(
                 query=query,
                 search_type=search_type,
                 matches=[],
                 total_matches=0,
-                metadata={'error': validation.reason}
+                metadata={'error': self._sanitize_error(validation.reason)}
             )
 
         # Execute search
-        results = await self.search_engine.search(query, search_type, path, **kwargs)
+        results = await self.search_engine.search(query, search_type, host_path, **kwargs)
+
+        # Convert match paths to virtual paths
+        for match in results.matches:
+            if hasattr(match, 'file') and match.file:
+                virtual = self._to_virtual_path(match.file)
+                # For filename searches, match field is the file path — convert it too
+                if search_type == SearchType.FILENAME and match.match == str(match.file):
+                    match.match = str(virtual)
+                match.file = virtual
 
         return results
 
@@ -419,26 +486,32 @@ class FileOperationTools:
         Get hierarchical structure of a file.
 
         Args:
-            path: File path
+            path: File path (virtual path)
             **kwargs: Additional arguments (max_depth, etc.)
 
         Returns:
             DocumentStructure with file hierarchy
         """
-        path = Path(path)
+        # Resolve path through virtual filesystem
+        resolved = self._resolve(path)
+        host_path = resolved.host_path
 
         # Security check
-        validation = await self.security.authorize_operation("read", path)
+        validation = await self.security.authorize_operation("read", host_path)
         if not validation.allowed:
-            raise ValueError(f"Read not allowed: {validation.reason}")
+            raise ValueError(f"Read not allowed: {self._sanitize_error(validation.reason)}")
+
+        # Existence check
+        if not host_path.exists():
+            raise FileNotFoundError(f"File not found: {resolved.virtual_path}")
 
         # Get handler
-        handler = self._get_handler(path)
+        handler = self._get_handler(host_path)
         if not handler:
-            raise ValueError(f"No handler found for file: {path}")
+            raise ValueError(f"No handler found for file: {resolved.virtual_path}")
 
         # Get structure
-        structure = await handler.get_structure(path, **kwargs)
+        structure = await handler.get_structure(host_path, **kwargs)
 
         return structure
 
@@ -452,27 +525,33 @@ class FileOperationTools:
         Read a specific section from a file.
 
         Args:
-            path: File path
+            path: File path (virtual path)
             section_id: Section identifier
             **kwargs: Additional arguments
 
         Returns:
             Content of the section
         """
-        path = Path(path)
+        # Resolve path through virtual filesystem
+        resolved = self._resolve(path)
+        host_path = resolved.host_path
 
         # Security check
-        validation = await self.security.authorize_operation("read", path)
+        validation = await self.security.authorize_operation("read", host_path)
         if not validation.allowed:
-            raise ValueError(f"Read not allowed: {validation.reason}")
+            raise ValueError(f"Read not allowed: {self._sanitize_error(validation.reason)}")
+
+        # Existence check
+        if not host_path.exists():
+            raise FileNotFoundError(f"File not found: {resolved.virtual_path}")
 
         # Get handler
-        handler = self._get_handler(path)
+        handler = self._get_handler(host_path)
         if not handler:
-            raise ValueError(f"No handler found for file: {path}")
+            raise ValueError(f"No handler found for file: {resolved.virtual_path}")
 
         # Read section
-        content = await handler.read_section(path, section_id, **kwargs)
+        content = await handler.read_section(host_path, section_id, **kwargs)
 
         return content
 
@@ -480,7 +559,7 @@ class FileOperationTools:
 
     async def list_files(
         self,
-        path: Union[str, Path],
+        path: Optional[Union[str, Path]] = None,
         pattern: Optional[str] = None,
         recursive: bool = False,
         **kwargs
@@ -489,38 +568,40 @@ class FileOperationTools:
         List files in a directory.
 
         Args:
-            path: Directory path
+            path: Directory path (virtual path, default: /)
             pattern: Optional glob pattern
             recursive: Whether to search recursively
             **kwargs: Additional arguments
 
         Returns:
-            List of FileInfo objects
+            List of FileInfo objects with virtual paths
         """
-        path = Path(path)
+        # Resolve path through virtual filesystem
+        resolved = self._resolve(path or ".")
+        host_path = resolved.host_path
 
         # Security check
-        validation = self.security.validate_path(path, "list")
+        validation = self.security.validate_path(host_path, "list")
         if not validation.allowed:
-            raise ValueError(f"List not allowed: {validation.reason}")
+            raise ValueError(f"List not allowed: {self._sanitize_error(validation.reason)}")
 
-        if not path.is_dir():
-            raise ValueError(f"Not a directory: {path}")
+        if not host_path.is_dir():
+            raise ValueError(f"Not a directory: {resolved.virtual_path}")
 
         # Get file list
         if pattern:
             glob_pattern = f"**/{pattern}" if recursive else pattern
-            files = list(path.glob(glob_pattern))
+            files = list(host_path.glob(glob_pattern))
         else:
             if recursive:
-                files = list(path.rglob("*"))
+                files = list(host_path.rglob("*"))
             else:
-                files = list(path.iterdir())
+                files = list(host_path.iterdir())
 
         # Filter out blocked files
         files = [f for f in files if not self.config.is_file_blocked(f)]
 
-        # Convert to FileInfo
+        # Convert to FileInfo with virtual paths
         file_infos = []
         for file_path in files:
             try:
@@ -529,7 +610,7 @@ class FileOperationTools:
                 size_human = self._format_size(size)
 
                 file_infos.append(FileInfo(
-                    path=file_path,
+                    path=self._to_virtual_path(file_path),
                     size=size,
                     size_human=size_human,
                     modified=stat.st_mtime,
@@ -553,61 +634,74 @@ class FileOperationTools:
         Create a directory.
 
         Args:
-            path: Directory path
+            path: Directory path (virtual path)
             parents: Whether to create parent directories
             **kwargs: Additional arguments
 
         Returns:
             DirectoryResult with success status and details
         """
-        path = Path(path)
+        # Resolve path through virtual filesystem
+        resolved = self._resolve(path)
+        host_path = resolved.host_path
+        virtual_path = self._to_virtual_path(host_path)
 
         # Security check
-        validation = await self.security.authorize_operation("write", path)
+        validation = await self.security.authorize_operation("write", host_path)
         if not validation.allowed:
             return DirectoryResult(
                 success=False,
-                path=path,
-                error=f"Create directory not allowed: {validation.reason}"
+                path=virtual_path,
+                error=f"Create directory not allowed: {self._sanitize_error(validation.reason)}"
             )
 
         try:
-            already_existed = path.exists()
-            path.mkdir(parents=parents, exist_ok=True)
-            self.security.log_operation("create_directory", path, True)
+            already_existed = host_path.exists()
+            host_path.mkdir(parents=parents, exist_ok=True)
+            self.security.log_operation("create_directory", host_path, True, {
+                'virtual_path': resolved.virtual_path,
+            })
             return DirectoryResult(
                 success=True,
-                path=path,
+                path=virtual_path,
                 already_existed=already_existed
             )
         except Exception as e:
-            logger.error(f"Error creating directory {path}: {e}")
-            self.security.log_operation("create_directory", path, False, {'error': str(e)})
+            logger.error(f"Error creating directory {host_path}: {e}")
+            self.security.log_operation("create_directory", host_path, False, {'error': str(e)})
             return DirectoryResult(
                 success=False,
-                path=path,
+                path=virtual_path,
                 error=str(e)
             )
 
     async def delete(self, path: Union[str, Path], **kwargs) -> DeleteResult:
         """Delete a file or directory."""
-        path = Path(path)
+        # Resolve path through virtual filesystem
+        resolved = self._resolve(path)
+        host_path = resolved.host_path
+        virtual_path = self._to_virtual_path(host_path)
+
         if not self.config.enable_delete:
             raise PermissionError("Delete operations are disabled in configuration")
-        validation = await self.security.authorize_operation("delete", path)
+        validation = await self.security.authorize_operation("delete", host_path)
         if not validation.allowed:
-            raise ValueError(f"Delete not allowed: {validation.reason}")
+            raise ValueError(f"Delete not allowed: {self._sanitize_error(validation.reason)}")
+        if not host_path.exists():
+            raise FileNotFoundError(f"File not found: {resolved.virtual_path}")
         try:
-            if path.is_dir():
-                path.rmdir()
+            if host_path.is_dir():
+                host_path.rmdir()
             else:
-                path.unlink()
-            self.security.log_operation("delete", path, True)
-            return DeleteResult(success=True, path=path)
+                host_path.unlink()
+            self.security.log_operation("delete", host_path, True, {
+                'virtual_path': resolved.virtual_path,
+            })
+            return DeleteResult(success=True, path=virtual_path)
         except Exception as e:
-            logger.error(f"Error deleting {path}: {e}")
-            self.security.log_operation("delete", path, False, {'error': str(e)})
-            return DeleteResult(success=False, path=path, error=str(e))
+            logger.error(f"Error deleting {host_path}: {e}")
+            self.security.log_operation("delete", host_path, False, {'error': str(e)})
+            return DeleteResult(success=False, path=virtual_path, error=str(e))
 
     # ========== Utility Methods ==========
 
@@ -840,7 +934,7 @@ class FileOperationTools:
             return await self.read_section(path, section_id, **kwargs)
 
         async def list_files_wrapper(
-            path: Union[str, Path],
+            path: Optional[Union[str, Path]] = None,
             pattern: Optional[str] = None,
             recursive: bool = False,
             **kwargs
@@ -848,8 +942,12 @@ class FileOperationTools:
             """List files and return dict with formatted directory info."""
             file_infos = await self.list_files(path, pattern, recursive, **kwargs)
 
+            # Get the virtual path for display
+            resolved = self._resolve(path or ".")
+            virtual_path = resolved.virtual_path
+
             return {
-                "path": str(path),
+                "path": virtual_path,
                 "files": [f.to_dict() for f in file_infos],
                 "file_count": sum(1 for f in file_infos if f.is_file),
                 "directory_count": sum(1 for f in file_infos if f.is_dir),
