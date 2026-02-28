@@ -7,7 +7,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
-## [0.2.1] - 2026-03-01
+## [0.2.1-beta] - 2026-03-01
 
 ### Added
 - Active context compaction with multi-stage memory processor pipeline (tool truncation, summarization, backward packing) and payload-error recovery
@@ -36,7 +36,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Logging configuration improved to reduce noise
 - README streamlined for quick onboarding
 - Documentation updated across API refs, concept guides, and getting started
-- Version bumped to 0.2.1
+- Version bumped to 0.2.1-beta
 
 ### Fixed
 - `.get` to `.pop` for context kwargs in exception constructors preventing duplicate keyword arguments
@@ -192,6 +192,6 @@ The first public beta release of MARSYS - Multi-Agent Reasoning Systems framewor
 
 | Version | Date | Status | Highlights |
 |---------|------|--------|------------|
-| 0.2.1 | 2026-03-01 | Released | Active context compaction, modular adapters, new agents, RunFileSystem |
+| 0.2.1-beta | 2026-03-01 | Released | Active context compaction, modular adapters, new agents, RunFileSystem |
 | 0.1.2 | 2025-12-21 | Released | OpenAI Responses API, xAI provider, steering system |
 | 0.1.0-beta | 2025-01 | Released | Initial public beta with full framework |

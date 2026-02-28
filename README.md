@@ -2,7 +2,7 @@
 
 <div align="center">
 
-![MARSYS Logo](https://img.shields.io/badge/MARSYS-v0.2.1-blue?style=for-the-badge)
+![MARSYS Logo](https://img.shields.io/badge/MARSYS-v0.2.1--beta-blue?style=for-the-badge)
 [![Python](https://img.shields.io/badge/python-3.12%2B-blue?style=for-the-badge)](https://www.python.org/)
 [![License](https://img.shields.io/badge/license-Apache%202.0-green?style=for-the-badge)](LICENSE)
 [![CLA assistant](https://cla-assistant.io/readme/badge/rezaho/MARSYS)](https://cla-assistant.io/rezaho/MARSYS)
