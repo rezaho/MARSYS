@@ -211,6 +211,46 @@ class DefaultTokenCounter:
         return sum(per_message), per_message
 
 
+def truncate_text_to_tokens(
+    text: str,
+    max_tokens: int,
+    chars_per_token: float = 4.0,
+    marker: str = "",
+) -> str:
+    """
+    Truncate text to fit within a token budget.
+
+    Uses character-based heuristic (chars_per_token) to estimate truncation point.
+    If the text already fits, returns it unchanged.
+
+    Args:
+        text: The text to truncate.
+        max_tokens: Maximum allowed tokens.
+        chars_per_token: Average characters per token for estimation.
+        marker: Optional marker to append when truncation occurs (e.g., " [truncated]").
+
+    Returns:
+        Original text if within budget, or truncated text with optional marker.
+    """
+    if not text:
+        return text
+
+    estimated_tokens = len(text) / chars_per_token
+    if estimated_tokens <= max_tokens:
+        return text
+
+    marker_chars = len(marker)
+    max_chars = int(max_tokens * chars_per_token) - marker_chars
+    if max_chars < 0:
+        max_chars = 0
+
+    truncated = text[:max_chars]
+    if marker:
+        truncated += marker
+
+    return truncated
+
+
 # Convenience function for quick token counting
 def estimate_tokens(
     messages: List[Dict[str, Any]],
