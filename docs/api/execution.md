@@ -373,10 +373,14 @@ results = await tool_executor.execute_tool_calls(
         ToolCall(name="search", arguments={"query": "AI news"}),
         ToolCall(name="summarize", arguments={"text": "..."})
     ],
-    name="Researcher",
+    agent_name="Researcher",
     context={}
 )
 ```
+
+Agent invocation note:
+- `execute_tool_calls` is for tools only.
+- If a name matches a peer agent, it must be invoked through agent action JSON (`next_action="invoke_agent"`), not through `tool_calls`.
 
 ---
 

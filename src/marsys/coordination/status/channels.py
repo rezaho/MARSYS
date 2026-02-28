@@ -70,7 +70,7 @@ class CLIChannel(ChannelAdapter):
         from .events import (
             AgentStartEvent, AgentThinkingEvent, AgentCompleteEvent,
             ToolCallEvent, BranchEvent, ParallelGroupEvent,
-            UserInteractionEvent, FinalResponseEvent,
+            UserInteractionEvent, FinalResponseEvent, CompactionEvent,
             PlanCreatedEvent, PlanUpdatedEvent, PlanItemAddedEvent,
             PlanItemRemovedEvent, PlanClearedEvent
         )
@@ -100,6 +100,8 @@ class CLIChannel(ChannelAdapter):
             await self._print_parallel_group(event, timestamp, verbosity)
         elif isinstance(event, UserInteractionEvent):
             await self._print_user_interaction(event, timestamp, verbosity)
+        elif isinstance(event, CompactionEvent):
+            await self._print_compaction_event(event, timestamp, verbosity)
         elif isinstance(event, FinalResponseEvent):
             await self._print_final_response(event, timestamp, verbosity)
         # Planning events
@@ -315,6 +317,31 @@ class CLIChannel(ChannelAdapter):
             print("Options:")
             for i, option in enumerate(event.options, 1):
                 print(f"  {i}. {option}")
+
+    async def _print_compaction_event(self, event, ts: str, verbosity: int):
+        """Print memory compaction event."""
+        from ..config import VerbosityLevel
+        c = self.colors
+
+        if verbosity == VerbosityLevel.QUIET:
+            return
+
+        if event.status == "started":
+            print(f"  {ts} {c['yellow']}📦 Memory compaction started ({event.pre_tokens} tokens, {event.pre_messages} messages){c['reset']}")
+        elif event.status == "completed":
+            reduction = 0
+            if event.pre_tokens > 0:
+                reduction = round((1 - event.post_tokens / event.pre_tokens) * 100)
+            duration_str = f" ({event.duration:.1f}s)" if event.duration is not None else ""
+            print(
+                f"  {ts} {c['green']}✓ Compaction complete: "
+                f"{event.pre_tokens}→{event.post_tokens} tokens ({reduction}% reduction), "
+                f"{event.pre_messages}→{event.post_messages} messages{duration_str}{c['reset']}"
+            )
+            if verbosity >= VerbosityLevel.VERBOSE and event.stages_run:
+                print(f"    {c['gray']}Stages: {', '.join(event.stages_run)}{c['reset']}")
+        elif event.status == "failed":
+            print(f"  {ts} {c['red']}✗ Compaction failed{c['reset']}")
 
     async def _print_final_response(self, event: 'FinalResponseEvent', ts: str, verbosity: int):
         """Print final response."""
@@ -565,7 +592,7 @@ class PrefixedCLIChannel(ChannelAdapter):
         from .events import (
             AgentStartEvent, AgentThinkingEvent, AgentCompleteEvent,
             ToolCallEvent, BranchEvent, ParallelGroupEvent,
-            UserInteractionEvent, FinalResponseEvent,
+            UserInteractionEvent, FinalResponseEvent, CompactionEvent,
             PlanCreatedEvent, PlanUpdatedEvent, PlanItemAddedEvent,
             PlanItemRemovedEvent, PlanClearedEvent
         )
@@ -592,6 +619,8 @@ class PrefixedCLIChannel(ChannelAdapter):
             await self._print_tool_call(event, timestamp, verbosity)
         elif isinstance(event, ParallelGroupEvent):
             await self._print_parallel_group(event, timestamp, verbosity)
+        elif isinstance(event, CompactionEvent):
+            await self._print_compaction_event(event, timestamp, verbosity)
         # Removed handling for UserInteractionRequestEvent, UserInteractionResponseEvent, FollowUpRequestEvent
         # These are now handled by CommunicationManager per separation of concerns
         elif isinstance(event, FinalResponseEvent):
@@ -767,6 +796,33 @@ class PrefixedCLIChannel(ChannelAdapter):
     # - _print_user_interaction_request: Full content display belongs in CommunicationManager
     # - _print_user_interaction_response: User input handling is CommunicationManager's responsibility
     # - _print_follow_up_request: Follow-up workflow is CommunicationManager's domain
+
+    async def _print_compaction_event(self, event, ts: str, verbosity: int):
+        """Print memory compaction event with prefix."""
+        from ..config import VerbosityLevel
+        c = self.colors
+
+        if verbosity == VerbosityLevel.QUIET:
+            return
+
+        prefix = self._format_prefix(event.agent_name)
+
+        if event.status == "started":
+            print(f"{prefix}{ts} {c['yellow']}📦 Memory compaction started ({event.pre_tokens} tokens, {event.pre_messages} messages){c['reset']}")
+        elif event.status == "completed":
+            reduction = 0
+            if event.pre_tokens > 0:
+                reduction = round((1 - event.post_tokens / event.pre_tokens) * 100)
+            duration_str = f" ({event.duration:.1f}s)" if event.duration is not None else ""
+            print(
+                f"{prefix}{ts} {c['green']}✓ Compaction complete: "
+                f"{event.pre_tokens}→{event.post_tokens} tokens ({reduction}% reduction), "
+                f"{event.pre_messages}→{event.post_messages} messages{duration_str}{c['reset']}"
+            )
+            if verbosity >= VerbosityLevel.VERBOSE and event.stages_run:
+                print(f"{prefix}  {c['gray']}Stages: {', '.join(event.stages_run)}{c['reset']}")
+        elif event.status == "failed":
+            print(f"{prefix}{ts} {c['red']}✗ Compaction failed{c['reset']}")
 
     async def _print_final_response(self, event: 'FinalResponseEvent', ts: str, verbosity: int):
         """Print final response."""

@@ -27,7 +27,12 @@ The MARSYS API is organized into several key modules:
 
     ```python
     from marsys.agents import Agent, BaseAgent
-    agent = Agent(model_config, name="Helper")
+    agent = Agent(
+        model_config=model_config,
+        name="Helper",
+        goal="Provide general assistance",
+        instruction="Respond helpfully and clearly to user requests.",
+    )
     ```
 
 - :material-brain:{ .lg .middle } **[Model System](models/)**
@@ -72,6 +77,10 @@ The MARSYS API is organized into several key modules:
 | [`BaseAgent`](agent-class/#baseagent) | `src.agents` | Abstract base agent class |
 | [`Agent`](agent-class/#agent) | `src.agents` | Standard agent implementation |
 | [`BrowserAgent`](agent-class/#browseragent) | `src.agents` | Web automation agent |
+| [`CodeExecutionAgent`](agent-class/#codeexecutionagent) | `src.agents` | Code execution + file operations agent |
+| [`DataAnalysisAgent`](agent-class/#dataanalysisagent) | `src.agents` | Persistent Python analysis agent |
+| `FileOperationAgent` | `src.agents` | File and shell operations agent |
+| `WebSearchAgent` | `src.agents` | Multi-source search agent |
 | [`LearnableAgent`](agent-class/#learnableagent) | `src.agents` | Fine-tunable agent |
 | [`AgentPool`](agent-class/#agentpool) | `src.agents.agent_pool` | Agent pool for parallelism |
 | [`PlanningConfig`](../concepts/planning/#planningconfig) | `src.agents.planning` | Task planning configuration |
@@ -109,27 +118,31 @@ from marsys.models import ModelConfig
 agent = Agent(
     model_config=ModelConfig(
         type="api",
-        name="anthropic/claude-haiku-4.5",
+        name="anthropic/claude-opus-4.6",
         provider="openrouter",
         max_tokens=12000
     ),
     name="Assistant",
-    goal="A helpful assistant"
+    goal="A helpful assistant",
+    instruction="Provide concise and accurate answers."
 )
 
 # Agent with tools
 agent = Agent(
     model_config=config,
     name="Researcher",
-    tools=[search_tool, analyze_tool]
+    goal="Research and analyze user questions",
+    instruction="Use available tools when needed and synthesize findings.",
+    tools={"search_tool": search_tool, "analyze_tool": analyze_tool}
 )
 
 # Browser agent
 from marsys.agents import BrowserAgent
 
-browser = BrowserAgent(
+browser = await BrowserAgent.create_safe(
     model_config=config,
     name="WebScraper",
+    mode="primitive",
     headless=True
 )
 ```
@@ -299,9 +312,24 @@ class OrchestraResult:
 
 ```python
 # Create specialized agents
-researcher = Agent(config, name="Researcher")
-analyst = Agent(config, name="Analyst")
-writer = Agent(config, name="Writer")
+researcher = Agent(
+    model_config=config,
+    name="Researcher",
+    goal="Gather and structure relevant information",
+    instruction="Focus on evidence collection and concise synthesis."
+)
+analyst = Agent(
+    model_config=config,
+    name="Analyst",
+    goal="Analyze findings and identify patterns",
+    instruction="Produce clear analytical conclusions from gathered evidence."
+)
+writer = Agent(
+    model_config=config,
+    name="Writer",
+    goal="Produce polished final output",
+    instruction="Turn analyzed content into a coherent final response."
+)
 
 # Define topology
 topology = PatternConfig.hub_and_spoke(

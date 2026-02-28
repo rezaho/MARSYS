@@ -405,53 +405,96 @@ Event bus for communication events.
 
 **Import:**
 ```python
-from marsys.coordination.communication import EventBus
+from marsys.coordination.event_bus import EventBus
 ```
 
 **Methods:**
 
-#### publish
+#### emit
 ```python
-async def publish(
-    event: str,
-    data: Any,
-    session_id: Optional[str] = None
-) -> None
+async def emit(event: Any) -> None
 ```
-Publish event to subscribers.
+Emit an event object to subscribers (async).
+
+#### emit_nowait
+```python
+def emit_nowait(event: Any) -> None
+```
+Emit an event from synchronous contexts (fire-and-forget).
 
 #### subscribe
 ```python
-def subscribe(
-    event: str,
-    callback: Callable[[Any], None]
-) -> str
+def subscribe(event_type: str, listener: Callable) -> None
 ```
 Subscribe to events.
 
-**Events:**
-- `user.input.requested` - Input requested
-- `user.input.received` - Input received
-- `user.message.sent` - Message sent
-- `channel.connected` - Channel connected
-- `channel.disconnected` - Channel disconnected
+#### unsubscribe
+```python
+def unsubscribe(event_type: str, listener: Callable) -> None
+```
+Unsubscribe from events.
+
+**Event Types:**
+Event types are the class names of the emitted event objects (e.g., `"PlanCreatedEvent"`).
 
 **Example:**
 ```python
+from dataclasses import dataclass
+
+@dataclass
+class CustomEvent:
+    session_id: str
+    payload: str
+
 bus = EventBus()
 
-# Subscribe to events
-def on_input(data):
-    print(f"User input: {data['response']}")
+async def on_custom_event(event: CustomEvent):
+    print(event.payload)
 
-bus.subscribe("user.input.received", on_input)
+bus.subscribe("CustomEvent", on_custom_event)
 
-# Publish event
-await bus.publish(
-    "user.input.received",
-    {"response": "yes", "session_id": "123"}
-)
+# Emit events
+await bus.emit(CustomEvent(session_id="123", payload="hello"))
+bus.emit_nowait(CustomEvent(session_id="123", payload="background"))
 ```
+
+---
+
+### WebChannel Status Events
+
+`WebChannel` can deliver status and planning events to web clients via WebSocket push or REST polling.
+
+**Methods:**
+
+#### push_status_event
+```python
+async def push_status_event(event_data: Dict[str, Any]) -> None
+```
+Push a serialized status event to WebSocket clients and the polling queue.
+
+#### subscribe_status_events
+```python
+def subscribe_status_events(callback: Callable[[Dict[str, Any]], None]) -> None
+```
+Subscribe to status event callbacks.
+
+#### get_status_events
+```python
+async def get_status_events(limit: int = 100, timeout: float = 0.0) -> List[Dict[str, Any]]
+```
+Poll for status events (useful for REST APIs).
+
+**StatusWebChannel Bridge:**
+```python
+from marsys.coordination.communication.channels import WebChannel
+from marsys.coordination.status.channels import StatusWebChannel
+
+web_channel = WebChannel()
+status_web = StatusWebChannel(web_channel)
+status_manager.add_channel(status_web)
+```
+
+This forwards `StatusManager` events (including planning events) into `WebChannel`.
 
 ---
 

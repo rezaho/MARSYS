@@ -66,16 +66,18 @@ agent1 = Agent(
     model_config=ModelConfig(
         type="api",
         provider="openrouter",
-        name="anthropic/claude-haiku-4.5",
+        name="anthropic/claude-opus-4.6",
         max_tokens=12000
     ),
-    goal="Processes and analyzes data"
+    goal="Processes and analyzes data",
+    instruction="Analyze structured inputs and return concise findings."
 )
 
 agent2 = Agent(
     name="report_writer",
     model_config=config,
-    goal="Creates detailed reports"
+    goal="Creates detailed reports",
+    instruction="Turn analyzed data into clear, actionable reports."
 )
 
 # Check registration
@@ -90,23 +92,18 @@ if processor:
 ### Automatic Registration
 
 ```python
-class Agent(BaseAgent):
-    """Agents automatically register on creation."""
+from marsys.agents import Agent
+from marsys.agents.registry import AgentRegistry
 
-    def __init__(self, agent_name: str = None, **kwargs):
-        super().__init__(**kwargs)
+agent = Agent(
+    model_config=config,
+    name="assistant",
+    goal="Help users with general tasks",
+    instruction="Respond clearly and safely."
+)
 
-        # Auto-registration happens in BaseAgent
-        if agent_name:
-            self.name = agent_name
-            AgentRegistry.register_instance(self, agent_name)
-        else:
-            # Auto-generate unique name
-            self.name = f"{self.__class__.__name__}_{id(self)}"
-            AgentRegistry.register_instance(self, self.name)
-
-# No manual registration needed!
-agent = Agent(name="assistant")  # Automatically in registry
+# Auto-registration happens in BaseAgent.__init__
+assert AgentRegistry.get("assistant") is agent
 ```
 
 ### Registry Operations
@@ -147,7 +144,12 @@ To prevent race conditions during concurrent execution, use identity-safe unregi
 from marsys.agents.registry import AgentRegistry
 
 # Create agent
-agent = Agent(name="worker", model_config=config)
+agent = Agent(
+    name="worker",
+    model_config=config,
+    goal="Process assigned tasks",
+    instruction="Execute assigned work and return concise results."
+)
 
 # Later: cleanup and unregister (identity-safe)
 await agent.cleanup()  # Close resources
@@ -261,7 +263,7 @@ class SmartCoordinator(Agent):
         agent_names = type_mapping.get(task_type, [])
         return [
             name for name in agent_names
-            if AgentRegistry.has_agent(name)
+            if AgentRegistry.get(name) is not None
         ]
 
     def _select_best_agent(self, candidates: List[str], task: str) -> str:
@@ -288,7 +290,7 @@ class LoadBalancedRegistry:
     @classmethod
     def get_least_loaded(cls, agent_type: str = None) -> Optional[str]:
         """Get least loaded agent."""
-        candidates = AgentRegistry.list()
+        candidates = list(AgentRegistry.all().keys())
 
         if agent_type:
             # Filter by type
@@ -340,7 +342,7 @@ class HealthMonitor:
     @classmethod
     async def check_agent_health(cls, agent_name: str) -> bool:
         """Check if agent is healthy."""
-        agent = AgentRegistry.get_agent(agent_name)
+        agent = AgentRegistry.get(agent_name)
         if not agent:
             return False
 
@@ -369,7 +371,7 @@ class HealthMonitor:
     async def check_all_agents(cls) -> Dict[str, bool]:
         """Health check all registered agents."""
         results = {}
-        for agent_name in AgentRegistry.list():
+        for agent_name in list(AgentRegistry.all().keys()):
             results[agent_name] = await cls.check_agent_health(agent_name)
         return results
 
@@ -396,8 +398,8 @@ class PersistentRegistry:
             "agents": {}
         }
 
-        for agent_name in AgentRegistry.list():
-            agent = AgentRegistry.get_agent(agent_name)
+        for agent_name in list(AgentRegistry.all().keys()):
+            agent = AgentRegistry.get(agent_name)
             if agent:
                 state["agents"][agent_name] = {
                     "type": type(agent).__name__,
@@ -415,11 +417,11 @@ class PersistentRegistry:
             return json.load(f)
 
     @classmethod
-    def restore_agents(cls, state: Dict, model_configs: Dict[str, ModelConfig]):
+    async def restore_agents(cls, state: Dict, model_configs: Dict[str, ModelConfig]):
         """Restore agents from saved state."""
         for agent_name, info in state.get("agents", {}).items():
             agent_type = info["type"]
-            model_name = info.get("model", "anthropic/claude-haiku-4.5")
+            model_name = info.get("model", "anthropic/claude-opus-4.6")
 
             # Get appropriate config
             config = model_configs.get(model_name)
@@ -428,9 +430,18 @@ class PersistentRegistry:
 
             # Recreate agent based on type
             if agent_type == "Agent":
-                Agent(name=agent_name, model_config=config)
+                Agent(
+                    name=agent_name,
+                    model_config=config,
+                    goal="Restored agent goal",
+                    instruction="Restored agent instruction."
+                )
             elif agent_type == "BrowserAgent":
-                BrowserAgent(name=agent_name, model_config=config)
+                await BrowserAgent.create_safe(
+                    name=agent_name,
+                    model_config=config,
+                    headless=True
+                )
             # Add other agent types as needed
 ```
 
@@ -440,12 +451,32 @@ class PersistentRegistry:
 
 ```python
 # ✅ GOOD - Descriptive, unique names
-agent1 = Agent(name="financial_analyst_v2", model_config=config)
-agent2 = Agent(name="report_generator_q4_2024", model_config=config)
+agent1 = Agent(
+    name="financial_analyst_v2",
+    model_config=config,
+    goal="Analyze financial performance",
+    instruction="Review financial data and report key findings."
+)
+agent2 = Agent(
+    name="report_generator_q4_2024",
+    model_config=config,
+    goal="Generate Q4 reports",
+    instruction="Create clear and complete quarterly reports."
+)
 
 # ❌ BAD - Generic, collision-prone names
-agent1 = Agent(name="agent", model_config=config)
-agent2 = Agent(name="helper", model_config=config)
+agent1 = Agent(
+    name="agent",
+    model_config=config,
+    goal="Generic goal",
+    instruction="Generic instruction."
+)
+agent2 = Agent(
+    name="helper",
+    model_config=config,
+    goal="Generic goal",
+    instruction="Generic instruction."
+)
 ```
 
 ### 2. **Existence Checks**
@@ -453,17 +484,17 @@ agent2 = Agent(name="helper", model_config=config)
 ```python
 # ✅ GOOD - Always check before invoking
 async def safe_delegate(agent_name: str, task: str):
-    if not AgentRegistry.has_agent(agent_name):
+    if AgentRegistry.get(agent_name) is None:
         logger.warning(f"Agent {agent_name} not found")
         # Fallback logic
         return await use_fallback_agent(task)
 
-    agent = AgentRegistry.get_agent(agent_name)
+    agent = AgentRegistry.get(agent_name)
     return await agent.run(task)
 
 # ❌ BAD - Assuming agent exists
 async def unsafe_delegate(agent_name: str, task: str):
-    agent = AgentRegistry.get_agent(agent_name)
+    agent = AgentRegistry.get(agent_name)
     return await agent.run(task)  # Will fail if agent is None
 ```
 
@@ -484,7 +515,9 @@ result = await Orchestra.run(
 async def process_batch(items):
     temp_agent = Agent(
         name=f"batch_processor_{uuid.uuid4().hex[:8]}",
-        model_config=config
+        model_config=config,
+        goal="Process batch items",
+        instruction="Process each item and return concise structured output."
     )
 
     results = []
@@ -500,7 +533,12 @@ async def process_batch(items):
 
 # ❌ BAD - Creating agents without cleanup
 for i in range(1000):
-    Agent(name=f"worker_{i}", model_config=config)
+    Agent(
+        name=f"worker_{i}",
+        model_config=config,
+        goal="Temporary worker",
+        instruction="Handle temporary workload."
+    )
     # Creates 1000 agents with open aiohttp sessions, registry entries!
 ```
 
@@ -511,7 +549,7 @@ for i in range(1000):
 async def monitor_registry():
     """Regular registry monitoring."""
     while True:
-        agents = AgentRegistry.list()
+        agents = list(AgentRegistry.all().keys())
         logger.info(f"Active agents: {len(agents)}")
 
         if len(agents) > 100:

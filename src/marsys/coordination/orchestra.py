@@ -810,7 +810,7 @@ class Orchestra:
                 "session_id": session_id,
                 "task": task,
                 "context": context,
-                "branches": {b.id: self._serialize_branch(b) for b in initial_branches},
+                "branches": {b.id: b for b in initial_branches},
                 "active_branches": [b.id for b in initial_branches],
                 "completed_branches": [],
                 "waiting_branches": {},
@@ -1199,11 +1199,11 @@ class Orchestra:
                 "session_id": session_id,
                 "task": task,
                 "context": context,
-                "branches": {bid: self._serialize_branch(b) for bid, b in branch_states.items()},
+                "branches": branch_states,  # Pass raw ExecutionBranch objects; StateManager serializes
                 "active_branches": [t.get_name() for t in active_tasks if not t.done()],
                 "completed_branches": [b.branch_id for b in completed_branches],
                 "waiting_branches": {},  # TODO: Extract from branch spawner
-                "branch_results": {b.branch_id: self._serialize_branch_result(b) for b in completed_branches},
+                "branch_results": {b.branch_id: b for b in completed_branches},  # Pass raw BranchResult objects
                 "parent_child_map": {},  # TODO: Extract from branch spawner
                 "child_parent_map": {},  # TODO: Extract from branch spawner
                 "metadata": {
@@ -1464,6 +1464,8 @@ class Session:
     
     async def run(self, topology: Any) -> OrchestraResult:
         """Run the session with the given topology."""
+        # Ensure session ID is passed through context so state is saved under this session's ID
+        self.context["session_id"] = self.id
         return await self.orchestra.execute(
             self.task,
             topology,

@@ -28,6 +28,7 @@ from marsys.agents.exceptions import (
 
 # Import ToolResponse for multimodal returns
 if TYPE_CHECKING:
+    from marsys.environment.filesystem import RunFileSystem
     from marsys.environment.tool_response import ToolResponse
 
 # Import BeautifulSoup and markdownify if available
@@ -131,6 +132,39 @@ def check_download(timeout_ms: int = 500):
 ##############################################
 ###   Helper Functions for Browser Tool   ###
 ##############################################
+
+
+def _coerce_coordinate(value: Union[int, float, str], name: str = "coordinate") -> float:
+    """
+    Coerce a coordinate value to float.
+
+    LLMs may return coordinates as strings (e.g., "768" instead of 768).
+    Playwright requires float values for mouse operations.
+
+    Args:
+        value: The coordinate value (int, float, or string representation)
+        name: Name of the coordinate for error messages (e.g., "x", "y")
+
+    Returns:
+        float: The coordinate as a float
+
+    Raises:
+        ValueError: If the value cannot be converted to a number
+    """
+    if isinstance(value, (int, float)):
+        return float(value)
+    if isinstance(value, str):
+        # Check for common mistake: both coordinates in one string
+        if ',' in value:
+            raise ValueError(
+                f"Invalid {name}: got '{value}'. The x and y coordinates must be separate integer parameters. "
+                f"Example: mouse_click(x=500, y=300)"
+            )
+        try:
+            return float(value.strip())
+        except ValueError:
+            raise ValueError(f"Invalid {name} coordinate: '{value}' is not a valid number")
+    raise ValueError(f"Invalid {name} coordinate: expected integer, got {type(value).__name__}")
 
 
 # Helper function to check rectangle overlap.
@@ -2095,6 +2129,9 @@ class BrowserTool:
         temp_dir: str,
         screenshot_dir: Optional[str] = None,
         downloads_path: Optional[str] = None,
+        filesystem: Optional["RunFileSystem"] = None,
+        downloads_virtual_dir: str = "./downloads",
+        screenshot_virtual_dir: str = "./screenshots",
     ) -> None:
         """
         Initialize the BrowserTool instance.
@@ -2106,13 +2143,22 @@ class BrowserTool:
             page (Page): The page to perform actions on.
             temp_dir (str): Temporary directory for downloads and other files.
             screenshot_dir (Optional[str]): Dedicated directory for screenshots. Defaults to temp_dir/screenshots.
+            downloads_path (Optional[str]): Custom downloads directory path.
+            filesystem (Optional[RunFileSystem]): Shared virtual filesystem for unified path resolution.
+            downloads_virtual_dir (str): Virtual path for downloads (default: /downloads).
+            screenshot_virtual_dir (str): Virtual path for screenshots (default: /screenshots).
         """
         self.playwright = playwright
         self.browser = browser
         self.context = context
         self.page = page
         self.temp_dir = temp_dir
-        
+
+        # Virtual filesystem for unified path handling
+        self._filesystem = filesystem
+        self._downloads_virtual_dir = downloads_virtual_dir
+        self._screenshot_virtual_dir = screenshot_virtual_dir
+
         # Set downloads path - use provided path or default to temp_dir/downloads
         self.download_path = downloads_path or os.path.join(temp_dir, "downloads")
 
@@ -2127,6 +2173,29 @@ class BrowserTool:
         # Global download detection infrastructure
         self._download_queue: asyncio.Queue = asyncio.Queue()
         self._setup_global_listeners()
+
+    def _to_virtual(self, host_path: str) -> str:
+        """
+        Convert a host path to a virtual path.
+
+        Args:
+            host_path: Host filesystem path
+
+        Returns:
+            Virtual path if filesystem is configured, otherwise host path
+        """
+        if self._filesystem is None:
+            return host_path
+        try:
+            return self._filesystem.to_virtual(Path(host_path))
+        except ValueError:
+            # If conversion fails, use virtual dir + filename
+            filename = os.path.basename(host_path)
+            if self.download_path in host_path:
+                return f"{self._downloads_virtual_dir}/{filename}"
+            elif self.screenshot_path in host_path:
+                return f"{self._screenshot_virtual_dir}/{filename}"
+            return host_path
 
     def _setup_global_listeners(self):
         """
@@ -2166,7 +2235,7 @@ class BrowserTool:
             timeout_ms: Milliseconds to wait for a download event
 
         Returns:
-            Dictionary with 'filename' and 'path' if download occurred, None otherwise
+            Dictionary with 'filename' and 'path' (virtual) if download occurred, None otherwise
         """
         try:
             # Wait for download event with timeout
@@ -2180,7 +2249,10 @@ class BrowserTool:
             file_path = os.path.join(self.download_path, filename)
             await download.save_as(file_path)
 
-            return {"filename": filename, "path": file_path}
+            # Return virtual path for agent visibility
+            virtual_path = self._to_virtual(file_path)
+
+            return {"filename": filename, "path": virtual_path}
 
         except asyncio.TimeoutError:
             # No download triggered - this is normal for most actions
@@ -2263,6 +2335,9 @@ class BrowserTool:
         viewport_width: int = 1280,
         viewport_height: int = 720,
         downloads_path: Optional[str] = None,
+        filesystem: Optional["RunFileSystem"] = None,
+        downloads_virtual_dir: str = "./downloads",
+        screenshot_virtual_dir: str = "./screenshots",
     ) -> "BrowserTool":
         """
         Create and initialize a BrowserTool instance using the async Playwright API with a timeout.
@@ -2278,6 +2353,9 @@ class BrowserTool:
             viewport_width (int): Browser viewport width.
             viewport_height (int): Browser viewport height.
             downloads_path (Optional[str]): Custom downloads directory path.
+            filesystem (Optional[RunFileSystem]): Shared virtual filesystem for unified path resolution.
+            downloads_virtual_dir (str): Virtual path for downloads (default: /downloads).
+            screenshot_virtual_dir (str): Virtual path for screenshots (default: /screenshots).
 
         Returns:
             BrowserTool: An instance with a page navigated to a default URL (https://google.com).
@@ -2414,8 +2492,13 @@ class BrowserTool:
                     raise TimeoutError("BrowserTool creation timed out.")
 
         # For persistent context, browser is None (context acts as both)
-        tool = cls(playwright, None, context, page, temp_dir, screenshot_dir, downloads_path)
-        
+        tool = cls(
+            playwright, None, context, page, temp_dir, screenshot_dir, downloads_path,
+            filesystem=filesystem,
+            downloads_virtual_dir=downloads_virtual_dir,
+            screenshot_virtual_dir=screenshot_virtual_dir,
+        )
+
         # Don't navigate to default page automatically - let the caller decide
         return tool
 
@@ -2462,8 +2545,9 @@ class BrowserTool:
             return f"Navigated to: {url}"
 
         except Exception as e:
-            # Handle ERR_ABORTED (download triggered before page load)
-            if "ERR_ABORTED" in str(e):
+            # Handle download-triggered navigation errors
+            error_msg = str(e)
+            if "ERR_ABORTED" in error_msg or "Download is starting" in error_msg:
                 # Wait a bit longer for download event to be captured by global listener
                 await self.page.wait_for_timeout(500)
                 # The decorator will check for download after this method returns
@@ -2903,6 +2987,10 @@ class BrowserTool:
         Returns:
             None
         """
+        # Coerce coordinates to floats (LLMs may return strings)
+        x = _coerce_coordinate(x, "x")
+        y = _coerce_coordinate(y, "y")
+
         r = reasoning or ""
 
         # Use smooth movement if requested
@@ -2952,6 +3040,10 @@ class BrowserTool:
         Returns:
             None
         """
+        # Coerce coordinates to floats (LLMs may return strings)
+        x = _coerce_coordinate(x, "x")
+        y = _coerce_coordinate(y, "y")
+
         r = reasoning or ""
 
         # Use smooth movement if requested
@@ -3004,6 +3096,10 @@ class BrowserTool:
         Returns:
             None
         """
+        # Coerce coordinates to floats (LLMs may return strings)
+        x = _coerce_coordinate(x, "x")
+        y = _coerce_coordinate(y, "y")
+
         r = reasoning or ""
 
         # Use smooth movement if requested
@@ -3054,6 +3150,10 @@ class BrowserTool:
         Returns:
             None
         """
+        # Coerce coordinates to floats (LLMs may return strings)
+        x = _coerce_coordinate(x, "x")
+        y = _coerce_coordinate(y, "y")
+
         r = reasoning or ""
 
         # Use smooth movement if requested
@@ -3100,6 +3200,10 @@ class BrowserTool:
             reasoning (Optional[str]): The reasoning chain for this action.
             button (str): Mouse button to press ("left", "right", "middle"). Defaults to "left".
         """
+        # Coerce coordinates to floats (LLMs may return strings)
+        x = _coerce_coordinate(x, "x")
+        y = _coerce_coordinate(y, "y")
+
         r = reasoning or ""
         await self.page.mouse.move(x, y, steps=5)
         await self.page.mouse.down(button=button)
@@ -3139,6 +3243,10 @@ class BrowserTool:
             reasoning (Optional[str]): The reasoning chain for this action.
             button (str): Mouse button to release ("left", "right", "middle"). Defaults to "left".
         """
+        # Coerce coordinates to floats (LLMs may return strings)
+        x = _coerce_coordinate(x, "x")
+        y = _coerce_coordinate(y, "y")
+
         r = reasoning or ""
         await self.page.mouse.move(x, y, steps=5)
         await self.page.mouse.up(button=button)
@@ -3228,6 +3336,10 @@ class BrowserTool:
         Returns:
             None
         """
+        # Coerce coordinates to floats (LLMs may return strings)
+        x = _coerce_coordinate(x, "x")
+        y = _coerce_coordinate(y, "y")
+
         r = reasoning or ""
         if steps is not None:
             await self.page.mouse.move(x, y, steps=steps)
@@ -3446,6 +3558,11 @@ class BrowserTool:
         Returns:
             Union[PILImage.Image, str]: The annotated screenshot as a PIL Image object or the file path if saved.
         """
+        # Coerce target coordinates (LLMs may return strings in the tuple)
+        target = (_coerce_coordinate(target[0], "target_x"), _coerce_coordinate(target[1], "target_y"))
+        if start is not None:
+            start = (_coerce_coordinate(start[0], "start_x"), _coerce_coordinate(start[1], "start_y"))
+
         r = reasoning or ""
         result = await mouse_move_smooth(
             page=self.page,
@@ -4051,7 +4168,7 @@ class BrowserTool:
                     ToolResponseContent(type="image", image_path=screenshot_path)
                 ],
                 metadata={
-                    "screenshot_path": screenshot_path,
+                    "screenshot_path": self._to_virtual(screenshot_path),
                     "elements_count": len(numbered_elements),
                     "detection_method": "rule_based"
                 }
@@ -4097,7 +4214,7 @@ class BrowserTool:
                     ToolResponseContent(type="text", text="[VISUAL CONTEXT] Current page screenshot (no element highlighting)."),
                     ToolResponseContent(type="image", image_path=full_path)
                 ],
-                metadata={"screenshot_path": full_path}
+                metadata={"screenshot_path": self._to_virtual(full_path)}
             )
 
             self.history.append({
@@ -4732,82 +4849,207 @@ class BrowserTool:
             reasoning (Optional[str]): The reasoning chain for this action.
 
         Returns:
-            Path to the downloaded file
+            Virtual path to the downloaded file (e.g., /downloads/file.pdf)
+        """
+        import mimetypes
+        import urllib.parse
+
+        r = reasoning or ""
+        # Validate URL scheme
+        parsed_url = urllib.parse.urlparse(url)
+        if parsed_url.scheme not in ("http", "https", ""):
+            return f"Error: Only http and https URLs are supported. Got: {parsed_url.scheme}://"
+
+        # Determine filename from URL if not provided and sanitize path separators
+        if not filename:
+            filename = os.path.basename(parsed_url.path) or "downloaded_file"
+        filename = os.path.basename(filename) or "downloaded_file"
+
+        response_status: Optional[int] = None
+        response_type: str = ""
+        body: Optional[bytes] = None
+        primary_error: Optional[str] = None
+
+        # Strategy 1: Use Playwright request context bound to browser session/cookies.
+        # This is more robust against anti-bot filtering than a raw aiohttp client.
+        try:
+            headers = {"Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8"}
+            if parsed_url.scheme and parsed_url.netloc:
+                headers["Referer"] = f"{parsed_url.scheme}://{parsed_url.netloc}/"
+
+            response = await self.page.request.get(
+                url,
+                headers=headers,
+                fail_on_status_code=False,
+                timeout=30000,
+            )
+            response_status = response.status
+
+            if response.ok:
+                body = await response.body()
+                response_type = response.headers.get("content-type", "")
+            else:
+                logger.warning(
+                    "download_file: primary request returned HTTP %s for %s",
+                    response.status,
+                    url,
+                )
+        except Exception as e:
+            primary_error = str(e)
+            logger.warning("download_file: primary request failed for %s: %s", url, e)
+
+        # Strategy 2: Navigate page, then inspect whether an actual download event occurred.
+        if body is None:
+            try:
+                nav_response = await self.page.goto(url, wait_until="domcontentloaded")
+                download_info = await self._check_for_download(timeout_ms=2000)
+                if download_info:
+                    self.history.append(
+                        {
+                            "action": "download_file",
+                            "reasoning": r,
+                            "url": url,
+                            "filename": download_info["filename"],
+                            "path": download_info["path"],
+                            "strategy": "download_event_fallback",
+                        }
+                    )
+                    return download_info["path"]
+
+                loaded_url = getattr(self.page, "url", None) or (
+                    getattr(nav_response, "url", None) if nav_response else url
+                )
+                message = (
+                    "No downloadable file detected from URL. "
+                    f"The page loaded successfully at: {loaded_url}. "
+                    "Continue by extracting content from the page or use a direct file URL."
+                )
+                self.history.append(
+                    {
+                        "action": "download_file",
+                        "reasoning": r,
+                        "url": url,
+                        "status": "page_loaded_no_download",
+                        "loaded_url": loaded_url,
+                        "primary_status": response_status,
+                        "primary_error": primary_error,
+                    }
+                )
+                return message
+            except Exception as e:
+                self.history.append(
+                    {
+                        "action": "download_file",
+                        "reasoning": r,
+                        "url": url,
+                        "status": "failed",
+                        "primary_status": response_status,
+                        "primary_error": primary_error,
+                        "fallback_error": str(e),
+                    }
+                )
+                if response_status is not None:
+                    primary_context = f"HTTP {response_status}"
+                elif primary_error:
+                    primary_context = primary_error
+                else:
+                    primary_context = "unknown"
+                return (
+                    f"Error: Failed to download file from {url}. "
+                    f"Primary request failed ({primary_context}) and browser fallback failed ({e})."
+                )
+
+        # Add file extension from content-type if filename lacks a recognized one
+        guessed_type, _ = mimetypes.guess_type(filename)
+        if guessed_type is None:
+            normalized_type = response_type.split(";")[0].strip().lower()
+            ext = mimetypes.guess_extension(normalized_type)
+            if ext and not filename.lower().endswith(ext.lower()):
+                filename += ext
+
+        file_path = os.path.join(self.download_path, filename)
+        with open(file_path, "wb") as f:
+            f.write(body)
+
+        # Convert to virtual path for agent visibility
+        virtual_path = self._to_virtual(file_path)
+
+        self.history.append(
+            {
+                "action": "download_file",
+                "reasoning": r,
+                "url": url,
+                "filename": filename,
+                "path": virtual_path,
+                "strategy": "request_context",
+                "primary_status": response_status,
+            }
+        )
+        return virtual_path
+
+    async def list_downloads(self, reasoning: Optional[str] = None) -> str:
+        """
+        List all files that have been downloaded to the downloads directory.
+
+        Use this tool when you need to find downloaded files, check if a download succeeded,
+        or see what files are available in the downloads folder.
+
+        Parameters:
+            reasoning (Optional[str]): The reasoning for listing downloads.
+
+        Returns:
+            A formatted string listing all downloaded files with their sizes and virtual paths.
         """
         r = reasoning or ""
 
-        # Use CDP session to fetch the file directly instead of waiting for download event
-        # This works better for PDFs that open in browser viewer
         try:
-            import urllib.parse
+            files = []
+            download_dir = Path(self.download_path)
 
-            import aiohttp
+            if download_dir.exists():
+                for file_path in download_dir.iterdir():
+                    if file_path.is_file():
+                        size_bytes = file_path.stat().st_size
+                        # Format size nicely
+                        if size_bytes < 1024:
+                            size_str = f"{size_bytes} B"
+                        elif size_bytes < 1024 * 1024:
+                            size_str = f"{size_bytes / 1024:.1f} KB"
+                        else:
+                            size_str = f"{size_bytes / (1024 * 1024):.1f} MB"
 
-            # Determine filename from URL if not provided
-            if not filename:
-                parsed_url = urllib.parse.urlparse(url)
-                filename = os.path.basename(parsed_url.path) or "downloaded_file"
-                # If no extension, try to get from content-type later
+                        # Convert to virtual path for agent visibility
+                        virtual_path = self._to_virtual(str(file_path))
 
-            file_path = os.path.join(self.download_path, filename)
-
-            # Use aiohttp to download the file
-            async with aiohttp.ClientSession() as session:
-                async with session.get(url) as response:
-                    response.raise_for_status()
-
-                    # Get content-type to determine file extension if needed
-                    if '.' not in filename:
-                        content_type = response.headers.get('content-type', '')
-                        if 'pdf' in content_type:
-                            filename += '.pdf'
-                        elif 'image' in content_type:
-                            ext = content_type.split('/')[-1]
-                            filename += f'.{ext}'
-                        file_path = os.path.join(self.download_path, filename)
-
-                    # Write the file
-                    with open(file_path, 'wb') as f:
-                        f.write(await response.read())
+                        files.append({
+                            "filename": file_path.name,
+                            "path": virtual_path,
+                            "size": size_str
+                        })
 
             self.history.append(
                 {
-                    "action": "download_file",
+                    "action": "list_downloads",
                     "reasoning": r,
-                    "url": url,
-                    "filename": filename,
-                    "path": file_path,
+                    "count": len(files),
                 }
             )
-            return file_path
 
-        except ImportError:
-            # Fallback to old method if aiohttp not available
-            # Start waiting for download before clicking
-            async with self.page.expect_download() as download_info:
-                # Navigate to the URL to trigger download
-                await self.page.goto(url)
+            # Use virtual path for display
+            virtual_downloads_dir = self._downloads_virtual_dir if self._filesystem else self.download_path
 
-            download = await download_info.value
+            if not files:
+                return f"No files found in downloads directory: {virtual_downloads_dir}"
 
-            # Determine filename
-            if not filename:
-                filename = download.suggested_filename or "downloaded_file"
+            result_lines = [f"Downloads directory: {virtual_downloads_dir}", f"Found {len(files)} file(s):", ""]
+            for f in files:
+                result_lines.append(f"  - {f['filename']} ({f['size']})")
+                result_lines.append(f"    Path: {f['path']}")
 
-            # Save the file
-            file_path = os.path.join(self.download_path, filename)
-            await download.save_as(file_path)
+            return "\n".join(result_lines)
 
-            self.history.append(
-                {
-                    "action": "download_file",
-                    "reasoning": r,
-                    "url": url,
-                    "filename": filename,
-                    "path": file_path,
-                }
-            )
-            return file_path
+        except Exception as e:
+            return f"Error listing downloads: {str(e)}"
 
     async def get_clean_html(
         self, 
@@ -5709,9 +5951,26 @@ class BrowserTool:
     async def close(self) -> None:
         """
         Close the browser and stop the Playwright instance.
+
+        For persistent contexts (create_safe), self.browser is None and
+        we close self.context instead.
         """
-        await self.browser.close()
-        await self.playwright.stop()
+        try:
+            if self.browser is not None:
+                # Normal browser instance
+                await self.browser.close()
+            elif self.context is not None:
+                # Persistent context (browser is None, context acts as browser)
+                await self.context.close()
+        except Exception as e:
+            logger.warning(f"Error closing browser/context: {e}")
+
+        try:
+            if self.playwright is not None:
+                await self.playwright.stop()
+        except Exception as e:
+            logger.warning(f"Error stopping playwright: {e}")
+
         self.history.append(
             {
                 "action": "close",
@@ -6026,7 +6285,7 @@ class BrowserTool:
                 "screenshot_path": filepath,
             }
         )
-        
+
         return filepath
 
     async def highlight_pixel_grid(

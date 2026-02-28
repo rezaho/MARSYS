@@ -133,6 +133,19 @@ class ResourceLimitEvent(StatusEvent):
         return "resource_limit"
 
 
+@dataclass
+class CompactionEvent(StatusEvent):
+    """Memory compaction lifecycle event."""
+    agent_name: str
+    status: str  # "started", "completed", "failed"
+    pre_tokens: int = 0
+    post_tokens: int = 0
+    pre_messages: int = 0
+    post_messages: int = 0
+    duration: Optional[float] = None
+    stages_run: Optional[List[str]] = None
+
+
 # ==============================================================================
 # Planning Events
 # ==============================================================================

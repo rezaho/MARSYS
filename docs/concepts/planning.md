@@ -58,7 +58,7 @@ from marsys.models import ModelConfig
 agent = Agent(
     model_config=ModelConfig(
         type="api",
-        name="anthropic/claude-haiku-4.5",
+        name="anthropic/claude-opus-4.6",
         provider="openrouter",
         max_tokens=12000
     ),
@@ -266,6 +266,21 @@ Planning integrates with the EventBus for:
 - **Memory Reset Sync**: Plans clear automatically when memory resets
 - **Status Updates**: Events emit for CLI/web visualization
 
+### Web Delivery (StatusWebChannel)
+
+To deliver planning events to web clients, attach `StatusWebChannel` to the `StatusManager` and use `WebChannel` polling or WebSocket push:
+
+```python
+from marsys.coordination.communication.channels import WebChannel
+from marsys.coordination.status.channels import StatusWebChannel
+
+web_channel = WebChannel()
+status_manager.add_channel(StatusWebChannel(web_channel))
+
+# Web clients can poll:
+# await web_channel.get_status_events()
+```
+
 ### Events Emitted
 
 | Event | When Emitted |
@@ -330,7 +345,7 @@ from marsys.models import ModelConfig
 researcher = Agent(
     model_config=ModelConfig(
         type="api",
-        name="anthropic/claude-sonnet-4",
+        name="anthropic/claude-opus-4.6",
         provider="openrouter",
         max_tokens=12000
     ),

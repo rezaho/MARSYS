@@ -29,6 +29,8 @@ class WebSearchAgent(Agent):
         google_cse_id: Optional[str] = None,
         semantic_scholar_api_key: Optional[str] = None,
         ncbi_api_key: Optional[str] = None,
+        memory_config=None,
+        compaction_model_config=None,
         **kwargs
     ):
         """
@@ -49,6 +51,8 @@ class WebSearchAgent(Agent):
             google_cse_id: Google Custom Search Engine ID (or read from GOOGLE_CSE_ID_GENERIC env var)
             semantic_scholar_api_key: Semantic Scholar API key (or read from SEMANTIC_SCHOLAR_API_KEY env var)
             ncbi_api_key: NCBI API key for PubMed (or read from NCBI_API_KEY env var)
+            memory_config: Optional ManagedMemoryConfig for compaction settings.
+            compaction_model_config: Optional ModelConfig for a separate compaction model.
             **kwargs: Additional arguments passed to base Agent
 
         Raises:
@@ -153,6 +157,8 @@ class WebSearchAgent(Agent):
             instruction=instruction,
             tools=tools,
             name=name,
+            memory_config=memory_config,
+            compaction_model_config=compaction_model_config,
             **kwargs
         )
 

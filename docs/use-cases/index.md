@@ -161,7 +161,7 @@ from marsys.models import ModelConfig
 config = ModelConfig(
     type="api",
     provider="openrouter",
-    name="anthropic/claude-haiku-4.5",
+    name="anthropic/claude-opus-4.6",
     temperature=0.3
 )
 

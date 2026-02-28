@@ -5,9 +5,14 @@ This module defines the configuration class for controlling security,
 permissions, operation limits, and feature flags.
 """
 
+from __future__ import annotations
+
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import List, Optional
+from typing import TYPE_CHECKING, Dict, List, Optional
+
+if TYPE_CHECKING:
+    from marsys.environment.filesystem import RunFileSystem
 
 
 # Default security patterns
@@ -53,7 +58,6 @@ DEFAULT_AUTO_APPROVE_PATTERNS = [
 
 DEFAULT_REQUIRE_APPROVAL_PATTERNS = [
     "**/config*",        # Configuration files
-    "**/*.json",         # JSON files (may contain sensitive config)
     "**/*.yaml",         # YAML files (may contain sensitive config)
     "**/*.yml",          # YAML files (alternative extension)
     "**/*.toml",         # TOML files (configuration)
@@ -62,7 +66,6 @@ DEFAULT_REQUIRE_APPROVAL_PATTERNS = [
     "**/.*rc",           # RC files (.bashrc, .npmrc, etc.)
     "**/Dockerfile*",    # Docker configuration
     "**/docker-compose*", # Docker Compose files
-    "**/*.xml",          # XML files (may be config)
     "**/requirements*.txt", # Python dependencies
     "**/package*.json",  # Node dependencies
     "**/Pipfile*",       # Python dependencies (Pipenv)
@@ -85,12 +88,6 @@ class FileOperationConfig:
 
     base_directory: Optional[Path] = None
     """Base directory for file operations. All operations are relative to this directory."""
-
-    force_base_directory: bool = True
-    """
-    If True, restrict all operations to base_directory and its subdirectories.
-    If False, base_directory is just a default, but operations outside are allowed.
-    """
 
     allowed_patterns: List[str] = field(default_factory=list)
     """
@@ -330,6 +327,23 @@ class FileOperationConfig:
     max_tree_depth: int = 10
     """Maximum depth for recursive directory operations."""
 
+    # === Virtual Filesystem Settings ===
+
+    run_filesystem: Optional["RunFileSystem"] = None
+    """
+    Shared run filesystem for unified path resolution across tools.
+    If provided, tool path resolution uses this object.
+    If None, one is auto-created from base_directory.
+    """
+
+    extra_mounts: Optional[Dict[str, Path]] = None
+    """
+    Additional mount points mapping virtual prefixes to host directories.
+    Each entry creates a mount point accessible via the virtual prefix.
+    Example: {"/datasets": Path("/shared/data"), "/memory": Path("/persistent/memory")}
+    Only used when auto-creating the RunFileSystem (i.e., run_filesystem is None).
+    """
+
     def __post_init__(self):
         """Validate configuration after initialization."""
         # Convert base_directory to Path if it's a string
@@ -362,6 +376,18 @@ class FileOperationConfig:
 
         if self.max_images_per_read <= 0:
             raise ValueError("max_images_per_read must be positive")
+
+        # Auto-create RunFileSystem if not provided
+        if self.run_filesystem is None:
+            from marsys.environment.filesystem import RunFileSystem
+
+            # Use base_directory or cwd as the root
+            root_dir = self.base_directory if self.base_directory is not None else Path.cwd()
+            self.run_filesystem = RunFileSystem.local(
+                run_root=root_dir,
+                extra_mounts=self.extra_mounts,
+                allow_symlink_escape=self.follow_symlinks,
+            )
 
     def _match_pattern(self, path: Path, pattern: str) -> bool:
         """
@@ -485,7 +511,6 @@ class FileOperationConfig:
         """
         return cls(
             base_directory=base_directory,
-            force_base_directory=False,
             blocked_patterns=[],
             auto_approve_patterns=["**/*"],
             require_approval_patterns=[],
@@ -508,7 +533,6 @@ class FileOperationConfig:
         """
         return cls(
             base_directory=base_directory,
-            force_base_directory=True,
             blocked_patterns=DEFAULT_BLOCKED_PATTERNS + [
                 "**/*.exe",
                 "**/*.dll",
@@ -529,7 +553,6 @@ class FileOperationConfig:
         """String representation."""
         return (
             f"FileOperationConfig(base_dir={self.base_directory}, "
-            f"force_base={self.force_base_directory}, "
             f"blocked={len(self.blocked_patterns)}, "
             f"auto_approve={len(self.auto_approve_patterns)}, "
             f"require_approval={len(self.require_approval_patterns)})"

@@ -47,9 +47,9 @@ agent = await BrowserAgent.create_safe(
 
 ---
 
-### [FileOperationAgent](file-operation-agent.md)
+### [FileOperationAgent](../guides/file-operations.md)
 
-Intelligent file and directory operations with optional bash command execution.
+Intelligent file and directory operations with optional shell command execution.
 
 **Best for**: Code analysis, configuration management, log processing, documentation generation
 
@@ -57,10 +57,10 @@ Intelligent file and directory operations with optional bash command execution.
 - Type-aware file handling (Python, JSON, PDF, Markdown, images)
 - Unified diff editing with high success rate
 - Content and structure search (ripgrep-based)
-- Optional bash tools for complex operations
+- Optional shell tools for complex operations
 - Security: Command validation, blocked dangerous patterns, timeouts
 
-**Tools**: 6 file operation tools + 10 optional bash tools
+**Tools**: 6 file operation tools + 10 optional shell tools
 
 ```python
 from marsys.agents import FileOperationAgent
@@ -68,12 +68,65 @@ from marsys.agents import FileOperationAgent
 agent = FileOperationAgent(
     model_config=config,
     name="FileHelper",
-    enable_bash=True,  # Enable bash commands
-    allowed_bash_commands=["grep", "find", "wc"]  # Whitelist
+    enable_shell=True,  # Enable shell commands
+    allowed_shell_commands=["grep", "find", "wc"]  # Whitelist
 )
 ```
 
-[**Read Full Documentation →**](file-operation-agent.md)
+To share files across agents, pass a shared `RunFileSystem` via `filesystem=...`.
+See [Run Filesystem](run-filesystem.md).
+
+[**Read Full Documentation →**](../guides/file-operations.md)
+
+---
+
+### CodeExecutionAgent
+
+Code-first specialist that combines file operations with safe Python and shell execution.
+
+**Best for**: Running tests, scripts, build/lint workflows, automation tasks, reproducible code-driven debugging.
+
+**Key Features**:
+- Unified file + execution toolset (`read_file`/`edit_file` + `python_execute`/`shell_execute`)
+- Shared `RunFileSystem` support for consistent virtual paths across agents
+- Configurable `CodeExecutionConfig` for resource and security limits
+- Explicit cleanup support for persistent execution resources
+
+**Tools**: file operation tools + `python_execute` + `shell_execute`
+
+```python
+from marsys.agents import CodeExecutionAgent
+
+agent = CodeExecutionAgent(
+    model_config=config,
+    name="CodeRunner",
+)
+```
+
+---
+
+### DataAnalysisAgent
+
+Data-science oriented agent with persistent Python session behavior (Jupyter-like workflow).
+
+**Best for**: Iterative analysis, data exploration, statistical modeling, plotting, and experiment-style workflows.
+
+**Key Features**:
+- Persistent `python_execute` session by default (`session_persistent_python=True`)
+- File operations + execution tools in one agent
+- Shared `RunFileSystem` support for multi-agent handoffs
+- Designed for incremental analysis loops instead of one-shot commands
+
+**Tools**: file operation tools + persistent `python_execute` + `shell_execute`
+
+```python
+from marsys.agents import DataAnalysisAgent
+
+agent = DataAnalysisAgent(
+    model_config=config,
+    name="DataScientist",
+)
+```
 
 ---
 
@@ -84,13 +137,13 @@ Multi-source information gathering across web and scholarly databases.
 **Best for**: Research, fact-checking, literature reviews, current events
 
 **Key Features**:
-- Multi-source search (Bing, Google, arXiv, Semantic Scholar, PubMed)
+- Multi-source search (DuckDuckGo, Google, arXiv, Semantic Scholar, PubMed)
 - Configurable search modes (web, scholarly, or all)
 - API key validation at initialization
 - Query formulation strategies
 - Iterative refinement guidance
 
-**Tools**: Up to 5 search sources (configurable)
+**Tools**: Up to 8 search sources (configurable)
 
 ```python
 from marsys.agents import WebSearchAgent
@@ -99,7 +152,7 @@ agent = WebSearchAgent(
     model_config=config,
     name="Researcher",
     search_mode="all",  # "web", "scholarly", or "all"
-    bing_api_key=os.getenv("BING_SEARCH_API_KEY")
+    include_google=False  # Avoid Google API key requirement
 )
 ```
 
@@ -113,7 +166,9 @@ agent = WebSearchAgent(
 |-------|------------------|-------|-------------------|-------------------|
 | **BrowserAgent** | Web automation | Browser control | None | Timeout enforcement, mode-based restrictions |
 | **FileOperationAgent** | File system operations | 6-16 tools | None | Command validation, blocked patterns |
-| **WebSearchAgent** | Information gathering | 1-5 sources | Bing/Google (web)<br>None (scholarly) | API key validation |
+| **CodeExecutionAgent** | Code + automation tasks | File ops + Python + shell | None | Resource limits, blocked patterns, optional network disable |
+| **DataAnalysisAgent** | Iterative data science workflows | Persistent Python + file ops + shell | None | Resource limits, blocked patterns, persistent session controls |
+| **WebSearchAgent** | Information gathering | 1-8 sources | Google (optional for Google tools)<br>None (DuckDuckGo/scholarly basics) | API key validation |
 
 ## Common Patterns
 
@@ -124,10 +179,16 @@ Combine specialized agents in a topology:
 ```python
 from marsys.coordination import Orchestra
 from marsys.coordination.topology.patterns import PatternConfig
+from marsys.agents import BrowserAgent, FileOperationAgent, DataAnalysisAgent, WebSearchAgent
 
-browser_agent = BrowserAgent(config, mode="vision")
-file_agent = FileOperationAgent(config, enable_bash=True)
-search_agent = WebSearchAgent(config, search_mode="scholarly")
+browser_agent = await BrowserAgent.create_safe(
+    model_config=config,
+    name="BrowserAgent",
+    mode="primitive"
+)
+file_agent = FileOperationAgent(model_config=config, name="FileHelper", enable_shell=True)
+analysis_agent = DataAnalysisAgent(model_config=config, name="Analyzer")
+search_agent = WebSearchAgent(model_config=config, name="Researcher", search_mode="scholarly")
 
 topology = PatternConfig.hub_and_spoke(
     hub="Coordinator",
@@ -166,14 +227,12 @@ from marsys.agents import create_browser_agent_pool
 pool = await create_browser_agent_pool(
     num_instances=3,
     model_config=config,
-    mode="vision",
+    mode="primitive",
     headless=True
 )
 
-# Register and use in topology
-AgentRegistry.register_instance(pool, "BrowserPool")
-
-# Pool automatically manages concurrent requests
+# Pool is registered by default (register=True)
+# and automatically manages concurrent requests
 ```
 
 ### Pattern 4: Conditional Tool Enabling
@@ -181,17 +240,19 @@ AgentRegistry.register_instance(pool, "BrowserPool")
 Enable features based on environment:
 
 ```python
-# Production: restricted bash commands
+# Production: restricted shell commands
 file_agent = FileOperationAgent(
-    config,
-    enable_bash=True,
-    allowed_bash_commands=["grep", "find", "wc", "ls"]
+    model_config=config,
+    name="FileHelper",
+    enable_shell=True,
+    allowed_shell_commands=["grep", "find", "wc", "ls"]
 )
 
 # Development: more permissive
 file_agent = FileOperationAgent(
-    config,
-    enable_bash=True  # Uses default blocked list only
+    model_config=config,
+    name="FileHelperDev",
+    enable_shell=True  # Uses default blocked list only
 )
 ```
 
@@ -239,10 +300,10 @@ Specialized agents use tool classes that provide:
 
 Available tool classes:
 
-- [BrowserTools](../guides/browser-tools.md): Browser automation and control
-- [FileOperationTools](../guides/file-operation-tools.md): File system operations
-- [BashTools](../guides/bash-tools.md): Shell command execution
-- [SearchTools](../guides/search-tools.md): Multi-source search
+- [BrowserAgent Tools](browser-automation.md): Browser automation and control
+- [FileOperationTools](../guides/file-operations.md): File system operations
+- [ShellTools](../guides/specialized-tools.md): Shell command execution
+- [SearchTools](../guides/specialized-tools.md): Multi-source search
 
 ## Best Practices
 
@@ -256,8 +317,18 @@ Available tool classes:
 
 **Use FileOperationAgent when**:
 - Working with files on the local file system
-- Need bash commands for system integration
+- Need shell commands for system integration
 - Analyzing codebases or processing logs
+
+**Use CodeExecutionAgent when**:
+- You need to execute Python/shell while editing files in the same workflow
+- Build/test/lint/automation loops are central to the task
+- You want strict execution controls via `CodeExecutionConfig`
+
+**Use DataAnalysisAgent when**:
+- You need notebook-like iterative analysis with persistent Python state
+- You are exploring datasets across multiple execution steps
+- You need plotting/analysis artifacts while keeping shared virtual paths
 
 **Use WebSearchAgent when**:
 - Gathering information from online sources
@@ -268,16 +339,21 @@ Available tool classes:
 
 ```python
 # BrowserAgent: production mode
-agent = BrowserAgent(
-    mode="stealth",  # Avoid detection
-    headless=True,   # No GUI
-    timeout=30
+agent = await BrowserAgent.create_safe(
+    model_config=config,
+    name="WebAutomation",
+    mode="advanced",
+    headless=True,
+    auto_screenshot=False,
+    timeout=8000
 )
 
 # FileOperationAgent: strict whitelist
 agent = FileOperationAgent(
-    enable_bash=True,
-    allowed_bash_commands=["grep", "find", "wc"]
+    model_config=config,
+    name="FileHelper",
+    enable_shell=True,
+    allowed_shell_commands=["grep", "find", "wc"]
 )
 ```
 
@@ -286,14 +362,17 @@ agent = FileOperationAgent(
 ```python
 try:
     search_agent = WebSearchAgent(
-        config,
+        model_config=config,
+        name="Researcher",
         search_mode="web",
-        bing_api_key=os.getenv("BING_SEARCH_API_KEY")
+        include_google=True,
+        google_api_key=os.getenv("GOOGLE_SEARCH_API_KEY"),
+        google_cse_id=os.getenv("GOOGLE_CSE_ID_GENERIC"),
     )
 except ValueError as e:
     print(f"Missing API key: {e}")
     # Fall back to scholarly-only mode
-    search_agent = WebSearchAgent(config, search_mode="scholarly")
+    search_agent = WebSearchAgent(model_config=config, name="Researcher", search_mode="scholarly")
 ```
 
 ### 4. Use Scenario-Based Instructions
@@ -325,7 +404,7 @@ from marsys.agents import create_browser_agent_pool
 pool = await create_browser_agent_pool(
     num_instances=3,
     model_config=config,
-    mode="vision"
+    mode="advanced"
 )
 
 # Acquire instance for task

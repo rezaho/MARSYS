@@ -49,23 +49,6 @@ class PathValidator:
                 reason=f"Invalid path: {e}"
             )
 
-        # Check if path exists for certain operations
-        if operation in ["read", "edit", "delete"] and not abs_path.exists():
-            return ValidationResult(
-                allowed=False,
-                reason=f"Path does not exist: {abs_path}"
-            )
-
-        # Check base directory restriction
-        if self.config.force_base_directory and self.config.base_directory:
-            try:
-                abs_path.relative_to(self.config.base_directory)
-            except ValueError:
-                return ValidationResult(
-                    allowed=False,
-                    reason=f"Path outside base directory: {self.config.base_directory}"
-                )
-
         # Check for symlinks
         if abs_path.is_symlink() and not self.config.follow_symlinks:
             return ValidationResult(

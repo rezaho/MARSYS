@@ -498,8 +498,8 @@ for task in tasks:
     # Agents stay alive, registry intact
 
 # Scenario 2: Long-lived agent pools
-pool = await create_browser_agent_pool(num_instances=3)
-AgentRegistry.register_instance(pool, "BrowserPool")
+pool = await create_browser_agent_pool(num_instances=3, register=False)
+AgentRegistry.register_pool(pool)
 
 # Pool manages its own lifecycle
 result = await Orchestra.run(

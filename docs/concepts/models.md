@@ -72,11 +72,12 @@ class ModelConfig(BaseModel):
     # Core settings
     type: Literal["api", "local"]           # Model type
     name: str                               # Model identifier
-    provider: Optional[str] = None          # openai, anthropic, google, xai
+    provider: Optional[str] = None          # openai, anthropic, google, xai, openrouter, openai-oauth, anthropic-oauth
 
     # API settings
     api_key: Optional[str] = None           # Auto-loaded from env if None
     base_url: Optional[str] = None          # Custom endpoint
+    oauth_profile: Optional[str] = None     # Optional OAuth profile for openai-oauth / anthropic-oauth
 
     # Generation parameters
     max_tokens: int = 8192                  # Maximum output tokens
@@ -98,47 +99,37 @@ class ModelConfig(BaseModel):
 openrouter_config = ModelConfig(
     type="api",
     provider="openrouter",
-    name="anthropic/claude-haiku-4.5",
+    name="anthropic/claude-opus-4.6",
     temperature=0.7,
     max_tokens=12000,
     # api_key loaded from OPENROUTER_API_KEY env var
 )
 
-# OpenAI GPT-5
+# OpenAI GPT-5 Codex
 gpt5_config = ModelConfig(
     type="api",
     provider="openrouter",
-    name="openai/gpt-5",
+    name="openai/gpt-5-codex",
     temperature=0.7,
     max_tokens=12000,
     # api_key loaded from OPENROUTER_API_KEY env var
 )
 
-# Anthropic Claude Sonnet 4.5
-claude_sonnet_config = ModelConfig(
+# Anthropic Claude Opus 4.6
+claude_opus_config = ModelConfig(
     type="api",
     provider="openrouter",
-    name="anthropic/claude-sonnet-4.5",
+    name="anthropic/claude-opus-4.6",
     temperature=0.5,
     max_tokens=12000,
     # api_key loaded from OPENROUTER_API_KEY env var
 )
 
-# Anthropic Claude Haiku 4.5
-claude_haiku_config = ModelConfig(
-    type="api",
-    provider="openrouter",
-    name="anthropic/claude-haiku-4.5",
-    temperature=0.7,
-    max_tokens=12000,
-    # api_key loaded from OPENROUTER_API_KEY env var
-)
-
-# Google Gemini 2.5 Pro
+# Google Gemini 3 Pro Preview
 gemini_config = ModelConfig(
     type="api",
     provider="openrouter",
-    name="google/gemini-2.5-pro",
+    name="google/gemini-3-pro-preview",
     temperature=0.8,
     max_tokens=12000,
     # api_key loaded from OPENROUTER_API_KEY env var
@@ -168,6 +159,58 @@ local_vllm_config = ModelConfig(
 )
 ```
 
+### OAuth Providers (No API Keys)
+
+MARSYS also supports OAuth-backed providers that use CLI logins instead of API keys:
+
+- **`openai-oauth`**: ChatGPT subscription via Codex CLI (`codex login`)
+- **`anthropic-oauth`**: Claude Max subscription via Claude CLI (`claude login`)
+
+Supported model families:
+
+- OpenAI OAuth: `gpt-5.3-codex`
+- Anthropic OAuth: `claude-opus-4-6` (aliases like `opus` also work)
+
+Credentials are read from local CLI files and can be overridden with environment variables:
+
+- OpenAI OAuth: `~/.codex/auth.json` (override with `CODEX_AUTH_PATH`)
+- Anthropic OAuth: `~/.claude/.credentials.json` (override with `CLAUDE_AUTH_PATH`)
+
+Profile resolution order:
+1. Explicit `credentials_path`
+2. `oauth_profile`
+3. Provider default profile (`marsys oauth set-default ...`)
+
+```python
+# OpenAI ChatGPT (OAuth via Codex CLI)
+openai_oauth_config = ModelConfig(
+    type="api",
+    provider="openai-oauth",
+    name="gpt-5.3-codex",
+    # Optional override:
+    # credentials_path="~/.codex/auth.json"
+)
+
+# Anthropic Claude Max (OAuth via Claude CLI)
+anthropic_oauth_config = ModelConfig(
+    type="api",
+    provider="anthropic-oauth",
+    name="claude-opus-4-6",
+    # Optional override:
+    # credentials_path="~/.claude/.credentials.json"
+)
+```
+
+!!! note "OAuth-Specific Behavior"
+    - OAuth providers do **not** require API keys.
+    - Anthropic OAuth reserves certain tool names (e.g., `read`, `write`, `bash`). MARSYS transparently transforms these for compatibility.
+
+!!! warning "Use At Your Own Risk (Anthropic OAuth)"
+    `anthropic-oauth` relies on a non-official integration path and may violate provider Terms of Service. Use at your own risk.
+
+!!! note "OpenAI OAuth Compliance"
+    MARSYS does not make a legal determination about OpenAI ToS coverage for this OAuth path. Review OpenAI terms for your use case.
+
 ## 🎯 Model Types
 
 ### Language Models (LLM)
@@ -183,7 +226,7 @@ agent = Agent(
     model_config=ModelConfig(
         type="api",
         provider="openrouter",
-        name="anthropic/claude-haiku-4.5",
+        name="anthropic/claude-opus-4.6",
         temperature=0.7
     ),
     name="Assistant",
@@ -204,7 +247,7 @@ Multimodal models that process text and images:
 vlm_config = ModelConfig(
     type="api",
     provider="openrouter",
-    name="google/gemini-2.5-pro",
+    name="google/gemini-3-pro-preview",
     max_tokens=12000
 )
 
@@ -243,7 +286,7 @@ browser_agent = await BrowserAgent.create_safe(
     model_config=ModelConfig(
         type="api",
         provider="openrouter",
-        name="anthropic/claude-haiku-4.5",  # or claude-sonnet-4.5
+        name="anthropic/claude-opus-4.6",
         temperature=0.3
     ),
     mode="advanced",
@@ -252,8 +295,8 @@ browser_agent = await BrowserAgent.create_safe(
     vision_model_config=ModelConfig(
         type="api",
         provider="openrouter",
-        name="google/gemini-2.5-flash",  # Recommended: fast and cost-effective
-        # For complex UI tasks, use: "google/gemini-2.5-pro"
+        name="google/gemini-3-flash-preview",  # Recommended: fast and cost-effective
+        # For complex UI tasks, use: "google/gemini-3-pro-preview"
         temperature=0,
         thinking_budget=0  # Disable thinking for faster vision responses
     ),
@@ -265,10 +308,10 @@ browser_agent = await BrowserAgent.create_safe(
 
 | Task Complexity | Recommended Model | Characteristics |
 |-----------------|-------------------|-----------------|
-| **Standard browsing** | `google/gemini-2.5-flash` | Fast, cost-effective, handles most UI detection tasks |
-| **Complex UIs** | `google/gemini-2.5-pro` | Higher accuracy for complex layouts, anti-bot challenges |
+| **Standard browsing** | `google/gemini-3-flash-preview` | Fast, cost-effective, handles most UI detection tasks |
+| **Complex UIs** | `google/gemini-3-pro-preview` | Higher accuracy for complex layouts, anti-bot challenges |
 
-**Note**: While Claude (Sonnet/Haiku 4.5) and other models work well for the main BrowserAgent planning logic, **Gemini models are specifically recommended for the vision component** due to superior performance in browser control and UI element detection tasks.
+**Note**: While Claude Opus 4.6 and other models work well for the main BrowserAgent planning logic, **Gemini models are specifically recommended for the vision component** due to superior performance in browser control and UI element detection tasks.
 
 ### Local Models
 
@@ -449,31 +492,52 @@ response = await agent.run(
 
 ### JSON Mode
 
-Force structured output:
+Use JSON mode when you need JSON output but not strict schema validation:
 
 ```python
-# Configure for JSON output
-agent = Agent(
-    model_config=ModelConfig(
-        type="api",
-        provider="openrouter",
-        name="anthropic/claude-sonnet-4.5",
-        parameters={"response_format": {"type": "json_object"}}
-    ),
-    name="StructuredAgent",
-    instruction="""
-    Always respond in JSON format:
-    {
-        "analysis": "...",
-        "confidence": 0.0-1.0,
-        "recommendations": []
-    }
-    """
+from marsys.models import BaseAPIModel
+
+model = BaseAPIModel(
+    provider="openrouter",
+    model_name="anthropic/claude-opus-4.6",
 )
 
-response = await agent.run("Analyze this business plan")
-# Response will be valid JSON
+response = await model.run(
+    messages=[{"role": "user", "content": "Return JSON with answer and confidence."}],
+    json_mode=True,
+)
 ```
+
+### Structured Output (`response_schema`)
+
+Use `response_schema` for strict, reliable structured outputs:
+
+```python
+schema = {
+    "type": "object",
+    "properties": {
+        "answer": {"type": "string"},
+        "confidence": {"type": "number"},
+    },
+    "required": ["answer", "confidence"],
+}
+
+response = await model.run(
+    messages=[{"role": "user", "content": "What is 2+2?"}],
+    response_schema=schema,
+)
+```
+
+Provider handling:
+
+- OpenAI / OpenRouter / OpenAI OAuth: native JSON schema format
+- Google: native `responseSchema`
+- Anthropic / Anthropic OAuth: native `output_config.format` JSON schema
+- If both are provided, `response_schema` takes precedence over `json_mode`
+
+Schema note:
+
+- MARSYS enforces `additionalProperties: false` on object nodes for strict providers (without mutating your original schema object).
 
 ### Streaming Responses
 
@@ -484,7 +548,7 @@ For real-time output (when supported):
 stream_config = ModelConfig(
     type="api",
     provider="openrouter",
-    name="anthropic/claude-haiku-4.5",
+    name="anthropic/claude-opus-4.6",
     parameters={"stream": True}
 )
 
@@ -498,15 +562,15 @@ stream_config = ModelConfig(
 
 | Use Case | Recommended Model | Why |
 |----------|-------------------|-----|
-| **General Chat** | Claude Sonnet 4.5 | Best overall understanding |
-| **Code Generation** | Claude Sonnet 4.5 | Superior coding ability |
-| **Fast Responses** | Claude Haiku 4.5 | Low latency, cost-effective |
-| **Long Context** | Claude Sonnet 4.5 | Extended context window |
-| **Image Analysis** | Gemini 2.5 Pro | Multimodal capabilities |
-| **Browser Vision** | Gemini 2.5 Flash | Fast screenshot analysis for BrowserAgent |
-| **Complex Browser Vision** | Gemini 2.5 Pro | Advanced UI understanding for BrowserAgent |
-| **Critical Reasoning** | GPT-5 | Advanced reasoning |
-| **Writing & Analysis** | Claude Sonnet 4.5, GPT-5-Chat | High-quality content generation |
+| **General Chat** | Claude Opus 4.6 | Strong overall understanding |
+| **Code Generation** | GPT-5 Codex | Strong coding ability |
+| **Fast Responses** | Gemini 3 Flash Preview | Low latency, cost-effective |
+| **Long Context** | Gemini 3 Pro Preview | Broad multimodal context handling |
+| **Image Analysis** | Gemini 3 Pro Preview | Strong multimodal capabilities |
+| **Browser Vision** | Gemini 3 Flash Preview | Fast screenshot analysis for BrowserAgent |
+| **Complex Browser Vision** | Gemini 3 Pro Preview | Advanced UI understanding for BrowserAgent |
+| **Critical Reasoning** | GPT-5.3 Codex | Advanced reasoning |
+| **Writing & Analysis** | Claude Opus 4.6, GPT-5.3 Codex | High-quality content generation |
 | **Local/Private** | Llama 2, Mistral | Data privacy, no API costs |
 
 ### By Requirements
@@ -516,7 +580,7 @@ stream_config = ModelConfig(
 premium_config = ModelConfig(
     type="api",
     provider="openrouter",
-    name="anthropic/claude-sonnet-4.5",
+    name="anthropic/claude-opus-4.6",
     temperature=0.3,
     max_tokens=12000,
     thinking_budget=4096  # Enable extended thinking for complex reasoning
@@ -526,7 +590,7 @@ premium_config = ModelConfig(
 balanced_config = ModelConfig(
     type="api",
     provider="openrouter",
-    name="anthropic/claude-sonnet-4.5",
+    name="anthropic/claude-opus-4.6",
     temperature=0.5,
     max_tokens=12000
 )
@@ -535,7 +599,7 @@ balanced_config = ModelConfig(
 speed_config = ModelConfig(
     type="api",
     provider="openrouter",
-    name="anthropic/claude-haiku-4.5",
+    name="google/gemini-3-flash-preview",
     temperature=0.7,
     max_tokens=12000
 )
@@ -601,7 +665,7 @@ os.environ["ANTHROPIC_API_KEY"] = "sk-ant-..."
 config = ModelConfig(
     type="api",
     provider="openrouter",
-    name="anthropic/claude-haiku-4.5"
+    name="anthropic/claude-opus-4.6"
     # api_key automatically loaded
 )
 
@@ -609,7 +673,7 @@ config = ModelConfig(
 config = ModelConfig(
     type="api",
     provider="openrouter",
-    name="anthropic/claude-haiku-4.5",
+    name="anthropic/claude-opus-4.6",
     api_key="sk-or-..."  # Don't hardcode!
 )
 ```
@@ -621,21 +685,21 @@ config = ModelConfig(
 # Creative tasks
 creative_config = ModelConfig(
     provider="openrouter",
-    name="anthropic/claude-sonnet-4.5",
+    name="anthropic/claude-opus-4.6",
     temperature=0.8  # Higher for creativity
 )
 
 # Analytical tasks
 analytical_config = ModelConfig(
     provider="openrouter",
-    name="anthropic/claude-sonnet-4.5",
+    name="anthropic/claude-opus-4.6",
     temperature=0.2  # Lower for consistency
 )
 
 # ❌ BAD - Same temperature for all tasks
 config = ModelConfig(
     provider="openrouter",
-    name="anthropic/claude-haiku-4.5",
+    name="anthropic/claude-opus-4.6",
     temperature=1.5  # Too high for most tasks
 )
 ```
@@ -646,23 +710,22 @@ config = ModelConfig(
 # ✅ GOOD - Appropriate token limits
 config = ModelConfig(
     provider="openrouter",
-    name="anthropic/claude-sonnet-4.5",
+    name="anthropic/claude-opus-4.6",
     max_tokens=12000
 )
 
 # Consider context window
-# GPT-5: 128k tokens total
-# Claude 4.5: 200k tokens total
-# Gemini 2.5: 1M tokens total
+# GPT-5.3 Codex, Claude Opus 4.6, and Gemini 3 have different context limits.
+# Check provider docs for exact context windows before setting max_tokens.
 # Plan accordingly:
 short_context = ModelConfig(
     provider="openrouter",
-    name="anthropic/claude-haiku-4.5",
+    name="google/gemini-3-flash-preview",
     max_tokens=12000
 )
 long_context = ModelConfig(
     provider="openrouter",
-    name="anthropic/claude-sonnet-4.5",
+    name="google/gemini-3-pro-preview",
     max_tokens=12000
 )
 ```
@@ -675,12 +738,12 @@ class ModelWithFallback:
         self.primary = ModelConfig(
             type="api",
             provider="openrouter",
-            name="anthropic/claude-sonnet-4.5"
+            name="anthropic/claude-opus-4.6"
         )
         self.fallback = ModelConfig(
             type="api",
             provider="openrouter",
-            name="anthropic/claude-haiku-4.5"
+            name="openai/gpt-5-codex"
         )
 
     async def run(self, prompt):
@@ -701,7 +764,12 @@ class ModelPool:
 
     def __init__(self, configs: List[ModelConfig]):
         self.agents = [
-            Agent(model_config=config, name=f"pool_{i}")
+            Agent(
+                model_config=config,
+                name=f"pool_{i}",
+                goal="Handle pooled model requests",
+                instruction="Process prompts and return concise results."
+            )
             for i, config in enumerate(configs)
         ]
         self.current = 0
@@ -714,9 +782,9 @@ class ModelPool:
 
 # Create pool
 pool = ModelPool([
-    ModelConfig(provider="openrouter", name="anthropic/claude-sonnet-4.5", max_tokens=12000),
-    ModelConfig(provider="openrouter", name="anthropic/claude-haiku-4.5", max_tokens=12000),
-    ModelConfig(provider="openrouter", name="google/gemini-2.5-flash", max_tokens=12000)
+    ModelConfig(provider="openrouter", name="anthropic/claude-opus-4.6", max_tokens=12000),
+    ModelConfig(provider="openrouter", name="openai/gpt-5-codex", max_tokens=12000),
+    ModelConfig(provider="openrouter", name="google/gemini-3-flash-preview", max_tokens=12000)
 ])
 ```
 
@@ -728,7 +796,12 @@ from functools import lru_cache
 
 class CachedModel:
     def __init__(self, model_config: ModelConfig, cache_size: int = 100):
-        self.agent = Agent(model_config=model_config, name="cached")
+        self.agent = Agent(
+            model_config=model_config,
+            name="cached",
+            goal="Serve cached model responses",
+            instruction="Return accurate responses while leveraging cache hits."
+        )
         self.cache = {}
 
     def _cache_key(self, prompt: str) -> str:

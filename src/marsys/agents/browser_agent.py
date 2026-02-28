@@ -1,3 +1,5 @@
+from __future__ import annotations
+
 import asyncio
 import json
 import logging
@@ -6,7 +8,7 @@ import re
 import uuid
 from enum import Enum
 from pathlib import Path
-from typing import Any, Callable, Dict, List, Optional, Union
+from typing import TYPE_CHECKING, Any, Callable, Dict, List, Optional, Union
 from urllib.parse import urlparse
 
 from PIL import Image as PILImage
@@ -16,16 +18,21 @@ from marsys.environment.web_browser import BrowserTool
 from marsys.models.models import ModelConfig
 
 from .agents import Agent
-from .planning import PlanningConfig
-from .memory import Message
-from .utils import LogLevel, RequestContext
 from .exceptions import (
-    BrowserNotInitializedError,
-    BrowserConnectionError,
-    MessageFormatError,
-    ModelResponseError,
     AgentConfigurationError,
+    APIErrorClassification,
+    BrowserConnectionError,
+    BrowserNotInitializedError,
+    MessageFormatError,
+    ModelAPIError,
+    ModelResponseError,
 )
+from .memory import Message
+from .planning import PlanningConfig
+from .utils import LogLevel, RequestContext
+
+if TYPE_CHECKING:
+    from marsys.environment.filesystem import RunFileSystem
 
 logger = logging.getLogger(__name__)
 
@@ -42,6 +49,7 @@ class BrowserAgentMode(Enum):
               Supports auto-screenshot with vision model for human-like interaction.
               Best for: complex UI navigation, form filling, interactive tasks.
     """
+
     PRIMITIVE = "primitive"
     ADVANCED = "advanced"
 
@@ -69,6 +77,7 @@ class ElementDetectionMode(Enum):
           - If vision_model_config provided: uses BOTH
           - If no vision_model_config: uses RULE_BASED
     """
+
     NONE = "none"
     RULE_BASED = "rule_based"
     VISION = "vision"
@@ -96,7 +105,7 @@ BROWSER_MODE_DEFAULTS = {
             "- Use extract_text_content with a selector to get the full text content of an element\n\n"
             "**Note**: The browser maintains state - after fetch_url loads a page, you can use other tools on that loaded page if needed. "
             "However, fetch_url already returns the content, so additional steps are rarely necessary. Focus on speed and simplicity."
-        )
+        ),
     },
     "advanced": {
         "goal": "Navigate and interact with web pages like a human through visual observation",
@@ -104,63 +113,34 @@ BROWSER_MODE_DEFAULTS = {
             "You are a browser automation agent in ADVANCED mode for human-like web interaction.\n\n"
             "**Browser Viewport:** {viewport_width}x{viewport_height} pixels\n\n"
             "{auto_screenshot_section}"
-            # "\n**Core Interactions:**\n"
-            # "1. **Observe**: {observation_method}\n"
-            # "2. **Identify**: Locate elements of interest (buttons, links, text, forms, etc.) using bounding boxes or positions\n"
-            # "3. **Interact**: Use mouse clicks (coordinates), keyboard typing, or scrolling\n"
-            # "4. **Verify**: Check screenshot feedback after each action to confirm the result\n"
-            # "5. **Adjust**: If action didn't achieve intended result, analyze the visual feedback and correct your approach\n\n"
             "**CRITICAL - Visual Feedback Loop:**\n"
-            "Human-like interaction requires continuous feedback and adjustment. After EVERY action, observe the screenshot to verify:\n"
-            "- **Decision Process**: Make decisions based on what you see in screenshots. Prefer using mouse, keyboard, and scrolling - the same tools a human would use - over programmatic approaches like reading raw page content.\n\n"
-            "- **Mouse positioning**: If you clicked but missed the target, check where the pointer landed in the screenshot\n"
-            "  Use mouse_move to reposition, then try the click again\n"
-            "- **Form input verification**: After typing, check if correct text appears in the field\n"
-            "  * Wrong text? Clear it (triple-click → Backspace) and re-type\n"
-            "  * Text in wrong field? Click correct field and re-enter\n"
-            "  * Field not focused? Click field again before typing\n"
-            "- **Action outcomes**: Did the button press work? Did the dropdown open? Did the page scroll?\n"
-            "  * If not, don't repeat the exact same action - analyze WHY it failed and adjust your approach\n"
-            "**Never blindly repeat failed actions** - use the visual feedback and your reasoning to understand what went wrong and correct it.\n\n"
+            "After EVERY action, observe the screenshot and reason about what happened:\n"
+            "- What changed between the previous screenshot and now?\n"
+            "- Did your action have the intended effect? If not, why?\n"
+            "- What is the current state of the page?\n\n"
+            "Build a mental model of the page state over time. Before repeating any action, diagnose what went wrong - different problems need different solutions. If an approach fails 2-3 times, switch strategies rather than repeating the same action.\n\n"
             "**Form filling:**\n"
-            "- Text inputs: Click field coordinates → type with keyboard\n"
-            "- Dropdowns: Click dropdown → wait for observation → scroll to option if needed → click option coordinates\n"
-            "- Dropdown with search: Click dropdown → click search field → type query → click result\n\n"
-            "**Clearing text from inputs:**\n"
-            "- Method 1 (recommended): Triple-click field coordinates → press 'Backspace' (reliably selects all text in single/multi-line inputs)\n"
-            "- Method 2 (fallback): Click field → right-click → look for 'Select All' option in context menu → click it → press 'Backspace'\n\n"
+            "- Text inputs: Click field → type with keyboard\n"
+            "- Dropdowns: Click dropdown → observe options → click option (scroll if needed)\n"
+            "- Clearing text: Triple-click to select all → press 'Backspace'\n\n"
             "**Searching for text on page:**\n"
-            "- Use search_page(\"term\") to find specific text on web pages - when manual scrolling fails\n"
-            "- Visual highlighting: All matches highlighted in YELLOW, current match in ORANGE (like Chrome's find)\n"
-            "- Automatically scrolls to the current match (centered in viewport)\n"
-            "- **Navigate to next matches**: Call search_page(\"term\") again with the SAME term to move to next occurrence\n"
-            "- Wraps around: After last match, returns to first match\n"
-            "- Returns match count (e.g., \"Match 3/10\") so you know progress\n"
-            "- Use screenshots to see highlighted results\n"
-            "- **Important**: Does NOT work with PDFs\n"
-            "- When navigating to PDF URLs: The file downloads automatically and you get the file path\n\n"
+            '- Use search_page("term") to find text - highlights matches and scrolls to them\n'
+            "- Call again with same term to navigate to next match\n"
+            "- Does NOT work with PDFs\n\n"
             "**Scrolling:**\n"
-            "- Use mouse_scroll with delta_y (positive = scroll down, negative = scroll up)\n"
-            "- IMPORTANT: If mouse_scroll doesn't work, it's because the scrollable area is NOT IN FOCUS\n"
-            "  Solution:\n"
-            "  1. Use mouse_click to click on the document/section content you want to scroll\n"
-            "     - Click on text, images, or document background (safe targets)\n"
-            "     - Avoid clicking on links, buttons, or form fields (this would trigger actions)\n"
-            "  2. Then use mouse_scroll - the click brings that area into focus, enabling scrolling\n"
-            "  Common cases: PDFs, plugins, embedded documents, iframes, scrollable containers\n\n"
+            "- Use mouse_scroll with delta_y (positive = down, negative = up)\n"
+            "- If scrolling doesn't work, click on the content area first to focus it, then scroll\n\n"
             "**Common situations:**\n"
-            "- **Cookie popups**: Decline if possible, otherwise accept to proceed\n"
+            "- **Cookie popups**: Decline if possible, otherwise accept\n"
             "- **Anti-bot challenges**: Analyze and solve the challenge\n"
             "- **Wrong navigation**: Use go_back to return\n"
-            "- **Unexpected state**: Review past actions and adjust\n"
-            "- **Page errors**: May restart from initial URL (avoid loops)\n"
-            "- **Scrolling not working**: Click on the content area first (text/images/background) to focus it, then use mouse_scroll\n\n"
-            "**Content extraction tools**:\n"
-            "- get_page_elements: Discover selectors for elements on the page\n"
-            "- inspect_at_position: Get element info at screen coordinates (returns truncated text preview)\n"
-            "- inspect_element: Get element info by selector (returns truncated text preview)\n"
-            "- extract_text_content: Get full text content of an element by selector\n\n"
-            "**When stuck**: If repeated attempts fail, report the issue to the requestor with details about what was tried."
+            "- **PDF URLs**: File downloads automatically; use list_downloads to find it\n\n"
+            "**Content extraction** (when visual inspection is insufficient):\n"
+            "- inspect_at_position(x, y): Get element info at screen coordinates\n"
+            "- inspect_element(selector): Get element info by CSS selector\n"
+            "- extract_text_content(selector): Get full text when inspect shows truncated preview\n"
+            "- get_page_elements: Discover available selectors on the page\n\n"
+            "**When stuck**: If you've tried 2-3 different approaches without success, report to the requestor what you tried, what you observed, and your assessment. Consider whether the content actually exists on the page."
         ),
         "auto_screenshot_enabled": (
             "**Visual feedback**: After each browser action, you automatically receive a screenshot showing the current page state "
@@ -172,15 +152,15 @@ BROWSER_MODE_DEFAULTS = {
             "Request screenshots when you need visual confirmation or to locate elements."
         ),
         "observation_auto": "Automatic screenshots after each action show the updated page",
-        "observation_manual": "Request screenshots when needed to observe the page state"
-    }
+        "observation_manual": "Request screenshots when needed to observe the page state",
+    },
 }
 
 
 class InteractiveElementsAgent(Agent):
     """
     A specialized agent for analyzing interactive elements on web pages.
-    
+
     This agent takes screenshots and uses vision models to identify interactive elements
     like buttons, links, inputs, etc. It uses normalized coordinates (1000x1000) internally
     and scales them to actual pixel coordinates.
@@ -211,7 +191,9 @@ class InteractiveElementsAgent(Agent):
 
         viewport_info = f"**Browser Viewport:** {viewport_width}x{viewport_height} pixels\n\n"
 
-        instruction = viewport_info + """
+        instruction = (
+            viewport_info
+            + """
 You are an expert UI analyst. Your task is to identify ALL currently accessible interactive elements, understanding modal interaction hierarchy.
 
 OUTPUT FORMAT REQUIREMENT:
@@ -287,18 +269,10 @@ For Persistent Navigation:
 
 Return ALL currently accessible interactive elements, understanding that both modal and persistent navigation can coexist.
         """
+        )
 
         # Define input schema for this agent
-        input_schema = {
-            "type": "object",
-            "properties": {
-                "screenshot_path": {
-                    "type": "string",
-                    "description": "Path to the screenshot image to analyze"
-                }
-            },
-            "required": ["screenshot_path"]
-        }
+        input_schema = {"type": "object", "properties": {"screenshot_path": {"type": "string", "description": "Path to the screenshot image to analyze"}}, "required": ["screenshot_path"]}
 
         # Define default output schema for bbox detection if not provided
         # This ensures InteractiveElementsAgent always has structured output
@@ -308,18 +282,11 @@ Return ALL currently accessible interactive elements, understanding that both mo
                 "items": {
                     "type": "object",
                     "properties": {
-                        "box_2d": {
-                            "type": "array",
-                            "items": {"type": "integer"},
-                            "description": "Bounding box coordinates in normalized format [y_min, x_min, y_max, x_max] (0-1000 scale)"
-                        },
-                        "label": {
-                            "type": "string",
-                            "description": "Descriptive label for the UI element"
-                        }
+                        "box_2d": {"type": "array", "items": {"type": "integer"}, "description": "Bounding box coordinates in normalized format [y_min, x_min, y_max, x_max] (0-1000 scale)"},
+                        "label": {"type": "string", "description": "Descriptive label for the UI element"},
                     },
-                    "required": ["box_2d", "label"]
-                }
+                    "required": ["box_2d", "label"],
+                },
             }
 
         super().__init__(
@@ -337,48 +304,41 @@ Return ALL currently accessible interactive elements, understanding that both mo
     def _web_elements_response_processor(self, message_obj: Dict[str, Any]) -> Dict[str, Any]:
         """
         Custom response processor for InteractiveElementsAgent that handles vision analysis responses.
-        
+
         This processor expects responses in the format:
         {
           "interactive_elements": [...],
           "elements": [...],
           or other vision-specific formats
         }
-        
+
         It preserves the original JSON content without trying to extract agent actions.
-        
+
         Args:
             message_obj: Raw message object from API response
-            
+
         Returns:
             Dictionary preserving the original content structure
         """
         # Extract basic fields
         content = message_obj.get("content")
         message_role = message_obj.get("role", "assistant")
-        
+
         # For vision analysis, we want to preserve the original JSON content as-is
         # No need to extract tool_calls or agent_calls since this agent returns data, not actions
-        
-        return {
-            "role": message_role,
-            "content": content,  # Preserve original content exactly as returned
-            "tool_calls": [],   # Vision agent doesn't make tool calls
-            "agent_calls": None # Vision agent doesn't invoke other agents
-        }
 
-    async def _run(
-        self, prompt: Any, request_context: RequestContext, run_mode: str, **kwargs: Any
-    ) -> Message:
+        return {"role": message_role, "content": content, "tool_calls": [], "agent_calls": None}  # Preserve original content exactly as returned  # Vision agent doesn't make tool calls  # Vision agent doesn't invoke other agents
+
+    async def _run(self, prompt: Any, request_context: RequestContext, run_mode: str, **kwargs: Any) -> Message:
         """
         PURE execution logic for the InteractiveElementsAgent.
-        
+
         Analyzes screenshots to identify interactive elements using AI vision.
         This method contains no side effects - only processes input and returns output.
         """
         # Extract and validate input
         prompt_content, passed_context = self._extract_prompt_and_context(prompt)
-        
+
         # Note: Memory operations moved to run_step()
         # Here we just process the prompt content
 
@@ -386,37 +346,21 @@ Return ALL currently accessible interactive elements, understanding that both mo
             try:
                 request_data = json.loads(prompt_content)
             except json.JSONDecodeError:
-                return Message(
-                    role="error",
-                    content="Invalid JSON input. Expected structured data with screenshot_path and mode.",
-                    name=self.name
-                )
+                return Message(role="error", content="Invalid JSON input. Expected structured data with screenshot_path and mode.", name=self.name)
         elif isinstance(prompt_content, dict):
             request_data = prompt_content
         else:
-            return Message(
-                role="error", 
-                content="Invalid input format. Expected JSON string or dict.",
-                name=self.name
-            )
+            return Message(role="error", content="Invalid input format. Expected JSON string or dict.", name=self.name)
 
         # Extract required parameters
         screenshot_path = request_data.get("screenshot_path")
 
         if not screenshot_path:
-            return Message(
-                role="error",
-                content="Missing required parameter: screenshot_path",
-                name=self.name
-            )
+            return Message(role="error", content="Missing required parameter: screenshot_path", name=self.name)
 
         # Verify screenshot exists
         if not Path(screenshot_path).exists():
-            return Message(
-                role="error",
-                content=f"Screenshot file not found: {screenshot_path}",
-                name=self.name
-            )
+            return Message(role="error", content=f"Screenshot file not found: {screenshot_path}", name=self.name)
 
         try:
             # Get image dimensions for coordinate scaling
@@ -441,76 +385,55 @@ DETECTION REQUIREMENTS:
 
 Return a JSON array of objects with "box_2d" and "label" fields only.
             """
-# """
-# COORDINATE SYSTEM:
-# - Normalized scale: 0-1000 (NOT pixel coordinates)
-# - Format: [y_min, x_min, y_max, x_max] where:
-#   * y_min: top edge (0-1000)
-#   * x_min: left edge (0-1000) 
-#   * y_max: bottom edge (0-1000)
-#   * x_max: right edge (0-1000)
-# """
+            # """
+            # COORDINATE SYSTEM:
+            # - Normalized scale: 0-1000 (NOT pixel coordinates)
+            # - Format: [y_min, x_min, y_max, x_max] where:
+            #   * y_min: top edge (0-1000)
+            #   * x_min: left edge (0-1000)
+            #   * y_max: bottom edge (0-1000)
+            #   * x_max: right edge (0-1000)
+            # """
             # Prepare messages for the model
             # In pure _run(), we construct messages directly from passed context
             messages = []
-            
+
             # Add system prompt
-            messages.append({
-                "role": "system",
-                "content": self.instruction
-            })
-            
+            messages.append({"role": "system", "content": self.instruction})
+
             # Add any passed context messages
             for context_msg in passed_context:
                 messages.append(context_msg)
-            
+
             # Add current user request message
-            user_request_message = Message(
-                role="user",
-                content=self._safe_json_serialize(request_data),
-                name=request_context.caller_agent_name or "user"
-            )
-            
+            user_request_message = Message(role="user", content=self._safe_json_serialize(request_data), name=request_context.caller_agent_name or "user")
+
             # Convert user message to dict format
-            messages.append({
-                "role": user_request_message.role,
-                "content": user_request_message.content,
-                "name": user_request_message.name
-            })
-            
+            messages.append({"role": user_request_message.role, "content": user_request_message.content, "name": user_request_message.name})
+
             # Create a temporary message with the image and analysis prompt
-            temp_message = Message(
-                role="user",
-                content=analysis_prompt,
-                images=[screenshot_path]
-            )
-            
+            temp_message = Message(role="user", content=analysis_prompt, images=[screenshot_path])
+
             # Convert to LLM format with proper base64 encoding
             # Use Message's built-in method to encode the image
             encoded_image = temp_message._encode_image_to_base64(screenshot_path)
-            vision_message = {
-                "role": "user",
-                "content": [
-                    {"type": "text", "text": analysis_prompt},
-                    {"type": "image_url", "image_url": {"url": encoded_image}}
-                ]
-            }
+            vision_message = {"role": "user", "content": [{"type": "text", "text": analysis_prompt}, {"type": "image_url", "image_url": {"url": encoded_image}}]}
             messages.append(vision_message)
 
             # Get API kwargs for the vision model
             api_model_kwargs = {}
-            if hasattr(self, '_get_api_kwargs'):
+            if hasattr(self, "_get_api_kwargs"):
                 api_model_kwargs = self._get_api_kwargs()
 
             # Since we override _run(), we need to manually set response_schema
             # Use self.output_schema that was defined in __init__
             if self.output_schema:
-                api_model_kwargs['response_schema'] = self.output_schema
-                api_model_kwargs['json_mode'] = True  # Fallback for providers without structured output
+                api_model_kwargs["response_schema"] = self.output_schema
+                api_model_kwargs["json_mode"] = True  # Fallback for providers without structured output
 
             # Get temperature and top_p from model config (use defaults if not set)
-            temperature = getattr(self._model_config, 'temperature', 0.1) if hasattr(self, '_model_config') else 0.1
-            top_p = getattr(self._model_config, 'top_p', 1.0) if hasattr(self, '_model_config') else 1.0
+            temperature = getattr(self._model_config, "temperature", 0.1) if hasattr(self, "_model_config") else 0.1
+            top_p = getattr(self._model_config, "top_p", 1.0) if hasattr(self, "_model_config") else 1.0
 
             # Call the model asynchronously for better performance
             raw_model_output = await self.model.arun(
@@ -522,11 +445,8 @@ Return a JSON array of objects with "box_2d" and "label" fields only.
             )
 
             # Create Message from HarmonizedResponse
-            assistant_message = Message.from_harmonized_response(
-                raw_model_output,
-                name=self.name
-            )
-            
+            assistant_message = Message.from_harmonized_response(raw_model_output, name=self.name)
+
             # Parse the response content as JSON array of bounding boxes
             content = assistant_message.content
 
@@ -539,11 +459,11 @@ Return a JSON array of objects with "box_2d" and "label" fields only.
                         bounding_boxes = json.loads(content)
                     except json.JSONDecodeError:
                         # Fallback: Extract JSON from markdown or find JSON pattern
-                        json_match = re.search(r'```json\s*(.*?)\s*```', content, re.DOTALL)
+                        json_match = re.search(r"```json\s*(.*?)\s*```", content, re.DOTALL)
                         if json_match:
                             json_content = json_match.group(1)
                         else:
-                            json_array_match = re.search(r'(\[.*\])', content, re.DOTALL)
+                            json_array_match = re.search(r"(\[.*\])", content, re.DOTALL)
                             if json_array_match:
                                 json_content = json_array_match.group(1)
                             else:
@@ -566,29 +486,20 @@ Return a JSON array of objects with "box_2d" and "label" fields only.
 
             except (json.JSONDecodeError, ValueError) as e:
                 error_msg = f"Failed to parse model response as JSON: {e}\nResponse: {content}"
-                return Message(
-                    role="error",
-                    content=error_msg,
-                    name=self.name,
-                    message_id=str(uuid.uuid4())
-                )
+                return Message(role="error", content=error_msg, name=self.name, message_id=str(uuid.uuid4()))
+
+        except ModelAPIError as e:
+            if e.classification == APIErrorClassification.REQUEST_TOO_LARGE.value:
+                raise
+            error_msg = f"Error during vision analysis: {e}"
+            return Message(role="error", content=error_msg, name=self.name, message_id=str(uuid.uuid4()))
 
         except Exception as e:
-            # In pure _run(), we don't log - just return error message
             error_msg = f"Error during vision analysis: {e}"
-            return Message(
-                role="error",
-                content=error_msg, 
-                name=self.name,
-                message_id=str(uuid.uuid4())
-            )
+            return Message(role="error", content=error_msg, name=self.name, message_id=str(uuid.uuid4()))
 
     # Note: InteractiveElementsAgent inherits message processors from Agent
     # which handle standard agent_calls and tool_calls transformations
-
-
-
-
 
 
 class BrowserAgent(Agent):
@@ -604,13 +515,7 @@ class BrowserAgent(Agent):
     """
 
     @staticmethod
-    def _validate_and_resolve_detection_mode(
-        element_detection_mode: str,
-        vision_model_config: Optional[ModelConfig],
-        model_config: ModelConfig,
-        auto_screenshot: bool,
-        agent_name: str
-    ) -> ElementDetectionMode:
+    def _validate_and_resolve_detection_mode(element_detection_mode: str, vision_model_config: Optional[ModelConfig], model_config: ModelConfig, auto_screenshot: bool, agent_name: str) -> ElementDetectionMode:
         """
         Validate element_detection_mode parameter and resolve AUTO mode to concrete mode.
 
@@ -631,13 +536,11 @@ class BrowserAgent(Agent):
         detection_mode_lower = element_detection_mode.lower()
         if detection_mode_lower not in ["none", "rule_based", "vision", "both", "auto"]:
             raise AgentConfigurationError(
-                f"Invalid element_detection_mode: '{element_detection_mode}'. "
-                f"Must be one of: 'none', 'rule_based', 'vision', 'both', 'auto'",
+                f"Invalid element_detection_mode: '{element_detection_mode}'. " f"Must be one of: 'none', 'rule_based', 'vision', 'both', 'auto'",
                 agent_name=agent_name,
                 config_field="element_detection_mode",
                 config_value=element_detection_mode,
-                suggestion="Use 'auto' for automatic selection, 'none' for raw screenshots, 'rule_based' for DOM-only, "
-                           "'vision' for AI-only, or 'both' for combined detection"
+                suggestion="Use 'auto' for automatic selection, 'none' for raw screenshots, 'rule_based' for DOM-only, " "'vision' for AI-only, or 'both' for combined detection",
             )
 
         # Convert string to enum
@@ -667,7 +570,7 @@ class BrowserAgent(Agent):
                         agent_name=agent_name,
                         config_field="element_detection_mode",
                         config_value=element_detection_mode,
-                        suggestion="Either provide vision_model_config parameter or set element_detection_mode='rule_based'"
+                        suggestion="Either provide vision_model_config parameter or set element_detection_mode='rule_based'",
                     )
 
         return mode
@@ -695,133 +598,105 @@ class BrowserAgent(Agent):
     # Mouse tool wrapper methods for tool registration
     async def mouse_click(self, x: int, y: int, reasoning: Optional[str] = None, use_smooth_movement: bool = False):
         """
-        Click at specified pixel coordinates.
+        Click at the specified x and y pixel position.
 
         Args:
-            x: Horizontal pixel position (0 to viewport_width, typically 0-1536)
-            y: Vertical pixel position (0 to viewport_height, typically 0-1536)
+            x: Horizontal position in pixels (integer, e.g., 500)
+            y: Vertical position in pixels (integer, e.g., 300)
             reasoning: Optional explanation for this action
             use_smooth_movement: Whether to use smooth human-like mouse movement
 
         Returns:
             Success message with pointer position
-
-        Note:
-            Coordinates are in absolute pixels relative to viewport origin (top-left corner).
-            Use visual feedback from screenshots to verify pointer landed on target and adjust if needed.
         """
         return await self.browser_tool.mouse_click(x=x, y=y, reasoning=reasoning, use_smooth_movement=use_smooth_movement)
 
     async def mouse_dbclick(self, x: int, y: int, reasoning: Optional[str] = None):
         """
-        Double-click at specified pixel coordinates.
+        Double-click at the specified x and y pixel position. Useful for selecting text or opening items.
 
         Args:
-            x: Horizontal pixel position (0 to viewport_width)
-            y: Vertical pixel position (0 to viewport_height)
+            x: Horizontal position in pixels (integer, e.g., 500)
+            y: Vertical position in pixels (integer, e.g., 300)
             reasoning: Optional explanation for this action
 
         Returns:
             Success message with pointer position
-
-        Note:
-            Coordinates are in absolute pixels. Useful for selecting text or opening items.
         """
         return await self.browser_tool.mouse_dbclick(x=x, y=y, reasoning=reasoning)
 
     async def mouse_triple_click(self, x: int, y: int, reasoning: Optional[str] = None):
         """
-        Triple-click at specified pixel coordinates.
+        Triple-click at the specified x and y pixel position. Useful for selecting entire paragraphs or lines.
 
         Args:
-            x: Horizontal pixel position (0 to viewport_width)
-            y: Vertical pixel position (0 to viewport_height)
+            x: Horizontal position in pixels (integer, e.g., 500)
+            y: Vertical position in pixels (integer, e.g., 300)
             reasoning: Optional explanation for this action
 
         Returns:
             Success message with pointer position
-
-        Note:
-            Coordinates are in absolute pixels. Useful for selecting entire paragraphs or lines.
         """
         return await self.browser_tool.mouse_triple_click(x=x, y=y, reasoning=reasoning)
 
     async def mouse_right_click(self, x: int, y: int, reasoning: Optional[str] = None):
         """
-        Right-click at specified pixel coordinates to open context menu.
+        Right-click at the specified x and y pixel position to open context menu.
 
         Args:
-            x: Horizontal pixel position (0 to viewport_width)
-            y: Vertical pixel position (0 to viewport_height)
+            x: Horizontal position in pixels (integer, e.g., 500)
+            y: Vertical position in pixels (integer, e.g., 300)
             reasoning: Optional explanation for this action
 
         Returns:
             Success message with pointer position
-
-        Note:
-            Coordinates are in absolute pixels. Opens browser context menu at specified location.
         """
         return await self.browser_tool.mouse_right_click(x=x, y=y, reasoning=reasoning)
 
     async def mouse_down(self, x: int, y: int, reasoning: Optional[str] = None):
         """
-        Press and hold mouse button at specified pixel coordinates.
+        Press and hold mouse button at the specified x and y pixel position. Use with mouse_move and mouse_up for drag operations.
 
         Args:
-            x: Horizontal pixel position (0 to viewport_width)
-            y: Vertical pixel position (0 to viewport_height)
+            x: Horizontal position in pixels (integer, e.g., 500)
+            y: Vertical position in pixels (integer, e.g., 300)
             reasoning: Optional explanation for this action
 
         Returns:
             Success message with pointer position
-
-        Note:
-            Coordinates are in absolute pixels. Use with mouse_move and mouse_up for drag operations.
         """
         return await self.browser_tool.mouse_down(x=x, y=y, reasoning=reasoning)
 
     async def mouse_up(self, x: int, y: int, reasoning: Optional[str] = None):
         """
-        Release mouse button at specified pixel coordinates.
+        Release mouse button at the specified x and y pixel position. Completes drag operation started with mouse_down.
 
         Args:
-            x: Horizontal pixel position (0 to viewport_width)
-            y: Vertical pixel position (0 to viewport_height)
+            x: Horizontal position in pixels (integer, e.g., 500)
+            y: Vertical position in pixels (integer, e.g., 300)
             reasoning: Optional explanation for this action
 
         Returns:
             Success message with pointer position
-
-        Note:
-            Coordinates are in absolute pixels. Completes drag operation started with mouse_down.
         """
         return await self.browser_tool.mouse_up(x=x, y=y, reasoning=reasoning)
 
     async def mouse_move(self, x: int, y: int, reasoning: Optional[str] = None, steps: Optional[int] = None):
         """
-        Move mouse pointer to specified pixel coordinates.
+        Move mouse pointer to the specified x and y pixel position.
 
         Args:
-            x: Horizontal pixel position (0 to viewport_width)
-            y: Vertical pixel position (0 to viewport_height)
+            x: Horizontal position in pixels (integer, e.g., 500)
+            y: Vertical position in pixels (integer, e.g., 300)
             reasoning: Optional explanation for this action
             steps: Number of intermediate steps for smooth movement (default: 1)
 
         Returns:
             Success message with new pointer position
-
-        Note:
-            Coordinates are in absolute pixels. Use visual feedback to verify pointer position
-            and adjust coordinates if needed. Increase steps for more human-like movement.
         """
         return await self.browser_tool.mouse_move(x=x, y=y, reasoning=reasoning, steps=steps)
 
-    async def _screenshot_with_detection_mode(
-        self,
-        filename: Optional[str] = None,
-        reasoning: Optional[str] = None,
-        highlight_bbox: bool = True
-    ):
+    async def _screenshot_with_detection_mode(self, filename: Optional[str] = None, reasoning: Optional[str] = None, highlight_bbox: bool = True):
         """
         Wrapper for screenshot tool that applies element_detection_mode.
 
@@ -840,65 +715,42 @@ class BrowserAgent(Agent):
 
         if not highlight_bbox:
             # No highlighting needed - use BrowserTool directly
-            return await self.browser_tool.screenshot(
-                filename=filename,
-                reasoning=reasoning,
-                highlight_bbox=False
-            )
+            return await self.browser_tool.screenshot(filename=filename, reasoning=reasoning, highlight_bbox=False)
 
         # Use highlight_interactive_elements with element_detection_mode
         detection_flags = self._get_detection_flags()
         result = await self.highlight_interactive_elements(
-            visible_only=True,
-            use_prediction=detection_flags["use_prediction"],
-            use_rule_based=detection_flags["use_rule_based"],
-            screenshot_filename=filename,
-            filter_keys=None  # Return all element data for manual screenshot
+            visible_only=True, use_prediction=detection_flags["use_prediction"], use_rule_based=detection_flags["use_rule_based"], screenshot_filename=filename, filter_keys=None  # Return all element data for manual screenshot
         )
 
-        screenshot_path = result.get('screenshot_path')
-        elements = result.get('elements', [])
-        detection_info = result.get('detection_methods', {})
+        screenshot_path = result.get("screenshot_path")
+        elements = result.get("elements", [])
+        detection_info = result.get("detection_methods", {})
 
         # Build text description with JSON-formatted elements (same as BrowserTool.screenshot)
         if elements:
             import json
+
             elements_json = []
             for element in elements:
-                label = element.get('label', 'Unknown')
-                number = element.get('number', '?')
-                center = element.get('center', [0, 0])
+                label = element.get("label", "Unknown")
+                number = element.get("number", "?")
+                center = element.get("center", [0, 0])
                 center_x = int(round(center[0]))
                 center_y = int(round(center[1]))
 
-                elements_json.append({
-                    "number": number,
-                    "label": label,
-                    "center": {"x": center_x, "y": center_y}
-                })
+                elements_json.append({"number": number, "label": label, "center": {"x": center_x, "y": center_y}})
 
             elements_json_str = json.dumps(elements_json, indent=2)
-            text_description = (
-                f"Screenshot captured with {len(elements)} interactive elements detected.\n\n"
-                f"Elements (use numbers for interaction):\n{elements_json_str}"
-            )
+            text_description = f"Screenshot captured with {len(elements)} interactive elements detected.\n\n" f"Elements (use numbers for interaction):\n{elements_json_str}"
         else:
             text_description = "Screenshot captured (no interactive elements detected)."
 
         # Create multimodal response
-        content_blocks = [
-            ToolResponseContent(text=text_description),
-            ToolResponseContent(image_path=screenshot_path)
-        ]
+        content_blocks = [ToolResponseContent(text=text_description), ToolResponseContent(image_path=screenshot_path)]
 
         return ToolResponse(
-            content=content_blocks,
-            metadata={
-                "element_count": len(elements),
-                "screenshot_path": screenshot_path,
-                "detection_mode": self.element_detection_mode.value,
-                "detection_methods": detection_info  # Include success/failure details
-            }
+            content=content_blocks, metadata={"element_count": len(elements), "screenshot_path": screenshot_path, "detection_mode": self.element_detection_mode.value, "detection_methods": detection_info}  # Include success/failure details
         )
 
     @staticmethod
@@ -909,7 +761,7 @@ class BrowserAgent(Agent):
         Different vision models have different optimal input sizes:
         - Claude (Anthropic): 1344x896 (optimized for their vision model)
         - Gemini (Google): 1000x1000 (square input, works well with Gemini vision)
-        - GPT-4V (OpenAI): 1024x1024 (optimized for their vision model)
+        - GPT/OpenAI: 1024x768 (XGA - standard for OpenAI computer use, avoids coordinate misalignment)
 
         Args:
             model_config: The model configuration
@@ -917,20 +769,22 @@ class BrowserAgent(Agent):
         Returns:
             Tuple of (width, height) in pixels
         """
-        provider = getattr(model_config, 'provider', '').lower()
-        model_name = getattr(model_config, 'name', '').lower()
+        provider = getattr(model_config, "provider", "").lower()
+        model_name = getattr(model_config, "name", "").lower()
 
         # Check for Gemini/Google models (check first since OpenRouter may have 'google/gemini-*')
-        if 'google' in provider or 'gemini' in model_name:
+        if "google" in provider or "gemini" in model_name:
             return (1000, 1000)
 
         # Check for Claude/Anthropic models
-        elif 'anthropic' in provider or 'claude' in model_name:
+        elif "anthropic" in provider or "claude" in model_name:
             return (1344, 896)
 
-        # Check for GPT/OpenAI models
-        elif 'openai' in provider or 'gpt' in model_name:
-            return (1024, 1024)
+        # Check for GPT/OpenAI models - use XGA (1024x768) for optimal coordinate accuracy
+        # OpenAI's computer-use-preview and GPT-5 vision internally scale images to 768px shortest side
+        # Using 1024x768 avoids rescaling and ensures coordinates match the actual viewport
+        elif "openai" in provider or "gpt" in model_name:
+            return (1024, 768)
 
         # Default fallback
         return (1536, 1536)
@@ -962,6 +816,12 @@ class BrowserAgent(Agent):
         show_mouse_helper: bool = True,
         session_path: Optional[str] = None,
         plan_config: Optional[Union[PlanningConfig, Dict, bool]] = None,
+        filesystem: Optional["RunFileSystem"] = None,
+        downloads_subdir: str = "downloads",
+        downloads_virtual_dir: str = "./downloads",
+        fetch_file_tool_name: str = "download_file",
+        memory_config=None,
+        compaction_model_config=None,
     ) -> None:
         """
         Initialize the BrowserAgent.
@@ -978,7 +838,7 @@ class BrowserAgent(Agent):
                 PRIMITIVE: Fast content extraction with high-level tools, no vision, no auto-screenshot.
                 ADVANCED: Visual interaction with low-level coordinate-based tools, supports auto-screenshot.
             headless: Whether to run browser in headless mode
-            viewport_width: Browser viewport width
+            viewport_width: Browser  width
             viewport_height: Browser viewport height
             tmp_dir: Optional temporary directory for downloads and screenshots
             browser_channel: Optional browser channel (e.g., 'chrome', 'msedge')
@@ -1007,6 +867,8 @@ class BrowserAgent(Agent):
                 This enables persistent authentication (e.g., LinkedIn, Google) across browser sessions.
             plan_config: Planning configuration - PlanningConfig, dict, True/None (enabled with defaults),
                 or False (disabled). Enabled by default.
+            memory_config: Optional ManagedMemoryConfig for compaction settings.
+            compaction_model_config: Optional ModelConfig for a separate compaction model.
         """
         # Validate and normalize mode
         mode_lower = mode.lower()
@@ -1016,7 +878,7 @@ class BrowserAgent(Agent):
                 agent_name=name or "BrowserAgent",
                 config_field="mode",
                 config_value=mode,
-                suggestion="Use mode='primitive' for fast content extraction or mode='advanced' for visual interaction."
+                suggestion="Use mode='primitive' for fast content extraction or mode='advanced' for visual interaction.",
             )
 
         # Convert to enum
@@ -1025,12 +887,11 @@ class BrowserAgent(Agent):
         # Validate mode-specific configurations
         if self.mode == BrowserAgentMode.PRIMITIVE and auto_screenshot:
             raise AgentConfigurationError(
-                "auto_screenshot=True is not compatible with mode='primitive'. "
-                "PRIMITIVE mode is designed for fast content extraction without visual feedback.",
+                "auto_screenshot=True is not compatible with mode='primitive'. " "PRIMITIVE mode is designed for fast content extraction without visual feedback.",
                 agent_name=name or "BrowserAgent",
                 config_field="auto_screenshot",
                 config_value=True,
-                suggestion="Either set mode='advanced' to enable auto_screenshot, or set auto_screenshot=False for PRIMITIVE mode."
+                suggestion="Either set mode='advanced' to enable auto_screenshot, or set auto_screenshot=False for PRIMITIVE mode.",
             )
 
         # Enhance goal and instruction based on mode
@@ -1051,21 +912,10 @@ class BrowserAgent(Agent):
                 final_instruction += "\n\n" + instruction
         else:
             # For ADVANCED mode, format template with auto_screenshot settings
-            auto_screenshot_section = (
-                mode_defaults["auto_screenshot_enabled"] if auto_screenshot
-                else mode_defaults["auto_screenshot_disabled"]
-            )
-            observation_method = (
-                mode_defaults["observation_auto"] if auto_screenshot
-                else mode_defaults["observation_manual"]
-            )
+            auto_screenshot_section = mode_defaults["auto_screenshot_enabled"] if auto_screenshot else mode_defaults["auto_screenshot_disabled"]
+            observation_method = mode_defaults["observation_auto"] if auto_screenshot else mode_defaults["observation_manual"]
 
-            mode_instruction = mode_defaults["instruction_template"].format(
-                viewport_width=viewport_width,
-                viewport_height=viewport_height,
-                auto_screenshot_section=auto_screenshot_section,
-                observation_method=observation_method
-            )
+            mode_instruction = mode_defaults["instruction_template"].format(viewport_width=viewport_width, viewport_height=viewport_height, auto_screenshot_section=auto_screenshot_section, observation_method=observation_method)
             final_instruction = mode_instruction
             if instruction:
                 final_instruction += "\n\n" + instruction
@@ -1075,35 +925,28 @@ class BrowserAgent(Agent):
             # Will use main model_config for vision - validate it's vision-capable
             if model_config.model_class != "vlm":
                 from ..agents.exceptions import AgentConfigurationError
+
                 raise AgentConfigurationError(
-                    "auto_screenshot=True with local model requires a vision-capable model (VLM). "
-                    "Either provide a vision_model_config with a VLM, "
-                    "or use a VLM as the main model_config (set model_class='vlm').",
+                    "auto_screenshot=True with local model requires a vision-capable model (VLM). " "Either provide a vision_model_config with a VLM, " "or use a VLM as the main model_config (set model_class='vlm').",
                     agent_name=name or "BrowserAgent",
                     config_field="auto_screenshot",
                     config_value=True,
-                    suggestion="Add vision_model_config parameter with a VLM, "
-                               "or set model_config.model_class='vlm' if using a local vision model."
+                    suggestion="Add vision_model_config parameter with a VLM, " "or set model_config.model_class='vlm' if using a local vision model.",
                 )
 
         # Validate and set element_detection_mode
-        self.element_detection_mode = self._validate_and_resolve_detection_mode(
-            element_detection_mode,
-            vision_model_config,
-            model_config,
-            auto_screenshot,
-            name or "BrowserAgent"
-        )
+        self.element_detection_mode = self._validate_and_resolve_detection_mode(element_detection_mode, vision_model_config, model_config, auto_screenshot, name or "BrowserAgent")
 
         # Check for playwright-stealth support
         try:
             from playwright_stealth import stealth_async
+
             self._stealth_available = True
             logger.info("playwright-stealth detected - stealth mode will be enabled")
         except ImportError:
             self._stealth_available = False
             logger.info("playwright-stealth not installed. Install with: pip install playwright-stealth")
-        
+
         # Set up temporary directory
         if tmp_dir:
             self.tmp_dir = Path(tmp_dir)
@@ -1113,11 +956,34 @@ class BrowserAgent(Agent):
             self.tmp_dir.mkdir(parents=True, exist_ok=True)
             self._temp_dir_obj = None  # Not using tempfile.TemporaryDirectory for local tmp
 
+        # Store configurable download/tool naming params
+        self._downloads_virtual_dir = downloads_virtual_dir
+        self._fetch_file_tool_name = fetch_file_tool_name
+
         # Create subdirectories for downloads and screenshots
-        self.downloads_dir = self.tmp_dir / "downloads"
+        self.downloads_dir = self.tmp_dir / downloads_subdir
         self.screenshots_dir = self.tmp_dir / "screenshots"
         self.downloads_dir.mkdir(parents=True, exist_ok=True)
         self.screenshots_dir.mkdir(parents=True, exist_ok=True)
+
+        # Create shared filesystem if not provided
+        if filesystem is None:
+            from marsys.environment.filesystem import RunFileSystem
+
+            filesystem = RunFileSystem.local(run_root=self.tmp_dir, cwd="/")
+        self.filesystem = filesystem
+
+        # Virtual paths for agent instructions
+        downloads_virtual = downloads_virtual_dir
+        screenshots_virtual = "./screenshots"
+
+        # Add downloads directory path to instruction so agent knows where files are saved
+        final_instruction += (
+            f"\n\n**Downloads directory**: All downloaded files are saved to: `{downloads_virtual}`\n"
+            "Use `list_downloads` tool to see all files that have been downloaded. "
+            "When a download is triggered by clicking a link or navigating to a file URL, "
+            "the file path will be returned. If you need to find previously downloaded files, use `list_downloads`."
+        )
 
         # Store auto_screenshot setting
         self.auto_screenshot = auto_screenshot
@@ -1147,6 +1013,8 @@ class BrowserAgent(Agent):
             input_schema=input_schema,
             output_schema=output_schema,
             memory_type=memory_type,
+            memory_config=memory_config,
+            compaction_model_config=compaction_model_config,
             memory_retention=memory_retention,
             memory_storage_path=memory_storage_path,
             plan_config=plan_config,
@@ -1160,10 +1028,7 @@ class BrowserAgent(Agent):
             auto_width, auto_height = self._get_optimal_viewport_size(model_config)
             self.viewport_width = viewport_width or auto_width
             self.viewport_height = viewport_height or auto_height
-            logger.info(
-                f"Auto-detected viewport size for {model_config.provider}/{model_config.name}: "
-                f"{self.viewport_width}x{self.viewport_height}"
-            )
+            logger.info(f"Auto-detected viewport size for {model_config.provider}/{model_config.name}: " f"{self.viewport_width}x{self.viewport_height}")
         else:
             self.viewport_width = viewport_width
             self.viewport_height = viewport_height
@@ -1179,10 +1044,7 @@ class BrowserAgent(Agent):
         self.vision_agent: Optional[InteractiveElementsAgent] = None
 
         # Determine if vision agent is needed based on detection mode
-        needs_vision = self.element_detection_mode in [
-            ElementDetectionMode.VISION,
-            ElementDetectionMode.BOTH
-        ]
+        needs_vision = self.element_detection_mode in [ElementDetectionMode.VISION, ElementDetectionMode.BOTH]
 
         actual_vision_config = None
         if needs_vision:
@@ -1191,23 +1053,15 @@ class BrowserAgent(Agent):
         if actual_vision_config:
             # Validate vision model is vision-capable
             if actual_vision_config.type == "local" and actual_vision_config.model_class != "vlm":
-                raise ValueError(
-                    "Vision analysis requires a vision-capable model (VLM for local, or vision-enabled API model). "
-                    "Either provide a vision_model_config with a VLM, or ensure your main model_config is vision-capable."
-                )
+                raise ValueError("Vision analysis requires a vision-capable model (VLM for local, or vision-enabled API model). " "Either provide a vision_model_config with a VLM, or ensure your main model_config is vision-capable.")
 
             # Create the vision agent with the model config
-            self.vision_agent = InteractiveElementsAgent(
-                model_config=actual_vision_config,
-                name=f"{name or 'BrowserAgent'}_VisionAnalyzer",
-                viewport_width=self.viewport_width,
-                viewport_height=self.viewport_height
-            )
+            self.vision_agent = InteractiveElementsAgent(model_config=actual_vision_config, name=f"{name or 'BrowserAgent'}_VisionAnalyzer", viewport_width=self.viewport_width, viewport_height=self.viewport_height)
             logger.info(f"Vision agent initialized for {name or 'BrowserAgent'} using {'provided vision_model_config' if vision_model_config else 'main model_config'}")
 
         # Store vision model config for potential future use (only if vision is needed)
         self._vision_model_config = actual_vision_config
-        
+
         # Track last auto-generated message IDs for memory management
         self._last_auto_screenshot_message_id: Optional[str] = None
         self._last_auto_accessibility_message_id: Optional[str] = None
@@ -1253,6 +1107,14 @@ class BrowserAgent(Agent):
         memory_retention: str = "session",
         memory_storage_path: Optional[str] = None,
         session_path: Optional[str] = None,
+        plan_config: Optional[Union[PlanningConfig, Dict, bool]] = None,
+        filesystem: Optional["RunFileSystem"] = None,
+        show_mouse_helper: bool = True,
+        downloads_subdir: str = "downloads",
+        downloads_virtual_dir: str = "./downloads",
+        fetch_file_tool_name: str = "download_file",
+        memory_config=None,
+        compaction_model_config=None,
     ) -> "BrowserAgent":
         """
         Safe factory method to create and initialize a BrowserAgent.
@@ -1285,6 +1147,14 @@ class BrowserAgent(Agent):
             memory_retention=memory_retention,
             memory_storage_path=memory_storage_path,
             session_path=session_path,
+            plan_config=plan_config,
+            filesystem=filesystem,
+            show_mouse_helper=show_mouse_helper,
+            downloads_subdir=downloads_subdir,
+            downloads_virtual_dir=downloads_virtual_dir,
+            fetch_file_tool_name=fetch_file_tool_name,
+            memory_config=memory_config,
+            compaction_model_config=compaction_model_config,
         )
 
         # Initialize browser - use storage_state if session file exists
@@ -1313,12 +1183,16 @@ class BrowserAgent(Agent):
                 timeout=self.timeout,
                 downloads_path=str(self.downloads_dir),
                 screenshot_dir=str(self.screenshots_dir),
+                filesystem=self.filesystem,
+                downloads_virtual_dir=self._downloads_virtual_dir,
+                screenshot_virtual_dir="./screenshots",
             )
 
             # Apply stealth mode if available
             if self._stealth_available:
                 try:
                     from playwright_stealth import stealth_async
+
                     await stealth_async(self.browser_tool.page)
                     logger.info(f"Stealth mode enabled for {self.name}")
                 except Exception as e:
@@ -1332,9 +1206,7 @@ class BrowserAgent(Agent):
                 except Exception as e:
                     logger.warning(f"Failed to enable mouse helper: {e}")
 
-            logger.info(
-                f"Browser initialized for {self.name} using BrowserTool (headless={self.headless}, timeout={self.timeout}ms)"
-            )
+            logger.info(f"Browser initialized for {self.name} using BrowserTool (headless={self.headless}, timeout={self.timeout}ms)")
         except Exception as e:
             error_message = str(e)
             browser_name = self.browser_channel or "chromium"
@@ -1344,19 +1216,13 @@ class BrowserAgent(Agent):
                 if self.browser_channel:
                     # User specified a system browser like 'chrome'
                     raise ConnectionError(
-                        f"Failed to launch browser. The system-installed browser "
-                        f"'{self.browser_channel}' was not found in the expected path.\n"
-                        f"Please ensure '{self.browser_channel}' is installed correctly on your system."
+                        f"Failed to launch browser. The system-installed browser " f"'{self.browser_channel}' was not found in the expected path.\n" f"Please ensure '{self.browser_channel}' is installed correctly on your system."
                     ) from e
                 else:
                     # User is using the default bundled browser
                     install_command = f"python -m playwright install {browser_name}"
-                    raise ConnectionError(
-                        f"Playwright's bundled '{browser_name}' browser not found. "
-                        f"Please install it by running the following command in your terminal:\n\n"
-                        f"    {install_command}\n"
-                    ) from e
-            
+                    raise ConnectionError(f"Playwright's bundled '{browser_name}' browser not found. " f"Please install it by running the following command in your terminal:\n\n" f"    {install_command}\n") from e
+
             # Generic fallback suggesting installation with dependencies
             else:
                 install_command = f"python -m playwright install --with-deps {browser_name}"
@@ -1407,7 +1273,8 @@ class BrowserAgent(Agent):
             )
 
             # Add stealth scripts to avoid detection
-            await context.add_init_script("""
+            await context.add_init_script(
+                """
                 Object.defineProperty(navigator, 'webdriver', { get: () => undefined });
                 Object.defineProperty(navigator, 'plugins', {
                     get: () => [
@@ -1418,7 +1285,8 @@ class BrowserAgent(Agent):
                 });
                 Object.defineProperty(navigator, 'languages', { get: () => ['en-US', 'en'] });
                 if (window.chrome) { window.chrome.runtime = {}; }
-            """)
+            """
+            )
 
             # Create page
             page = await context.new_page()
@@ -1432,12 +1300,16 @@ class BrowserAgent(Agent):
                 temp_dir=str(self.tmp_dir),
                 screenshot_dir=str(self.screenshots_dir),
                 downloads_path=str(self.downloads_dir),
+                filesystem=self.filesystem,
+                downloads_virtual_dir=self._downloads_virtual_dir,
+                screenshot_virtual_dir="./screenshots",
             )
 
             # Apply stealth mode if available
             if self._stealth_available:
                 try:
                     from playwright_stealth import stealth_async
+
                     await stealth_async(page)
                     logger.info(f"Stealth mode enabled for {self.name}")
                 except Exception as e:
@@ -1451,9 +1323,7 @@ class BrowserAgent(Agent):
                 except Exception as e:
                     logger.warning(f"Failed to enable mouse helper: {e}")
 
-            logger.info(
-                f"Browser initialized with storage_state for {self.name} (headless={self.headless}, session={session_path})"
-            )
+            logger.info(f"Browser initialized with storage_state for {self.name} (headless={self.headless}, session={session_path})")
 
         except Exception as e:
             error_message = str(e)
@@ -1475,7 +1345,8 @@ class BrowserAgent(Agent):
                 "get_page_elements": self.browser_tool.get_page_elements,
                 "extract_text_content": self.browser_tool.extract_text_content,
                 "get_page_metadata": self.browser_tool.get_page_metadata,
-                "download_file": self.browser_tool.download_file,
+                self._fetch_file_tool_name: self.browser_tool.download_file,
+                "list_downloads": self.browser_tool.list_downloads,
                 "inspect_element": self.browser_tool.inspect_element,
             }
         else:
@@ -1498,7 +1369,8 @@ class BrowserAgent(Agent):
                 "reload": self.browser_tool.reload,
                 "get_url": self.browser_tool.get_url,
                 "get_title": self.browser_tool.get_title,
-                "download_file": self.browser_tool.download_file,
+                self._fetch_file_tool_name: self.browser_tool.download_file,
+                "list_downloads": self.browser_tool.list_downloads,
                 # Tab management tools
                 "list_tabs": self.browser_tool.list_tabs,
                 "get_active_tab": self.browser_tool.get_active_tab,
@@ -1516,22 +1388,23 @@ class BrowserAgent(Agent):
                 browser_tools["screenshot"] = self._screenshot_with_detection_mode
 
         # Update the agent's tools
-        if hasattr(self, 'tools') and self.tools:
+        if hasattr(self, "tools") and self.tools:
             self.tools.update(browser_tools)
         else:
             self.tools = browser_tools
-        
+
         # Regenerate tools schema for the updated tools
         self.tools_schema = []
         if self.tools:
             from marsys.environment.utils import generate_openai_tool_schema
+
             for tool_name, tool_func in self.tools.items():
                 try:
                     schema = generate_openai_tool_schema(tool_func, tool_name)
                     self.tools_schema.append(schema)
                 except Exception as e:
                     logger.error(f"Failed to generate schema for tool {tool_name}: {e}")
-        
+
         logger.info(f"Browser tools setup completed for agent {self.name}")
 
     async def _save_session(self, file_path: str, reasoning: Optional[str] = None) -> str:
@@ -1582,7 +1455,8 @@ class BrowserAgent(Agent):
             # Unregister vision agent from registry FIRST (before closing)
             try:
                 from .registry import AgentRegistry
-                if hasattr(self.vision_agent, 'name'):
+
+                if hasattr(self.vision_agent, "name"):
                     vision_name = self.vision_agent.name
                     logger.info(f"Unregistering vision agent: {vision_name}")
                     # Use identity-safe unregistration to prevent race conditions
@@ -1595,7 +1469,7 @@ class BrowserAgent(Agent):
                 logger.error(f"Error unregistering vision agent: {e}", exc_info=True)
 
             # Then close the vision agent
-            if hasattr(self.vision_agent, 'close'):
+            if hasattr(self.vision_agent, "close"):
                 try:
                     await self.vision_agent.close()
                 except Exception as e:
@@ -1632,43 +1506,33 @@ class BrowserAgent(Agent):
         """
         if not self.auto_screenshot or not self.browser_tool:
             return None
-        
+
         try:
             # Create the screenshot path in the tmp_dir/screenshots directory
             # Use consistent filename "latest_screenshot.png" (overwrite previous)
             filename = "latest_screenshot.png"
-            
+
             # Take screenshot using BrowserTool
-            filepath = await self.browser_tool.screenshot(
-                filename=filename, 
-                reasoning="Auto screenshot",
-                highlight_bbox=False
-            )
+            filepath = await self.browser_tool.screenshot(filename=filename, reasoning="Auto screenshot", highlight_bbox=False)
             logger.debug(f"Auto screenshot taken: {filepath}")
             return filepath
         except Exception as e:
             logger.warning(f"Failed to take auto screenshot: {e}")
             return None
 
-
-
     # Browser action methods are now handled by BrowserTool via tools dict
 
-
-
     # All browser methods have been moved to BrowserTool and are accessible via the tools dict
-    
+
     # The following methods are kept in BrowserAgent as they are unique to this agent's functionality
     # and need access to the vision agent. The basic browser operations are now handled by BrowserTool.
-    
-    async def detect_interactive_elements_rule_based(
-        self, visible_only: bool = True
-    ) -> List[Dict[str, Any]]:
+
+    async def detect_interactive_elements_rule_based(self, visible_only: bool = True) -> List[Dict[str, Any]]:
         """
         Detects interactive elements on the current page using rule-based DOM analysis.
 
-        This method uses CSS selectors and DOM analysis to find all interactive elements 
-        (buttons, links, inputs, etc.) and returns them in the same JSON schema format 
+        This method uses CSS selectors and DOM analysis to find all interactive elements
+        (buttons, links, inputs, etc.) and returns them in the same JSON schema format
         as predict_interactive_elements for consistency.
 
         Args:
@@ -1681,13 +1545,10 @@ class BrowserAgent(Agent):
             raise RuntimeError("Browser not initialized")
 
         # Use BrowserTool's detect_interactive_elements_rule_based method
-        return await self.browser_tool.detect_interactive_elements_rule_based(
-            visible_only=visible_only,
-            reasoning="Detect interactive elements using rule-based approach"
-        )
+        return await self.browser_tool.detect_interactive_elements_rule_based(visible_only=visible_only, reasoning="Detect interactive elements using rule-based approach")
 
     # All other browser methods have been moved to BrowserTool and are available via the tools dict
-    
+
     # Keep only the methods that are unique to BrowserAgent and need vision agent access
     async def predict_interactive_elements(self) -> List[Dict[str, Any]]:
         """
@@ -1701,29 +1562,22 @@ class BrowserAgent(Agent):
             Exception: If no vision agent is configured or analysis fails.
         """
         if not self.vision_agent:
-            raise Exception(
-                "No vision analysis agent configured. Please provide 'vision_model_config' "
-                "when creating the BrowserAgent to enable AI-based element prediction."
-            )
+            raise Exception("No vision analysis agent configured. Please provide 'vision_model_config' " "when creating the BrowserAgent to enable AI-based element prediction.")
 
         # Take a screenshot for analysis using BrowserTool
-        screenshot_response = await self.browser_tool.screenshot(
-            filename="vision_analysis_screenshot.png",
-            reasoning="Take screenshot for vision analysis",
-            highlight_bbox=False
-        )
+        screenshot_response = await self.browser_tool.screenshot(filename="vision_analysis_screenshot.png", reasoning="Take screenshot for vision analysis", highlight_bbox=False)
 
         # Extract actual file path from ToolResponse
         screenshot_path = None
-        if hasattr(screenshot_response, 'content'):
+        if hasattr(screenshot_response, "content"):
             for content_item in screenshot_response.content:
-                if content_item.type == 'image' and content_item.image_path:
+                if content_item.type == "image" and content_item.image_path:
                     screenshot_path = content_item.image_path
                     break
 
         # Fallback to metadata if not found in content
-        if not screenshot_path and hasattr(screenshot_response, 'metadata'):
-            screenshot_path = screenshot_response.metadata.get('screenshot_path')
+        if not screenshot_path and hasattr(screenshot_response, "metadata"):
+            screenshot_path = screenshot_response.metadata.get("screenshot_path")
 
         if not screenshot_path:
             raise Exception("Could not extract screenshot path from BrowserTool.screenshot() response")
@@ -1731,22 +1585,13 @@ class BrowserAgent(Agent):
         try:
             # Create request context for the InteractiveElementsAgent call
             progress_queue = asyncio.Queue()
-            request_context = RequestContext(
-                progress_queue=progress_queue,
-                caller_agent_name="BrowserAgent"
-            )
+            request_context = RequestContext(progress_queue=progress_queue, caller_agent_name="BrowserAgent")
 
             # Prepare the input for the agent - exactly as in test_framework_bounding_boxes.py
-            agent_input = {
-                "screenshot_path": str(screenshot_path)
-            }
+            agent_input = {"screenshot_path": str(screenshot_path)}
 
             # Call the InteractiveElementsAgent using its _run method - exactly as in test file
-            result = await self.vision_agent._run(
-                prompt=agent_input,
-                request_context=request_context,
-                run_mode="standard"
-            )
+            result = await self.vision_agent._run(prompt=agent_input, request_context=request_context, run_mode="standard")
 
             # Check if the response is an error - exactly as in test file
             if result.role == "error":
@@ -1756,12 +1601,12 @@ class BrowserAgent(Agent):
             boxes_data = result.content
             if not isinstance(boxes_data, list):
                 raise Exception(f"Expected list of bounding boxes, got: {type(boxes_data)}")
-                
+
             # Get image dimensions for coordinate conversion
             screenshot_img = PILImage.open(screenshot_path)
             img_width, img_height = screenshot_img.size
             screenshot_img.close()
-            
+
             # Convert InteractiveElementsAgent format (BoundingBox) to BrowserTool format
             converted_elements = []
             for bbox_data in boxes_data:
@@ -1769,36 +1614,36 @@ class BrowserAgent(Agent):
                 # Coordinates are in normalized format (0-1000 scale)
                 box_2d = bbox_data.get("box_2d", [0, 0, 0, 0])
                 label = bbox_data.get("label", "unknown")
-                    
+
                 if len(box_2d) != 4:
                     continue  # Skip invalid bounding boxes
-                    
+
                 # Convert normalized coordinates (0-1000) to absolute coordinates
                 # BoundingBox format: [y_min, x_min, y_max, x_max] in 0-1000 scale
                 norm_y_min, norm_x_min, norm_y_max, norm_x_max = box_2d
-                    
+
                 # Scale to image dimensions
                 abs_y_min = int(norm_y_min / 1000 * img_height)
                 abs_x_min = int(norm_x_min / 1000 * img_width)
                 abs_y_max = int(norm_y_max / 1000 * img_height)
                 abs_x_max = int(norm_x_max / 1000 * img_width)
-                    
-                    # Calculate center point as integers
+
+                # Calculate center point as integers
                 center_x = int(round((abs_x_min + abs_x_max) / 2))
                 center_y = int(round((abs_y_min + abs_y_max) / 2))
-                
+
                 # BrowserTool format: {"bbox": [x1, y1, x2, y2], "center": [x, y], "label": "...", etc.}
                 converted_elem = {
-                    'label': label,  # Use label as primary identifier
-                    'href': '',  # Vision agent doesn't provide href
-                'bbox': [abs_x_min, abs_y_min, abs_x_max, abs_y_max],  # [x1, y1, x2, y2]
-                    'center': [center_x, center_y],
-                    'selector': None,  # Synthetic selector for predicted elements
-                'confidence': 1.0,  # InteractiveElementsAgent doesn't provide confidence
-                    'source': 'vision_prediction'  # Mark as vision-predicted
+                    "label": label,  # Use label as primary identifier
+                    "href": "",  # Vision agent doesn't provide href
+                    "bbox": [abs_x_min, abs_y_min, abs_x_max, abs_y_max],  # [x1, y1, x2, y2]
+                    "center": [center_x, center_y],
+                    "selector": None,  # Synthetic selector for predicted elements
+                    "confidence": 1.0,  # InteractiveElementsAgent doesn't provide confidence
+                    "source": "vision_prediction",  # Mark as vision-predicted
                 }
                 converted_elements.append(converted_elem)
-            
+
             return converted_elements
 
         except Exception as e:
@@ -1806,19 +1651,13 @@ class BrowserAgent(Agent):
             raise
 
     async def highlight_interactive_elements(
-        self, 
-        visible_only: bool = True, 
-        use_prediction: bool = False,
-        use_rule_based: bool = True,
-        intersection_threshold: float = 0.3,
-        screenshot_filename: Optional[str] = None,
-        filter_keys: Optional[List[str]] = None
+        self, visible_only: bool = True, use_prediction: bool = False, use_rule_based: bool = True, intersection_threshold: float = 0.3, screenshot_filename: Optional[str] = None, filter_keys: Optional[List[str]] = None
     ) -> Dict[str, Any]:
         """
         Highlights interactive elements on the current page with numbered labels and returns metadata.
 
-        This method detects interactive elements using rule-based DOM analysis and/or 
-        AI-based prediction, intelligently combines the results, numbers the elements, 
+        This method detects interactive elements using rule-based DOM analysis and/or
+        AI-based prediction, intelligently combines the results, numbers the elements,
         and creates a screenshot with highlighted and numbered elements.
 
         Intelligent Combination Strategy (when both methods are used):
@@ -1839,7 +1678,7 @@ class BrowserAgent(Agent):
                                   Higher values = more strict intersection requirements.
             screenshot_filename: Optional custom filename (without extension) for the screenshot.
                                 If None, uses timestamp-based naming.
-            filter_keys: Optional list of keys to include in element dictionaries. 
+            filter_keys: Optional list of keys to include in element dictionaries.
                         Defaults to ["label", "number", "center"] for AI agents.
 
         Returns:
@@ -1867,23 +1706,21 @@ class BrowserAgent(Agent):
             # Take a plain screenshot without any element highlighting
             # browser_tool.screenshot() returns a ToolResponse object, not a string path
             # We need to extract the actual path from metadata for internal use
-            tool_response = await self.browser_tool.screenshot(
-                filename=screenshot_filename,
-                reasoning="Raw screenshot without element detection",
-                highlight_bbox=False
-            )
-            # Extract the actual file path from ToolResponse metadata
-            screenshot_path = tool_response.metadata.get("screenshot_path") if tool_response.metadata else None
+            tool_response = await self.browser_tool.screenshot(filename=screenshot_filename, reasoning="Raw screenshot without element detection", highlight_bbox=False)
+            # Extract the HOST file path from ToolResponse content (not metadata,
+            # which contains the virtual path). The host path is needed for
+            # base64 encoding when adding screenshots to memory.
+            screenshot_path = None
+            if tool_response.content:
+                for item in tool_response.content:
+                    if item.type == "image" and item.image_path:
+                        screenshot_path = item.image_path
+                        break
             return {
-                'screenshot_path': screenshot_path,
-                'elements': [],  # No elements detected
-                'total_elements': 0,
-                'detection_methods': {
-                    'rule_based_requested': False,
-                    'rule_based_succeeded': False,
-                    'ai_prediction_requested': False,
-                    'ai_prediction_succeeded': False
-                }
+                "screenshot_path": screenshot_path,
+                "elements": [],  # No elements detected
+                "total_elements": 0,
+                "detection_methods": {"rule_based_requested": False, "rule_based_succeeded": False, "ai_prediction_requested": False, "ai_prediction_succeeded": False},
             }
 
         elements = []
@@ -1893,12 +1730,10 @@ class BrowserAgent(Agent):
         # Step 1: Use rule-based detection if requested
         if use_rule_based:
             try:
-                rule_based_elements = await self.browser_tool.detect_interactive_elements_rule_based(
-                    visible_only=visible_only
-                )
+                rule_based_elements = await self.browser_tool.detect_interactive_elements_rule_based(visible_only=visible_only)
                 # Mark elements as rule-based for overlap resolution
                 for elem in rule_based_elements:
-                    elem['source'] = 'rule_based'
+                    elem["source"] = "rule_based"
                 elements.extend(rule_based_elements)
                 rule_based_success = True
                 logger.debug(f"Rule-based detection succeeded: {len(rule_based_elements)} elements")
@@ -1910,18 +1745,16 @@ class BrowserAgent(Agent):
         if use_prediction:
             if not self.vision_agent:
                 from ..agents.exceptions import VisionAgentNotConfiguredError
+
                 raise VisionAgentNotConfiguredError(
-                    "Vision agent not configured. Cannot use prediction-based element detection.",
-                    agent_name=self.name,
-                    operation="highlight_interactive_elements with use_prediction=True",
-                    auto_screenshot=self.auto_screenshot
+                    "Vision agent not configured. Cannot use prediction-based element detection.", agent_name=self.name, operation="highlight_interactive_elements with use_prediction=True", auto_screenshot=self.auto_screenshot
                 )
 
             try:
                 predicted_elements = await self.predict_interactive_elements()
                 # Mark elements as predicted for overlap resolution
                 for elem in predicted_elements:
-                    elem['source'] = 'vision_prediction'
+                    elem["source"] = "vision_prediction"
                 elements.extend(predicted_elements)
                 vision_prediction_success = True
                 logger.debug(f"Vision prediction succeeded: {len(predicted_elements)} elements")
@@ -1934,46 +1767,37 @@ class BrowserAgent(Agent):
         # Only combine if both methods succeeded
         if rule_based_success and vision_prediction_success and intersection_threshold > 0:
             # Use intelligent combination when both methods are used
-            rule_based_elements = [elem for elem in elements if elem.get('source') == 'rule_based']
-            prediction_elements = [elem for elem in elements if elem.get('source') == 'vision_prediction']
+            rule_based_elements = [elem for elem in elements if elem.get("source") == "rule_based"]
+            prediction_elements = [elem for elem in elements if elem.get("source") == "vision_prediction"]
             elements = self._intelligently_combine_elements(rule_based_elements, prediction_elements, intersection_threshold)
         elif intersection_threshold > 0 and len(elements) > 1:
             # Use traditional overlap removal for single-method detection
             elements = self._remove_overlapping_elements(elements, intersection_threshold)
-        
+
         # Step 4: Add numbering to elements (1-indexed)
         numbered_elements = []
         for i, element in enumerate(elements):
             numbered_element = element.copy()
-            numbered_element['number'] = i + 1
+            numbered_element["number"] = i + 1
             numbered_elements.append(numbered_element)
-        
+
         # Step 5: Use BrowserTool's highlight_bbox method to render the elements
-        screenshot_path = await self.browser_tool.highlight_bbox(
-            elements=numbered_elements,
-            reasoning="Highlight interactive elements on page",
-            filename=screenshot_filename
-        )
-        
+        screenshot_path = await self.browser_tool.highlight_bbox(elements=numbered_elements, reasoning="Highlight interactive elements on page", filename=screenshot_filename)
+
         # Step 6: Filter element keys if specified
         if filter_keys is None:
             filter_keys = ["label", "number", "center"]  # Default for AI agents
-        
+
         filtered_elements = []
         for element in numbered_elements:
             filtered_element = {key: element[key] for key in filter_keys if key in element}
             filtered_elements.append(filtered_element)
-        
+
         return {
-            'screenshot_path': screenshot_path,
-            'elements': filtered_elements,  # Return filtered elements
-            'total_elements': len(filtered_elements),
-            'detection_methods': {
-                'rule_based_requested': use_rule_based,
-                'rule_based_succeeded': rule_based_success,
-                'ai_prediction_requested': use_prediction,
-                'ai_prediction_succeeded': vision_prediction_success
-            }
+            "screenshot_path": screenshot_path,
+            "elements": filtered_elements,  # Return filtered elements
+            "total_elements": len(filtered_elements),
+            "detection_methods": {"rule_based_requested": use_rule_based, "rule_based_succeeded": rule_based_success, "ai_prediction_requested": use_prediction, "ai_prediction_succeeded": vision_prediction_success},
         }
 
     def _remove_overlapping_elements(self, elements: List[Dict[str, Any]], threshold: float) -> List[Dict[str, Any]]:
@@ -1990,72 +1814,67 @@ class BrowserAgent(Agent):
         """
         if not elements:
             return elements
-        
+
         # Sort by source priority (predicted first) then by area (largest first)
         def sort_key(elem):
-            source_priority = 0 if elem.get('source') == 'vision_prediction' else 1
-            bbox = elem.get('bbox', [0, 0, 0, 0])
+            source_priority = 0 if elem.get("source") == "vision_prediction" else 1
+            bbox = elem.get("bbox", [0, 0, 0, 0])
             area = (bbox[2] - bbox[0]) * (bbox[3] - bbox[1]) if len(bbox) >= 4 else 0
             return (source_priority, -area)  # Negative area for descending order
-        
+
         elements_sorted = sorted(elements, key=sort_key)
-        
+
         filtered_elements = []
-        
+
         for current_elem in elements_sorted:
-            current_bbox = current_elem.get('bbox', [0, 0, 0, 0])
+            current_bbox = current_elem.get("bbox", [0, 0, 0, 0])
             if len(current_bbox) != 4:
                 continue
-                
+
             current_area = (current_bbox[2] - current_bbox[0]) * (current_bbox[3] - current_bbox[1])
-            
+
             # Check if this element significantly overlaps with any already selected element
             should_keep = True
-            
+
             for existing_elem in filtered_elements:
-                existing_bbox = existing_elem.get('bbox', [0, 0, 0, 0])
+                existing_bbox = existing_elem.get("bbox", [0, 0, 0, 0])
                 if len(existing_bbox) != 4:
                     continue
-                    
+
                 intersection_area = self._calculate_intersection_area(current_bbox, existing_bbox)
-                
+
                 # Calculate intersection ratio relative to the smaller element
                 existing_area = (existing_bbox[2] - existing_bbox[0]) * (existing_bbox[3] - existing_bbox[1])
                 min_area = min(current_area, existing_area)
-                
+
                 if min_area > 0:
                     intersection_ratio = intersection_area / min_area
                     if intersection_ratio > threshold:
                         should_keep = False
                         break
-            
+
             if should_keep:
                 filtered_elements.append(current_elem)
-        
+
         return filtered_elements
 
-    def _intelligently_combine_elements(
-        self, 
-        rule_based_elements: List[Dict[str, Any]], 
-        prediction_elements: List[Dict[str, Any]], 
-        intersection_threshold: float
-    ) -> List[Dict[str, Any]]:
+    def _intelligently_combine_elements(self, rule_based_elements: List[Dict[str, Any]], prediction_elements: List[Dict[str, Any]], intersection_threshold: float) -> List[Dict[str, Any]]:
         """
         Intelligently combine rule-based and prediction-based elements using intersection analysis.
-        
+
         Strategy:
         - Rule-based elements are more accurate (based on HTML DOM)
         - Prediction-based elements can detect JS-rendered content not visible in DOM
         - If a prediction-based element significantly intersects with a rule-based element,
           prefer the rule-based element (it's more accurate)
-        - If a prediction-based element doesn't intersect significantly, keep it 
+        - If a prediction-based element doesn't intersect significantly, keep it
           (it might be detecting something rule-based missed)
-        
+
         Args:
             rule_based_elements: List of elements detected via DOM analysis
             prediction_elements: List of elements detected via AI vision
             intersection_threshold: Intersection ratio threshold (intersection_area / average_area)
-        
+
         Returns:
             Combined list of elements with intelligent deduplication
         """
@@ -2063,45 +1882,45 @@ class BrowserAgent(Agent):
             return prediction_elements
         if not prediction_elements:
             return rule_based_elements
-        
+
         final_elements = []
         used_rule_based_indices = set()
-        
+
         # Process each prediction-based element
         for pred_elem in prediction_elements:
-            pred_bbox = pred_elem.get('bbox', [0, 0, 0, 0])
+            pred_bbox = pred_elem.get("bbox", [0, 0, 0, 0])
             if len(pred_bbox) != 4:
                 continue
-                
+
             pred_area = (pred_bbox[2] - pred_bbox[0]) * (pred_bbox[3] - pred_bbox[1])
             best_match_index = -1
             best_intersection_ratio = 0.0
-            
+
             # Find the best matching rule-based element
             for i, rule_elem in enumerate(rule_based_elements):
-                rule_bbox = rule_elem.get('bbox', [0, 0, 0, 0])
+                rule_bbox = rule_elem.get("bbox", [0, 0, 0, 0])
                 if len(rule_bbox) != 4:
                     continue
-                    
+
                 rule_area = (rule_bbox[2] - rule_bbox[0]) * (rule_bbox[3] - rule_bbox[1])
                 intersection_area = self._calculate_intersection_area(pred_bbox, rule_bbox)
-                
+
                 if intersection_area > 0:
                     # Calculate intersection ratio w.r.t. average area
                     average_area = (pred_area + rule_area) / 2
                     intersection_ratio = intersection_area / average_area if average_area > 0 else 0
-                    
+
                     if intersection_ratio > best_intersection_ratio:
                         best_intersection_ratio = intersection_ratio
                         best_match_index = i
-            
+
             # Decide whether to use rule-based or prediction-based element
             if best_intersection_ratio > intersection_threshold and best_match_index >= 0:
                 # Significant intersection found - prefer rule-based element
                 if best_match_index not in used_rule_based_indices:
                     rule_elem = rule_based_elements[best_match_index].copy()
-                    rule_elem['matched_with_prediction'] = True
-                    rule_elem['intersection_ratio'] = best_intersection_ratio
+                    rule_elem["matched_with_prediction"] = True
+                    rule_elem["intersection_ratio"] = best_intersection_ratio
                     final_elements.append(rule_elem)
                     used_rule_based_indices.add(best_match_index)
                 # Discard the prediction-based element in favor of rule-based
@@ -2109,16 +1928,16 @@ class BrowserAgent(Agent):
                 # No significant intersection - keep prediction-based element
                 # (it might be detecting JS-rendered content not in DOM)
                 pred_elem_copy = pred_elem.copy()
-                pred_elem_copy['no_rule_based_match'] = True
+                pred_elem_copy["no_rule_based_match"] = True
                 final_elements.append(pred_elem_copy)
-        
+
         # Add any rule-based elements that weren't matched with predictions
         for i, rule_elem in enumerate(rule_based_elements):
             if i not in used_rule_based_indices:
                 rule_elem_copy = rule_elem.copy()
-                rule_elem_copy['no_prediction_match'] = True
+                rule_elem_copy["no_prediction_match"] = True
                 final_elements.append(rule_elem_copy)
-        
+
         return final_elements
 
     def _calculate_intersection_area(self, bbox1: List[int], bbox2: List[int]) -> float:
@@ -2137,7 +1956,7 @@ class BrowserAgent(Agent):
         y1 = max(bbox1[1], bbox2[1])
         x2 = min(bbox1[2], bbox2[2])
         y2 = min(bbox1[3], bbox2[3])
-        
+
         # Check if there's an intersection
         if x1 < x2 and y1 < y2:
             return (x2 - x1) * (y2 - y1)
@@ -2147,12 +1966,7 @@ class BrowserAgent(Agent):
     # All other browser methods have been moved to BrowserTool and are available via the tools dict
 
     # Keep only the methods that are unique to BrowserAgent and need vision agent access
-    async def _pre_step_hook(
-        self,
-        step_number: int,
-        request_context: RequestContext,
-        **kwargs: Any
-    ) -> None:
+    async def _pre_step_hook(self, step_number: int, request_context: RequestContext, **kwargs: Any) -> None:
         """
         Pre-step hook for BrowserAgent that captures page state BEFORE the next LLM call.
 
@@ -2174,9 +1988,11 @@ class BrowserAgent(Agent):
             return
 
         try:
+            # DISABLED: Keep previous screenshots in memory for better visual context
+            # The agent needs to see state changes over time to reason about what happened
             # Enable sliding window to keep only last screenshot in context
             # This prevents memory explosion while maintaining current state visibility
-            await self._remove_previous_auto_messages(request_context)
+            # await self._remove_previous_auto_messages(request_context)
 
             # Use highlight_interactive_elements to capture current page state
             # Detection method determined by element_detection_mode
@@ -2186,30 +2002,27 @@ class BrowserAgent(Agent):
                 use_prediction=detection_flags["use_prediction"],
                 use_rule_based=detection_flags["use_rule_based"],
                 screenshot_filename=f"auto_step_{step_number}",
-                filter_keys=["label", "number", "center"]  # Only include AI-relevant keys
+                filter_keys=["label", "number", "center"],  # Only include AI-relevant keys
             )
 
-            screenshot_path = result.get('screenshot_path')
-            elements = result.get('elements', [])
+            screenshot_path = result.get("screenshot_path")
+            elements = result.get("elements", [])
 
             if screenshot_path:
                 # Build JSON-formatted element description to embed WITH the screenshot
                 if elements:
                     # Build JSON list of elements
                     import json
+
                     elements_json = []
                     for element in elements:
-                        label = element.get('label', 'Unknown')
-                        number = element.get('number', '?')
-                        center = element.get('center', [0, 0])
+                        label = element.get("label", "Unknown")
+                        number = element.get("number", "?")
+                        center = element.get("center", [0, 0])
                         center_x = int(round(center[0]))
                         center_y = int(round(center[1]))
 
-                        elements_json.append({
-                            "number": number,
-                            "label": label,
-                            "center": {"x": center_x, "y": center_y}
-                        })
+                        elements_json.append({"number": number, "label": label, "center": {"x": center_x, "y": center_y}})
 
                     # Create text with JSON-formatted elements
                     elements_json_str = json.dumps(elements_json, indent=2)
@@ -2224,12 +2037,7 @@ class BrowserAgent(Agent):
 
                 # Add screenshot with embedded element description as a SINGLE multimodal message
                 # This uses the Message class which will automatically format it correctly
-                screenshot_message_id = self.memory.add(
-                    role="user",
-                    content=screenshot_content,
-                    name="auto_screenshot_system",
-                    images=[screenshot_path]
-                )
+                screenshot_message_id = self.memory.add(role="user", content=screenshot_content, name="auto_screenshot_system", images=[screenshot_path])
 
                 # Track this message ID for future cleanup
                 self._last_auto_screenshot_message_id = screenshot_message_id
@@ -2238,17 +2046,12 @@ class BrowserAgent(Agent):
                     request_context,
                     LogLevel.DEBUG,
                     f"Auto-screenshot with embedded elements captured before step {step_number + 1}",
-                    data={"screenshot_path": screenshot_path, "message_id": screenshot_message_id, "elements_count": len(elements)}
+                    data={"screenshot_path": screenshot_path, "message_id": screenshot_message_id, "elements_count": len(elements)},
                 )
 
         except Exception as e:
             # Don't fail the entire step if screenshot capture fails
-            await self._log_progress(
-                request_context,
-                LogLevel.MINIMAL,
-                f"Auto-capture failed before step {step_number + 1}: {e}",
-                data={"error": str(e)}
-            )
+            await self._log_progress(request_context, LogLevel.MINIMAL, f"Auto-capture failed before step {step_number + 1}: {e}", data={"error": str(e)})
 
     async def _remove_previous_auto_messages(self, request_context: RequestContext) -> None:
         """
@@ -2265,38 +2068,19 @@ class BrowserAgent(Agent):
             if self._last_auto_screenshot_message_id:
                 if self.memory.remove_by_id(self._last_auto_screenshot_message_id):
                     messages_removed += 1
-                    await self._log_progress(
-                        request_context,
-                        LogLevel.DEBUG,
-                        "Removed previous auto-screenshot message from memory",
-                        data={"removed_message_id": self._last_auto_screenshot_message_id}
-                    )
+                    await self._log_progress(request_context, LogLevel.DEBUG, "Removed previous auto-screenshot message from memory", data={"removed_message_id": self._last_auto_screenshot_message_id})
                 self._last_auto_screenshot_message_id = None
 
             # Legacy cleanup: Remove old separate elements message if it exists
             # This can be removed in future versions once all instances are updated
-            if hasattr(self, '_last_auto_elements_message_id') and self._last_auto_elements_message_id:
+            if hasattr(self, "_last_auto_elements_message_id") and self._last_auto_elements_message_id:
                 if self.memory.remove_by_id(self._last_auto_elements_message_id):
                     messages_removed += 1
-                    await self._log_progress(
-                        request_context,
-                        LogLevel.DEBUG,
-                        "Removed legacy auto-elements message from memory",
-                        data={"removed_message_id": self._last_auto_elements_message_id}
-                    )
+                    await self._log_progress(request_context, LogLevel.DEBUG, "Removed legacy auto-elements message from memory", data={"removed_message_id": self._last_auto_elements_message_id})
                 self._last_auto_elements_message_id = None
-                
+
             if messages_removed > 0:
-                await self._log_progress(
-                    request_context,
-                    LogLevel.DEBUG,
-                    f"Memory cleanup: removed {messages_removed} previous auto-generated messages"
-                )
-                
+                await self._log_progress(request_context, LogLevel.DEBUG, f"Memory cleanup: removed {messages_removed} previous auto-generated messages")
+
         except Exception as e:
-            await self._log_progress(
-                request_context,
-                LogLevel.MINIMAL,
-                f"Failed to remove previous auto-messages from memory: {e}",
-                data={"error": str(e)}
-            )
+            await self._log_progress(request_context, LogLevel.MINIMAL, f"Failed to remove previous auto-messages from memory: {e}", data={"error": str(e)})

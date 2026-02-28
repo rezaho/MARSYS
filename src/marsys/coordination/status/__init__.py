@@ -11,7 +11,8 @@ from .events import (
     BranchEvent,
     ParallelGroupEvent,
     UserInteractionEvent,
-    FinalResponseEvent
+    FinalResponseEvent,
+    CompactionEvent
 )
 from .manager import StatusManager
 from .channels import ChannelAdapter, CLIChannel
@@ -26,6 +27,7 @@ __all__ = [
     'ParallelGroupEvent',
     'UserInteractionEvent',
     'FinalResponseEvent',
+    'CompactionEvent',
     'StatusManager',
     'ChannelAdapter',
     'CLIChannel'
