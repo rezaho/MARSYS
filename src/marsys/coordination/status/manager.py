@@ -65,6 +65,9 @@ class StatusManager:
             'BranchCreatedEvent',    # Already emitted by DynamicBranchSpawner
             'BranchCompletedEvent',  # Already emitted by DynamicBranchSpawner
 
+            # Memory events
+            'CompactionEvent',
+
             # Planning events
             'PlanCreatedEvent',
             'PlanUpdatedEvent',
