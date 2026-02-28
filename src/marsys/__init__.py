@@ -8,7 +8,7 @@ Author: Reza Hosseini
 License: Apache-2.0
 """
 
-__version__ = "0.1.0"
+__version__ = "0.2.1"
 
 # Core agent classes
 from .agents import (

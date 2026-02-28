@@ -17,8 +17,9 @@ from abc import ABC
 from typing import TYPE_CHECKING, Any, Callable, Dict, List, Optional, Union
 
 from .agents import BaseAgent
+from .exceptions import APIErrorClassification, ModelAPIError
 from .planning import PlanningConfig
-from .memory import MemoryManager, Message
+from .memory import ManagedMemoryConfig, MemoryManager, Message
 from .utils import RequestContext
 
 # Type-only imports for optional local model support (requires marsys[local-models])
@@ -254,7 +255,8 @@ class LearnableAgent(BaseLearnableAgent):
         goal: str,
         instruction: str,
         tools: Optional[Dict[str, Callable[..., Any]]] = None,
-        memory_type: Optional[str] = "conversation_history",
+        memory_type: Optional[str] = "managed_conversation",
+        memory_config: Optional["ManagedMemoryConfig"] = None,
         learning_head: Optional[str] = None,
         learning_head_config: Optional[Dict[str, Any]] = None,
         max_tokens: Optional[int] = None,
@@ -276,6 +278,7 @@ class LearnableAgent(BaseLearnableAgent):
             instruction: Detailed instructions on how the agent should behave and operate.
             tools: Optional dictionary of tools.
             memory_type: Type of memory module to use.
+            memory_config: Optional configuration for ManagedConversationMemory.
             learning_head: Optional type of learning head ('peft').
             learning_head_config: Optional configuration for the learning head.
             max_tokens: Default maximum tokens for model generation.
@@ -321,9 +324,10 @@ class LearnableAgent(BaseLearnableAgent):
             kg_model = self.model
 
         self.memory = MemoryManager(
-            memory_type=memory_type or "conversation_history",
+            memory_type=memory_type or "managed_conversation",
             description=self.instruction,
             model=kg_model,
+            memory_config=memory_config,
         )
 
     async def _run(
@@ -377,11 +381,18 @@ class LearnableAgent(BaseLearnableAgent):
 
             return assistant_message
 
-        except Exception as e:
-            # Return error as a Message
-            error_message = Message(
+        except ModelAPIError as e:
+            if e.classification == APIErrorClassification.REQUEST_TOO_LARGE.value:
+                raise
+            return Message(
                 role="error",
                 content=f"LLM call failed: {e}",
-                name=self.name
+                name=self.name,
             )
-            return error_message
+
+        except Exception as e:
+            return Message(
+                role="error",
+                content=f"LLM call failed: {e}",
+                name=self.name,
+            )
