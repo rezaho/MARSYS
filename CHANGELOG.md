@@ -7,6 +7,48 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
+## [0.2.1] - 2026-03-01
+
+### Added
+- Active context compaction with multi-stage memory processor pipeline (tool truncation, summarization, backward packing) and payload-error recovery
+- Response formats architecture with pluggable format system separating prompt building and response parsing from agents
+- Task planning module with agent-callable planning tools, plan lifecycle management, and status events
+- Provider adapter refactor: extracted adapters from monolithic `models.py` into `models/adapters/` (OpenAI, Anthropic, Google, OpenRouter, OpenAI-OAuth, Anthropic-OAuth)
+- OAuth credential store and CLI (`marsys oauth add/remove/list/set-default`) for profile management with automatic token refresh
+- RunFileSystem virtual filesystem with mount-based path resolution for sandboxed agent file operations
+- Code execution module with sandboxed Python and shell execution
+- CodeExecutionAgent for file operations and code execution tasks
+- DataAnalysisAgent with persistent Python session (Jupyter-like) for data analysis workflows
+- Shell tools with pattern-based command validation (replacing BashTools)
+- ElementDetector for unified element detection with shadow DOM and iframe support
+- Browser cursor icons for screenshot annotation
+- CompactionEvent and MemoryResetEvent status events
+- EventBus propagation through execution pipeline for planning events
+- Comprehensive test suites for agents, coordination, communication, memory, and models
+
+### Changed
+- Agents module migrated to formats architecture; deprecated methods removed
+- LearnableAgent migrated to formats architecture
+- ValidationProcessor and StepExecutor integrated with formats module
+- BrowserAgent detection mode logic updated; `type_text` renamed to `keyboard_input`
+- File operations handlers updated to use RunFileSystem
+- Default agent model configurations updated
+- Logging configuration improved to reduce noise
+- README streamlined for quick onboarding
+- Documentation updated across API refs, concept guides, and getting started
+- Version bumped to 0.2.1
+
+### Fixed
+- `.get` to `.pop` for context kwargs in exception constructors preventing duplicate keyword arguments
+- Stale agent error context not cleared between turns in BranchExecutor
+- Agent-vs-tool confusion detection in ToolExecutor
+- State serialization issues (JSON-safe metadata, session ID propagation)
+- MaxBranchDepthRule not checking `spawn_request_metadata`
+- HTTP 413 REQUEST_TOO_LARGE not classified as a recoverable error
+- `max_steps` not propagated through execution context
+
+---
+
 ## [0.1.2] - 2025-12-21
 
 ### ✨ Added
@@ -146,93 +188,10 @@ The first public beta release of MARSYS - Multi-Agent Reasoning Systems framewor
 
 ---
 
-## [Unreleased]
-
-### Planned for v0.2.0 (Q1 2025)
-
-#### Performance & Scale
-- [ ] Distributed execution across multiple machines
-- [ ] Redis storage backend for state management
-- [ ] Streaming response support for long-running tasks
-- [ ] Advanced result caching and memoization
-
-#### Intelligence & Learning
-- [ ] Self-optimizing topologies based on execution history
-- [ ] Agent fine-tuning within workflows
-- [ ] Pattern recognition from historical executions
-
-#### Developer Experience
-- [ ] Visual workflow designer UI
-- [ ] OpenTelemetry integration for observability
-- [ ] CI/CD templates and deployment guides
-- [ ] Performance benchmarking suite
-
----
-
-## Migration Guides
-
-### From Development Version to v0.1.0
-
-If you were using an unreleased development version:
-
-1. **Package Name Change**: Update imports from `src.*` to `marsys.*`
-   ```python
-   # Old
-   from marsys.coordination import Orchestra
-
-   # New
-   from marsys.coordination import Orchestra
-   ```
-
-2. **Dependency Updates**: Reinstall with new package structure
-   ```bash
-   pip uninstall multi-agent-ai-learning
-   pip install marsys[local-models]
-   ```
-
-3. **PyPDF2 → pypdf**: If you were using PyPDF2 directly
-   ```python
-   # Old
-   from PyPDF2 import PdfReader
-
-   # New (compatible API)
-   from pypdf import PdfReader
-   ```
-
-4. **Python Version**: Ensure Python >=3.9 (previously required 3.12)
-
-### Breaking Changes
-
-None - this is the first public release.
-
----
-
 ## Version History Summary
 
 | Version | Date | Status | Highlights |
 |---------|------|--------|------------|
+| 0.2.1 | 2026-03-01 | Released | Active context compaction, modular adapters, new agents, RunFileSystem |
+| 0.1.2 | 2025-12-21 | Released | OpenAI Responses API, xAI provider, steering system |
 | 0.1.0-beta | 2025-01 | Released | Initial public beta with full framework |
-| 0.2.0 | TBD | Planned | Performance, streaming, distributed execution |
-
----
-
-## How to Contribute
-
-See [CONTRIBUTING.md](CONTRIBUTING.md) for guidelines on:
-- Reporting bugs
-- Suggesting features
-- Submitting pull requests
-- Development setup
-
----
-
-## Stay Updated
-
-- 🌟 Star the repo: [github.com/rezaho/MARSYS](https://github.com/rezaho/MARSYS)
-- 📢 Watch releases for updates
-- 💬 Join discussions: [github.com/rezaho/MARSYS/discussions](https://github.com/rezaho/MARSYS/discussions)
-- 🐛 Report issues: [github.com/rezaho/MARSYS/issues](https://github.com/rezaho/MARSYS/issues)
-
----
-
-**Note**: This changelog will be updated with the exact release date once v0.1.0 is published to PyPI.
