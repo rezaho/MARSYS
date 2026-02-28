@@ -148,7 +148,7 @@ class MessageFormatError(MessageError):
         self.invalid_content = invalid_content
         self.expected_format = expected_format
         
-        context = kwargs.get("context", {})
+        context = kwargs.pop("context", {})
         if invalid_content:
             context["invalid_content"] = invalid_content[:200] + "..." if len(invalid_content) > 200 else invalid_content
         if expected_format:
@@ -184,7 +184,7 @@ class MessageContentError(MessageError):
         self.content_type = content_type
         self.expected_type = expected_type
         
-        context = kwargs.get("context", {})
+        context = kwargs.pop("context", {})
         if content_type:
             context["actual_type"] = content_type
         if expected_type:
@@ -222,7 +222,7 @@ class ActionValidationError(MessageError):
         self.valid_actions = valid_actions
         self.action_input = action_input
         
-        context = kwargs.get("context", {})
+        context = kwargs.pop("context", {})
         if action:
             context["provided_action"] = action
         if valid_actions:
@@ -264,7 +264,7 @@ class ToolCallError(MessageError):
         self.available_tools = available_tools
         self.tool_call_index = tool_call_index
 
-        context = kwargs.get("context", {})
+        context = kwargs.pop("context", {})
         if tool_name:
             context["tool_name"] = tool_name
         if available_tools:
@@ -312,7 +312,7 @@ class SchemaValidationError(MessageError):
         self.validation_path = validation_path
         self.provided_data = provided_data
         
-        context = kwargs.get("context", {})
+        context = kwargs.pop("context", {})
         if schema_type:
             context["schema_type"] = schema_type
         if validation_path:
@@ -370,7 +370,7 @@ class AgentImplementationError(AgentError):
         self.expected_return_type = expected_return_type
         self.actual_return_type = actual_return_type
         
-        context = kwargs.get("context", {})
+        context = kwargs.pop("context", {})
         if method_name:
             context["method_name"] = method_name
         if expected_return_type:
@@ -447,7 +447,7 @@ class AgentPermissionError(AgentError):
         self.target_agent = target_agent
         self.allowed_agents = allowed_agents
         
-        context = kwargs.get("context", {})
+        context = kwargs.pop("context", {})
         if target_agent:
             context["target_agent"] = target_agent
         if allowed_agents:
@@ -485,7 +485,7 @@ class AgentLimitError(AgentError):
         self.current_value = current_value
         self.limit_value = limit_value
         
-        context = kwargs.get("context", {})
+        context = kwargs.pop("context", {})
         if limit_type:
             context["limit_type"] = limit_type
         if current_value is not None:
@@ -544,7 +544,7 @@ class ModelResponseError(ModelError):
         self.missing_fields = missing_fields
         self.response_content = response_content
         
-        context = kwargs.get("context", {})
+        context = kwargs.pop("context", {})
         if response_type:
             context["response_type"] = response_type
         if expected_fields:
@@ -586,7 +586,7 @@ class ModelTokenLimitError(ModelError):
         self.token_limit = token_limit
         self.limit_type = limit_type
         
-        context = kwargs.get("context", {})
+        context = kwargs.pop("context", {})
         if token_count is not None:
             context["token_count"] = token_count
         if token_limit is not None:
@@ -641,7 +641,7 @@ class ModelAPIError(ModelError):
         self.retry_after = retry_after
         self.raw_response = raw_response
 
-        context = kwargs.get("context", {})
+        context = kwargs.pop("context", {})
         context.update({
             "provider": provider,
             "api_endpoint": api_endpoint,
@@ -661,7 +661,9 @@ class ModelAPIError(ModelError):
                     "anthropic": "Add credits at https://console.anthropic.com/billing",
                     "google": "Enable billing or upgrade from free tier at https://console.cloud.google.com",
                     "openrouter": "Add credits at https://openrouter.ai/credits",
-                    "xai": "Check credits at https://console.x.ai/billing"
+                    "xai": "Check credits at https://console.x.ai/billing",
+                    "openai-oauth": "Upgrade to ChatGPT Plus/Pro at https://chatgpt.com/upgrade",
+                    "anthropic-oauth": "Check your Claude Max subscription at https://claude.ai/settings"
                 }
                 suggested_action = provider_actions.get(provider, f"Add credits to your {provider} account")
             elif self.classification == APIErrorClassification.RATE_LIMIT.value:
@@ -737,6 +739,7 @@ class ModelAPIError(ModelError):
         api_error_code = None
         api_error_type = None
         raw_response = None
+        suggested_action = None
 
         # Try to get raw response data
         if response:
@@ -745,9 +748,14 @@ class ModelAPIError(ModelError):
             except:
                 raw_response = None
 
+        # Provider-agnostic: HTTP 413 always means payload too large
+        if status_code == 413:
+            classification = APIErrorClassification.REQUEST_TOO_LARGE.value
+            is_retryable = False
+
         # Provider-specific error parsing based on status code
         # This needs to work even when response is None (just using status_code)
-        if status_code:
+        elif status_code:
             if provider == "openai":
                 error_data = raw_response.get("error", {}) if raw_response else {}
                 if error_data:
@@ -873,6 +881,81 @@ class ModelAPIError(ModelError):
                 elif status_code == 401:
                     classification = APIErrorClassification.AUTHENTICATION_FAILED.value
 
+            elif provider == "openai-oauth":
+                # ChatGPT OAuth backend error handling (Codex CLI credentials)
+                error_data = raw_response.get("error", {}) if raw_response else {}
+                if error_data:
+                    message = error_data.get("message", message)
+                    api_error_code = error_data.get("code")
+                    api_error_type = error_data.get("type")
+
+                if status_code == 401:
+                    classification = APIErrorClassification.AUTHENTICATION_FAILED.value
+                elif status_code == 402:
+                    classification = APIErrorClassification.INSUFFICIENT_CREDITS.value
+                elif status_code == 403:
+                    classification = APIErrorClassification.PERMISSION_DENIED.value
+                elif status_code == 404:
+                    classification = APIErrorClassification.INVALID_MODEL.value
+                elif status_code == 429:
+                    classification = APIErrorClassification.RATE_LIMIT.value
+                    is_retryable = True
+                    retry_after = 60
+                elif status_code >= 500:
+                    classification = APIErrorClassification.SERVICE_UNAVAILABLE.value
+                    is_retryable = True
+                    retry_after = 10
+
+                # Check for token expiration in message
+                if "token" in message.lower() and ("expired" in message.lower() or "invalid" in message.lower()):
+                    classification = APIErrorClassification.AUTHENTICATION_FAILED.value
+
+            elif provider == "anthropic-oauth":
+                # Claude OAuth backend error handling (Claude CLI credentials)
+                error_data = raw_response.get("error", {}) if raw_response else {}
+                if error_data:
+                    message = error_data.get("message", message)
+                    api_error_code = error_data.get("code")
+                    api_error_type = error_data.get("type")
+
+                if status_code == 400:
+                    # Check for specific errors
+                    if "model" in message.lower():
+                        classification = APIErrorClassification.INVALID_MODEL.value
+                    elif "credential" in message.lower() or "authorized" in message.lower():
+                        classification = APIErrorClassification.AUTHENTICATION_FAILED.value
+                    else:
+                        classification = APIErrorClassification.INVALID_REQUEST.value
+                elif status_code == 401:
+                    classification = APIErrorClassification.AUTHENTICATION_FAILED.value
+                elif status_code == 403:
+                    classification = APIErrorClassification.PERMISSION_DENIED.value
+                elif status_code == 404:
+                    classification = APIErrorClassification.INVALID_MODEL.value
+                elif status_code == 429:
+                    classification = APIErrorClassification.RATE_LIMIT.value
+                    is_retryable = True
+                    retry_after = 60
+                elif status_code >= 500:
+                    classification = APIErrorClassification.SERVICE_UNAVAILABLE.value
+                    is_retryable = True
+                    retry_after = 10
+
+                # Check for token expiration in message
+                if "token" in message.lower() and ("expired" in message.lower() or "invalid" in message.lower()):
+                    classification = APIErrorClassification.AUTHENTICATION_FAILED.value
+
+        # Payload-too-large override: some providers return 400 with payload
+        # hints instead of 413.  This runs unconditionally so it can override
+        # earlier INVALID_REQUEST-style classifications from 400 status codes.
+        msg_lower = message.lower()
+        if any(s in msg_lower for s in (
+            "request_too_large", "payload too large",
+            "request exceeds the maximum", "request body is too large",
+        )):
+            classification = APIErrorClassification.REQUEST_TOO_LARGE.value
+            is_retryable = False
+
         # SPECIAL CASE: Mark timeout and network errors as retryable
         # These should attempt automatic retry before user intervention
         if classification in [APIErrorClassification.TIMEOUT.value, APIErrorClassification.NETWORK_ERROR.value]:
@@ -889,6 +972,7 @@ class ModelAPIError(ModelError):
             classification=classification,
             is_retryable=is_retryable,
             retry_after=retry_after,
+            suggested_action=suggested_action,
             raw_response=raw_response
         )
 
@@ -948,7 +1032,7 @@ class BrowserNotInitializedError(BrowserError):
     def __init__(self, operation: Optional[str] = None, **kwargs):
         self.operation = operation
         
-        context = kwargs.get("context", {})
+        context = kwargs.pop("context", {})
         if operation:
             context["attempted_operation"] = operation
         
@@ -984,7 +1068,7 @@ class BrowserConnectionError(BrowserError):
         self.browser_type = browser_type
         self.install_command = install_command
         
-        context = kwargs.get("context", {})
+        context = kwargs.pop("context", {})
         if browser_type:
             context["browser_type"] = browser_type
         if install_command:
@@ -1024,7 +1108,7 @@ class VisionAgentNotConfiguredError(BrowserError):
         self.operation = operation
         self.auto_screenshot = auto_screenshot
 
-        context = kwargs.get("context", {})
+        context = kwargs.pop("context", {})
         if operation:
             context["attempted_operation"] = operation
         if auto_screenshot is not None:
@@ -1067,7 +1151,7 @@ class ToolExecutionError(AgentFrameworkError):
         self.tool_args = tool_args
         self.execution_error = execution_error
         
-        context = kwargs.get("context", {})
+        context = kwargs.pop("context", {})
         if tool_name:
             context["tool_name"] = tool_name
         if tool_args:
@@ -1111,6 +1195,7 @@ class APIErrorClassification(Enum):
     # Request issues
     INVALID_REQUEST = "invalid_request"
     VALIDATION_ERROR = "validation_error"
+    REQUEST_TOO_LARGE = "request_too_large"
 
     UNKNOWN = "unknown"
 
@@ -1151,7 +1236,7 @@ class TopologyError(CoordinationError):
         self.affected_nodes = affected_nodes
         self.graph_structure = graph_structure
 
-        context = kwargs.get("context", {})
+        context = kwargs.pop("context", {})
         if topology_issue:
             context["topology_issue"] = topology_issue
         if affected_nodes:
@@ -1191,7 +1276,7 @@ class RoutingError(CoordinationError):
         self.routing_type = routing_type
         self.available_paths = available_paths
 
-        context = kwargs.get("context", {})
+        context = kwargs.pop("context", {})
         if current_agent:
             context["current_agent"] = current_agent
         if target_agent:
@@ -1228,7 +1313,7 @@ class BranchExecutionError(CoordinationError):
         self.parent_branch = parent_branch
         self.child_branches = child_branches
 
-        context = kwargs.get("context", {})
+        context = kwargs.pop("context", {})
         if branch_id:
             context["branch_id"] = branch_id
         if branch_type:
@@ -1261,7 +1346,7 @@ class ParallelExecutionError(CoordinationError):
         self.failed_agents = failed_agents
         self.successful_agents = successful_agents
 
-        context = kwargs.get("context", {})
+        context = kwargs.pop("context", {})
         if failed_agents:
             context["failed_agents"] = failed_agents
         if successful_agents:
@@ -1302,7 +1387,7 @@ class SessionNotFoundError(StateError):
         self.session_id = session_id
         self.last_activity = last_activity
 
-        context = kwargs.get("context", {})
+        context = kwargs.pop("context", {})
         if session_id:
             context["session_id"] = session_id
         if last_activity:
@@ -1334,7 +1419,7 @@ class CheckpointError(StateError):
         self.operation = operation
         self.storage_backend = storage_backend
 
-        context = kwargs.get("context", {})
+        context = kwargs.pop("context", {})
         if checkpoint_id:
             context["checkpoint_id"] = checkpoint_id
         if operation:
@@ -1365,7 +1450,7 @@ class StateCorruptionError(StateError):
         self.state_type = state_type
         self.corruption_details = corruption_details
 
-        context = kwargs.get("context", {})
+        context = kwargs.pop("context", {})
         if state_type:
             context["state_type"] = state_type
         if corruption_details:
@@ -1394,7 +1479,7 @@ class StateLockError(StateError):
         self.lock_holder = lock_holder
         self.timeout_seconds = timeout_seconds
 
-        context = kwargs.get("context", {})
+        context = kwargs.pop("context", {})
         if lock_holder:
             context["lock_holder"] = lock_holder
         if timeout_seconds:
@@ -1439,7 +1524,7 @@ class PoolExhaustedError(ResourceError):
         self.allocated_instances = allocated_instances
         self.requested_count = requested_count
 
-        context = kwargs.get("context", {})
+        context = kwargs.pop("context", {})
         if pool_name:
             context["pool_name"] = pool_name
         if total_instances is not None:
@@ -1479,7 +1564,7 @@ class TimeoutError(ResourceError):
         self.timeout_seconds = timeout_seconds
         self.elapsed_seconds = elapsed_seconds
 
-        context = kwargs.get("context", {})
+        context = kwargs.pop("context", {})
         if operation:
             context["operation"] = operation
         if timeout_seconds is not None:
@@ -1516,7 +1601,7 @@ class ResourceLimitError(ResourceError):
         self.limit = limit
         self.current_usage = current_usage
 
-        context = kwargs.get("context", {})
+        context = kwargs.pop("context", {})
         if resource_type:
             context["resource_type"] = resource_type
         if limit is not None:
@@ -1551,7 +1636,7 @@ class QuotaExceededError(ResourceError):
         self.current_usage = current_usage
         self.reset_time = reset_time
 
-        context = kwargs.get("context", {})
+        context = kwargs.pop("context", {})
         if quota_type:
             context["quota_type"] = quota_type
         if quota_limit is not None:
@@ -1596,7 +1681,7 @@ class ChannelNotFoundError(CommunicationError):
         self.channel_id = channel_id
         self.available_channels = available_channels
 
-        context = kwargs.get("context", {})
+        context = kwargs.pop("context", {})
         if channel_id:
             context["channel_id"] = channel_id
         if available_channels:
@@ -1625,7 +1710,7 @@ class UserInteractionError(CommunicationError):
         self.interaction_type = interaction_type
         self.timeout = timeout
 
-        context = kwargs.get("context", {})
+        context = kwargs.pop("context", {})
         if interaction_type:
             context["interaction_type"] = interaction_type
         if timeout is not None:
@@ -1654,7 +1739,7 @@ class ChannelConnectionError(CommunicationError):
         self.channel_type = channel_type
         self.connection_details = connection_details
 
-        context = kwargs.get("context", {})
+        context = kwargs.pop("context", {})
         if channel_type:
             context["channel_type"] = channel_type
         if connection_details:
@@ -1685,7 +1770,7 @@ class MessageRoutingError(CommunicationError):
         self.target_agent = target_agent
         self.message_id = message_id
 
-        context = kwargs.get("context", {})
+        context = kwargs.pop("context", {})
         if source_agent:
             context["source_agent"] = source_agent
         if target_agent:
@@ -1728,7 +1813,7 @@ class WorkflowConfigurationError(WorkflowError):
         self.workflow_name = workflow_name
         self.config_issue = config_issue
 
-        context = kwargs.get("context", {})
+        context = kwargs.pop("context", {})
         if workflow_name:
             context["workflow_name"] = workflow_name
         if config_issue:
@@ -1759,7 +1844,7 @@ class WorkflowExecutionError(WorkflowError):
         self.step_name = step_name
         self.step_number = step_number
 
-        context = kwargs.get("context", {})
+        context = kwargs.pop("context", {})
         if workflow_name:
             context["workflow_name"] = workflow_name
         if step_name:
@@ -1792,7 +1877,7 @@ class WorkflowStateError(WorkflowError):
         self.current_state = current_state
         self.expected_state = expected_state
 
-        context = kwargs.get("context", {})
+        context = kwargs.pop("context", {})
         if workflow_name:
             context["workflow_name"] = workflow_name
         if current_state:
@@ -1825,7 +1910,7 @@ class WorkflowTimeoutError(WorkflowError):
         self.timeout_seconds = timeout_seconds
         self.elapsed_seconds = elapsed_seconds
 
-        context = kwargs.get("context", {})
+        context = kwargs.pop("context", {})
         if workflow_name:
             context["workflow_name"] = workflow_name
         if timeout_seconds is not None:
