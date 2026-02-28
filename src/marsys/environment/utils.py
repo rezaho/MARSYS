@@ -289,7 +289,15 @@ def generate_openai_tool_schema(func: Callable, func_name: str) -> Dict[str, Any
     required_params = []
 
     for name, param in sig.parameters.items():
-        if name in ("self", "cls"): # Skip self/cls for methods
+        if name in ("self", "cls"):  # Skip self/cls for methods
+            continue
+
+        # Skip *args and **kwargs - these are variadic parameters that shouldn't be in tool schemas
+        if param.kind == inspect.Parameter.VAR_POSITIONAL:  # *args
+            logger.debug(f"Skipping VAR_POSITIONAL parameter '*{name}' in '{func_name}'")
+            continue
+        if param.kind == inspect.Parameter.VAR_KEYWORD:  # **kwargs
+            logger.debug(f"Skipping VAR_KEYWORD parameter '**{name}' in '{func_name}'")
             continue
 
         param_type_hint = type_hints.get(name, param.annotation)
