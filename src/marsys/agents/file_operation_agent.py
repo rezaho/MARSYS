@@ -2,21 +2,26 @@
 FileOperationAgent - Specialized agent for file and system operations.
 """
 
+from __future__ import annotations
+
 import logging
 from pathlib import Path
-from typing import Any, Dict, Optional
+from typing import TYPE_CHECKING, Any, Dict, Optional
 
 from marsys.agents.agents import Agent
 from marsys.environment.file_operations import FileOperationTools
 from marsys.environment.file_operations.config import FileOperationConfig
-from marsys.environment.bash_tools import BashTools
+from marsys.environment.shell_tools import ShellTools
 from marsys.models.models import ModelConfig
+
+if TYPE_CHECKING:
+    from marsys.environment.filesystem import RunFileSystem
 
 logger = logging.getLogger(__name__)
 
 
 class FileOperationAgent(Agent):
-    """Specialized agent for file operations and optional bash commands."""
+    """Specialized agent for file operations and optional shell commands."""
 
     def __init__(
         self,
@@ -24,60 +29,88 @@ class FileOperationAgent(Agent):
         name: str,
         goal: Optional[str] = None,
         instruction: Optional[str] = None,
-        enable_bash: bool = False,
+        enable_shell: bool = False,
         working_directory: Optional[str] = None,
         base_directory: Optional[Path] = None,
-        force_base_directory: bool = False,
-        allowed_bash_commands: Optional[list] = None,
-        blocked_bash_commands: Optional[list] = None,
-        bash_timeout_default: int = 30,
+        allowed_shell_commands: Optional[list] = None,
+        blocked_shell_patterns: Optional[list] = None,
+        shell_timeout_default: int = 30,
+        filesystem: Optional["RunFileSystem"] = None,
+        memory_config=None,
+        compaction_model_config=None,
         **kwargs
     ):
-        """Initialize FileOperationAgent."""
+        """
+        Initialize FileOperationAgent.
 
+        Args:
+            model_config: Model configuration
+            name: Agent name
+            goal: Agent goal (default: auto-generated)
+            instruction: Agent instruction (default: auto-generated)
+            enable_shell: Whether to enable shell commands
+            working_directory: Working directory for shell commands
+            base_directory: Base directory for file operations
+            allowed_shell_commands: Whitelist of allowed shell commands
+            blocked_shell_patterns: Patterns to block in shell commands
+            shell_timeout_default: Default timeout for shell commands
+            filesystem: Optional shared RunFileSystem for unified path resolution
+            memory_config: Optional ManagedMemoryConfig for compaction settings.
+            compaction_model_config: Optional ModelConfig for a separate compaction model.
+            **kwargs: Additional Agent arguments
+        """
         # Build default goal
         if goal is None:
-            bash_status = "with bash execution" if enable_bash else "file operations only"
-            goal = f"Perform file operations and system tasks ({bash_status})"
+            shell_status = "with shell execution" if enable_shell else "file operations only"
+            goal = f"Perform file operations and system tasks ({shell_status})"
 
         # Build conditional instruction
         if instruction is None:
-            instruction = self._build_instruction(enable_bash, allowed_bash_commands)
+            instruction = self._build_instruction(enable_shell, allowed_shell_commands)
 
-        # Initialize FileOperationTools
+        # Create shared filesystem if not provided
+        if filesystem is None:
+            from marsys.environment.filesystem import RunFileSystem
+            filesystem = RunFileSystem.local(
+                run_root=base_directory or Path.cwd(),
+                cwd="/",
+            )
+        self.filesystem = filesystem
+
+        # Initialize FileOperationTools with shared filesystem
         file_config = FileOperationConfig(
             base_directory=base_directory or Path.cwd(),
-            force_base_directory=force_base_directory
+            run_filesystem=filesystem,
         )
         self.file_tools = FileOperationTools(config=file_config)
         tools = self.file_tools.get_tools()
 
-        # Initialize BashTools if enabled
-        self.bash_enabled = enable_bash
-        self.bash_tools = None
+        # Initialize ShellTools if enabled
+        self.shell_enabled = enable_shell
+        self.shell_tools = None
 
-        if enable_bash:
-            default_blocked = BashTools._default_blocked_commands()
-            merged_blocked = list(set(default_blocked + (blocked_bash_commands or [])))
+        if enable_shell:
+            default_blocked = ShellTools._default_blocked_patterns()
+            merged_blocked = list(set(default_blocked + (blocked_shell_patterns or [])))
 
-            self.bash_tools = BashTools(
+            self.shell_tools = ShellTools(
                 working_directory=working_directory,
-                timeout_default=bash_timeout_default,
-                allowed_commands=allowed_bash_commands,
-                blocked_commands=merged_blocked
+                timeout_default=shell_timeout_default,
+                allowed_commands=allowed_shell_commands,
+                blocked_patterns=merged_blocked
             )
 
             tools.update({
-                "bash_execute": self.bash_tools.execute,
-                "bash_grep": self.bash_tools.grep,
-                "bash_find": self.bash_tools.find,
-                "bash_sed": self.bash_tools.sed,
-                "bash_awk": self.bash_tools.awk,
-                "bash_tail": self.bash_tools.tail,
-                "bash_head": self.bash_tools.head,
-                "bash_wc": self.bash_tools.wc,
-                "bash_diff": self.bash_tools.diff,
-                "bash_execute_streaming": self.bash_tools.execute_streaming
+                "shell_execute": self.shell_tools.execute,
+                "shell_grep": self.shell_tools.grep,
+                "shell_find": self.shell_tools.find,
+                "shell_sed": self.shell_tools.sed,
+                "shell_awk": self.shell_tools.awk,
+                "shell_tail": self.shell_tools.tail,
+                "shell_head": self.shell_tools.head,
+                "shell_wc": self.shell_tools.wc,
+                "shell_diff": self.shell_tools.diff,
+                "shell_execute_streaming": self.shell_tools.execute_streaming
             })
 
         super().__init__(
@@ -86,10 +119,12 @@ class FileOperationAgent(Agent):
             instruction=instruction,
             tools=tools,
             name=name,
+            memory_config=memory_config,
+            compaction_model_config=compaction_model_config,
             **kwargs
         )
 
-    def _build_instruction(self, enable_bash: bool, allowed_bash_commands: Optional[list]) -> str:
+    def _build_instruction(self, enable_shell: bool, allowed_shell_commands: Optional[list]) -> str:
         """Build conditional instruction."""
 
         instruction = """You are a file operations specialist. Your role is to help users work with files, directories, and data efficiently.
@@ -98,8 +133,8 @@ class FileOperationAgent(Agent):
 
 You have access to intelligent file operation tools (read, write, edit, search files and directories)"""
 
-        if enable_bash:
-            instruction += """ and bash command execution tools (grep, find, sed, awk, etc.)"""
+        if enable_shell:
+            instruction += """ and shell command execution tools (grep, find, sed, awk, etc.)"""
 
         instruction += """.
 
@@ -109,26 +144,26 @@ You have access to intelligent file operation tools (read, write, edit, search f
 - When you need to create new files or completely replace content, use write_file
 - When searching for content patterns, use search_content"""
 
-        if enable_bash:
-            instruction += """ or bash_grep for flexible pattern matching"""
+        if enable_shell:
+            instruction += """ or shell_grep for flexible pattern matching"""
 
         instruction += """
 - When finding files by name, use search_files"""
 
-        if enable_bash:
-            instruction += """ or bash_find based on needed filters"""
+        if enable_shell:
+            instruction += """ or shell_find based on needed filters"""
 
-        if enable_bash:
-            bash_guidance = "\n\n**Bash tools give you flexibility**:"
-            if allowed_bash_commands:
-                bash_guidance += f"\n- You are restricted to: {', '.join(allowed_bash_commands)}"
+        if enable_shell:
+            shell_guidance = "\n\n**Shell tools give you flexibility**:"
+            if allowed_shell_commands:
+                shell_guidance += f"\n- You are restricted to: {', '.join(allowed_shell_commands)}"
             else:
-                bash_guidance += "\n- Most standard commands available (dangerous operations blocked)"
-                bash_guidance += "\n- Use specialized helpers (bash_grep, bash_find) for structured output"
-                bash_guidance += "\n- Use bash_execute for complex pipelines when specialized tools don't fit"
+                shell_guidance += "\n- Most standard commands available (dangerous operations blocked)"
+                shell_guidance += "\n- Use specialized helpers (shell_grep, shell_find) for structured output"
+                shell_guidance += "\n- Use shell_execute for complex pipelines when specialized tools don't fit"
 
-            bash_guidance += "\n- Use bash_execute_streaming for long-running operations"
-            instruction += bash_guidance
+            shell_guidance += "\n- Use shell_execute_streaming for long-running operations"
+            instruction += shell_guidance
 
         instruction += """
 
@@ -163,9 +198,9 @@ When operations don't work as expected, adapt your approach:
 **Edit failures**: The diff format might not match actual file content. Re-read the specific section to get exact current state, then try again with precise line matching. If still failing, explain the issue and consider alternatives.
 """
 
-        if enable_bash:
+        if enable_shell:
             instruction += """
-**Bash command errors**: Parse the error message to understand what went wrong. Often it's syntax or missing file. Break complex commands into simpler steps, or fall back to file tools which have better error handling.
+**Shell command errors**: Parse the error message to understand what went wrong. Often it's syntax or missing file. Break complex commands into simpler steps, or fall back to file tools which have better error handling.
 """
 
         instruction += """
@@ -195,7 +230,7 @@ Don't narrate your actions as steps. Present results naturally as if answering a
         """Get agent capabilities."""
         return {
             "file_operations": True,
-            "bash_commands": self.bash_enabled,
+            "shell_commands": self.shell_enabled,
             "total_tools": len(self.tools)
         }
 

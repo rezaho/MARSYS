@@ -5,9 +5,18 @@ This package provides the core agent infrastructure for the Multi-Agent Reasonin
 from .agents import Agent, BaseAgent
 from .agent_pool import AgentPool
 from .browser_agent import BrowserAgent
+from .code_execution_agent import CodeExecutionAgent
+from .data_analysis_agent import DataAnalysisAgent
 from .file_operation_agent import FileOperationAgent
 from .learnable_agents import BaseLearnableAgent, LearnableAgent
-from .memory import ConversationMemory, KGMemory, MemoryManager, Message
+from .memory import (
+    ConversationMemory,
+    KGMemory,
+    ManagedConversationMemory,
+    ManagedMemoryConfig,
+    MemoryManager,
+    Message,
+)
 from .web_search_agent import WebSearchAgent
 from .pool_factory import (
     create_agent_pool,
@@ -26,6 +35,8 @@ __all__ = [
     "Agent",
     "AgentPool",
     "BrowserAgent",
+    "CodeExecutionAgent",
+    "DataAnalysisAgent",
     "FileOperationAgent",
     "WebSearchAgent",
     "BaseLearnableAgent",
@@ -42,6 +53,8 @@ __all__ = [
     "Message",
     "ConversationMemory",
     "KGMemory",
+    "ManagedConversationMemory",
+    "ManagedMemoryConfig",
     # Registry
     "AgentRegistry",
     # Utilities
