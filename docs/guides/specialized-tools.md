@@ -14,7 +14,7 @@ Tool classes provide:
 
 ## Available Tool Classes
 
-### [FileOperationTools](file-operation-tools.md)
+### [FileOperationTools](file-operations.md)
 
 High-level file system operations with type-aware handling.
 
@@ -23,17 +23,20 @@ High-level file system operations with type-aware handling.
 **Key Features**:
 - Type-aware file reading (Python, JSON, PDF, Markdown, images)
 - Unified diff editing for precise changes
-- R ipgrep-based content search
+- Ripgrep-based content search
 - Glob/regex file finding
-- Base directory restrictions for security
+- Run filesystem boundaries and mounts
+
+See [Run Filesystem](../concepts/run-filesystem.md) for virtual path semantics.
 
 ```python
-from marsys.environment.file_operations import FileOperationTools
+from pathlib import Path
+from marsys.environment.file_operations import FileOperationTools, FileOperationConfig
+from marsys.environment.filesystem import RunFileSystem
 
-file_tools = FileOperationTools(
-    base_directory=Path("/project"),
-    force_base_directory=True  # Jail to base directory
-)
+fs = RunFileSystem.local(run_root=Path("/project"))
+config = FileOperationConfig(run_filesystem=fs)
+file_tools = FileOperationTools(config)
 
 # Get tools dict for agent
 tools = file_tools.get_tools()
@@ -41,13 +44,13 @@ tools = file_tools.get_tools()
 
 **Use with**: FileOperationAgent, or custom agents needing file operations
 
-[**Read Full Documentation →**](file-operation-tools.md)
+[**Read Full Documentation →**](file-operations.md)
 
 ---
 
-### [BashTools](bash-tools.md)
+### ShellTools
 
-Safe bash command execution with validation and specialized helpers.
+Safe shell command execution with validation and specialized helpers.
 
 **Capabilities**: Execute commands, grep, find, sed, awk, tail, head, wc, diff, streaming execution
 
@@ -59,25 +62,59 @@ Safe bash command execution with validation and specialized helpers.
 - Specialized helper methods for common operations
 
 ```python
-from marsys.environment.bash_tools import BashTools
+from marsys.environment.shell_tools import ShellTools
 
-bash_tools = BashTools(
+shell_tools = ShellTools(
     working_directory="/project",
     allowed_commands=["grep", "find", "wc"],  # Whitelist
     timeout_default=30
 )
 
 # Get tools dict for agent
-tools = bash_tools.get_tools()
+tools = shell_tools.get_tools()
 ```
 
 **Use with**: FileOperationAgent (optional), or custom agents needing shell access
 
-[**Read Full Documentation →**](bash-tools.md)
+---
+
+### CodeExecutionTools
+
+Safe Python and shell execution toolkit for agent workflows.
+
+**Capabilities**: `python_execute`, `shell_execute`
+
+**Key Features**:
+- Resource limits (timeout, output size, memory, CPU)
+- Optional persistent Python sessions (`session_persistent_python=True`)
+- Security controls for shell patterns and Python modules
+- Network disabled by default (`allow_network=False`)
+- Virtual output path support via run filesystem (`output_virtual_dir`, default `./outputs`)
+
+```python
+from pathlib import Path
+from marsys.environment.code import CodeExecutionConfig, CodeExecutionTools
+from marsys.environment.filesystem import RunFileSystem
+
+fs = RunFileSystem.local(run_root=Path("./runs/run-20260206"))
+
+config = CodeExecutionConfig(
+    run_filesystem=fs,
+    timeout_default=30,
+    max_memory_mb=1024,
+    allow_network=False,
+    session_persistent_python=True,
+)
+
+code_tools = CodeExecutionTools(config)
+tools = code_tools.get_tools()  # {"python_execute": ..., "shell_execute": ...}
+```
+
+**Use with**: CodeExecutionAgent, DataAnalysisAgent, or custom agents requiring controlled execution
 
 ---
 
-### [SearchTools](search-tools.md)
+### SearchTools
 
 Multi-source search across web and scholarly databases.
 
@@ -106,8 +143,6 @@ except ValueError as e:
 
 **Use with**: WebSearchAgent, or custom agents needing search capabilities
 
-[**Read Full Documentation →**](search-tools.md)
-
 ---
 
 ### BrowserAgent
@@ -120,6 +155,7 @@ Browser automation through the BrowserAgent class with Playwright integration.
 - Two modes: PRIMITIVE (content extraction) and ADVANCED (visual interaction)
 - Vision-based interaction with auto-screenshot
 - Built-in browser tools
+- Download discovery via `list_downloads` (see BrowserAgent docs)
 
 ```python
 from marsys.agents import BrowserAgent
@@ -130,7 +166,7 @@ browser_agent = await BrowserAgent.create_safe(
     model_config=ModelConfig(
         type="api",
         provider="openrouter",
-        name="anthropic/claude-haiku-4.5",
+        name="anthropic/claude-opus-4.6",
         temperature=0.3
     ),
     name="web_scraper",
@@ -157,10 +193,11 @@ await browser_agent.cleanup()
 
 | Tool Class | Operations | API Keys | Security Features | Output Format |
 |------------|-----------|----------|-------------------|---------------|
-| **FileOperationTools** | 6 file ops | None | Base dir restriction, path validation | Dict with success/content |
-| **BashTools** | 10 commands | None | Blocked patterns, whitelist, timeout | Dict with success/output |
+| **FileOperationTools** | 6 file ops | None | Run filesystem boundaries, path validation | Dict with success/content |
+| **ShellTools** | 10 commands | None | Blocked patterns, whitelist, timeout | Dict with success/output |
+| **CodeExecutionTools** | Python + shell execution | None | Resource limits, module/pattern blocking, network controls | ToolResponse (text + optional images) |
 | **SearchTools** | 5 sources | None required<br>Google optional | API key validation, rate limits | JSON string |
-| **BrowserTools** | Browser control | None | Timeout, mode restrictions | Dict/JSON depending on operation |
+| **BrowserAgent built-ins** | Browser control | None | Timeout, mode restrictions | Dict/JSON depending on operation |
 
 ## Integration Patterns
 
@@ -170,14 +207,19 @@ All tool classes provide `get_tools()` method that returns a dict of wrapped fun
 
 ```python
 from marsys.agents import Agent
+from marsys.environment.code import CodeExecutionTools
+from marsys.environment.file_operations import FileOperationTools
+from marsys.environment.shell_tools import ShellTools
 
 file_tools = FileOperationTools()
-bash_tools = BashTools()
+shell_tools = ShellTools()
+code_tools = CodeExecutionTools()
 
 # Combine tools from multiple classes
 tools = {}
 tools.update(file_tools.get_tools())
-tools.update(bash_tools.get_tools())
+tools.update(shell_tools.get_tools())
+tools.update(code_tools.get_tools())
 
 agent = Agent(
     model_config=config,
@@ -192,17 +234,28 @@ agent = Agent(
 Enable tools based on configuration:
 
 ```python
+from marsys.environment.code import CodeExecutionConfig, CodeExecutionTools
+from marsys.environment.search_tools import SearchTools
+from marsys.environment.shell_tools import ShellTools
+
 tools = {}
 
 # Always include file operations
 tools.update(file_tools.get_tools())
 
-# Conditionally add bash tools
-if enable_bash:
-    bash_tools = BashTools(
+# Conditionally add shell tools
+if enable_shell:
+    shell_tools = ShellTools(
         allowed_commands=allowed_commands if production else None
     )
-    tools.update(bash_tools.get_tools())
+    tools.update(shell_tools.get_tools())
+
+# Conditionally add code execution tools
+if enable_code_execution:
+    code_tools = CodeExecutionTools(
+        CodeExecutionConfig(session_persistent_python=enable_persistent_python)
+    )
+    tools.update(code_tools.get_tools())
 
 # Conditionally add search tools (validates API keys)
 if has_search_api_keys:
@@ -218,6 +271,9 @@ if has_search_api_keys:
 Select specific tools from a class:
 
 ```python
+from marsys.environment.code import CodeExecutionTools
+from marsys.environment.search_tools import SearchTools
+
 # FileOperationTools: get only read/write tools
 all_file_tools = file_tools.get_tools()
 read_write_only = {
@@ -228,6 +284,13 @@ read_write_only = {
 # SearchTools: get only scholarly sources
 search_tools = SearchTools()
 scholarly_only = search_tools.get_tools(tools_subset=["arxiv", "semantic_scholar", "pubmed"])
+
+# CodeExecutionTools: keep only Python execution
+code_tools = CodeExecutionTools()
+python_only = {
+    k: v for k, v in code_tools.get_tools().items()
+    if k == "python_execute"
+}
 ```
 
 ### Pattern 4: Tool Configuration
@@ -235,17 +298,34 @@ scholarly_only = search_tools.get_tools(tools_subset=["arxiv", "semantic_scholar
 Configure tool behavior through initialization:
 
 ```python
-# FileOperationTools: restrict to specific directory
-file_tools = FileOperationTools(
-    base_directory=Path("/app/data"),
-    force_base_directory=True  # Cannot escape /app/data
+from pathlib import Path
+from marsys.environment.code import CodeExecutionConfig, CodeExecutionTools
+from marsys.environment.file_operations import FileOperationTools, FileOperationConfig
+from marsys.environment.filesystem import RunFileSystem
+from marsys.environment.search_tools import SearchTools
+from marsys.environment.shell_tools import ShellTools
+
+# FileOperationTools: restrict to specific run root
+fs = RunFileSystem.local(run_root=Path("/app/data"))
+config = FileOperationConfig(run_filesystem=fs)
+file_tools = FileOperationTools(config)
+
+# ShellTools: production whitelist
+shell_tools = ShellTools(
+    allowed_commands=["grep", "find", "wc", "ls"],
+    blocked_patterns=["rm -rf /", "sudo", "mv /"],  # Additional blocks
+    timeout_default=10  # Shorter timeout
 )
 
-# BashTools: production whitelist
-bash_tools = BashTools(
-    allowed_commands=["grep", "find", "wc", "ls"],
-    blocked_commands=["rm", "mv"],  # Additional blocks
-    timeout_default=10  # Shorter timeout
+# CodeExecutionTools: persistent Python + stricter limits
+code_tools = CodeExecutionTools(
+    CodeExecutionConfig(
+        timeout_default=20,
+        max_output_bytes=500_000,
+        max_memory_mb=1024,
+        allow_network=False,
+        session_persistent_python=True,
+    )
 )
 
 # SearchTools: explicit API keys (override env vars)
@@ -467,8 +547,9 @@ Tool classes commonly use environment variables for API keys:
 |------------|----------------------|----------|
 | **SearchTools** | `GOOGLE_SEARCH_API_KEY` (optional)<br>`GOOGLE_CSE_ID_GENERIC` (optional)<br>`SEMANTIC_SCHOLAR_API_KEY` (optional)<br>`NCBI_API_KEY` (optional) | None (DuckDuckGo is free) |
 | **FileOperationTools** | None | No |
-| **BashTools** | None | No |
-| **BrowserTools** | None | No |
+| **ShellTools** | None | No |
+| **CodeExecutionTools** | None | No |
+| **BrowserAgent built-ins** | None | No |
 
 Setup guides:
 - [Google Custom Search](https://developers.google.com/custom-search/v1/overview)

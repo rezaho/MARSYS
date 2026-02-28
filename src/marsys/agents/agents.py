@@ -39,7 +39,7 @@ from marsys.environment.utils import generate_openai_tool_schema, ObservableTool
 from marsys.models.models import BaseAPIModel, BaseLocalModel, ModelConfig
 from marsys.utils.monitoring import default_progress_monitor
 
-from .memory import MemoryManager, Message, ToolCallMsg
+from .memory import ManagedMemoryConfig, MemoryManager, Message, ToolCallMsg
 from .planning import PlanningConfig, PlanningState, create_planning_tools, get_planning_instruction
 from .registry import AgentRegistry
 from .utils import (
@@ -83,6 +83,7 @@ class MockRequestContext:
 
 
 from .exceptions import (
+    APIErrorClassification,
     ActionValidationError,
     AgentConfigurationError,
     AgentError,
@@ -93,6 +94,7 @@ from .exceptions import (
     MessageContentError,
     MessageError,
     MessageFormatError,
+    ModelAPIError,
     ModelError,
     ModelResponseError,
     SchemaValidationError,
@@ -1479,9 +1481,9 @@ class BaseAgent(ABC):
         # This allows memory reset events to trigger plan clearing
         event_bus = context.get("event_bus")
         if event_bus:
-            # Set up memory's event context for emitting MemoryResetEvent
+            # Set up memory's event context for emitting MemoryResetEvent and CompactionEvent
             if hasattr(self, "memory"):
-                self.memory.set_event_context(self.name, event_bus)
+                self.memory.set_event_context(self.name, event_bus, session_id)
 
             # Set up planning state's event bus for receiving MemoryResetEvent
             # and session_id for emitting planning events
@@ -1607,6 +1609,22 @@ class BaseAgent(ABC):
             request_context=request_context,
         )
 
+        # Run compaction if needed before retrieving messages
+        if hasattr(self, "memory") and hasattr(self.memory, "compact_if_needed"):
+            _mc = getattr(self, "_model_config", None)
+            await self.memory.compact_if_needed(
+                runtime={
+                    "agent_instruction": self.instruction,
+                    "compaction_model": getattr(self, "_compaction_model", None) or self.model,
+                    "compaction_model_name": (
+                        self._compaction_model_config.name
+                        if getattr(self, "_compaction_model_config", None)
+                        else (_mc.name if _mc else "unknown")
+                    ),
+                    "provider": getattr(_mc, "provider", "unknown") if _mc else "unknown",
+                }
+            )
+
         # Get memory messages and prepare them for the model
         memory_messages = self.memory.get_messages() if hasattr(self, "memory") else []
 
@@ -1672,57 +1690,116 @@ class BaseAgent(ABC):
             },
         )
 
-        # Call pure _run() method - contains ONLY domain logic
-        try:
-            raw_response = await self._run(
-                messages=prepared_messages,
-                request_context=request_context,
-                run_mode=execution_mode,
-                **model_kwargs,
-            )
+        # Call pure _run() method with payload-error recovery loop.
+        # If _run() raises ModelAPIError with REQUEST_TOO_LARGE, compact
+        # memory and retry up to _MAX_PAYLOAD_RETRIES times.
+        _MAX_PAYLOAD_RETRIES = 2
+        _payload_retries = 0
 
-            # Log successful model call
-            if raw_response.role != "error":
-                await self._log_progress(
-                    request_context,
-                    LogLevel.DETAILED,
-                    f"Model/API call successful. Content type: {type(raw_response.content).__name__}",
-                    data={
-                        "has_tool_calls": bool(raw_response.tool_calls),
-                        "message_id": raw_response.message_id,
-                        "content_preview": (
-                            str(raw_response.content)[:100]
-                            if raw_response.content
-                            else "Empty"
-                        ),
-                    },
+        while True:
+            try:
+                raw_response = await self._run(
+                    messages=prepared_messages,
+                    request_context=request_context,
+                    run_mode=execution_mode,
+                    **model_kwargs,
                 )
-            else:
-                # Handle error response from _run
-                error_data = {}
-                if isinstance(raw_response.content, str):
-                    try:
-                        error_data = json.loads(raw_response.content)
-                    except json.JSONDecodeError:
-                        error_data = {"error": raw_response.content}
 
+                # Log successful model call
+                if raw_response.role != "error":
+                    await self._log_progress(
+                        request_context,
+                        LogLevel.DETAILED,
+                        f"Model/API call successful. Content type: {type(raw_response.content).__name__}",
+                        data={
+                            "has_tool_calls": bool(raw_response.tool_calls),
+                            "message_id": raw_response.message_id,
+                            "content_preview": (
+                                str(raw_response.content)[:100]
+                                if raw_response.content
+                                else "Empty"
+                            ),
+                        },
+                    )
+                else:
+                    # Handle error response from _run
+                    error_data = {}
+                    if isinstance(raw_response.content, str):
+                        try:
+                            error_data = json.loads(raw_response.content)
+                        except json.JSONDecodeError:
+                            error_data = {"error": raw_response.content}
+
+                    await self._log_progress(
+                        request_context,
+                        LogLevel.MINIMAL,
+                        f"Model/API call failed: {error_data.get('error', 'Unknown error')}",
+                        data=error_data,
+                    )
+                break  # Success or non-recoverable error message
+
+            except ModelAPIError as e:
+                if (
+                    e.classification == APIErrorClassification.REQUEST_TOO_LARGE.value
+                    and _payload_retries < _MAX_PAYLOAD_RETRIES
+                    and hasattr(self, "memory")
+                    and hasattr(self.memory, "compact_for_payload_error")
+                ):
+                    _payload_retries += 1
+                    self.logger.warning(
+                        f"Payload too large for '{self.name}', running payload "
+                        f"compaction (attempt {_payload_retries}/{_MAX_PAYLOAD_RETRIES})"
+                    )
+
+                    _mc = getattr(self, "_model_config", None)
+                    compaction_runtime = {
+                        "agent_instruction": self.instruction,
+                        "compaction_model": getattr(self, "_compaction_model", None) or self.model,
+                        "compaction_model_name": (
+                            self._compaction_model_config.name
+                            if getattr(self, "_compaction_model_config", None)
+                            else (_mc.name if _mc else "unknown")
+                        ),
+                        "provider": getattr(_mc, "provider", "unknown") if _mc else "unknown",
+                    }
+                    compacted = await self.memory.compact_for_payload_error(
+                        runtime=compaction_runtime,
+                    )
+                    if not compacted:
+                        raw_response = self._make_error_message_from_exception(e)
+                        break
+
+                    # Re-prepare messages from compacted memory
+                    memory_messages = self.memory.get_messages() if hasattr(self, "memory") else []
+                    prepared_messages = self._prepare_messages_for_llm(
+                        memory_messages,
+                        system_prompt_builder,
+                        coordination_context,
+                        execution_context,
+                    )
+                    if steering_prompt:
+                        prepared_messages = prepared_messages.copy()
+                        prepared_messages.append({"role": "user", "content": steering_prompt})
+                    continue  # Retry with compacted messages
+
+                # Non-recoverable or retries exhausted
+                raw_response = self._make_error_message_from_exception(e)
                 await self._log_progress(
                     request_context,
                     LogLevel.MINIMAL,
-                    f"Model/API call failed: {error_data.get('error', 'Unknown error')}",
-                    data=error_data,
+                    f"Model/API call failed: {e}",
+                    data={"error": str(e), "error_type": type(e).__name__},
                 )
+                break
 
-        except Exception as e:
-            # This should not happen since _run() catches exceptions
-            # But keep it for safety
-            await self._log_progress(
-                request_context,
-                LogLevel.MINIMAL,
-                f"Unexpected error in _run: {e}",
-                data={"error": str(e), "error_type": type(e).__name__},
-            )
-            raise
+            except Exception as e:
+                await self._log_progress(
+                    request_context,
+                    LogLevel.MINIMAL,
+                    f"Unexpected error in _run: {e}",
+                    data={"error": str(e), "error_type": type(e).__name__},
+                )
+                raise
 
         # Ensure response is a Message object
         if not isinstance(raw_response, Message):
@@ -2296,9 +2373,8 @@ The user will provide their response, and you'll receive it to continue your tas
 
         Returns:
             The final response from the agent execution, either as a dict or string.
-            
+
         Raises:
-            ValueError: If no allowed_peers are defined for the agent.
             RuntimeError: If the execution fails.
         """
         # Import here to avoid circular imports
@@ -2360,13 +2436,6 @@ The user will provide their response, and you'll receive it to continue your tas
             max_steps = max_steps or 30
             timeout = timeout
 
-        # Validate that agent has allowed_peers
-        if not self._allowed_peers_init:
-            raise ValueError(
-                f"Agent {self.name} has no allowed_peers defined. "
-                f"Use allowed_peers parameter during initialization."
-            )
-        
         # Extract prompt and context from task
         prompt, context_messages = self._extract_prompt_and_context(task)
         
@@ -2596,7 +2665,7 @@ The user will provide their response, and you'll receive it to continue your tas
             # Clear memory if retention is single_run
             if self._memory_retention == "single_run" and hasattr(self, 'memory'):
                 try:
-                    self.memory.clear()
+                    self.memory.reset_memory()
                     self.logger.debug(f"Cleared single-run memory for agent '{self.name}'")
                 except Exception as e:
                     self.logger.warning(f"Failed to clear memory: {e}")
@@ -2651,17 +2720,18 @@ class Agent(BaseAgent):
         goal: str,
         instruction: str,
         tools: Optional[Dict[str, Callable[..., Any]]] = None,
-        # tools_schema: Optional[List[Dict[str, Any]]] = None, # Removed from signature
-        memory_type: Optional[str] = "conversation_history",
+        memory_type: Optional[str] = "managed_conversation",
+        memory_config: Optional[ManagedMemoryConfig] = None,
+        compaction_model_config: Optional[ModelConfig] = None,
         max_tokens: Optional[int] = None,  # Explicit override; None ⇒ use ModelConfig
         name: Optional[str] = None,
         allowed_peers: Optional[List[str]] = None,
-        bidirectional_peers: bool = False,  # NEW: Control edge directionality
+        bidirectional_peers: bool = False,
         input_schema: Optional[Any] = None,
         output_schema: Optional[Any] = None,
-        memory_retention: str = "session",  # New parameter
-        memory_storage_path: Optional[str] = None,  # New parameter
-        plan_config: Optional[Union[PlanningConfig, Dict, bool]] = None,  # Planning configuration
+        memory_retention: str = "session",
+        memory_storage_path: Optional[str] = None,
+        plan_config: Optional[Union[PlanningConfig, Dict, bool]] = None,
     ) -> None:
         """
         Initializes the Agent.
@@ -2672,6 +2742,8 @@ class Agent(BaseAgent):
             instruction: Detailed instructions on how the agent should behave and operate.
             tools: Optional dictionary of tools.
             memory_type: Type of memory module to use.
+            memory_config: Optional configuration for ManagedConversationMemory.
+            compaction_model_config: Optional ModelConfig for a separate compaction model.
             max_tokens: Default maximum tokens for generation for this agent instance (overrides model_config default).
             name: Optional specific name for registration.
             allowed_peers: List of agent names this agent can call.
@@ -2710,12 +2782,20 @@ class Agent(BaseAgent):
             memory_storage_path=memory_storage_path,  # Pass storage path
             plan_config=plan_config,  # Pass planning configuration
         )
-        self.memory = MemoryManager(
-            memory_type=memory_type or "conversation_history",
-            description=self.instruction,  # Pass agent's instruction for initial system message
-            model=self.model if memory_type == "kg" else None,
+        self._model_config = model_config
+        self._compaction_model_config = compaction_model_config
+        self._compaction_model = (
+            self._create_model_from_config(compaction_model_config)
+            if compaction_model_config is not None
+            else None
         )
-        self._model_config = model_config  # Store the ModelConfig instance
+
+        self.memory = MemoryManager(
+            memory_type=memory_type or "managed_conversation",
+            description=self.instruction,
+            model=self.model if memory_type == "kg" else None,
+            memory_config=memory_config,
+        )
 
     async def cleanup(self) -> None:
         """
@@ -2724,6 +2804,18 @@ class Agent(BaseAgent):
         This method ensures proper cleanup of aiohttp sessions and other resources.
         Should be called when the agent is no longer needed.
         """
+        # Clean up compaction model if separate from primary
+        if getattr(self, "_compaction_model", None) and self._compaction_model is not self.model:
+            if hasattr(self._compaction_model, "cleanup"):
+                try:
+                    if asyncio.iscoroutinefunction(self._compaction_model.cleanup):
+                        await self._compaction_model.cleanup()
+                    else:
+                        self._compaction_model.cleanup()
+                except Exception as e:
+                    logger = logging.getLogger(__name__)
+                    logger.warning(f"Error cleaning up compaction model for agent {self.name}: {e}")
+
         # Clean up the model's async resources (e.g., aiohttp sessions)
         if hasattr(self.model, 'cleanup'):
             try:
@@ -2800,6 +2892,11 @@ class Agent(BaseAgent):
             provider = (
                 config.provider or "openai"
             )  # Default to openai if no provider specified
+
+            # Pass oauth_profile for OAuth providers (it's a known field, so not in extra_kwargs)
+            if config.oauth_profile:
+                extra_kwargs["oauth_profile"] = config.oauth_profile
+
             return BaseAPIModel(
                 model_name=model_name,
                 api_key=api_key,
@@ -2840,6 +2937,7 @@ class Agent(BaseAgent):
                 "temperature",  # Handled by Agent init and run override
                 "thinking_budget",  # Passed to BaseAPIModel init
                 "reasoning_effort",  # Passed to BaseAPIModel init
+                "oauth_profile",  # Passed to BaseAPIModel init (for OAuth providers)
                 "model_class",  # Local model specific
                 "torch_dtype",  # Local model specific
                 "device_map",  # Local model specific
@@ -2857,6 +2955,22 @@ class Agent(BaseAgent):
             kwargs = {k: v for k, v in config_dict.items() if k not in exclude_keys}
             return kwargs
         return {}
+
+    def _make_error_message_from_exception(self, e: Exception) -> Message:
+        """Convert an exception to an error Message with preserved metadata."""
+        error_content = {
+            "error": f"LLM call failed: {e}",
+            "error_code": getattr(e, "error_code", "MODEL_ERROR"),
+            "error_type": type(e).__name__,
+        }
+        for attr in (
+            "classification", "provider", "is_retryable", "retry_after",
+            "suggested_action", "api_error_code", "api_error_type",
+        ):
+            val = getattr(e, attr, None)
+            if val is not None:
+                error_content[attr] = val
+        return Message(role="error", content=json.dumps(error_content), name=self.name)
 
     async def _run(
         self,
@@ -2941,38 +3055,12 @@ class Agent(BaseAgent):
 
             return assistant_message
 
-        # TODO: Test if AgentFrameworkError handling is needed here
-        # except AgentFrameworkError:
-        #     # Re-raise framework errors for step executor to handle
-        #     raise
+        except ModelAPIError as e:
+            # Re-raise payload-too-large so run_step() can attempt compaction
+            if e.classification == APIErrorClassification.REQUEST_TOO_LARGE.value:
+                raise
+            # Other API errors: convert to error Message (existing behavior)
+            return self._make_error_message_from_exception(e)
 
         except Exception as e:
-            # Extract all relevant error information
-            error_content = {
-                "error": f"LLM call failed: {e}",
-                "error_code": getattr(e, "error_code", "MODEL_ERROR"),
-                "error_type": type(e).__name__,
-            }
-
-            # Preserve ModelAPIError classification data
-            if hasattr(e, 'classification'):
-                error_content['classification'] = e.classification
-            if hasattr(e, 'provider'):
-                error_content['provider'] = e.provider
-            if hasattr(e, 'is_retryable'):
-                error_content['is_retryable'] = e.is_retryable
-            if hasattr(e, 'retry_after'):
-                error_content['retry_after'] = e.retry_after
-            if hasattr(e, 'suggested_action'):
-                error_content['suggested_action'] = e.suggested_action
-            if hasattr(e, 'api_error_code'):
-                error_content['api_error_code'] = e.api_error_code
-            if hasattr(e, 'api_error_type'):
-                error_content['api_error_type'] = e.api_error_type
-
-            error_message = Message(
-                role="error",
-                content=json.dumps(error_content),
-                name=self.name,
-            )
-            return error_message
+            return self._make_error_message_from_exception(e)

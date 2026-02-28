@@ -83,22 +83,68 @@ ManagedConversationMemory(
 |--------|-------------|
 | `get_raw_messages()` | Get full raw message history |
 | `get_cache_stats()` | Get cache statistics |
+| `compact_for_payload_error(runtime: Optional[Dict[str, Any]] = None) -> bool` | Run payload-too-large recovery compaction. Returns `True` only when serialized payload bytes are reduced |
+
+**Payload Error Recovery (`compact_for_payload_error`)**
+
+When an LLM/API call fails with payload-too-large classification, `Agent.run_step()` can call this method to compact memory and retry.
+
+Behavior:
+- Splits messages into `prefix` and protected `tail` using assistant-round boundary semantics (`grace_recent_messages = n` protects from the n-th most recent assistant message onward)
+- Runs **summarization** on the prefix using the same summarization config as normal compaction
+- Re-appends the protected tail unchanged
+- Preserves conversation structure (including leading system message) instead of flattening into a single user message
+- Retains only selected images with a provider-aware byte budget (50% of payload limit) and optional `max_retained_images` cap
+- Applies safety guards (minimum viable output and at least one `user` message)
+- Treats compaction as successful only if estimated serialized payload bytes decrease
+- Emits `CompactionEvent` lifecycle events (`started`, `completed`, `failed`)
 
 **ManagedMemoryConfig:**
 ```python
 @dataclass
 class ManagedMemoryConfig:
-    max_total_tokens_trigger: int = 150_000
-    target_total_tokens: int = 100_000
+    threshold_tokens: int = 150_000
     image_token_estimate: int = 800
-    min_retrieval_gap_steps: int = 2
-    min_retrieval_gap_tokens: int = 5000
     trigger_events: List[str] = ["add", "get_messages"]
     cache_invalidation_events: List[str] = ["add", "remove_by_id", "delete_memory"]
     token_counter: Optional[Callable] = None
-    enable_headroom_percent: float = 0.1
-    processing_strategy: str = "none"
+    active_context: ActiveContextPolicyConfig = ...
+
+    @property
+    def compaction_target_tokens(self) -> int:
+        """Derived: threshold_tokens * (1 - min_reduction_ratio)."""
 ```
+
+**ActiveContextPolicyConfig (key fields):**
+```python
+@dataclass
+class ActiveContextPolicyConfig:
+    enabled: bool = True
+    mode: str = "compaction"  # "compaction" | "sliding_window"
+    processor_order: List[str] = ["tool_truncation", "summarization", "backward_packing"]
+    excluded_processors: List[str] = []
+    min_reduction_ratio: float = 0.4
+    tool_truncation: ToolTruncationConfig = ...
+    summarization: SummarizationConfig = ...
+    backward_packing: BackwardPackingConfig = ...
+```
+
+**SummarizationConfig (key fields):**
+```python
+@dataclass
+class SummarizationConfig:
+    enabled: bool = True
+    grace_recent_messages: int = 1
+    output_max_tokens: int = 6000
+    include_original_instruction: bool = True
+    include_image_payload_bytes: bool = False
+    max_retained_images: Optional[int] = None  # Payload recovery defaults to 5 when unset
+```
+
+Notes:
+- `grace_recent_messages` uses assistant-round semantics (protect from the N-th most recent assistant message onward).
+- `max_retained_images` limits retained image count in summarization output.
+- Payload recovery compaction additionally enforces a provider-aware byte budget for retained images.
 
 ---
 
@@ -161,8 +207,11 @@ MemoryManager(
 
 | Method | Description |
 |--------|-------------|
-| `save_to_file(filepath: str)` | Save memory state to JSON |
-| `load_from_file(filepath: str)` | Load memory state from JSON |
+| `set_event_context(agent_name: str, event_bus: Optional[EventBus], session_id: Optional[str] = None)` | Enable memory event emission (`MemoryResetEvent`, `CompactionEvent`) |
+| `compact_if_needed(runtime: Optional[Dict[str, Any]] = None)` | Trigger token-threshold compaction when supported by the underlying memory module |
+| `compact_for_payload_error(runtime: Optional[Dict[str, Any]] = None) -> bool` | Trigger payload-too-large recovery compaction when supported by the underlying memory module |
+| `save_to_file(filepath: str, additional_state: Optional[Dict])` | Save memory state to JSON (optionally with extra state) |
+| `load_from_file(filepath: str) -> Optional[Dict]` | Load memory state and return additional_state if present |
 
 **Example:**
 ```python
@@ -176,7 +225,7 @@ manager = MemoryManager(
 manager = MemoryManager(
     memory_type="managed_conversation",
     memory_config=ManagedMemoryConfig(
-        max_total_tokens_trigger=100000
+        threshold_tokens=100000
     )
 )
 
@@ -193,6 +242,49 @@ manager.save_to_file("memory.json")
 ```
 
 ---
+
+### MemoryResetEvent
+
+`MemoryResetEvent` is emitted when memory is cleared (e.g., `reset_memory()`), enabling planning state to auto-clear.
+
+**Import:**
+```python
+from marsys.agents.memory import MemoryResetEvent
+```
+
+**Usage:**
+```python
+from marsys.coordination.event_bus import EventBus
+
+bus = EventBus()
+manager.set_event_context(agent_name="Researcher", event_bus=bus, session_id="run_123")
+```
+
+---
+
+### CompactionEvent
+
+`CompactionEvent` is emitted by managed memory compaction to report lifecycle progress to status channels.
+
+**Import:**
+```python
+from marsys.coordination.status.events import CompactionEvent
+```
+
+**Fields:**
+```python
+CompactionEvent(
+    session_id: str,
+    agent_name: str,
+    status: str,              # "started" | "completed" | "failed"
+    pre_tokens: int = 0,
+    post_tokens: int = 0,
+    pre_messages: int = 0,
+    post_messages: int = 0,
+    duration: Optional[float] = None,
+    stages_run: Optional[List[str]] = None,
+)
+```
 
 ### Message
 

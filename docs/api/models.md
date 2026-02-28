@@ -30,7 +30,7 @@ class ModelConfig(BaseModel):
     # API settings
     provider: Optional[str] = Field(
         default=None,
-        description="API provider (openai, anthropic, google, openrouter, xai)"
+        description="API provider (openai, anthropic, google, openrouter, xai, openai-oauth, anthropic-oauth)"
     )
     base_url: Optional[str] = Field(
         default=None,
@@ -39,6 +39,10 @@ class ModelConfig(BaseModel):
     api_key: Optional[str] = Field(
         default=None,
         description="API key (auto-loaded from env if None)"
+    )
+    oauth_profile: Optional[str] = Field(
+        default=None,
+        description="OAuth profile name for openai-oauth / anthropic-oauth"
     )
 
     # Generation parameters
@@ -125,20 +129,20 @@ class ModelConfig(BaseModel):
 ```python
 from marsys.models import ModelConfig
 
-# OpenAI GPT-5
+# OpenAI GPT-5 Codex
 gpt5_config = ModelConfig(
     type="api",
     provider="openrouter",
-    name="openai/gpt-5",
+    name="openai/gpt-5-codex",
     temperature=0.7,
     max_tokens=12000
 )
 
-# Anthropic Claude Sonnet 4.5
+# Anthropic Claude Opus 4.6
 claude_config = ModelConfig(
     type="api",
     provider="openrouter",
-    name="anthropic/claude-sonnet-4.5",
+    name="anthropic/claude-opus-4.6",
     temperature=0.5,
     max_tokens=12000
 )
@@ -175,6 +179,47 @@ custom_config = ModelConfig(
     parameters={"custom_param": "value"}
 )
 ```
+
+### OAuth Providers (No API Keys)
+
+MARSYS supports OAuth-backed providers that use local CLI credentials instead of API keys:
+
+- **`openai-oauth`**: ChatGPT subscription via Codex CLI (`codex login`)
+- **`anthropic-oauth`**: Claude Max subscription via Claude CLI (`claude login`)
+
+Credentials are read from local files and can be overridden with environment variables:
+
+- OpenAI OAuth: `~/.codex/auth.json` (override with `CODEX_AUTH_PATH`)
+- Anthropic OAuth: `~/.claude/.credentials.json` (override with `CLAUDE_AUTH_PATH`)
+
+OAuth profile resolution order:
+1. Explicit `credentials_path` in `ModelConfig`
+2. `oauth_profile` in `ModelConfig`
+3. Provider default profile set via `marsys oauth set-default ...`
+
+```python
+# OpenAI ChatGPT OAuth (Codex CLI)
+openai_oauth = ModelConfig(
+    type="api",
+    provider="openai-oauth",
+    name="gpt-5.3-codex",
+    credentials_path="~/.codex/auth.json"  # Optional override
+)
+
+# Anthropic Claude OAuth (Claude CLI)
+anthropic_oauth = ModelConfig(
+    type="api",
+    provider="anthropic-oauth",
+    name="claude-opus-4-6",
+    credentials_path="~/.claude/.credentials.json"  # Optional override
+)
+```
+
+!!! warning "Use At Your Own Risk (Anthropic OAuth)"
+    `anthropic-oauth` relies on a non-official integration path and may violate provider Terms of Service. Use at your own risk.
+
+!!! note "OpenAI OAuth Compliance"
+    MARSYS does not make a legal determination about OpenAI ToS coverage for this OAuth path. Review OpenAI terms for your use case.
 
 ## 🤖 Model Classes
 
@@ -447,9 +492,11 @@ class BaseAPIModel:
 | Provider | Models | Environment Variable |
 |----------|--------|---------------------|
 | `openrouter` | All major models | `OPENROUTER_API_KEY` |
-| `openai` | gpt-5, gpt-5-mini, gpt-5-chat, etc. | `OPENAI_API_KEY` |
-| `anthropic` | claude-haiku-4.5, claude-sonnet-4.5, etc. | `ANTHROPIC_API_KEY` |
-| `google` | gemini-2.5-pro, gemini-2.5-flash, etc. | `GOOGLE_API_KEY` |
+| `openai` | gpt-5-codex, etc. | `OPENAI_API_KEY` |
+| `openai-oauth` | gpt-5.3-codex | `codex login` (`~/.codex/auth.json`) |
+| `anthropic` | claude-opus-4-6, claude-opus-4.6 (alias), etc. | `ANTHROPIC_API_KEY` |
+| `anthropic-oauth` | claude-opus-4-6 | `claude login` (`~/.claude/.credentials.json`) |
+| `google` | gemini-3-flash-preview, gemini-3-pro-preview, etc. | `GOOGLE_API_KEY` |
 | `xai` | grok-4, grok-4-fast, grok-3, etc. | `XAI_API_KEY` |
 
 #### Methods
@@ -460,7 +507,8 @@ Execute API model.
 
 **Parameters:**
 - `messages` (List[Dict]): Conversation messages
-- `json_mode` (bool): Force JSON response
+- `json_mode` (bool): Force JSON response (non-schema mode)
+- `response_schema` (Optional[Dict]): Strict JSON schema for structured output
 - `tools` (Optional[List[Dict]]): Function definitions
 - `tool_choice` (Optional[str]): Tool selection strategy
 - `**kwargs`: Provider-specific parameters
@@ -471,7 +519,7 @@ from marsys.models import BaseAPIModel
 
 model = BaseAPIModel(
     provider="openrouter",
-    model_name="anthropic/claude-haiku-4.5",
+    model_name="anthropic/claude-opus-4.6",
     temperature=0.7,
     max_tokens=12000
 )
@@ -514,7 +562,7 @@ from marsys.models import BaseAPIModel, ModelConfig
 config = ModelConfig(
     type="api",
     provider="openrouter",
-    name="anthropic/claude-haiku-4.5",
+    name="anthropic/claude-opus-4.6",
     max_tokens=12000
 )
 
@@ -643,6 +691,37 @@ data = json.loads(response["content"])
 print(f"Answer: {data['answer']} (Confidence: {data['confidence']})")
 ```
 
+### Structured Output (`response_schema`)
+
+Use `response_schema` for strict schema-constrained JSON:
+
+```python
+schema = {
+    "type": "object",
+    "properties": {
+        "answer": {"type": "string"},
+        "confidence": {"type": "number"},
+    },
+    "required": ["answer", "confidence"],
+}
+
+response = await model.run(
+    messages=[{"role": "user", "content": "What is 2+2?"}],
+    response_schema=schema,
+)
+```
+
+Provider behavior:
+
+- OpenAI / OpenRouter / OpenAI OAuth: native JSON schema mode
+- Google: `responseSchema` in generation config
+- Anthropic / Anthropic OAuth: native `output_config.format` JSON schema
+- `response_schema` takes precedence over `json_mode`
+
+Strict schema note:
+
+- MARSYS auto-normalizes schema objects with `additionalProperties: false` where required by strict providers.
+
 ### Streaming Responses
 
 Stream model output (when supported):
@@ -680,7 +759,7 @@ from marsys.models import BaseAPIModel
 
 model = BaseAPIModel(
     provider="openrouter",
-    model_name="anthropic/claude-sonnet-4.5",
+    model_name="anthropic/claude-opus-4.6",
     api_key=api_key
 )
 
@@ -689,8 +768,8 @@ model = BaseAPIModel(
 response = await model.arun(messages)
 
 # Logs will show retry attempts:
-# WARNING - Server error 503 from claude-sonnet-4.5. Retry 1/3 after 1.0s
-# WARNING - Server error 503 from claude-sonnet-4.5. Retry 2/3 after 2.0s
+# WARNING - Server error 503 from claude-opus-4.6. Retry 1/3 after 1.0s
+# WARNING - Server error 503 from claude-opus-4.6. Retry 2/3 after 2.0s
 # INFO - Request successful after 2 retries
 ```
 
@@ -802,7 +881,7 @@ from marsys.models import ModelConfig
 config = ModelConfig(
     type="api",
     provider="openrouter",
-    name=os.getenv("MODEL_NAME", "anthropic/claude-haiku-4.5"),
+    name=os.getenv("MODEL_NAME", "anthropic/claude-opus-4.6"),
     temperature=float(os.getenv("MODEL_TEMPERATURE", "0.7")),
     max_tokens=int(os.getenv("MAX_TOKENS", "12000"))
 )
@@ -811,7 +890,7 @@ config = ModelConfig(
 config = ModelConfig(
     type="api",
     provider="openrouter",
-    name="anthropic/claude-haiku-4.5",
+    name="anthropic/claude-opus-4.6",
     api_key="sk-..."  # Never hardcode!
 )
 ```

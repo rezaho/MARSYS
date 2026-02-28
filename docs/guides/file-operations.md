@@ -12,7 +12,7 @@ The File Operations Toolkit provides type-aware file handling with advanced feat
 - **Hierarchical Structure Extraction**: AST-based parsing for code, font-analysis for PDFs
 - **Image Support**: Extract and process images from PDFs and read image files directly
 - **Unified Diff Editing**: High-success-rate patching with multiple fallback strategies
-- **Security Framework**: Base directory enforcement, pattern-based permissions, approval workflows
+- **Security Framework**: Virtual filesystem boundaries, pattern-based permissions, approval workflows
 - **Search Capabilities**: Content search (grep), filename search (glob), and structure search
 - **Type-Specific Handlers**: Specialized handlers for images, PDFs, JSON, YAML, Markdown, and code files
 
@@ -50,19 +50,23 @@ import os
 from pathlib import Path
 from marsys import Agent
 from marsys.models import ModelConfig
-from marsys.environment import create_file_operation_tools
+from marsys.environment import FileOperationConfig, create_file_operation_tools
+from marsys.environment.filesystem import RunFileSystem
 
 # Create model configuration (example using OpenRouter)
 # Note: API key is only required if you use API-based models
 model_config = ModelConfig(
     type="api",
-    name="anthropic/claude-haiku-4.5",
+    name="anthropic/claude-opus-4.6",
     provider="openrouter",
     api_key=os.getenv("OPENROUTER_API_KEY")  # Set if using OpenRouter
 )
 
 # Create file operation tools
-file_tools = create_file_operation_tools()
+# Shared run filesystem for all agents
+fs = RunFileSystem.local(run_root=Path("./runs/run-20260206"))
+file_config = FileOperationConfig(run_filesystem=fs)
+file_tools = create_file_operation_tools(file_config)
 
 # Create agent with file capabilities
 file_agent = Agent(
@@ -73,7 +77,7 @@ file_agent = Agent(
     - Extract structured information from documents
     - Edit files using unified diff format for reliability
     - Search for content across multiple files
-    - Maintain security by respecting base directory restrictions
+    - Maintain security by respecting run filesystem boundaries
 
     Always use the most appropriate reading strategy to optimize token usage.
     When editing, prefer unified diff format for complex changes.""",
@@ -83,13 +87,37 @@ file_agent = Agent(
 
 # Use the agent
 result = await file_agent.run(
-    prompt="Read the README.md file and summarize its contents",
-    context={"working_dir": Path.cwd()}
+    prompt="Read the README.md file and summarize its contents"
 )
 ```
 
 !!! tip "API Keys"
     If you're using API-based models (like OpenRouter, OpenAI, etc.), ensure the appropriate API key environment variable is set (e.g., `OPENROUTER_API_KEY`, `OPENAI_API_KEY`).
+
+---
+
+## 🗂️ Virtual Paths & RunFileSystem
+
+File operations use **virtual POSIX paths**. Tool-returned paths are typically `./...`, while the run filesystem also accepts absolute virtual form (`/...`):
+
+- `/` is the run root
+- Use `./downloads`, `./screenshots`, `./outputs` for common artifacts
+- Relative paths like `./data.csv` resolve against the run filesystem working directory
+
+To share files between agents, create a `RunFileSystem` once and pass it to tools/agents:
+
+```python
+from pathlib import Path
+from marsys.environment.filesystem import RunFileSystem
+from marsys.environment import FileOperationConfig, create_file_operation_tools
+
+fs = RunFileSystem.local(run_root=Path("./runs/run-20260206"))
+
+config = FileOperationConfig(run_filesystem=fs)
+file_tools = create_file_operation_tools(config)
+```
+
+See [Run Filesystem](../concepts/run-filesystem.md) for details and mount examples.
 
 ---
 
@@ -110,12 +138,17 @@ file_tools = create_file_operation_tools()
 ```python
 from pathlib import Path
 from marsys.environment import FileOperationConfig, create_file_operation_tools
+from marsys.environment.filesystem import RunFileSystem
 
-# Create custom configuration
+# Create custom configuration (virtual filesystem + security)
+fs = RunFileSystem.local(
+    run_root=Path("/home/user/projects"),
+    extra_mounts={"/datasets": Path("/shared/datasets")}
+)
+
 config = FileOperationConfig(
-    # Base directory enforcement
     base_directory=Path("/home/user/projects"),
-    force_base_directory=True,  # Require all operations within base_directory
+    run_filesystem=fs,
 
     # File size limits (hard limit for safety)
     max_file_size_bytes=100 * 1024 * 1024,  # 100 MB absolute limit
@@ -159,19 +192,19 @@ config = FileOperationConfig(
         "*.sql",                      # SQL files
     ],
 
-    # Editing
-    enable_editing=True,
-    enable_dry_run=True,  # Allow preview before applying edits
+    # Feature flags
+    enable_delete=False,
+    enable_tree_sitter=True,
+    enable_semantic_search=False,
+    enable_caching=True,
+    cache_ttl_seconds=300,
 
     # Search
-    enable_content_search=True,
-    enable_filename_search=True,
-    enable_structure_search=True,
     max_search_results=100,
 
     # Audit logging
-    enable_audit_log=True,
-    audit_log_path=Path("./file_operations_audit.log"),
+    enable_audit_logging=True,
+    log_file_path=Path("./file_operations_audit.log"),
 )
 
 # Create tools with custom config
@@ -253,7 +286,9 @@ permissive_config = FileOperationConfig.create_permissive()
 permissive_tools = create_file_operation_tools(permissive_config)
 
 # Restrictive mode (tighter security)
-restrictive_config = FileOperationConfig.create_restrictive()
+restrictive_config = FileOperationConfig.create_restrictive(
+    base_directory=Path("/workspace")
+)
 restrictive_tools = create_file_operation_tools(restrictive_config)
 ```
 
@@ -411,6 +446,7 @@ result = await file_agent.run(
 **Features:**
 - Character-based limit enforcement (prevents requesting too many lines)
 - Maximum characters enforced by `max_characters_absolute` (120K default)
+- Line-range reads are streamed from disk (no full-file load for large files)
 - Clean response without usage guides (explicit request)
 
 **Response Format:**
@@ -852,9 +888,9 @@ result = await file_agent.run(
 
 ## 🔒 Security Features
 
-### Base Directory Enforcement
+### Run Filesystem Root & Mounts
 
-Restrict operations to a specific directory tree:
+Restrict operations to a **run root** and optionally add **mounts**:
 
 ```python
 from pathlib import Path
@@ -862,12 +898,13 @@ from marsys.environment import FileOperationConfig, create_file_operation_tools
 
 config = FileOperationConfig(
     base_directory=Path("/home/user/safe_workspace"),
-    force_base_directory=True  # Reject operations outside this directory
+    extra_mounts={"/datasets": Path("/shared/datasets")}
 )
 
 file_tools = create_file_operation_tools(config)
 
-# Attempts to access /etc/passwd will be blocked
+# Attempts to escape the run root are blocked
+# Virtual paths like /datasets/* map to the mounted host directory
 ```
 
 ### Pattern-Based Permissions
@@ -897,6 +934,10 @@ config = FileOperationConfig(
 )
 ```
 
+Default behavior note:
+- `*.json` and `*.xml` are not in default require-approval patterns.
+- Sensitive config and execution-related files still require approval by default.
+
 ### File Size Limits
 
 Prevent memory issues:
@@ -904,9 +945,14 @@ Prevent memory issues:
 ```python
 config = FileOperationConfig(
     max_file_size_bytes=10 * 1024 * 1024,  # 10 MB limit
-    max_tokens_per_read=8000  # Token limit per read
+    max_characters_absolute=80000,          # Absolute read limit (chars)
+    max_lines_per_read=200                  # Line-based partial reads
 )
 ```
+
+Error message safety:
+- File-operation errors are sanitized to avoid leaking host filesystem paths.
+- Agents see virtual paths in error messages (for example, `./data/file.txt`) instead of host-absolute paths.
 
 ### Audit Logging
 
@@ -914,8 +960,8 @@ Track all file operations:
 
 ```python
 config = FileOperationConfig(
-    enable_audit_log=True,
-    audit_log_path=Path("./file_ops_audit.log")
+    enable_audit_logging=True,
+    log_file_path=Path("./file_ops_audit.log")
 )
 
 # All operations logged with:
@@ -1040,9 +1086,9 @@ result = await file_agent.run(
 from pathlib import Path
 from marsys.environment import FileOperationConfig, create_file_operation_tools
 
-config = FileOperationConfig.create_restrictive()
-config.base_directory = Path("/workspace/project")
-config.force_base_directory = True
+config = FileOperationConfig.create_restrictive(
+    base_directory=Path("/workspace/project")
+)
 
 secure_tools = create_file_operation_tools(config)
 
@@ -1126,18 +1172,19 @@ Pillow is included in core marsys installation for:
 - Image extraction from PDFs
 - Image token estimation and processing
 
-### Issue: "Path outside base directory"
+### Issue: "Path outside run filesystem"
 
 **Solution:**
 ```python
-# Either expand base directory
+# Either expand the run root
 config = FileOperationConfig(
     base_directory=Path("/broader/path")
 )
 
-# Or disable enforcement
+# Or mount the external folder into the virtual filesystem
 config = FileOperationConfig(
-    force_base_directory=False
+    base_directory=Path("/workspace"),
+    extra_mounts={"/datasets": Path("/shared/datasets")}
 )
 ```
 
@@ -1313,18 +1360,17 @@ result = await file_agent.run(
 )
 ```
 
-### 4. **Restrict Base Directory for Security**
+### 4. **Restrict Run Root for Security**
 
 ```python
-# ✅ GOOD - Enforce base directory
+# ✅ GOOD - Limit the run root
 config = FileOperationConfig(
-    base_directory=Path("/workspace"),
-    force_base_directory=True
+    base_directory=Path("/workspace")
 )
 
-# ❌ RISKY - No restrictions
+# ❌ RISKY - Overly broad root
 config = FileOperationConfig(
-    force_base_directory=False  # Agent can access any file
+    base_directory=Path("/")  # Agent can access the entire host filesystem
 )
 ```
 
@@ -1347,13 +1393,13 @@ config = FileOperationConfig(
 ```python
 # ✅ GOOD - Track all operations
 config = FileOperationConfig(
-    enable_audit_log=True,
-    audit_log_path=Path("./audit.log")
+    enable_audit_logging=True,
+    log_file_path=Path("./audit.log")
 )
 
 # ❌ MISSING - No audit trail
 config = FileOperationConfig(
-    enable_audit_log=False
+    enable_audit_logging=False
 )
 ```
 
@@ -1384,7 +1430,9 @@ file_agent = Agent(
 ```python
 from marsys import Agent
 from marsys.models import ModelConfig
-from marsys.environment import create_file_operation_tools
+from pathlib import Path
+from marsys.environment import FileOperationConfig, create_file_operation_tools
+from marsys.environment.filesystem import RunFileSystem
 from marsys.coordination import Orchestra
 from marsys.coordination.topology.patterns import PatternConfig
 import os
@@ -1392,12 +1440,15 @@ import os
 # Model configuration (adjust based on your provider)
 model_config = ModelConfig(
     type="api",
-    name="anthropic/claude-haiku-4.5",
+    name="anthropic/claude-opus-4.6",
     provider="openrouter",
     api_key=os.getenv("OPENROUTER_API_KEY")
 )
 
-file_tools = create_file_operation_tools()
+# Shared run filesystem for all agents
+fs = RunFileSystem.local(run_root=Path("./runs/run-20260206"))
+file_config = FileOperationConfig(run_filesystem=fs)
+file_tools = create_file_operation_tools(file_config)
 
 # Agent 1: File Scanner
 scanner = Agent(

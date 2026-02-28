@@ -88,7 +88,7 @@ from marsys.models import ModelConfig
 # Create specialized agents
 model_config = ModelConfig(
     type="api",
-    name="anthropic/claude-sonnet-4.5",
+    name="anthropic/claude-opus-4.6",
     provider="openrouter"
 )
 

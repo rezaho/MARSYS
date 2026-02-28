@@ -23,11 +23,11 @@ from marsys.agents import Agent
 from marsys.models import ModelConfig
 
 async def main():
-    # Create an agent with Claude Haiku 4.5
+    # Create an agent with Claude Opus 4.6
     agent = Agent(
         model_config=ModelConfig(
             type="api",
-            name="anthropic/claude-haiku-4.5",
+            name="anthropic/claude-opus-4.6",
             provider="openrouter"
         ),
         name="Assistant",
@@ -56,7 +56,7 @@ Customize agent behavior with detailed system prompts:
 agent = Agent(
     model_config=ModelConfig(
         type="api",
-        name="anthropic/claude-sonnet-4.5",
+        name="anthropic/claude-opus-4.6",
         provider="openrouter"
     ),
     name="TechnicalWriter",
@@ -81,15 +81,15 @@ MARSYS supports multiple AI providers:
     agent = Agent(
         model_config=ModelConfig(
             type="api",
-            name="openai/gpt-5",
+            name="openai/gpt-5-codex",
             provider="openrouter",
             api_key=os.getenv("OPENROUTER_API_KEY"),
             temperature=0.7,
             max_tokens=12000
         ),
         name="GPTAgent",
-        goal="Assist with general AI tasks using GPT-5",
-        instruction="An intelligent GPT-5 agent for versatile assistance"
+        goal="Assist with general AI tasks using GPT-5 Codex",
+        instruction="An intelligent GPT-5 Codex agent for versatile assistance"
     )
     ```
 
@@ -98,7 +98,7 @@ MARSYS supports multiple AI providers:
     agent = Agent(
         model_config=ModelConfig(
             type="api",
-            name="anthropic/claude-sonnet-4.5",
+            name="anthropic/claude-opus-4.6",
             provider="openrouter",
             api_key=os.getenv("OPENROUTER_API_KEY"),
             temperature=0.5,
@@ -115,7 +115,7 @@ MARSYS supports multiple AI providers:
     agent = Agent(
         model_config=ModelConfig(
             type="api",
-            name="gemini-pro",
+            name="gemini-3-flash-preview",
             provider="google",
             api_key=os.getenv("GOOGLE_API_KEY"),
             temperature=0.9,
@@ -156,7 +156,7 @@ from marsys.environment.tools import AVAILABLE_TOOLS
 agent = Agent(
     model_config=ModelConfig(
         type="api",
-        name="anthropic/claude-haiku-4.5",
+        name="anthropic/claude-opus-4.6",
         provider="openrouter"
     ),
     name="ToolMaster",
@@ -216,7 +216,7 @@ def analyze_sentiment(text: str, language: str = "en") -> dict:
 agent = Agent(
     model_config=ModelConfig(
         type="api",
-        name="openai/gpt-5",
+        name="openai/gpt-5-codex",
         provider="openrouter"
     ),
     name="FinancialAnalyst",
@@ -292,7 +292,7 @@ async def fetch_news(
 agent = Agent(
     model_config=ModelConfig(
         type="api",
-        name="anthropic/claude-haiku-4.5",
+        name="anthropic/claude-opus-4.6",
         provider="openrouter",
         max_tokens=12000
     ),
@@ -435,18 +435,20 @@ For web automation and scraping:
 ```python
 from marsys.agents import BrowserAgent
 
-browser_agent = BrowserAgent(
+browser_agent = await BrowserAgent.create_safe(
     model_config=ModelConfig(
         type="api",
-        name="google/gemini-2.5-pro",
+        name="google/gemini-3-flash-preview",
         provider="openrouter",
         max_tokens=12000
     ),
     name="WebNavigator",
     goal="Navigate and extract information from websites",
     instruction="Web automation specialist capable of browser control and content extraction",
+    mode="advanced",
     headless=False,
-    viewport_size=(1280, 720),
+    viewport_width=1280,
+    viewport_height=720,
     timeout=30000
 )
 
@@ -514,6 +516,7 @@ writer = Agent(
     model_config=config,
     name="Writer",
     goal="Content writer",
+    instruction="Draft clear content using verified research from peer agents.",
     allowed_peers=["Researcher"]  # Can invoke Researcher
 )
 
@@ -522,6 +525,7 @@ editor = Agent(
     model_config=config,
     name="Editor",
     goal="Content editor",
+    instruction="Review and refine drafts for clarity, correctness, and style.",
     allowed_peers=["Researcher", "Writer"]  # Can invoke both
 )
 ```
@@ -585,6 +589,7 @@ agent = Agent(
     model_config=config,
     name="StructuredResearcher",
     goal="Researcher with structured I/O",
+    instruction="Return outputs that strictly match the configured schemas.",
     input_schema=ResearchRequest,
     output_schema=ResearchResponse
 )
@@ -598,7 +603,7 @@ agent = Agent(
 agent = Agent(
     model_config=ModelConfig(
         type="api",
-        name="anthropic/claude-sonnet-4.5",
+        name="anthropic/claude-opus-4.6",
         provider="openrouter",
         temperature=0.3,
         max_tokens=12000
@@ -624,11 +629,11 @@ goal="Writer"
 
 ### 2. **Appropriate Models**
 Choose models based on task requirements:
-- **Claude Haiku 4.5** (`anthropic/claude-haiku-4.5`): Fast agentic tasks, web browsing, massive text processing
-- **Claude Sonnet 4.5** (`anthropic/claude-sonnet-4.5`): Orchestration, planning, writing
-- **GPT-5** (`openai/gpt-5`): Advanced reasoning, critical analysis, complex tasks
-- **Gemini 2.5 Flash** (`google/gemini-2.5-flash`): Browser vision (fast, cost-effective), general vision tasks
-- **Gemini 2.5 Pro** (`google/gemini-2.5-pro`): Complex vision tasks, advanced UI detection
+- **Claude Opus 4.6** (`anthropic/claude-opus-4.6`): Strong orchestration, planning, writing
+- **GPT-5 Codex** (`openai/gpt-5-codex`): Advanced coding and analytical tasks via OpenRouter
+- **GPT-5.3 Codex** (`gpt-5.3-codex`): Latest OpenAI OAuth model via `provider="openai-oauth"`
+- **Gemini 3 Flash Preview** (`google/gemini-3-flash-preview`): Browser vision (fast, cost-effective), general vision tasks
+- **Gemini 3 Pro Preview** (`google/gemini-3-pro-preview`): Complex vision tasks, advanced UI detection
 - **Local**: Privacy-sensitive data
 
 ### 3. **Tool Design**

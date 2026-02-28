@@ -108,6 +108,7 @@ class ErrorMessageProcessor(ResponseProcessor):
             APIErrorClassification.PERMISSION_DENIED.value,
             APIErrorClassification.INVALID_MODEL.value,
             APIErrorClassification.INVALID_REQUEST.value,
+            APIErrorClassification.REQUEST_TOO_LARGE.value,
         ]
 
         if classification in auto_retry_classifications and is_retryable:

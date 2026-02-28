@@ -259,7 +259,10 @@ class BranchExecutor:
             if await self._should_complete(branch, context, execution_trace):
                 break
 
-            # Pass retry context to StepExecutor for steering
+            # Pass retry context to StepExecutor for steering.
+            # Clear stale error context so one agent's validation error
+            # does not leak into another agent's first turn.
+            context.metadata.pop("agent_error_context", None)
             agent_retry_info = branch.agent_retry_info.get(current_agent)
             context.metadata["agent_retry_count"] = retry_counts.get(current_agent, 0)
             if agent_retry_info:
@@ -2145,7 +2148,10 @@ class BranchExecutor:
             if await self._should_complete(branch, context, execution_trace):
                 break
 
-            # Pass retry context to StepExecutor for steering (same as _execute_simple_branch)
+            # Pass retry context to StepExecutor for steering (same as _execute_simple_branch).
+            # Clear stale error context so one agent's validation error
+            # does not leak into another agent's first turn.
+            context.metadata.pop("agent_error_context", None)
             agent_retry_info = branch.agent_retry_info.get(current_agent)
             context.metadata["agent_retry_count"] = retry_counts.get(current_agent, 0)
             if agent_retry_info:

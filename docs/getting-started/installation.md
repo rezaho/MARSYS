@@ -156,7 +156,7 @@ pip install marsys  # or marsys[local-models], etc.
 ### 3. Configure API Keys (Required)
 
 !!! warning "Required Step"
-    **You must configure API keys before running any examples.** MARSYS needs at least one API provider configured.
+    **You must configure authentication before running any examples.** MARSYS needs at least one API provider configured, either via API keys or OAuth.
 
 **Method 1: `.env` file (Recommended for development)**
 
@@ -204,6 +204,23 @@ MARSYS automatically loads `.env` files using `python-dotenv`.
 !!! warning "Security"
     Never commit `.env` files to version control. Add `.env` to your `.gitignore` file.
 
+#### OAuth Option (No API Keys)
+
+If you want to use subscription-based OAuth providers instead of API keys, log in with the corresponding CLI:
+
+- **OpenAI ChatGPT (OAuth)**: `codex login`
+  Credentials are stored in `~/.codex/auth.json` (override with `CODEX_AUTH_PATH`)
+- **Anthropic Claude Max (OAuth)**: `claude login`
+  Credentials are stored in `~/.claude/.credentials.json` (override with `CLAUDE_AUTH_PATH`)
+
+You can then set `provider="openai-oauth"` or `provider="anthropic-oauth"` in `ModelConfig` (optionally with `oauth_profile="your-profile"`).
+
+!!! warning "Use At Your Own Risk (Anthropic OAuth)"
+    `anthropic-oauth` relies on a non-official integration path and may violate provider Terms of Service. Use at your own risk.
+
+!!! note "OpenAI OAuth Compliance"
+    MARSYS does not make a legal determination about OpenAI ToS coverage for this OAuth path. Review OpenAI terms for your use case.
+
 ### 4. Install Browser Automation (Optional)
 
 !!! info "Only for BrowserAgent"
@@ -239,7 +256,7 @@ async def test():
     agent = Agent(
         model_config=ModelConfig(
             type="api",
-            name="anthropic/claude-haiku-4.5",
+            name="anthropic/claude-opus-4.6",
             provider="openrouter"
         ),
         name="TestAgent",
@@ -351,7 +368,7 @@ marsys/
     ```python
     ModelConfig(
         type="api",
-        name="anthropic/claude-haiku-4.5",
+        name="anthropic/claude-opus-4.6",
         provider="openrouter",
         api_key=os.getenv("OPENROUTER_API_KEY")
     )
@@ -361,7 +378,7 @@ marsys/
     ```python
     ModelConfig(
         type="api",
-        name="openai/gpt-5",
+        name="openai/gpt-5-codex",
         provider="openrouter",
         api_key=os.getenv("OPENROUTER_API_KEY"),
         max_tokens=12000
@@ -372,7 +389,7 @@ marsys/
     ```python
     ModelConfig(
         type="api",
-        name="anthropic/claude-sonnet-4.5",
+        name="anthropic/claude-opus-4.6",
         provider="openrouter",
         api_key=os.getenv("OPENROUTER_API_KEY"),
         max_tokens=12000
@@ -383,7 +400,7 @@ marsys/
     ```python
     ModelConfig(
         type="api",
-        name="gemini-pro",
+        name="gemini-3-flash-preview",
         provider="google",
         api_key=os.getenv("GOOGLE_API_KEY")
     )

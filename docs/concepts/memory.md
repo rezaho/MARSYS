@@ -95,16 +95,70 @@ Advanced memory with automatic token management:
 from marsys.agents.memory import ManagedConversationMemory, ManagedMemoryConfig
 
 config = ManagedMemoryConfig(
-    max_total_tokens_trigger=150000,  # When to engage context management
-    target_total_tokens=100000,        # Target after pruning
+    threshold_tokens=150000,  # When to trigger compaction
     image_token_estimate=800
 )
+# Derived: compaction_target_tokens = threshold_tokens * (1 - min_reduction_ratio)
 
 memory = ManagedConversationMemory(config=config)
 
 # Usage is identical to ConversationMemory
 memory.add(role="user", content="Hello")
 messages = memory.get_messages()  # Returns curated context within token budget
+```
+
+#### Active Context Compaction (ACM)
+
+Managed memory uses an active-context policy (`active_context`) to decide how and when to reduce context:
+
+- `mode="compaction"`: run processor pipeline and rewrite memory
+- `mode="sliding_window"`: return recent context window without rewriting raw history
+- `processor_order` (default): `["tool_truncation", "summarization", "backward_packing"]`
+- `excluded_processors`: skip specific processors by name
+- `min_reduction_ratio`: minimum estimated savings ratio to run non-final processors
+
+```python
+from marsys.agents.memory import (
+    ActiveContextPolicyConfig,
+    ManagedMemoryConfig,
+    SummarizationConfig,
+    ToolTruncationConfig,
+)
+
+memory_config = ManagedMemoryConfig(
+    threshold_tokens=120_000,
+    active_context=ActiveContextPolicyConfig(
+        mode="compaction",
+        processor_order=["tool_truncation", "summarization", "backward_packing"],
+        excluded_processors=[],
+        min_reduction_ratio=0.4,
+        tool_truncation=ToolTruncationConfig(max_tool_message_tokens=1200),
+        summarization=SummarizationConfig(output_max_tokens=6000),
+    ),
+)
+```
+
+The compaction target is derived automatically:
+`compaction_target_tokens = threshold_tokens * (1 - min_reduction_ratio)`.
+
+#### Optional Separate Compaction Model
+
+You can keep your main model for task execution and use a cheaper/faster model for memory compaction:
+
+```python
+from marsys.agents import Agent
+from marsys.models import ModelConfig
+
+agent = Agent(
+    model_config=ModelConfig(type="api", provider="openrouter", name="anthropic/claude-opus-4.6"),
+    compaction_model_config=ModelConfig(
+        type="api",
+        provider="openrouter",
+        name="anthropic/claude-haiku-4.5",
+    ),
+    goal="Research and synthesis",
+    instruction="You are a research agent.",
+)
 ```
 
 ### KGMemory
@@ -156,10 +210,24 @@ manager = MemoryManager(
 manager.add(role="user", content="Hello")
 messages = manager.get_messages()
 
-# Save/load for persistence
-manager.save_to_file("memory.json")
-manager.load_from_file("memory.json")
+# Save/load for persistence (can include additional state)
+manager.save_to_file("memory.json", additional_state={"planning": {...}})
+additional_state = manager.load_from_file("memory.json")
 ```
+
+### Memory Events
+
+When memory is cleared via `reset_memory()`, MARSYS emits `MemoryResetEvent`.
+Managed compaction can also emit `CompactionEvent` (`started`, `completed`, `failed`) for status channels.
+
+```python
+from marsys.coordination.event_bus import EventBus
+
+bus = EventBus()
+manager.set_event_context(agent_name="Researcher", event_bus=bus, session_id="run_123")
+```
+
+When agents run through `Orchestra`/`auto_run()`, this context is wired automatically.
 
 
 ## Message Addition Examples
@@ -240,8 +308,7 @@ from marsys.agents.memory import MemoryManager, ManagedMemoryConfig
 manager = MemoryManager(
     memory_type="managed_conversation",
     memory_config=ManagedMemoryConfig(
-        max_total_tokens_trigger=100000,
-        target_total_tokens=80000
+        threshold_tokens=100000
     )
 )
 ```

@@ -30,7 +30,7 @@ from marsys.models import ModelConfig
 vision_agent = Agent(
     model_config=ModelConfig(
         type="api",
-        name="anthropic/claude-sonnet-4.5",
+        name="anthropic/claude-opus-4.6",
         provider="openrouter",
         api_key=os.getenv("OPENROUTER_API_KEY")
     ),
@@ -56,28 +56,28 @@ print(result.final_response)
 ```python
 from marsys.models import ModelConfig
 
-# OpenRouter with Claude Sonnet for vision
+# OpenRouter with Claude Opus 4.6 for vision
 claude_config = ModelConfig(
     type="api",
-    name="anthropic/claude-sonnet-4.5",
+    name="anthropic/claude-opus-4.6",
     provider="openrouter",
     api_key=os.getenv("OPENROUTER_API_KEY"),
     temperature=0.7,
     max_tokens=2000
 )
 
-# Anthropic model with vision (Claude Sonnet 4.5)
+# Anthropic model with vision (Claude Opus 4.6)
 anthropic_config = ModelConfig(
     type="api",
-    name="claude-sonnet-4.5",
+    name="claude-opus-4-6",
     provider="anthropic",
     api_key=os.getenv("ANTHROPIC_API_KEY")
 )
 
-# Google model with vision (Gemini 2.5 Pro)
+# Google model with vision (Gemini 3 Pro Preview)
 google_config = ModelConfig(
     type="api",
-    name="gemini-2.5-pro",
+    name="gemini-3-pro-preview",
     provider="google",
     api_key=os.getenv("GOOGLE_API_KEY")
 )
@@ -106,7 +106,7 @@ task = {
     "content": "Analyze these screenshots",
     "images": [
         "/home/user/screenshot1.png",
-        "/tmp/image.jpg"
+        "./downloads/image.jpg"
     ]
 }
 
@@ -125,6 +125,8 @@ task = {
     ]
 }
 ```
+
+When images come from tools (browser downloads, code execution, etc.), prefer the **virtual paths** they return (e.g., `./downloads/...`, `./outputs/...`, `./screenshots/...`) so other agents can access them consistently. See [Run Filesystem](../concepts/run-filesystem.md).
 
 ### How It Works
 
@@ -249,9 +251,9 @@ tool_call: tool_read_pdf("/path/to/document.pdf")
 tool_result = ToolResponse(
     content=[
         ToolResponseContent(text="Extracted 3 pages."),
-        ToolResponseContent(image_path="/tmp/page1.png"),
+        ToolResponseContent(image_path="./outputs/page1.png"),
         ToolResponseContent(text="Page 1: Annual Report..."),
-        ToolResponseContent(image_path="/tmp/page2.png"),
+        ToolResponseContent(image_path="./outputs/page2.png"),
         ToolResponseContent(text="Page 2: Financial Data...")
     ]
 )
@@ -385,7 +387,7 @@ from marsys.models import ModelConfig
 ui_analyst = Agent(
     model_config=ModelConfig(
         type="api",
-        name="anthropic/claude-sonnet-4.5",
+        name="anthropic/claude-opus-4.6",
         provider="openrouter",
         api_key=os.getenv("OPENROUTER_API_KEY")
     ),
@@ -430,7 +432,7 @@ def tool_read_file(file_path: str) -> Dict[str, Any]:
 coordinator = Agent(
     model_config=ModelConfig(
         type="api",
-        name="anthropic/claude-sonnet-4.5",
+        name="anthropic/claude-opus-4.6",
         provider="openrouter",
         api_key=os.getenv("OPENROUTER_API_KEY")
     ),
@@ -443,7 +445,7 @@ coordinator = Agent(
 analyst = Agent(
     model_config=ModelConfig(
         type="api",
-        name="anthropic/claude-sonnet-4.5",
+        name="anthropic/claude-opus-4.6",
         provider="openrouter",
         api_key=os.getenv("OPENROUTER_API_KEY")
     ),
@@ -484,7 +486,7 @@ def tool_read_gaia_file(file_path: str) -> Dict[str, Any]:
 researcher = Agent(
     model_config=ModelConfig(
         type="api",
-        name="anthropic/claude-sonnet-4.5",
+        name="anthropic/claude-opus-4.6",
         provider="openrouter",
         api_key=os.getenv("OPENROUTER_API_KEY"),
         temperature=0.0  # Deterministic for benchmarks
@@ -518,7 +520,7 @@ from marsys.coordination.topology.patterns import PatternConfig
 image_captioner = Agent(
     model_config=ModelConfig(
         type="api",
-        name="anthropic/claude-sonnet-4.5",
+        name="anthropic/claude-opus-4.6",
         provider="openrouter",
         api_key=os.getenv("OPENROUTER_API_KEY")
     ),
@@ -530,7 +532,7 @@ image_captioner = Agent(
 object_detector = Agent(
     model_config=ModelConfig(
         type="api",
-        name="gemini-2.5-pro",
+        name="gemini-3-pro-preview",
         provider="google",
         api_key=os.getenv("GOOGLE_API_KEY")
     ),
@@ -542,7 +544,7 @@ object_detector = Agent(
 scene_analyzer = Agent(
     model_config=ModelConfig(
         type="api",
-        name="claude-sonnet-4.5",
+        name="claude-opus-4-6",
         provider="anthropic",
         api_key=os.getenv("ANTHROPIC_API_KEY")
     ),
@@ -554,7 +556,7 @@ scene_analyzer = Agent(
 synthesizer = Agent(
     model_config=ModelConfig(
         type="api",
-        name="anthropic/claude-sonnet-4.5",
+        name="anthropic/claude-opus-4.6",
         provider="openrouter",
         api_key=os.getenv("OPENROUTER_API_KEY")
     ),
@@ -598,7 +600,7 @@ def optimize_image(image_path: str, max_size: tuple = (2048, 2048)) -> str:
         img.thumbnail(max_size, Image.Resampling.LANCZOS)
 
         # Save to temp location
-        output_path = f"/tmp/optimized_{Path(image_path).name}"
+        output_path = f"./outputs/optimized_{Path(image_path).name}"
         img.save(output_path, optimize=True, quality=85)
         return output_path
 
@@ -708,7 +710,7 @@ def tool_process_pdf(pdf_path: str) -> ToolResponse:
 
 # ❌ BAD - Temp files accumulate
 def tool_process_pdf(pdf_path: str) -> ToolResponse:
-    temp_dir = "/tmp/pdf_" + str(uuid.uuid4())
+    temp_dir = "./outputs/pdf_" + str(uuid.uuid4())
     extract_pdf_pages(pdf_path, temp_dir)
     # Never cleaned up!
 ```
@@ -726,6 +728,8 @@ from marsys.agents import Agent
 vision_agent = Agent(
     model_config=vision_model_config,
     name="VisionAgent",
+    goal="Analyze images and visual artifacts",
+    instruction="Provide concise, evidence-based analysis of the supplied images.",
     memory_retention="single_run",  # Clear after each run
     max_tokens=4000  # Higher limit for vision
 )

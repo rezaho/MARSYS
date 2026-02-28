@@ -283,23 +283,50 @@ class RealToolExecutor:
                     # Step executor will determine message pattern based on result type
                     result = raw_result
                 else:
-                    # Create helpful error message with fuzzy matching
-                    all_tools = list(self.tool_registry.keys()) + list(agent_tools.keys())
-                    similar_tools = find_similar_tool_names(tool_name, all_tools)
+                    # Check if the "tool" name is actually a peer agent name
+                    next_agents = set()
+                    if hasattr(agent, '_topology_graph_ref') and agent._topology_graph_ref:
+                        next_agents = agent._topology_graph_ref.get_next_agents(agent.name)
 
-                    if similar_tools:
-                        error_msg = f"Tool '{tool_name}' not found. Did you mean: {similar_tools[0]}?"
-                        suggestion = f"Available tools: {', '.join(all_tools[:10])}"
-                        if len(all_tools) > 10:
-                            suggestion += f"... and {len(all_tools) - 10} more"
+                    if tool_name in next_agents:
+                        full_error = (
+                            f"'{tool_name}' is an agent, not a tool. "
+                            f"You cannot invoke agents via tool calls.\n\n"
+                            f"To invoke the '{tool_name}' agent, respond with JSON in your message content:\n"
+                            f"```json\n"
+                            f'{{\n'
+                            f'  "thought": "your reasoning",\n'
+                            f'  "next_action": "invoke_agent",\n'
+                            f'  "action_input": [\n'
+                            f'    {{\n'
+                            f'      "agent_name": "{tool_name}",\n'
+                            f'      "request": "your task description"\n'
+                            f'    }}\n'
+                            f'  ]\n'
+                            f'}}\n'
+                            f"```\n"
+                            f"Do NOT use tool_calls for agent invocation."
+                        )
+                        logger.warning(
+                            f"Agent '{agent.name}' tried to invoke peer '{tool_name}' "
+                            f"via tool_calls instead of JSON invoke_agent"
+                        )
                     else:
-                        error_msg = f"Tool '{tool_name}' not found."
+                        # Standard tool-not-found error with fuzzy matching
+                        all_tools = list(self.tool_registry.keys()) + list(agent_tools.keys())
+                        similar_tools = find_similar_tool_names(tool_name, all_tools)
+
+                        if similar_tools:
+                            error_msg = f"Tool '{tool_name}' not found. Did you mean: {similar_tools[0]}?"
+                        else:
+                            error_msg = f"Tool '{tool_name}' not found."
                         suggestion = f"Available tools: {', '.join(all_tools[:10])}"
                         if len(all_tools) > 10:
                             suggestion += f"... and {len(all_tools) - 10} more"
 
-                    full_error = f"{error_msg} {suggestion}"
-                    logger.error(full_error)
+                        full_error = f"{error_msg} {suggestion}"
+                        logger.error(full_error)
+
                     # Return error as string (will use single-message pattern)
                     result = full_error
 
@@ -377,7 +404,7 @@ class RealToolExecutor:
                 
         except Exception as e:
             logger.error(f"Tool execution failed for {tool_name}: {e}", exc_info=True)
-            
+
             # Provide helpful error message for parameter structure issues
             error_str = str(e)
             if "unexpected keyword argument" in error_str:
