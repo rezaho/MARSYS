@@ -2,7 +2,7 @@
 
 <div align="center">
 
-![MARSYS Logo](https://img.shields.io/badge/MARSYS-v0.1--beta-blue?style=for-the-badge)
+![MARSYS Logo](https://img.shields.io/badge/MARSYS-v0.2.1--beta-blue?style=for-the-badge)
 [![Python](https://img.shields.io/badge/python-3.12%2B-blue?style=for-the-badge)](https://www.python.org/)
 [![License](https://img.shields.io/badge/license-Apache%202.0-green?style=for-the-badge)](LICENSE)
 [![CLA assistant](https://cla-assistant.io/readme/badge/rezaho/MARSYS)](https://cla-assistant.io/rezaho/MARSYS)
@@ -78,6 +78,16 @@ OPENROUTER_API_KEY=your-key-here
 ANTHROPIC_API_KEY=your-key-here
 ```
 
+**OAuth alternative (no API keys):**
+
+- OpenAI ChatGPT/Codex subscription: `marsys oauth add <profile> --provider openai-oauth`
+- Anthropic Claude Max subscription: `marsys oauth add <profile> --provider anthropic-oauth`
+
+Credentials are stored in `~/.marsys/oauth/<profile>/credentials.json`. Use `provider="openai-oauth"` or `provider="anthropic-oauth"` in `ModelConfig`.
+
+Note:
+- `anthropic-oauth` relies on a non-official integration path and may violate provider Terms of Service. Use at your own risk.
+
 ### Playwright Setup (BrowserAgent only)
 
 Only required if you plan to use BrowserAgent for web automation:
@@ -95,7 +105,7 @@ from marsys.models import ModelConfig
 
 model_config = ModelConfig(
     type="api",
-    name="anthropic/claude-haiku-4.5",
+    name="anthropic/claude-opus-4.6",
     provider="openrouter"
 )
 
@@ -135,7 +145,7 @@ from marsys.models import ModelConfig
 
 model_config = ModelConfig(
     type="api",
-    name="anthropic/claude-haiku-4.5",
+    name="anthropic/claude-opus-4.6",
     provider="openrouter"
 )
 
