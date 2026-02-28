@@ -20,6 +20,12 @@ from .response_models import (
     ErrorResponse
 )
 
+from .credentials import (
+    OAuthProfile,
+    OAuthCredentialStore,
+    OAuthTokenRefresher,
+)
+
 __all__ = [
     # Model config
     "ModelConfig",
@@ -41,4 +47,9 @@ __all__ = [
     "UsageInfo",
     "ToolCall",
     "ErrorResponse",
+
+    # OAuth credentials
+    "OAuthProfile",
+    "OAuthCredentialStore",
+    "OAuthTokenRefresher",
 ]
