@@ -40,19 +40,79 @@ class MemoryResetEvent:
 # --- Structured Content Data Classes ---
 
 @dataclasses.dataclass
+class ToolTruncationConfig:
+    """Configuration for tool response truncation reducer."""
+    enabled: bool = True
+    max_tool_message_tokens: int = 1200
+    grace_recent_messages: int = 1
+    append_marker: str = " [truncated]"
+    include_tool_payload_user_messages: bool = True
+
+
+@dataclasses.dataclass
+class SlidingWindowConfig:
+    """Configuration for sliding window mode."""
+    enabled: bool = True
+    headroom_percent: float = 0.1
+
+
+@dataclasses.dataclass
+class SummarizationConfig:
+    """Configuration for model-based summarization processor."""
+    enabled: bool = True
+    grace_recent_messages: int = 1
+    output_max_tokens: int = 6000
+    prompt_mode: str = "generic"
+    include_original_instruction: bool = True
+    include_image_payload_bytes: bool = False
+    max_retained_images: Optional[int] = None
+
+
+# Backward compatibility alias
+CompactionConfig = SummarizationConfig
+
+
+@dataclasses.dataclass
+class BackwardPackingConfig:
+    """Configuration for backward packing processor."""
+    grace_recent_messages: int = 1
+
+
+@dataclasses.dataclass
+class ActiveContextPolicyConfig:
+    """Configuration for active context management policy."""
+    enabled: bool = True
+    mode: str = "compaction"
+    sliding_window: SlidingWindowConfig = dataclasses.field(default_factory=SlidingWindowConfig)
+    processor_order: List[str] = dataclasses.field(
+        default_factory=lambda: ["tool_truncation", "summarization", "backward_packing"]
+    )
+    excluded_processors: List[str] = dataclasses.field(default_factory=list)
+    min_reduction_ratio: float = 0.4
+    tool_truncation: ToolTruncationConfig = dataclasses.field(default_factory=ToolTruncationConfig)
+    summarization: SummarizationConfig = dataclasses.field(default_factory=SummarizationConfig)
+    backward_packing: BackwardPackingConfig = dataclasses.field(default_factory=BackwardPackingConfig)
+
+    @property
+    def compaction(self) -> SummarizationConfig:
+        """Backward compatibility alias for summarization config."""
+        return self.summarization
+
+    @property
+    def reduction_order(self) -> List[str]:
+        """Backward compatibility alias for processor_order."""
+        return self.processor_order
+
+
+@dataclasses.dataclass
 class ManagedMemoryConfig:
     """Configuration for ManagedMemory with active context management."""
 
-    # Trigger thresholds
-    max_total_tokens_trigger: int = 150_000  # When to engage ACM
-    target_total_tokens: int = 100_000        # Target after pruning
+    # Trigger threshold — when to trigger compaction
+    threshold_tokens: int = 150_000
 
     # Image handling
     image_token_estimate: int = 800
-
-    # Cache invalidation
-    min_retrieval_gap_steps: int = 2  # Don't recompute until N new messages
-    min_retrieval_gap_tokens: int = 5000  # OR until N new tokens
 
     # Strategy selection
     trigger_events: List[str] = dataclasses.field(default_factory=lambda: ["add", "get_messages"])
@@ -61,11 +121,14 @@ class ManagedMemoryConfig:
     # Token counter
     token_counter: Optional[Callable] = None  # Override with custom counter
 
-    # Reserved space
-    enable_headroom_percent: float = 0.1  # Reserve 10% for system/tools
+    # Active context management policy
+    active_context: ActiveContextPolicyConfig = dataclasses.field(default_factory=ActiveContextPolicyConfig)
 
-    # Processing strategy (for future)
-    processing_strategy: str = "none"  # "none", "summarize", "ace", "rag"
+    @property
+    def compaction_target_tokens(self) -> int:
+        """Derived target: threshold * (1 - min_reduction_ratio)."""
+        ratio = self.active_context.min_reduction_ratio
+        return int(self.threshold_tokens * (1 - ratio))
 
 # --- Structured Content Data Classes (continued) ---
 
@@ -639,24 +702,42 @@ class BaseMemory(ABC):
         self.memory_type = memory_type
         self._event_bus: Optional['EventBus'] = None
         self._agent_name: Optional[str] = None
+        self._session_id: Optional[str] = None
 
     def set_event_context(
         self,
         agent_name: str,
-        event_bus: Optional['EventBus'] = None
+        event_bus: Optional['EventBus'] = None,
+        session_id: Optional[str] = None
     ) -> None:
         """
-        Configure event emission for memory reset notifications.
+        Configure event emission for memory reset and compaction notifications.
 
         Called by the agent during run_step() when EventBus becomes available.
 
         Args:
             agent_name: Name of the owning agent (used for event filtering)
             event_bus: EventBus instance for emitting events
+            session_id: Coordination session ID for status events
         """
         self._agent_name = agent_name
         if event_bus is not None:
             self._event_bus = event_bus
+        if session_id is not None:
+            self._session_id = session_id
+
+    def _emit_compaction_event(self, **kwargs) -> None:
+        """Emit CompactionEvent if event context is configured."""
+        if not (self._event_bus and self._session_id):
+            return
+        from marsys.coordination.status.events import CompactionEvent
+        self._event_bus.emit_nowait(
+            CompactionEvent(
+                session_id=self._session_id,
+                agent_name=self._agent_name or "unknown",
+                **kwargs
+            )
+        )
 
     def _emit_reset_event(self) -> None:
         """Emit MemoryResetEvent if configured."""
@@ -1468,6 +1549,25 @@ class ManagedConversationMemory(BaseMemory):
 
     def get_messages(self) -> List[Dict[str, Any]]:
         """Retrieve curated context for LLM (PRIMARY method)."""
+        mode = self.config.active_context.mode
+
+        # Handle deprecated mode name
+        if mode == "destructive_compaction":
+            import warnings
+            warnings.warn(
+                'mode="destructive_compaction" is deprecated, use mode="compaction"',
+                DeprecationWarning,
+                stacklevel=2,
+            )
+            mode = "compaction"
+
+        # In compaction mode, raw_messages have already been
+        # compacted by _run_compaction(). Return them directly without
+        # applying backward-packing retrieval (which would discard compacted output).
+        if mode == "compaction" and self.config.active_context.enabled:
+            return [self._message_to_dict(msg) for msg in self.raw_messages]
+
+        # sliding_window mode: use backward-packing retrieval
         # Check trigger
         if "get_messages" in self.config.trigger_events:
             from marsys.agents.memory_strategies import MemoryState
@@ -1669,6 +1769,493 @@ class ManagedConversationMemory(BaseMemory):
         """Mark cache as invalid."""
         self._cache_valid = False
 
+    # === Active Context Compaction (Async) ===
+
+    async def _run_compaction(
+        self, runtime: Optional[Dict[str, Any]] = None
+    ) -> None:
+        """
+        Execute the compaction processor chain and rewrite memory.
+
+        Checks whether compaction should trigger based on estimated tokens
+        exceeding threshold_tokens, then runs processors in priority order.
+        Each processor estimates its reduction capability before being applied.
+        The last processor in the chain always runs as a last resort.
+        """
+        from marsys.agents.memory_strategies import COMPACTION_PROCESSOR_REGISTRY
+
+        policy = self.config.active_context
+        if not policy.enabled or policy.mode != "compaction":
+            return
+        if self._estimated_total_tokens <= self.config.threshold_tokens:
+            return
+
+        pre_tokens = self._estimated_total_tokens
+        pre_messages = len(self.raw_messages)
+        working_messages = [self._message_to_dict(msg) for msg in self.raw_messages]
+        original_messages = list(working_messages)
+
+        metadata_log = []
+        processors = []
+        for name in policy.processor_order:
+            if name in policy.excluded_processors:
+                logging.info(f"Compaction: processor '{name}' excluded by config")
+                continue
+            cls = COMPACTION_PROCESSOR_REGISTRY.get(name)
+            if cls is None:
+                logging.warning(f"Unknown compaction processor: {name}, skipping")
+                continue
+            processors.append(cls())
+
+        logging.info(
+            f"Compaction triggered: {pre_tokens} tokens, "
+            f"threshold={self.config.threshold_tokens}, "
+            f"processors={[p.name() for p in processors]}"
+        )
+
+        # Emit "started" event
+        self._emit_compaction_event(
+            status="started",
+            pre_tokens=pre_tokens,
+            pre_messages=pre_messages,
+        )
+        compaction_start = time.time()
+
+        try:
+            for i, processor in enumerate(processors):
+                is_last = (i == len(processors) - 1)
+
+                if is_last:
+                    logging.info(f"Compaction: running last-resort '{processor.name()}'")
+                    try:
+                        working_messages, meta = await processor.reduce(
+                            working_messages, self.config, self.token_counter, runtime
+                        )
+                        metadata_log.append(meta)
+                    except Exception as e:
+                        logging.error(f"Processor '{processor.name()}' failed: {e}")
+                        metadata_log.append({"stage": processor.name(), "error": str(e)})
+                else:
+                    try:
+                        estimated_savings = await processor.estimate_reduction(
+                            working_messages, self.config, self.token_counter, runtime
+                        )
+                        ratio = estimated_savings / self.config.threshold_tokens if self.config.threshold_tokens > 0 else 0.0
+
+                        if ratio >= policy.min_reduction_ratio:
+                            logging.info(
+                                f"Compaction: running '{processor.name()}' "
+                                f"(savings={estimated_savings}, ratio={ratio:.3f}, "
+                                f"min_ratio={policy.min_reduction_ratio})"
+                            )
+                            working_messages, meta = await processor.reduce(
+                                working_messages, self.config, self.token_counter, runtime
+                            )
+                            metadata_log.append(meta)
+                        else:
+                            logging.info(
+                                f"Compaction: skipping '{processor.name()}' "
+                                f"(savings={estimated_savings}, ratio={ratio:.3f}, "
+                                f"min_ratio={policy.min_reduction_ratio})"
+                            )
+                            metadata_log.append({
+                                "stage": processor.name(),
+                                "skipped": True,
+                                "reason": "insufficient_reduction",
+                                "estimated_savings": estimated_savings,
+                                "ratio": ratio,
+                            })
+                    except Exception as e:
+                        logging.error(f"Processor '{processor.name()}' failed: {e}")
+                        metadata_log.append({"stage": processor.name(), "error": str(e)})
+
+            # Minimum output guarantee: at least 2 messages
+            if len(working_messages) < 2:
+                logging.warning(
+                    f"Compaction produced insufficient output "
+                    f"({len(working_messages)} msgs), "
+                    f"running forced summarization fallback"
+                )
+                working_messages = await self._forced_summarization_fallback(
+                    original_messages, runtime, policy, metadata_log
+                )
+
+            # Safety check: API calls require at least one user message
+            has_user = any(m.get("role") == "user" for m in working_messages)
+            if not has_user:
+                logging.error(
+                    "Compaction result has no user message — API call would fail. "
+                    "Injecting most recent user message from original context."
+                )
+                for msg in reversed(original_messages):
+                    if msg.get("role") == "user":
+                        working_messages.insert(0, msg)
+                        break
+
+            # Rewrite memory
+            self._rewrite_memory_with_reduced_context(working_messages)
+            self._recompute_token_accounting()
+
+            # Store compaction metadata
+            self.metadata["last_compaction"] = {
+                "timestamp": time.time(),
+                "stages": metadata_log,
+                "pre_compaction_tokens": pre_tokens,
+                "pre_compaction_messages": pre_messages,
+                "post_compaction_tokens": self._estimated_total_tokens,
+                "post_compaction_messages": len(self.raw_messages),
+            }
+            self._invalidate_cache()
+
+            # Emit "completed" event
+            stages_run = [
+                m["stage"] for m in metadata_log
+                if "stage" in m and not m.get("skipped")
+            ]
+            self._emit_compaction_event(
+                status="completed",
+                pre_tokens=pre_tokens,
+                post_tokens=self._estimated_total_tokens,
+                pre_messages=pre_messages,
+                post_messages=len(self.raw_messages),
+                duration=time.time() - compaction_start,
+                stages_run=stages_run,
+            )
+
+        except Exception as e:
+            logging.error(f"Compaction failed: {e}")
+            self._emit_compaction_event(
+                status="failed",
+                pre_tokens=pre_tokens,
+                pre_messages=pre_messages,
+                duration=time.time() - compaction_start,
+            )
+            raise
+
+    def _estimate_payload_bytes(self, messages: List[Dict[str, Any]]) -> int:
+        """Estimate total serialized payload bytes for a list of message dicts."""
+        total = 0
+        for msg in messages:
+            content = msg.get("content")
+            if content is None:
+                total += 200
+            elif isinstance(content, str):
+                total += len(content.encode("utf-8")) + 100
+            elif isinstance(content, list):
+                for item in content:
+                    if isinstance(item, dict):
+                        itype = item.get("type")
+                        if itype == "image_url":
+                            url = item.get("image_url", {})
+                            if isinstance(url, dict):
+                                url = url.get("url", "")
+                            total += len(url) if isinstance(url, str) else 1000
+                        elif itype == "text":
+                            total += len(item.get("text", ""))
+                        else:
+                            total += len(json.dumps(item, separators=(",", ":")))
+                total += 200
+            elif isinstance(content, dict):
+                total += len(json.dumps(content, separators=(",", ":")))
+            tc = msg.get("tool_calls")
+            if tc:
+                total += len(json.dumps(tc, separators=(",", ":")))
+            total += 50
+        return total
+
+    async def compact_for_payload_error(
+        self, runtime: Optional[Dict[str, Any]] = None
+    ) -> bool:
+        """
+        Compact memory after a payload-too-large error.
+
+        Runs SummarizationProcessor on the prefix (before the last assistant
+        round), preserving the tail. Uses the same summarization config as
+        regular compaction. Success is measured by serialized payload-byte
+        reduction.
+
+        Returns True if payload bytes were reduced, False otherwise.
+        """
+        from marsys.agents.memory_strategies import (
+            COMPACTION_PROCESSOR_REGISTRY,
+            _compute_protected_tail_start,
+        )
+
+        messages = [self._message_to_dict(msg) for msg in self.raw_messages]
+        if len(messages) <= 3:
+            return False
+
+        # Boundary: last assistant round
+        policy = self.config.active_context
+        summ_cfg = policy.summarization
+        grace = max(summ_cfg.grace_recent_messages, 1)
+        boundary = _compute_protected_tail_start(messages, grace)
+
+        if boundary <= 1:
+            return False
+
+        prefix = messages[:boundary]
+        protected_tail = messages[boundary:]
+
+        pre_bytes = self._estimate_payload_bytes(messages)
+        pre_tokens = self._estimated_total_tokens
+        pre_messages = len(messages)
+
+        self._emit_compaction_event(
+            status="started",
+            pre_tokens=pre_tokens,
+            pre_messages=pre_messages,
+        )
+        compaction_start = time.time()
+
+        try:
+            summ_cls = COMPACTION_PROCESSOR_REGISTRY.get("summarization")
+            if summ_cls is None:
+                logging.error("SummarizationProcessor not found in registry")
+                self._emit_compaction_event(
+                    status="failed",
+                    pre_tokens=pre_tokens,
+                    pre_messages=pre_messages,
+                    duration=time.time() - compaction_start,
+                )
+                return False
+
+            # Use existing config with grace=0 so processor summarizes the
+            # ENTIRE prefix (we already split at the boundary)
+            import copy
+            temp_config = copy.deepcopy(self.config)
+            temp_config.active_context.summarization.grace_recent_messages = 0
+            if temp_config.active_context.summarization.max_retained_images is None:
+                temp_config.active_context.summarization.max_retained_images = 5
+            temp_config.active_context.summarization.include_image_payload_bytes = False
+
+            working, meta = await summ_cls().reduce(
+                prefix, temp_config, self.token_counter, runtime
+            )
+
+            # Combine: summarized prefix + protected tail
+            new_messages = working + protected_tail
+
+            # Safety guards (lifecycle parity with _run_compaction)
+            if len(new_messages) < 2:
+                new_messages = await self._forced_summarization_fallback(
+                    messages, runtime, policy, [meta]
+                )
+
+            has_user = any(m.get("role") == "user" for m in new_messages)
+            if not has_user:
+                for msg in reversed(messages):
+                    if msg.get("role") == "user":
+                        new_messages.insert(0, msg)
+                        break
+
+            # Check success: payload byte reduction
+            post_bytes = self._estimate_payload_bytes(new_messages)
+            if post_bytes >= pre_bytes:
+                logging.warning(
+                    f"Payload compaction did not reduce bytes: "
+                    f"{pre_bytes} -> {post_bytes}"
+                )
+                self._emit_compaction_event(
+                    status="failed",
+                    pre_tokens=pre_tokens,
+                    pre_messages=pre_messages,
+                    duration=time.time() - compaction_start,
+                )
+                return False
+
+            # Rewrite memory
+            self._rewrite_memory_with_reduced_context(new_messages)
+            self._recompute_token_accounting()
+            self._invalidate_cache()
+
+            self.metadata["last_compaction"] = {
+                "timestamp": time.time(),
+                "trigger": "payload_error",
+                "stages": [meta],
+                "pre_compaction_tokens": pre_tokens,
+                "pre_compaction_messages": pre_messages,
+                "post_compaction_tokens": self._estimated_total_tokens,
+                "post_compaction_messages": len(self.raw_messages),
+                "pre_payload_bytes": pre_bytes,
+                "post_payload_bytes": post_bytes,
+            }
+
+            stages_run = ["summarization"] if not meta.get("skipped") else []
+            self._emit_compaction_event(
+                status="completed",
+                pre_tokens=pre_tokens,
+                post_tokens=self._estimated_total_tokens,
+                pre_messages=pre_messages,
+                post_messages=len(self.raw_messages),
+                duration=time.time() - compaction_start,
+                stages_run=stages_run,
+            )
+
+            logging.info(
+                f"Payload compaction: {pre_messages}->{len(self.raw_messages)} msgs, "
+                f"~{pre_bytes}->~{post_bytes} bytes"
+            )
+            return True
+
+        except Exception as e:
+            logging.error(f"Payload compaction failed: {e}")
+            self._emit_compaction_event(
+                status="failed",
+                pre_tokens=pre_tokens,
+                pre_messages=pre_messages,
+                duration=time.time() - compaction_start,
+            )
+            return False
+
+    async def _forced_summarization_fallback(
+        self,
+        original_messages: List[Dict[str, Any]],
+        runtime: Optional[Dict[str, Any]],
+        policy: Any,
+        metadata_log: List[Dict[str, Any]],
+    ) -> List[Dict[str, Any]]:
+        """
+        Emergency fallback: produce at least [user_request_summary, summary] when the
+        processor chain yields insufficient output.
+        """
+        from marsys.agents.memory_strategies import (
+            SummarizationProcessor,
+            _build_compaction_payload,
+            _build_user_rollup,
+        )
+
+        compact_cfg = policy.summarization
+        compaction_model = runtime.get("compaction_model") if runtime else None
+        compaction_model_name = runtime.get("compaction_model_name", "unknown") if runtime else "unknown"
+
+        # Build user rollup from all original messages
+        user_rollup_text = _build_user_rollup(original_messages)
+
+        if compaction_model is not None:
+            agent_instruction = runtime.get("agent_instruction") if runtime else None
+            compaction_messages, _ = _build_compaction_payload(
+                original_messages,
+                agent_instruction=agent_instruction,
+                compact_cfg=compact_cfg,
+            )
+
+            processor = SummarizationProcessor()
+            summary_json = await processor._run_compaction_model(
+                compaction_messages, compaction_model, compact_cfg
+            )
+
+            if summary_json:
+                result = []
+
+                # 1. User request summary (from model or fallback)
+                user_req_summary = summary_json.get("user_request_summary", "")
+                if user_req_summary:
+                    result.append({
+                        "role": "user",
+                        "content": f"[User Requests Summary]\n{user_req_summary}",
+                    })
+                elif user_rollup_text:
+                    result.append({
+                        "role": "user",
+                        "content": f"[User Requests Summary]\n{user_rollup_text}",
+                    })
+
+                # 2. Conversation summary
+                summary_text = summary_json.get("summary", "")
+                salient_facts = summary_json.get("salient_facts", [])
+                open_threads = summary_json.get("open_threads", [])
+
+                summary_parts = [f"[Compacted Context Summary]\n{summary_text}"]
+                if salient_facts:
+                    summary_parts.append(
+                        "\n[Key Facts]\n" + "\n".join(f"- {f}" for f in salient_facts)
+                    )
+                if open_threads:
+                    summary_parts.append(
+                        "\n[Open Threads]\n" + "\n".join(f"- {t}" for t in open_threads)
+                    )
+
+                result.append({
+                    "role": "assistant",
+                    "content": "\n".join(summary_parts),
+                    "name": f"compaction_{compaction_model_name}",
+                })
+
+                metadata_log.append({
+                    "stage": "forced_summarization_fallback",
+                    "post_messages": len(result),
+                })
+                logging.info(
+                    f"Forced fallback produced {len(result)} messages "
+                    f"via model={compaction_model_name}"
+                )
+                return result
+
+        # Hard fallback: no model available — create a minimal placeholder
+        result = []
+        if user_rollup_text:
+            result.append({
+                "role": "user",
+                "content": f"[User Requests Summary]\n{user_rollup_text}",
+            })
+        result.append({
+            "role": "assistant",
+            "content": "[Context was compacted. Previous conversation history is no longer available.]",
+        })
+
+        metadata_log.append({
+            "stage": "forced_summarization_fallback",
+            "hard_fallback": True,
+            "post_messages": len(result),
+        })
+        logging.warning("Forced fallback: no compaction model, using hard placeholder")
+        return result
+
+    def _rewrite_memory_with_reduced_context(
+        self, reduced_messages: List[Dict[str, Any]]
+    ) -> None:
+        """
+        Replace raw_messages with reduced message dicts.
+
+        Converts dict messages back to Message objects for storage.
+
+        Args:
+            reduced_messages: List of message dicts after reduction.
+        """
+        new_raw: List[Message] = []
+        for msg_dict in reduced_messages:
+            role = msg_dict.get("role", "assistant")
+            content = msg_dict.get("content")
+            name = msg_dict.get("name")
+            tool_calls = msg_dict.get("tool_calls")
+            tool_call_id = msg_dict.get("tool_call_id")
+            reasoning_details = msg_dict.get("reasoning_details")
+
+            msg = Message(
+                role=role,
+                content=content,
+                name=name,
+                tool_calls=tool_calls,
+                tool_call_id=tool_call_id,
+                reasoning_details=reasoning_details,
+            )
+            new_raw.append(msg)
+
+        self.raw_messages = new_raw
+
+    def _recompute_token_accounting(self) -> None:
+        """Recalculate token tracking from current raw_messages."""
+        total = 0
+        for msg in self.raw_messages:
+            msg_dict = self._message_to_dict(msg)
+            total += self.token_counter.count_message(msg_dict)
+
+        self._estimated_total_tokens = total
+        self._messages_since_last_retrieval = 0
+        self._tokens_since_last_retrieval = 0
+        self._last_retrieval_index = len(self.raw_messages)
+
     # === Utility Methods ===
 
     def get_raw_messages(self) -> List[Message]:
@@ -1753,10 +2340,11 @@ class MemoryManager:
     def set_event_context(
         self,
         agent_name: str,
-        event_bus: Optional['EventBus'] = None
+        event_bus: Optional['EventBus'] = None,
+        session_id: Optional[str] = None
     ) -> None:
         """Delegate event context setup to the underlying memory module."""
-        self.memory_module.set_event_context(agent_name, event_bus)
+        self.memory_module.set_event_context(agent_name, event_bus, session_id)
 
     def add(
         self,
@@ -1851,6 +2439,17 @@ class MemoryManager:
         memory types, it delegates to retrieve_all().
         """
         return self.memory_module.get_messages()
+
+    async def compact_if_needed(self, runtime: Optional[Dict[str, Any]] = None) -> None:
+        """Run compaction if the underlying memory supports it."""
+        if hasattr(self.memory_module, "_run_compaction"):
+            await self.memory_module._run_compaction(runtime)
+
+    async def compact_for_payload_error(self, runtime: Optional[Dict[str, Any]] = None) -> bool:
+        """Run payload-error compaction if the underlying memory supports it."""
+        if hasattr(self.memory_module, "compact_for_payload_error"):
+            return await self.memory_module.compact_for_payload_error(runtime)
+        return False
 
     def retrieve_by_id(self, message_id: str) -> Optional[Message]:
         """Delegates to the underlying memory module's retrieve_by_id."""
