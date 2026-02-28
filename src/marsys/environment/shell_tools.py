@@ -1,45 +1,44 @@
 """
-Bash command execution toolkit for MARSYS agents.
+Shell command execution toolkit for MARSYS agents.
 
-Provides safe bash command execution with:
+Provides safe shell command execution with:
+- Configurable shell path (/bin/sh, /bin/bash, etc.)
 - General execution for any command
 - Specialized helpers for common operations (grep, find, sed, etc.)
-- Safety validation and blocked commands
+- Safety validation and blocked patterns
 - Structured output for easy parsing
 - Timeout enforcement and output size limits
 
-TODO: Add user approval workflow for potentially dangerous commands
+This module replaces bash_tools.py with a more flexible implementation.
 """
 
 import asyncio
 import logging
-import os
 import re
-import subprocess
 from pathlib import Path
-from typing import Any, AsyncIterator, Dict, List, Optional, Tuple
+from typing import Any, AsyncIterator, Callable, Dict, List, Optional, Tuple
 
 from marsys.agents.exceptions import ToolExecutionError
 
 logger = logging.getLogger(__name__)
 
 
-class BashTools:
+class ShellTools:
     """
-    Safe bash command execution toolkit with specialized helpers.
+    Safe shell command execution toolkit with specialized helpers.
 
     Provides both general command execution and specialized methods
     for common operations like grep, find, sed, etc.
 
     Example:
         ```python
-        bash = BashTools(working_directory="./project")
+        shell = ShellTools(working_directory="./project")
 
         # Use specialized helper
-        result = await bash.grep("TODO", ".", recursive=True)
+        result = await shell.grep("TODO", ".", recursive=True)
 
         # Or general execution
-        result = await bash.execute("find . -name '*.py' | wc -l")
+        result = await shell.execute("find . -name '*.py' | wc -l")
         ```
     """
 
@@ -48,40 +47,49 @@ class BashTools:
         working_directory: Optional[str] = None,
         timeout_default: int = 30,
         allowed_commands: Optional[List[str]] = None,
-        blocked_commands: Optional[List[str]] = None,
-        max_output_size: int = 1_000_000  # 1MB
+        blocked_patterns: Optional[List[str]] = None,
+        max_output_size: int = 1_000_000,
+        shell_path: str = "/bin/sh",
     ):
         """
-        Initialize BashTools.
+        Initialize ShellTools.
 
         Args:
             working_directory: Default working directory for commands
             timeout_default: Default timeout in seconds
             allowed_commands: Whitelist of allowed commands (empty = all allowed except blocked)
-            blocked_commands: Blacklist of blocked commands
+            blocked_patterns: Blacklist of blocked patterns
             max_output_size: Maximum output size in bytes
+            shell_path: Path to shell executable (default: /bin/sh)
         """
-        self.working_directory = Path(working_directory) if working_directory else Path.cwd()
+        self.working_directory = (
+            Path(working_directory) if working_directory else Path.cwd()
+        )
         self.timeout_default = timeout_default
         self.allowed_commands = allowed_commands or []
-        self.blocked_commands = blocked_commands or self._default_blocked_commands()
+        self.blocked_patterns = blocked_patterns or self._default_blocked_patterns()
         self.max_output_size = max_output_size
-        self.history: List[Dict] = []
+        self.shell_path = shell_path
+        self.history: List[Dict[str, Any]] = []
 
     async def execute(
         self,
         command: str,
         timeout: Optional[int] = None,
         working_dir: Optional[str] = None,
-        reasoning: Optional[str] = None
+        env: Optional[Dict[str, str]] = None,
+        preexec_fn: Optional[Callable[[], None]] = None,
+        reasoning: Optional[str] = None,
     ) -> Dict[str, Any]:
         """
-        Execute any bash command safely.
+        Execute any shell command safely.
 
         Args:
-            command: Bash command to execute
+            command: Shell command to execute
             timeout: Timeout in seconds (default: self.timeout_default)
             working_dir: Working directory (default: self.working_directory)
+            env: Environment variables
+            preexec_fn: Function to call in child process before exec (for resource limits)
             reasoning: Optional reasoning for this command
 
         Returns:
@@ -96,15 +104,15 @@ class BashTools:
             ToolExecutionError: If command is blocked or fails validation
         """
         if reasoning:
-            logger.info(f"BashTools execute: {reasoning}")
+            logger.info(f"ShellTools execute: {reasoning}")
 
         # Validate command
         is_valid, error_msg = self.validate_command(command)
         if not is_valid:
             raise ToolExecutionError(
                 f"Command validation failed: {error_msg}",
-                tool_name="bash_execute",
-                context={"command": command}
+                tool_name="shell_execute",
+                context={"command": command},
             )
 
         # Setup execution
@@ -112,43 +120,51 @@ class BashTools:
         work_dir = Path(working_dir) if working_dir else self.working_directory
 
         try:
-            # Execute command
-            process = await asyncio.create_subprocess_shell(
+            # Execute command using shell
+            process = await asyncio.create_subprocess_exec(
+                self.shell_path,
+                "-c",
                 command,
                 stdout=asyncio.subprocess.PIPE,
                 stderr=asyncio.subprocess.PIPE,
                 cwd=str(work_dir),
-                shell=True
+                env=env,
+                preexec_fn=preexec_fn,
             )
 
             try:
                 stdout_bytes, stderr_bytes = await asyncio.wait_for(
                     process.communicate(),
-                    timeout=timeout_val
+                    timeout=timeout_val,
                 )
 
-                stdout = stdout_bytes.decode('utf-8', errors='replace')
-                stderr = stderr_bytes.decode('utf-8', errors='replace')
+                stdout = stdout_bytes.decode("utf-8", errors="replace")
+                stderr = stderr_bytes.decode("utf-8", errors="replace")
 
                 # Enforce output size limit
                 if len(stdout) > self.max_output_size:
-                    stdout = stdout[:self.max_output_size] + f"\n... (truncated, limit: {self.max_output_size} bytes)"
+                    stdout = (
+                        stdout[: self.max_output_size]
+                        + f"\n... (truncated, limit: {self.max_output_size} bytes)"
+                    )
 
                 result = {
                     "success": process.returncode == 0,
                     "stdout": stdout,
                     "stderr": stderr,
                     "return_code": process.returncode,
-                    "command": command
+                    "command": command,
                 }
 
                 # Log to history
-                self.history.append({
-                    "action": "execute",
-                    "command": command,
-                    "return_code": process.returncode,
-                    "success": result["success"]
-                })
+                self.history.append(
+                    {
+                        "action": "execute",
+                        "command": command,
+                        "return_code": process.returncode,
+                        "success": result["success"],
+                    }
+                )
 
                 return result
 
@@ -157,16 +173,18 @@ class BashTools:
                 await process.wait()
                 raise ToolExecutionError(
                     f"Command timed out after {timeout_val} seconds",
-                    tool_name="bash_execute",
-                    context={"command": command, "timeout": timeout_val}
+                    tool_name="shell_execute",
+                    context={"command": command, "timeout": timeout_val},
                 )
 
+        except ToolExecutionError:
+            raise
         except Exception as e:
-            logger.error(f"BashTools execute failed: {e}")
+            logger.error(f"ShellTools execute failed: {e}")
             raise ToolExecutionError(
                 f"Command execution failed: {str(e)}",
-                tool_name="bash_execute",
-                context={"command": command}
+                tool_name="shell_execute",
+                context={"command": command},
             )
 
     async def grep(
@@ -177,7 +195,7 @@ class BashTools:
         case_insensitive: bool = False,
         line_numbers: bool = True,
         context_lines: int = 0,
-        reasoning: Optional[str] = None
+        reasoning: Optional[str] = None,
     ) -> Dict[str, Any]:
         """
         Search for pattern in files with structured output.
@@ -199,7 +217,7 @@ class BashTools:
                 - files_searched: int
         """
         if reasoning:
-            logger.info(f"BashTools grep: {reasoning}")
+            logger.info(f"ShellTools grep: {reasoning}")
 
         # Build grep command
         cmd_parts = ["grep"]
@@ -227,7 +245,7 @@ class BashTools:
                     "success": True,
                     "matches": [],
                     "total_matches": 0,
-                    "files_searched": 0
+                    "files_searched": 0,
                 }
 
             if not result["success"]:
@@ -236,7 +254,7 @@ class BashTools:
                     "error": result["stderr"],
                     "matches": [],
                     "total_matches": 0,
-                    "files_searched": 0
+                    "files_searched": 0,
                 }
 
             # Parse output
@@ -256,46 +274,52 @@ class BashTools:
                         content = parts[2]
 
                         files_seen.add(file_path)
-                        matches.append({
-                            "file": file_path,
-                            "line_number": int(line_num) if line_num.isdigit() else None,
-                            "line": content
-                        })
+                        matches.append(
+                            {
+                                "file": file_path,
+                                "line_number": int(line_num) if line_num.isdigit() else None,
+                                "line": content,
+                            }
+                        )
                     elif len(parts) == 2:
                         # Single file search: line_number:content
                         line_num = parts[0]
                         content = parts[1]
-                        matches.append({
-                            "file": file_or_dir,
-                            "line_number": int(line_num) if line_num.isdigit() else None,
-                            "line": content
-                        })
+                        matches.append(
+                            {
+                                "file": file_or_dir,
+                                "line_number": int(line_num) if line_num.isdigit() else None,
+                                "line": content,
+                            }
+                        )
 
             return {
                 "success": True,
                 "matches": matches,
                 "total_matches": len(matches),
-                "files_searched": len(files_seen) if files_seen else 1
+                "files_searched": len(files_seen) if files_seen else 1,
             }
 
+        except ToolExecutionError:
+            raise
         except Exception as e:
-            logger.error(f"BashTools grep failed: {e}")
+            logger.error(f"ShellTools grep failed: {e}")
             return {
                 "success": False,
                 "error": str(e),
                 "matches": [],
                 "total_matches": 0,
-                "files_searched": 0
+                "files_searched": 0,
             }
 
     async def find(
         self,
         path: str,
         name_pattern: Optional[str] = None,
-        type: Optional[str] = None,  # "f" (file), "d" (dir)
+        type: Optional[str] = None,
         max_depth: Optional[int] = None,
-        modified_within: Optional[str] = None,  # e.g., "7" for 7 days
-        reasoning: Optional[str] = None
+        modified_within: Optional[str] = None,
+        reasoning: Optional[str] = None,
     ) -> Dict[str, Any]:
         """
         Find files matching criteria with structured output.
@@ -315,7 +339,7 @@ class BashTools:
                 - total_found: int
         """
         if reasoning:
-            logger.info(f"BashTools find: {reasoning}")
+            logger.info(f"ShellTools find: {reasoning}")
 
         # Build find command
         cmd_parts = ["find", f"'{path}'"]
@@ -342,7 +366,7 @@ class BashTools:
                     "success": False,
                     "error": result["stderr"],
                     "files": [],
-                    "total_found": 0
+                    "total_found": 0,
                 }
 
             # Parse output
@@ -354,23 +378,25 @@ class BashTools:
             return {
                 "success": True,
                 "files": files,
-                "total_found": len(files)
+                "total_found": len(files),
             }
 
+        except ToolExecutionError:
+            raise
         except Exception as e:
-            logger.error(f"BashTools find failed: {e}")
+            logger.error(f"ShellTools find failed: {e}")
             return {
                 "success": False,
                 "error": str(e),
                 "files": [],
-                "total_found": 0
+                "total_found": 0,
             }
 
     async def wc(
         self,
         file_path: str,
-        count_type: str = "all",  # "lines", "words", "chars", "all"
-        reasoning: Optional[str] = None
+        count_type: str = "all",
+        reasoning: Optional[str] = None,
     ) -> Dict[str, Any]:
         """
         Word/line/character count with structured output.
@@ -388,7 +414,7 @@ class BashTools:
                 - characters: int
         """
         if reasoning:
-            logger.info(f"BashTools wc: {reasoning}")
+            logger.info(f"ShellTools wc: {reasoning}")
 
         command = f"wc '{file_path}'"
 
@@ -396,10 +422,7 @@ class BashTools:
             result = await self.execute(command, reasoning=reasoning)
 
             if not result["success"]:
-                return {
-                    "success": False,
-                    "error": result["stderr"]
-                }
+                return {"success": False, "error": result["stderr"]}
 
             # Parse output: "lines words chars filename"
             parts = result["stdout"].strip().split()
@@ -408,20 +431,16 @@ class BashTools:
                     "success": True,
                     "lines": int(parts[0]),
                     "words": int(parts[1]),
-                    "characters": int(parts[2])
+                    "characters": int(parts[2]),
                 }
 
-            return {
-                "success": False,
-                "error": "Could not parse wc output"
-            }
+            return {"success": False, "error": "Could not parse wc output"}
 
+        except ToolExecutionError:
+            raise
         except Exception as e:
-            logger.error(f"BashTools wc failed: {e}")
-            return {
-                "success": False,
-                "error": str(e)
-            }
+            logger.error(f"ShellTools wc failed: {e}")
+            return {"success": False, "error": str(e)}
 
     async def sed(
         self,
@@ -430,7 +449,7 @@ class BashTools:
         file_path: str,
         in_place: bool = False,
         global_replace: bool = True,
-        reasoning: Optional[str] = None
+        reasoning: Optional[str] = None,
     ) -> Dict[str, Any]:
         """
         Text substitution using sed with structured output.
@@ -450,7 +469,7 @@ class BashTools:
                 - lines_modified: int
         """
         if reasoning:
-            logger.info(f"BashTools sed: {reasoning}")
+            logger.info(f"ShellTools sed: {reasoning}")
 
         # Build sed command
         flags = "g" if global_replace else ""
@@ -472,7 +491,7 @@ class BashTools:
                     "success": False,
                     "error": result["stderr"],
                     "output": "",
-                    "lines_modified": 0
+                    "lines_modified": 0,
                 }
 
             # Count modified lines (approximate)
@@ -481,16 +500,18 @@ class BashTools:
             return {
                 "success": True,
                 "output": result["stdout"],
-                "lines_modified": len(output_lines) if not in_place else None
+                "lines_modified": len(output_lines) if not in_place else None,
             }
 
+        except ToolExecutionError:
+            raise
         except Exception as e:
-            logger.error(f"BashTools sed failed: {e}")
+            logger.error(f"ShellTools sed failed: {e}")
             return {
                 "success": False,
                 "error": str(e),
                 "output": "",
-                "lines_modified": 0
+                "lines_modified": 0,
             }
 
     async def awk(
@@ -498,7 +519,7 @@ class BashTools:
         script: str,
         file_path: str,
         field_separator: Optional[str] = None,
-        reasoning: Optional[str] = None
+        reasoning: Optional[str] = None,
     ) -> Dict[str, Any]:
         """
         Pattern processing using awk with structured output.
@@ -516,7 +537,7 @@ class BashTools:
                 - lines_processed: int
         """
         if reasoning:
-            logger.info(f"BashTools awk: {reasoning}")
+            logger.info(f"ShellTools awk: {reasoning}")
 
         # Build awk command
         cmd_parts = ["awk"]
@@ -535,7 +556,7 @@ class BashTools:
                     "success": False,
                     "error": result["stderr"],
                     "output": "",
-                    "lines_processed": 0
+                    "lines_processed": 0,
                 }
 
             output_lines = result["stdout"].strip().split("\n") if result["stdout"] else []
@@ -543,16 +564,18 @@ class BashTools:
             return {
                 "success": True,
                 "output": result["stdout"],
-                "lines_processed": len(output_lines)
+                "lines_processed": len(output_lines),
             }
 
+        except ToolExecutionError:
+            raise
         except Exception as e:
-            logger.error(f"BashTools awk failed: {e}")
+            logger.error(f"ShellTools awk failed: {e}")
             return {
                 "success": False,
                 "error": str(e),
                 "output": "",
-                "lines_processed": 0
+                "lines_processed": 0,
             }
 
     async def tail(
@@ -560,7 +583,7 @@ class BashTools:
         file_path: str,
         num_lines: int = 10,
         follow: bool = False,
-        reasoning: Optional[str] = None
+        reasoning: Optional[str] = None,
     ) -> Dict[str, Any]:
         """
         Get last N lines of file with structured output.
@@ -578,7 +601,7 @@ class BashTools:
                 - total_lines: int
         """
         if reasoning:
-            logger.info(f"BashTools tail: {reasoning}")
+            logger.info(f"ShellTools tail: {reasoning}")
 
         command = f"tail -n {num_lines} '{file_path}'"
         if follow:
@@ -593,7 +616,7 @@ class BashTools:
                     "success": False,
                     "error": result["stderr"],
                     "lines": [],
-                    "total_lines": 0
+                    "total_lines": 0,
                 }
 
             lines = result["stdout"].strip().split("\n") if result["stdout"] else []
@@ -601,23 +624,25 @@ class BashTools:
             return {
                 "success": True,
                 "lines": lines,
-                "total_lines": len(lines)
+                "total_lines": len(lines),
             }
 
+        except ToolExecutionError:
+            raise
         except Exception as e:
-            logger.error(f"BashTools tail failed: {e}")
+            logger.error(f"ShellTools tail failed: {e}")
             return {
                 "success": False,
                 "error": str(e),
                 "lines": [],
-                "total_lines": 0
+                "total_lines": 0,
             }
 
     async def head(
         self,
         file_path: str,
         num_lines: int = 10,
-        reasoning: Optional[str] = None
+        reasoning: Optional[str] = None,
     ) -> Dict[str, Any]:
         """
         Get first N lines of file with structured output.
@@ -634,7 +659,7 @@ class BashTools:
                 - total_lines: int
         """
         if reasoning:
-            logger.info(f"BashTools head: {reasoning}")
+            logger.info(f"ShellTools head: {reasoning}")
 
         command = f"head -n {num_lines} '{file_path}'"
 
@@ -646,7 +671,7 @@ class BashTools:
                     "success": False,
                     "error": result["stderr"],
                     "lines": [],
-                    "total_lines": 0
+                    "total_lines": 0,
                 }
 
             lines = result["stdout"].strip().split("\n") if result["stdout"] else []
@@ -654,16 +679,18 @@ class BashTools:
             return {
                 "success": True,
                 "lines": lines,
-                "total_lines": len(lines)
+                "total_lines": len(lines),
             }
 
+        except ToolExecutionError:
+            raise
         except Exception as e:
-            logger.error(f"BashTools head failed: {e}")
+            logger.error(f"ShellTools head failed: {e}")
             return {
                 "success": False,
                 "error": str(e),
                 "lines": [],
-                "total_lines": 0
+                "total_lines": 0,
             }
 
     async def diff(
@@ -672,7 +699,7 @@ class BashTools:
         file2: str,
         unified: bool = True,
         context_lines: int = 3,
-        reasoning: Optional[str] = None
+        reasoning: Optional[str] = None,
     ) -> Dict[str, Any]:
         """
         Compare files with structured output.
@@ -692,7 +719,7 @@ class BashTools:
                 - changes: int
         """
         if reasoning:
-            logger.info(f"BashTools diff: {reasoning}")
+            logger.info(f"ShellTools diff: {reasoning}")
 
         # Build diff command
         cmd_parts = ["diff"]
@@ -712,19 +739,19 @@ class BashTools:
                     "success": True,
                     "identical": True,
                     "diff_output": "",
-                    "changes": 0
+                    "changes": 0,
                 }
             elif result["return_code"] == 1:
                 # Files differ
                 diff_lines = result["stdout"].strip().split("\n")
                 # Count actual change lines (start with +/-)
-                changes = sum(1 for line in diff_lines if line and line[0] in ['+', '-'])
+                changes = sum(1 for line in diff_lines if line and line[0] in ["+", "-"])
 
                 return {
                     "success": True,
                     "identical": False,
                     "diff_output": result["stdout"],
-                    "changes": changes
+                    "changes": changes,
                 }
             else:
                 # Error case
@@ -733,17 +760,19 @@ class BashTools:
                     "error": result["stderr"],
                     "identical": None,
                     "diff_output": "",
-                    "changes": 0
+                    "changes": 0,
                 }
 
+        except ToolExecutionError:
+            raise
         except Exception as e:
-            logger.error(f"BashTools diff failed: {e}")
+            logger.error(f"ShellTools diff failed: {e}")
             return {
                 "success": False,
                 "error": str(e),
                 "identical": None,
                 "diff_output": "",
-                "changes": 0
+                "changes": 0,
             }
 
     async def execute_streaming(
@@ -751,54 +780,61 @@ class BashTools:
         command: str,
         timeout: Optional[int] = None,
         working_dir: Optional[str] = None,
-        reasoning: Optional[str] = None
+        env: Optional[Dict[str, str]] = None,
+        preexec_fn: Optional[Callable[[], None]] = None,
+        reasoning: Optional[str] = None,
     ) -> AsyncIterator[str]:
         """
         Execute command with streaming output for long-running commands.
 
         Args:
-            command: Bash command
+            command: Shell command
             timeout: Timeout in seconds
             working_dir: Working directory
+            env: Environment variables
+            preexec_fn: Function to call in child process before exec
             reasoning: Optional reasoning
 
         Yields:
             Lines of output as they become available
         """
         if reasoning:
-            logger.info(f"BashTools execute_streaming: {reasoning}")
+            logger.info(f"ShellTools execute_streaming: {reasoning}")
 
         # Validate command
         is_valid, error_msg = self.validate_command(command)
         if not is_valid:
             raise ToolExecutionError(
                 f"Command validation failed: {error_msg}",
-                tool_name="bash_execute_streaming",
-                context={"command": command}
+                tool_name="shell_execute_streaming",
+                context={"command": command},
             )
 
         timeout_val = timeout or self.timeout_default
         work_dir = Path(working_dir) if working_dir else self.working_directory
 
-        process = await asyncio.create_subprocess_shell(
+        process = await asyncio.create_subprocess_exec(
+            self.shell_path,
+            "-c",
             command,
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.PIPE,
             cwd=str(work_dir),
-            shell=True
+            env=env,
+            preexec_fn=preexec_fn,
         )
 
         try:
             while True:
                 line = await asyncio.wait_for(
                     process.stdout.readline(),
-                    timeout=timeout_val
+                    timeout=timeout_val,
                 )
 
                 if not line:
                     break
 
-                yield line.decode('utf-8', errors='replace').rstrip()
+                yield line.decode("utf-8", errors="replace").rstrip()
 
             await process.wait()
 
@@ -807,8 +843,8 @@ class BashTools:
             await process.wait()
             raise ToolExecutionError(
                 f"Command timed out after {timeout_val} seconds",
-                tool_name="bash_execute_streaming",
-                context={"command": command}
+                tool_name="shell_execute_streaming",
+                context={"command": command},
             )
 
     def validate_command(self, command: str) -> Tuple[bool, Optional[str]]:
@@ -827,8 +863,8 @@ class BashTools:
             if cmd_start not in self.allowed_commands:
                 return False, f"Command '{cmd_start}' not in allowed commands list"
 
-        # Check blocked commands
-        for blocked in self.blocked_commands:
+        # Check blocked patterns
+        for blocked in self.blocked_patterns:
             if blocked in command:
                 return False, f"Command contains blocked pattern: '{blocked}'"
 
@@ -848,8 +884,8 @@ class BashTools:
         return True, None
 
     @staticmethod
-    def _default_blocked_commands() -> List[str]:
-        """Default dangerous commands to block."""
+    def _default_blocked_patterns() -> List[str]:
+        """Default dangerous patterns to block."""
         return [
             "rm -rf /",
             "sudo",
