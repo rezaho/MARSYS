@@ -22,11 +22,11 @@ from marsys.coordination.tracing.config import TracingConfig
 TracingConfig(
     enabled: bool = False,
     output_dir: str = "./traces",
-    detail_level: str = "standard",
+    detail_level: str = "verbose",
     include_generation_details: bool = True,
-    include_message_content: bool = False,
+    include_message_content: bool = True,
     include_tool_results: bool = True,
-    max_content_length: int = 500
+    max_content_length: int = 0
 )
 ```
 
@@ -35,11 +35,11 @@ TracingConfig(
 |-----------|------|-------------|---------|
 | `enabled` | `bool` | Enable trace collection | `False` |
 | `output_dir` | `str` | Directory for trace JSON files | `"./traces"` |
-| `detail_level` | `str` | `"minimal"`, `"standard"`, or `"verbose"` | `"standard"` |
+| `detail_level` | `str` | `"minimal"`, `"standard"`, or `"verbose"` | `"verbose"` |
 | `include_generation_details` | `bool` | Include token counts, model info in generation spans | `True` |
-| `include_message_content` | `bool` | Include full prompt/response content (sensitive) | `False` |
+| `include_message_content` | `bool` | Include full prompt/response content | `True` |
 | `include_tool_results` | `bool` | Include tool call results in tool spans | `True` |
-| `max_content_length` | `int` | Truncation length for string attributes in `standard` mode | `500` |
+| `max_content_length` | `int` | Truncation length for string attributes in `standard` mode (0 = no truncation) | `0` |
 
 ### TraceCollector
 
@@ -293,11 +293,11 @@ if orchestra.trace_collector:
 ## 📋 Best Practices
 
 - ✅ Use `detail_level="minimal"` in production for low overhead
-- ✅ Use `detail_level="standard"` (default) during development
-- ✅ Keep `include_message_content=False` unless investigating specific issues
+- ✅ Use `detail_level="verbose"` (default) during development for full visibility
+- ✅ Use `detail_level="standard"` with `max_content_length` to limit trace size if needed
 - ✅ Use meaningful `session_id` values for trace file identification
 - ✅ Add `./traces/` to `.gitignore`
-- ❌ Don't enable `verbose` in production — trace files can be very large
+- ❌ Don't leave `verbose` tracing on in production — trace files can be very large
 - ❌ Don't commit trace files containing sensitive prompt/response content
 
 ## 🚦 Related Documentation
