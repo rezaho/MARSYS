@@ -14,22 +14,24 @@ class Span:
     A single unit of work in the execution trace.
 
     Spans form a tree: an execution span contains branch spans,
-    which contain step spans, which contain generation/tool/validation spans.
+    which contain step spans, which contain generation and tool spans.
 
     The `kind` field determines what `attributes` contain:
       - execution: task, topology_summary, config_summary
-      - branch: branch_type, agents, completion_condition, parent_branch_id, group_id
-      - step: agent_name, step_number, action_type, next_agent, retry_count
+      - branch: branch_id, branch_name, source_agent, target_agents, trigger_type
+      - step: agent_name, step_number, action_type, next_agents, success
       - generation: model_name, provider, prompt_tokens, completion_tokens, response_time_ms
-      - tool: tool_name, arguments_summary, result_summary
-      - validation: is_valid, action_type, next_agents, error_category
+      - tool: tool_name, arguments, result_summary
+
+    Validation decisions are captured as events on step spans (not separate spans).
+    Convergence is captured as links and events on both branch and step spans.
     """
 
     span_id: str
     parent_span_id: Optional[str]
     trace_id: str
     name: str
-    kind: str  # execution | branch | step | generation | tool | validation
+    kind: str  # execution | branch | step | generation | tool
     start_time: float
     end_time: Optional[float] = None
     duration_ms: Optional[float] = None
