@@ -879,6 +879,18 @@ class Orchestra:
             # This contains the correct message for the User node
             branch_task = branch.metadata.get("initial_task", task) if branch.metadata else task
 
+            # Emit BranchCreatedEvent for tracing (initial branches are created here, not by BranchSpawner)
+            if self.event_bus:
+                from .execution.branch_spawner import BranchCreatedEvent
+                await self.event_bus.emit(BranchCreatedEvent(
+                    session_id=session_id,
+                    branch_id=branch.id,
+                    branch_name=branch.name,
+                    source_agent="entry",
+                    target_agents=[branch.topology.entry_agent],
+                    trigger_type="initial",
+                ))
+
             task_obj = asyncio.create_task(
                 self.branch_executor.execute_branch(branch, branch_task, context)
             )
