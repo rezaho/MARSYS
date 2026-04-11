@@ -6,6 +6,8 @@ from dataclasses import dataclass, field
 from typing import Literal, Optional, List, Dict, Any, Union
 from enum import IntEnum
 
+from .tracing.config import TracingConfig
+
 
 class VerbosityLevel(IntEnum):
     """Verbosity levels for status output."""
@@ -252,6 +254,9 @@ class ExecutionConfig:
 
     # Status configuration
     status: StatusConfig = field(default_factory=StatusConfig)
+
+    # Tracing configuration
+    tracing: 'TracingConfig' = field(default_factory=lambda: TracingConfig())
 
     # NEW: User interaction control fields (Orchestra only)
     user_first: bool = False  # Enable user-first execution mode

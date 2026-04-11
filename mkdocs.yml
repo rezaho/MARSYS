@@ -133,6 +133,8 @@ nav:
     - Advanced Topics:
       - Topology: concepts/advanced/topology.md
       - State Management: concepts/state-management.md
+      - Observability:
+          - Tracing: concepts/tracing.md
       - Error Handling: concepts/error-handling.md
       - Learning Agents: concepts/learning-agents.md
       - Custom Agents: concepts/custom-agents.md
@@ -152,6 +154,8 @@ nav:
     - Data Management:
       - State: api/state.md
       - Memory: api/memory.md
+      - Observability:
+          - Tracing: api/tracing.md
     - Interaction:
       - Communication: api/communication.md
       - Tools: api/tools.md

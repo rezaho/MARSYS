@@ -931,6 +931,21 @@ class BranchExecutor:
                 result.next_agent = agent_name  # Continue with same agent
                 # Don't set parsed_response - it's not needed for tool continuation flow
                 logger.debug(f"Tool continuation for {agent_name} - skipping validation, agent will process tool results")
+
+                # Emit tracing event for tool continuation decision
+                if self.event_bus:
+                    from ..tracing.events import ValidationDecisionEvent
+                    await self.event_bus.emit(ValidationDecisionEvent(
+                        session_id=context.session_id,
+                        branch_id=context.branch_id,
+                        agent_name=agent_name,
+                        step_number=branch.state.current_step,
+                        step_span_id=context.metadata.get("step_span_id", ""),
+                        is_valid=True,
+                        action_type="invoke_agent",
+                        next_agents=[agent_name],
+                        is_tool_continuation=True,
+                    ))
             elif self.response_validator and result.success:
                 # Normal validation path
                 # Create a mock ExecutionState for validation
@@ -948,7 +963,28 @@ class BranchExecutor:
                     branch=branch,
                     exec_state=exec_state
                 )
-                
+
+                # Emit tracing event for validation decision
+                if self.event_bus:
+                    from ..tracing.events import ValidationDecisionEvent
+                    next_agents = []
+                    if validation.next_agents:
+                        next_agents = list(validation.next_agents)
+                    elif validation.invocations:
+                        next_agents = [inv.agent_name for inv in validation.invocations if hasattr(inv, 'agent_name')]
+                    await self.event_bus.emit(ValidationDecisionEvent(
+                        session_id=context.session_id,
+                        branch_id=context.branch_id,
+                        agent_name=agent_name,
+                        step_number=branch.state.current_step,
+                        step_span_id=context.metadata.get("step_span_id", ""),
+                        is_valid=validation.is_valid,
+                        action_type=validation.action_type.value if validation.action_type else "",
+                        next_agents=next_agents,
+                        error_category=validation.error_category,
+                        retry_suggestion=getattr(validation, 'retry_suggestion', None),
+                    ))
+
                 if validation.is_valid:
                     result.action_type = validation.action_type.value if validation.action_type else "continue"
                     result.parsed_response = validation.parsed_response

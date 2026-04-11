@@ -189,6 +189,11 @@ class StepExecutor:
         # Normal agent handling
         agent_name = agent.name if hasattr(agent, 'name') else str(agent)
 
+        # Generate a unique span ID for this step execution (used for trace correlation)
+        import uuid
+        step_span_id = str(uuid.uuid4())
+        step_number = context.get("step_number", 0)
+
         # Emit start event if event_bus is available
         if self.event_bus:
             from ..status.events import AgentStartEvent
@@ -200,14 +205,19 @@ class StepExecutor:
                 session_id=context.get("session_id", "unknown"),
                 branch_id=context.get("branch_id"),
                 agent_name=agent_name,
-                request_summary=request_summary
+                request_summary=request_summary,
+                step_number=step_number,
+                step_span_id=step_span_id,
             ))
+
+        # Store span ID in context for downstream use (tool executor, generation event)
+        context["step_span_id"] = step_span_id
 
         # Create step context
         step_context = StepContext(
             session_id=context.get("session_id", ""),
             branch_id=context.get("branch_id", ""),
-            step_number=context.get("step_number", 0),  # 0-based: first step is step 0
+            step_number=step_number,
             agent_name=agent_name,
             memory=[],  # Empty - not used for injection anymore
             tools_enabled=context.get("tools_enabled", True),
@@ -481,6 +491,30 @@ class StepExecutor:
                         step_result.saved_context = saved_context
                         logger.debug(f"Extracted saved context from {agent_name}: {list(saved_context.keys())}")
 
+                # Emit generation event BEFORE completion (collector closes span on complete)
+                if self.event_bus and step_result.response:
+                    response_meta = getattr(step_result.response, 'response_metadata', None)
+                    if response_meta:
+                        from ..tracing.events import GenerationEvent
+                        usage = response_meta.get("usage") or {}
+                        response_time = response_meta.get("response_time")
+                        await self.event_bus.emit(GenerationEvent(
+                            session_id=context.get("session_id", "unknown"),
+                            branch_id=context.get("branch_id"),
+                            agent_name=agent_name,
+                            step_number=step_number,
+                            step_span_id=step_span_id,
+                            model_name=response_meta.get("model", ""),
+                            provider=response_meta.get("provider", ""),
+                            prompt_tokens=usage.get("prompt_tokens"),
+                            completion_tokens=usage.get("completion_tokens"),
+                            reasoning_tokens=usage.get("reasoning_tokens"),
+                            response_time_ms=response_time * 1000 if response_time else None,
+                            finish_reason=response_meta.get("finish_reason"),
+                            has_thinking=response_meta.get("has_thinking", False),
+                            has_tool_calls=bool(step_result.tool_calls),
+                        ))
+
                 # Emit completion event
                 if self.event_bus:
                     from ..status.events import AgentCompleteEvent
@@ -492,7 +526,9 @@ class StepExecutor:
                         success=step_result.success,
                         duration=time.time() - start_time,
                         next_action=None,  # Action type not yet determined - set by BranchExecutor after validation
-                        error=step_result.error
+                        error=step_result.error,
+                        step_number=step_number,
+                        step_span_id=step_span_id,
                     ))
 
                 return step_result
@@ -618,7 +654,9 @@ class StepExecutor:
                 success=False,
                 duration=duration,
                 next_action=None,
-                error=f"Max retries exceeded. Last error: {last_error}"
+                error=f"Max retries exceeded. Last error: {last_error}",
+                step_number=step_number,
+                step_span_id=step_span_id,
             ))
 
         self._update_stats(agent_name, failed_result, retry_count, duration)
@@ -950,7 +988,9 @@ Available options:
                 context={
                     "session_id": context.session_id,
                     "branch_id": context.branch_id,
-                    "agent_name": context.agent_name
+                    "agent_name": context.agent_name,
+                    "step_number": context.step_number,
+                    "step_span_id": context.metadata.get("step_span_id"),
                 }
             )
             

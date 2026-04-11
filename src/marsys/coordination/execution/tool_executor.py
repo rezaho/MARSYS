@@ -182,7 +182,9 @@ class RealToolExecutor:
                         tool_name=tool_name,
                         status="started",
                         arguments=event_args,
-                        reasoning=reasoning
+                        reasoning=reasoning,
+                        step_number=context.get("step_number"),
+                        step_span_id=context.get("step_span_id"),
                     ))
 
                 # Find and execute the tool
@@ -270,13 +272,17 @@ class RealToolExecutor:
                         import time
                         from ..status.events import ToolCallEvent
 
+                        result_summary = str(raw_result)[:200] if raw_result else None
                         await self.event_bus.emit(ToolCallEvent(
                             session_id=context.get("session_id", "unknown"),
                             branch_id=context.get("branch_id"),
                             agent_name=agent.name if hasattr(agent, 'name') else str(agent),
                             tool_name=tool_name,
                             status="completed",
-                            duration=time.time() - start_time if start_time else None
+                            duration=time.time() - start_time if start_time else None,
+                            step_number=context.get("step_number"),
+                            step_span_id=context.get("step_span_id"),
+                            result_summary=result_summary,
                         ))
 
                     # Store raw result - either ToolResponse object or string
@@ -351,7 +357,9 @@ class RealToolExecutor:
                         agent_name=agent.name if hasattr(agent, 'name') else str(agent),
                         tool_name=tool_name,
                         status="failed",
-                        duration=time.time() - start_time if 'start_time' in locals() and start_time else None
+                        duration=time.time() - start_time if 'start_time' in locals() and start_time else None,
+                        step_number=context.get("step_number"),
+                        step_span_id=context.get("step_span_id"),
                     ))
 
                 # Create clear error message for the agent (as string)

@@ -266,6 +266,7 @@ class Message:
     images: Optional[List[str]] = None  # For storing image paths/URLs for vision models
     tool_call_id: Optional[str] = None  # For tool response messages, links to the original tool call
     reasoning_details: Optional[List[Dict[str, Any]]] = None  # For Gemini 3 thought signatures (must be preserved for multi-turn tool calling)
+    response_metadata: Optional[Dict[str, Any]] = None  # Preserved from HarmonizedResponse for tracing (provider, model, usage, timing)
 
     def __post_init__(self):
         """Automatically convert dictionaries to proper dataclasses with validation."""
@@ -634,14 +635,27 @@ class Message:
                     "function": tc.function
                 })
         
+        # Preserve response metadata for tracing/observability
+        metadata = harmonized_response.metadata
+        response_metadata = {
+            "provider": metadata.provider,
+            "model": metadata.model,
+            "usage": metadata.usage.model_dump() if metadata.usage else None,
+            "finish_reason": metadata.finish_reason,
+            "response_time": metadata.response_time,
+            "has_thinking": harmonized_response.has_thinking(),
+            "has_reasoning": harmonized_response.has_reasoning(),
+        }
+
         # Create Message with fields from HarmonizedResponse
         return cls(
             role=harmonized_response.role,
             content=harmonized_response.content,
-            name=name or harmonized_response.metadata.model,
+            name=name or metadata.model,
             tool_calls=tool_calls,
             images=images,
             reasoning_details=harmonized_response.reasoning_details,  # Preserve for Gemini 3
+            response_metadata=response_metadata,
         )
 
     def to_api_format(self) -> Dict[str, Any]:
