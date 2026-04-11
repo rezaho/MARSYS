@@ -255,6 +255,44 @@ class TestConvergence:
         assert main_branch.events[0]["attributes"]["successful_count"] == 2
 
 
+    @pytest.mark.asyncio
+    async def test_convergence_step_receives_links(self, event_bus, collector):
+        """The step that runs after convergence should have links to the child branches."""
+        sid = "test-conv-step"
+        await event_bus.emit(ExecutionStartEvent(session_id=sid, task_summary="test", agent_names=["C", "W1", "W2"]))
+        # Parent branch + initial step
+        await event_bus.emit(BranchCreatedEvent(session_id=sid, branch_id="b-main", branch_name="Main", source_agent="entry", target_agents=["C"], trigger_type="initial"))
+        await emit_step(event_bus, sid, "b-main", "C", 0, "span-init", action_type="parallel_invoke", next_agents=["W1", "W2"])
+        # Child branches
+        await event_bus.emit(BranchCreatedEvent(session_id=sid, branch_id="b-w1", branch_name="W1", source_agent="C", target_agents=["W1"], trigger_type="parallel"))
+        await event_bus.emit(BranchCreatedEvent(session_id=sid, branch_id="b-w2", branch_name="W2", source_agent="C", target_agents=["W2"], trigger_type="parallel"))
+        await emit_step(event_bus, sid, "b-w1", "W1", 0, "span-w1")
+        await emit_step(event_bus, sid, "b-w2", "W2", 0, "span-w2")
+        await event_bus.emit(BranchCompletedEvent(session_id=sid, branch_id="b-w1", success=True, total_steps=1))
+        await event_bus.emit(BranchCompletedEvent(session_id=sid, branch_id="b-w2", success=True, total_steps=1))
+        # Convergence
+        await event_bus.emit(ConvergenceEvent(
+            session_id=sid, parent_branch_id="b-main",
+            child_branch_ids=["b-w1", "b-w2"],
+            convergence_point="C", group_id="g1",
+            successful_count=2, total_count=2,
+        ))
+        # Convergence step — the step AFTER convergence on the parent branch
+        await emit_step(event_bus, sid, "b-main", "C", 1, "span-conv", action_type="final_response")
+        await event_bus.emit(BranchCompletedEvent(session_id=sid, branch_id="b-main", success=True, total_steps=2))
+
+        trace = await collector.finalize(sid)
+        main_branch = trace.root_span.children[0]
+        # The convergence step is the second step in main branch
+        conv_step = main_branch.children[1]
+        assert conv_step.name == "Step 1: C"
+        assert len(conv_step.links) == 2, f"Convergence step should have 2 links, got {len(conv_step.links)}"
+        assert conv_step.links[0]["relationship"] == "convergence"
+        assert len(conv_step.events) >= 1  # convergence event + validation event
+        conv_events = [e for e in conv_step.events if e["name"] == "convergence"]
+        assert len(conv_events) == 1, "Should have convergence event on step"
+
+
 class TestFinalizeOnFailure:
     """Trace must be written even when execution fails (orphaned spans)."""
 

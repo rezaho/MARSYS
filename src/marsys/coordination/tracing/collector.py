@@ -52,6 +52,7 @@ class TraceCollector:
         self.open_spans: Dict[str, Span] = {}  # span_id -> Span (unclosed only, for finalization)
         self.branch_spans: Dict[str, Span] = {}  # branch_id -> Span (survives closure)
         self.step_spans: Dict[str, Span] = {}  # step_span_id -> Span (survives closure)
+        self._pending_convergence: Dict[str, List[Dict]] = {}  # branch_id -> convergence info for next step
 
         self._subscribe_to_events()
 
@@ -203,6 +204,15 @@ class TraceCollector:
             self.open_spans[step_span.span_id] = step_span
             self.step_spans[step_span_id] = step_span
 
+            # Attach pending convergence info to this step (it's the convergence step)
+            pending = getattr(self, '_pending_convergence', {})
+            if branch_id in pending:
+                for conv in pending[branch_id]:
+                    for child_span_id in conv["child_span_ids"]:
+                        step_span.add_link(child_span_id, "convergence", conv["convergence_data"])
+                    step_span.add_event("convergence", conv["convergence_data"])
+                del pending[branch_id]
+
     async def _handle_generation(self, event: Any) -> None:
         """Create generation child span on the step span."""
         async with self._lock:
@@ -332,25 +342,36 @@ class TraceCollector:
             self.open_spans.pop(span.span_id, None)
 
     async def _handle_convergence(self, event: Any) -> None:
-        """Add convergence links between parent and child branch spans."""
+        """Add convergence links to parent branch span and record for next step."""
         async with self._lock:
-            parent_span = self.branch_spans.get(event.parent_branch_id)
-            if not parent_span:
-                return
-
+            child_span_ids = []
             for child_branch_id in event.child_branch_ids:
                 child_span = self.branch_spans.get(child_branch_id)
                 if child_span:
-                    parent_span.add_link(child_span.span_id, "convergence", {
-                        "convergence_point": event.convergence_point,
-                        "group_id": event.group_id,
-                    })
+                    child_span_ids.append(child_span.span_id)
 
-            parent_span.add_event("convergence", {
+            convergence_data = {
                 "convergence_point": event.convergence_point,
                 "group_id": event.group_id,
                 "successful_count": event.successful_count,
                 "total_count": event.total_count,
+            }
+
+            # Add links and event to parent branch span (if it exists)
+            parent_span = self.branch_spans.get(event.parent_branch_id)
+            if parent_span:
+                for child_span_id in child_span_ids:
+                    parent_span.add_link(child_span_id, "convergence", convergence_data)
+                parent_span.add_event("convergence", convergence_data)
+
+            # Store convergence info so the NEXT step span on this branch
+            # (the convergence step) can inherit the links
+            branch_id = event.parent_branch_id
+            if branch_id not in self._pending_convergence:
+                self._pending_convergence[branch_id] = []
+            self._pending_convergence[branch_id].append({
+                "child_span_ids": child_span_ids,
+                "convergence_data": convergence_data,
             })
 
     async def _handle_final_response(self, event: Any) -> None:
