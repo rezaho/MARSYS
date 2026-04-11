@@ -168,7 +168,22 @@ class TestGenerationSpans:
         assert gen.attributes["provider"] == "openai"
         assert gen.attributes["prompt_tokens"] == 200
         assert gen.attributes["completion_tokens"] == 100
-        assert gen.duration_ms == 1000.0
+        assert gen.attributes["response_time_ms"] == 1000.0
+
+    @pytest.mark.asyncio
+    async def test_generation_timing_contained_in_step(self, event_bus, collector):
+        """Generation span must start/end within its parent step span."""
+        sid = "test-gen-timing"
+        await event_bus.emit(ExecutionStartEvent(session_id=sid, task_summary="test", agent_names=["A"]))
+        await event_bus.emit(BranchCreatedEvent(session_id=sid, branch_id="b1", branch_name="Main", source_agent="entry", target_agents=["A"], trigger_type="initial"))
+        await emit_step(event_bus, sid, "b1", "A", 0, "span-0")
+        await event_bus.emit(BranchCompletedEvent(session_id=sid, branch_id="b1", success=True, total_steps=1))
+
+        trace = await collector.finalize(sid)
+        step = trace.root_span.children[0].children[0]
+        gen = [c for c in step.children if c.kind == "generation"][0]
+        assert gen.start_time >= step.start_time, "Generation must start at or after step start"
+        assert gen.end_time <= step.end_time, "Generation must end at or before step end"
 
 
 class TestToolSpans:
