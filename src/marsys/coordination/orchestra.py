@@ -214,6 +214,20 @@ class Orchestra:
             logger.info("Status updates enabled with verbosity: %s",
                        execution_config.status.verbosity)
 
+        # Create trace collector if tracing enabled
+        self.trace_collector = None
+        if execution_config.tracing.enabled:
+            from .tracing.collector import TraceCollector
+            from .tracing.writers.json_writer import JSONFileTraceWriter
+
+            json_writer = JSONFileTraceWriter(execution_config.tracing)
+            self.trace_collector = TraceCollector(
+                event_bus=self.event_bus,
+                config=execution_config.tracing,
+                writers=[json_writer],
+            )
+            logger.info("Tracing enabled, output dir: %s", execution_config.tracing.output_dir)
+
         # Create SystemPromptBuilder (doesn't need topology)
         response_format = execution_config.response_format
         self.system_prompt_builder = SystemPromptBuilder(response_format)
@@ -584,7 +598,22 @@ class Orchestra:
         context.setdefault("max_steps", max_steps)
 
         logger.info(f"Starting orchestration session {session_id}")
-        
+
+        # Emit execution start event for tracing
+        if self.trace_collector:
+            from .tracing.events import ExecutionStartEvent
+            task_summary = str(task)[:500] if task else ""
+            await self.event_bus.emit(ExecutionStartEvent(
+                session_id=session_id,
+                task_summary=task_summary,
+                topology_summary={},  # Populated after topology analysis
+                agent_names=[],  # Populated after topology analysis
+                config_summary={
+                    "max_steps": max_steps,
+                    "steering_mode": self._execution_config.steering_mode if self._execution_config else "error",
+                },
+            ))
+
         try:
             # Import ExecutionConfig here to avoid circular imports
             from .config import ExecutionConfig
@@ -615,6 +644,17 @@ class Orchestra:
 
             # Also store in graph metadata for runtime access
             self.topology_graph.metadata['execution_config'] = execution_config
+
+            # Update trace with topology info now that it's analyzed
+            if self.trace_collector and session_id in self.trace_collector.active_traces:
+                trace = self.trace_collector.active_traces[session_id]
+                agent_names = [n for n in self.topology_graph.nodes if n != "User"]
+                trace.root_span.attributes["agent_names"] = agent_names
+                trace.root_span.attributes["topology_summary"] = {
+                    "nodes": list(self.topology_graph.nodes.keys()),
+                    "edge_count": len(self.canonical_topology.edges),
+                }
+                trace.metadata["agent_names"] = agent_names
 
             # NEW: Set topology references in all agents
             for node_name in self.topology_graph.nodes:
@@ -705,6 +745,13 @@ class Orchestra:
                 error=str(e),
                 metadata={"session_id": session_id}
             )
+        finally:
+            # Finalize trace (writes output even on failure)
+            if self.trace_collector:
+                try:
+                    await self.trace_collector.finalize(session_id)
+                except Exception as e:
+                    logger.warning(f"Trace finalization failed: {e}")
     
     async def _execute_with_dynamic_branching(
         self,
@@ -831,6 +878,18 @@ class Orchestra:
             # Use the branch's initial_task if it was set (e.g., for User branch in user-first mode)
             # This contains the correct message for the User node
             branch_task = branch.metadata.get("initial_task", task) if branch.metadata else task
+
+            # Emit BranchCreatedEvent for tracing (initial branches are created here, not by BranchSpawner)
+            if self.event_bus:
+                from .execution.branch_spawner import BranchCreatedEvent
+                await self.event_bus.emit(BranchCreatedEvent(
+                    session_id=session_id,
+                    branch_id=branch.id,
+                    branch_name=branch.name,
+                    source_agent="entry",
+                    target_agents=[branch.topology.entry_agent],
+                    trigger_type="initial",
+                ))
 
             task_obj = asyncio.create_task(
                 self.branch_executor.execute_branch(branch, branch_task, context)

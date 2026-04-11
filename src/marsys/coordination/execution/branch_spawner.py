@@ -30,6 +30,7 @@ from ..branches.types import (
 from ..topology.graph import TopologyGraph, ParallelGroup
 from ..topology.core import NodeType
 from ..validation.types import AgentInvocation
+from ..status.events import StatusEvent
 
 if TYPE_CHECKING:
     from ...agents.registry import AgentRegistry
@@ -42,26 +43,20 @@ logger = logging.getLogger(__name__)
 
 
 @dataclass
-class BranchCreatedEvent:
+class BranchCreatedEvent(StatusEvent):
     """Event emitted when a new branch is created."""
-    branch_id: str
-    branch_name: str
-    source_agent: str
-    target_agents: List[str]
-    trigger_type: str  # "divergence", "parallel", "conversation"
-    timestamp: float = field(default_factory=time.time)
-    metadata: Dict[str, Any] = field(default_factory=dict)
+    branch_name: str = ""
+    source_agent: str = ""
+    target_agents: List[str] = field(default_factory=list)
+    trigger_type: str = ""  # "divergence", "parallel", "conversation"
 
 
 @dataclass
-class BranchCompletedEvent:
+class BranchCompletedEvent(StatusEvent):
     """Event emitted when a branch completes."""
-    branch_id: str
-    last_agent: str
-    success: bool
-    total_steps: int
-    timestamp: float = field(default_factory=time.time)
-    metadata: Dict[str, Any] = field(default_factory=dict)
+    last_agent: str = ""
+    success: bool = True
+    total_steps: int = 0
 
 
 @dataclass
@@ -801,13 +796,14 @@ class DynamicBranchSpawner:
             # Emit event
             if self.event_bus:
                 await self.event_bus.emit(BranchCreatedEvent(
+                    session_id=context.get("session_id", "unknown"),
                     branch_id=branch.id,
                     branch_name=branch.name,
                     source_agent=divergence_agent,
                     target_agents=[next_agent],
-                    trigger_type="divergence"
+                    trigger_type="divergence",
                 ))
-        
+
         logger.info(f"Spawned {len(new_tasks)} branches from divergence point '{divergence_agent}' (topology-based)")
         return new_tasks
     
@@ -865,17 +861,18 @@ class DynamicBranchSpawner:
             
             self.active_branches[branch.id] = task
             new_tasks.append(task)
-        
-        # Emit event
-        if self.event_bus and new_tasks:
-            await self.event_bus.emit(BranchCreatedEvent(
-                branch_id=f"parallel_group_{uuid.uuid4().hex[:8]}",
-                branch_name=f"Parallel: {', '.join(parallel_group.agents)}",
-                source_agent=trigger_agent,
-                target_agents=parallel_group.agents,
-                trigger_type="parallel"
-            ))
-        
+
+            # Emit per-branch event (matching divergence path pattern)
+            if self.event_bus:
+                await self.event_bus.emit(BranchCreatedEvent(
+                    session_id=context.get("session_id", "unknown"),
+                    branch_id=branch.id,
+                    branch_name=branch.name,
+                    source_agent=trigger_agent,
+                    target_agents=[agent],
+                    trigger_type="parallel",
+                ))
+
         logger.info(f"Spawned {len(new_tasks)} parallel branches for agents: {parallel_group.agents}")
         return new_tasks
     
@@ -1083,12 +1080,14 @@ class DynamicBranchSpawner:
             
             # Emit completion event
             if self.event_bus:
+                branch_context = branch.metadata.get("context", {}) if branch.metadata else {}
                 await self.event_bus.emit(BranchCompletedEvent(
+                    session_id=branch_context.get("session_id", context.get("session_id", "unknown")),
                     branch_id=branch.id,
                     last_agent=result.get_last_agent() or "",
                     success=result.success,
                     total_steps=result.total_steps,
-                    metadata={"is_child": branch.id in self.child_parent_map}
+                    metadata={"is_child": branch.id in self.child_parent_map},
                 ))
             
             return result
@@ -1762,6 +1761,17 @@ class DynamicBranchSpawner:
             # Store branch info
             self.branch_info[child_branch.id] = child_branch
             all_branches.append(child_branch)
+
+            # Emit tracing event for this branch
+            if self.event_bus:
+                await self.event_bus.emit(BranchCreatedEvent(
+                    session_id=context.get("session_id", "unknown"),
+                    branch_id=child_branch.id,
+                    branch_name=child_branch.name,
+                    source_agent=agent_name,
+                    target_agents=[target_agent],
+                    trigger_type="parallel",
+                ))
             branch_to_invocation[child_branch.id] = {
                 'target_agent': target_agent,
                 'request': agent_request,
@@ -2290,6 +2300,20 @@ class DynamicBranchSpawner:
             parent_branch.metadata['aggregated_child_results'] = aggregated_data
             parent_branch.metadata['child_group_id'] = group.group_id
             logger.info(f"Stored {len(aggregated_data)} aggregated results for parent branch '{parent_branch_id}'")
+
+            # Emit convergence tracing event
+            if self.event_bus:
+                from ..tracing.events import ConvergenceEvent
+                context = parent_branch.metadata.get("context", {}) if parent_branch.metadata else {}
+                await self.event_bus.emit(ConvergenceEvent(
+                    session_id=context.get("session_id", "unknown"),
+                    parent_branch_id=parent_branch_id,
+                    child_branch_ids=list(group.completed_branches),
+                    convergence_point=str(group.shared_convergence_points) if group.shared_convergence_points else "",
+                    group_id=group.group_id,
+                    successful_count=group.get_successful_count(),
+                    total_count=group.total_branches,
+                ))
 
             # NOTE: waiting_branches cleanup moved to check_synchronization_points
             # This ensures parent resumption/completion decision happens in one place

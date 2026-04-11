@@ -28,6 +28,8 @@ class AgentStartEvent(StatusEvent):
     """Agent starting execution."""
     agent_name: str
     request_summary: Optional[str] = None
+    step_number: Optional[int] = None
+    step_span_id: Optional[str] = None
 
 
 @dataclass
@@ -46,6 +48,8 @@ class AgentCompleteEvent(StatusEvent):
     duration: float
     next_action: Optional[str] = None
     error: Optional[str] = None
+    step_number: Optional[int] = None
+    step_span_id: Optional[str] = None
 
 
 @dataclass
@@ -57,6 +61,9 @@ class ToolCallEvent(StatusEvent):
     duration: Optional[float] = None
     arguments: Optional[Dict[str, Any]] = None
     reasoning: Optional[str] = None
+    step_number: Optional[int] = None
+    step_span_id: Optional[str] = None
+    result_summary: Optional[str] = None
 
 
 @dataclass

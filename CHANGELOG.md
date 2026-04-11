@@ -10,6 +10,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [0.2.1-beta] - 2026-03-01
 
 ### Added
+- Execution tracing module with hierarchical span trees, generation/validation/convergence events, and JSON trace output
 - Active context compaction with multi-stage memory processor pipeline (tool truncation, summarization, backward packing) and payload-error recovery
 - Response formats architecture with pluggable format system separating prompt building and response parsing from agents
 - Task planning module with agent-callable planning tools, plan lifecycle management, and status events
