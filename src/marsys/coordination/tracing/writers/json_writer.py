@@ -97,8 +97,10 @@ class JSONFileTraceWriter(TraceWriter):
         return result
 
     def _truncate_attributes(self, attributes: Dict[str, Any]) -> Dict[str, Any]:
-        """Truncate string values in attributes to max_content_length."""
+        """Truncate string values in attributes to max_content_length (0 = no truncation)."""
         max_len = self.config.max_content_length
+        if not max_len:
+            return attributes
         truncated = {}
         for key, value in attributes.items():
             if isinstance(value, str) and len(value) > max_len:

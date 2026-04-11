@@ -21,9 +21,9 @@ class TracingConfig:
     #   minimal  - span hierarchy + timing only (no attributes content)
     #   standard - all spans with attributes, content truncated to max_content_length
     #   verbose  - everything including full message content
-    detail_level: str = "standard"
+    detail_level: str = "verbose"
 
     include_generation_details: bool = True
-    include_message_content: bool = False  # Off by default — can be large/sensitive
+    include_message_content: bool = True
     include_tool_results: bool = True
-    max_content_length: int = 500
+    max_content_length: int = 0  # 0 = no truncation; only applies in "standard" detail_level

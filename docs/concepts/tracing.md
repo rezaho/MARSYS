@@ -27,7 +27,7 @@ from marsys.coordination.tracing.config import TracingConfig
 config = TracingConfig(
     enabled=True,
     output_dir="./traces",
-    detail_level="standard",  # minimal | standard | verbose
+    detail_level="verbose",  # minimal | standard | verbose
 )
 ```
 
@@ -184,8 +184,8 @@ Execution Span (one per Orchestra.run)
 | Level | What's captured | Use case |
 |-------|----------------|----------|
 | `minimal` | Span hierarchy + timing only, no attributes | Performance profiling |
-| `standard` | All spans with attributes, content truncated to `max_content_length` | Default, general debugging |
-| `verbose` | Everything including full message content | Deep investigation (large files, may contain sensitive data) |
+| `standard` | All spans with attributes, content truncated to `max_content_length` | Production with size limits |
+| `verbose` | Everything including full message content | Default, full visibility during development |
 
 ## Best Practices
 
@@ -199,11 +199,11 @@ This makes trace files easy to find and correlate.
 
 ### 2. Choose the Right Detail Level
 
-Use `minimal` for production performance monitoring. Use `standard` (default) during development. Use `verbose` only when investigating specific issues — it captures full prompt/response content.
+Use `verbose` (default) during development for full visibility. Use `minimal` in production for low overhead. Use `standard` with `max_content_length` when you want attributes but need to control file size.
 
 ### 3. Be Mindful of Content Sensitivity
 
-With `include_message_content=True` or `detail_level="verbose"`, trace files may contain full LLM prompts and responses. Keep trace output directories secure and excluded from version control.
+By default, trace files contain full LLM prompts and responses. Keep trace output directories secure and excluded from version control. Set `include_message_content=False` or use `detail_level="minimal"` to exclude content.
 
 ## Limitations
 
