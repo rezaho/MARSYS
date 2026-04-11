@@ -2291,6 +2291,20 @@ class DynamicBranchSpawner:
             parent_branch.metadata['child_group_id'] = group.group_id
             logger.info(f"Stored {len(aggregated_data)} aggregated results for parent branch '{parent_branch_id}'")
 
+            # Emit convergence tracing event
+            if self.event_bus:
+                from ..tracing.events import ConvergenceEvent
+                context = parent_branch.metadata.get("context", {}) if parent_branch.metadata else {}
+                await self.event_bus.emit(ConvergenceEvent(
+                    session_id=context.get("session_id", "unknown"),
+                    parent_branch_id=parent_branch_id,
+                    child_branch_ids=list(group.completed_branches),
+                    convergence_point=str(group.shared_convergence_points) if group.shared_convergence_points else "",
+                    group_id=group.group_id,
+                    successful_count=group.get_successful_count(),
+                    total_count=group.total_branches,
+                ))
+
             # NOTE: waiting_branches cleanup moved to check_synchronization_points
             # This ensures parent resumption/completion decision happens in one place
         
