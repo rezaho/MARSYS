@@ -1761,6 +1761,17 @@ class DynamicBranchSpawner:
             # Store branch info
             self.branch_info[child_branch.id] = child_branch
             all_branches.append(child_branch)
+
+            # Emit tracing event for this branch
+            if self.event_bus:
+                await self.event_bus.emit(BranchCreatedEvent(
+                    session_id=context.get("session_id", "unknown"),
+                    branch_id=child_branch.id,
+                    branch_name=child_branch.name,
+                    source_agent=agent_name,
+                    target_agents=[target_agent],
+                    trigger_type="parallel",
+                ))
             branch_to_invocation[child_branch.id] = {
                 'target_agent': target_agent,
                 'request': agent_request,

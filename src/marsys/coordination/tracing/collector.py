@@ -231,17 +231,20 @@ class TraceCollector:
                     "finish_reason": event.finish_reason,
                 })
 
+            # Generation span covers the actual API call duration:
+            # starts at (emission_time - response_time), ends at emission_time.
+            # Clamped to not precede the parent step's start.
+            response_time_s = (event.response_time_ms / 1000) if event.response_time_ms else 0
+            gen_start = max(event.timestamp - response_time_s, step_span.start_time)
             gen_span = create_span(
                 trace_id=trace.trace_id,
                 name=f"Generation: {event.model_name}",
                 kind="generation",
                 parent_span_id=step_span.span_id,
                 attributes=attributes,
-                start_time=event.timestamp,
+                start_time=gen_start,
             )
-            # Generation is an instant span (no separate end event)
-            response_time_s = (event.response_time_ms / 1000) if event.response_time_ms else 0
-            gen_span.close(end_time=event.timestamp + response_time_s)
+            gen_span.close(end_time=event.timestamp)
 
             step_span.children.append(gen_span)
 
