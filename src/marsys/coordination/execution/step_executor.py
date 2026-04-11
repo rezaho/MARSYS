@@ -491,23 +491,7 @@ class StepExecutor:
                         step_result.saved_context = saved_context
                         logger.debug(f"Extracted saved context from {agent_name}: {list(saved_context.keys())}")
 
-                # Emit completion event
-                if self.event_bus:
-                    from ..status.events import AgentCompleteEvent
-
-                    await self.event_bus.emit(AgentCompleteEvent(
-                        session_id=context.get("session_id", "unknown"),
-                        branch_id=context.get("branch_id"),
-                        agent_name=agent_name,
-                        success=step_result.success,
-                        duration=time.time() - start_time,
-                        next_action=None,  # Action type not yet determined - set by BranchExecutor after validation
-                        error=step_result.error,
-                        step_number=step_number,
-                        step_span_id=step_span_id,
-                    ))
-
-                # Emit generation event with model metadata (for tracing)
+                # Emit generation event BEFORE completion (collector closes span on complete)
                 if self.event_bus and step_result.response:
                     response_meta = getattr(step_result.response, 'response_metadata', None)
                     if response_meta:
@@ -530,6 +514,22 @@ class StepExecutor:
                             has_thinking=response_meta.get("has_thinking", False),
                             has_tool_calls=bool(step_result.tool_calls),
                         ))
+
+                # Emit completion event
+                if self.event_bus:
+                    from ..status.events import AgentCompleteEvent
+
+                    await self.event_bus.emit(AgentCompleteEvent(
+                        session_id=context.get("session_id", "unknown"),
+                        branch_id=context.get("branch_id"),
+                        agent_name=agent_name,
+                        success=step_result.success,
+                        duration=time.time() - start_time,
+                        next_action=None,  # Action type not yet determined - set by BranchExecutor after validation
+                        error=step_result.error,
+                        step_number=step_number,
+                        step_span_id=step_span_id,
+                    ))
 
                 return step_result
 
@@ -988,7 +988,9 @@ Available options:
                 context={
                     "session_id": context.session_id,
                     "branch_id": context.branch_id,
-                    "agent_name": context.agent_name
+                    "agent_name": context.agent_name,
+                    "step_number": context.step_number,
+                    "step_span_id": context.metadata.get("step_span_id"),
                 }
             )
             
