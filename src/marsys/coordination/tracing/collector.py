@@ -27,6 +27,13 @@ class TraceCollector:
     Collects events from EventBus and builds structured execution traces.
 
     Thread-safe via asyncio.Lock for concurrent branch event handling.
+
+    Lookup architecture:
+      - branch_spans/step_spans map external IDs directly to Span objects.
+        These persist beyond span closure so downstream events (validation,
+        convergence) can still attach data to closed spans.
+      - open_spans tracks spans that haven't been closed yet, used only
+        during finalization to detect orphaned spans.
     """
 
     def __init__(
@@ -42,9 +49,9 @@ class TraceCollector:
         # Trace state (protected by _lock)
         self._lock = asyncio.Lock()
         self.active_traces: Dict[str, TraceTree] = {}  # session_id -> TraceTree
-        self.open_spans: Dict[str, Span] = {}  # span_id -> Span
-        self.branch_span_map: Dict[str, str] = {}  # branch_id -> span_id
-        self.step_span_map: Dict[str, str] = {}  # step_span_id -> span_id
+        self.open_spans: Dict[str, Span] = {}  # span_id -> Span (unclosed only, for finalization)
+        self.branch_spans: Dict[str, Span] = {}  # branch_id -> Span (survives closure)
+        self.step_spans: Dict[str, Span] = {}  # step_span_id -> Span (survives closure)
 
         self._subscribe_to_events()
 
@@ -119,7 +126,7 @@ class TraceCollector:
                 kind="branch",
                 parent_span_id=parent_span.span_id,
                 attributes={
-                    "branch_id": event.branch_id,
+                    "branch_id": getattr(event, 'branch_id', None),
                     "branch_name": event.branch_name,
                     "source_agent": event.source_agent,
                     "target_agents": event.target_agents,
@@ -130,18 +137,16 @@ class TraceCollector:
 
             parent_span.children.append(branch_span)
             self.open_spans[branch_span.span_id] = branch_span
-            self.branch_span_map[event.branch_id] = branch_span.span_id
+            branch_id = getattr(event, 'branch_id', None)
+            if branch_id:
+                self.branch_spans[branch_id] = branch_span
             logger.debug(f"Branch span created: {event.branch_name}")
 
     async def _handle_branch_event(self, event: Any) -> None:
         """Update branch span on status changes."""
         async with self._lock:
             branch_id = event.branch_id
-            if not branch_id or branch_id not in self.branch_span_map:
-                return
-
-            span_id = self.branch_span_map[branch_id]
-            span = self.open_spans.get(span_id)
+            span = self.branch_spans.get(branch_id) if branch_id else None
             if not span:
                 return
 
@@ -154,16 +159,15 @@ class TraceCollector:
         """Close branch span."""
         async with self._lock:
             branch_id = event.branch_id
-            if branch_id not in self.branch_span_map:
+            span = self.branch_spans.get(branch_id)
+            if not span:
                 return
 
-            span_id = self.branch_span_map[branch_id]
-            span = self.open_spans.pop(span_id, None)
-            if span:
-                status = "ok" if event.success else "error"
-                span.close(end_time=event.timestamp, status=status)
-                span.attributes["total_steps"] = event.total_steps
-                span.attributes["success"] = event.success
+            status = "ok" if event.success else "error"
+            span.close(end_time=event.timestamp, status=status)
+            span.attributes["total_steps"] = event.total_steps
+            span.attributes["success"] = event.success
+            self.open_spans.pop(span.span_id, None)
 
     async def _handle_agent_start(self, event: Any) -> None:
         """Create step span as child of branch span."""
@@ -178,20 +182,15 @@ class TraceCollector:
             if not step_span_id:
                 return
 
-            # Find parent branch span
-            parent_span_id = self.branch_span_map.get(branch_id)
-            parent_span = self.open_spans.get(parent_span_id) if parent_span_id else None
-            if not parent_span:
-                # Fallback to root span if branch not found
-                parent_span = trace.root_span
-                parent_span_id = parent_span.span_id
+            # Find parent: branch span if available, else root
+            parent_span = self.branch_spans.get(branch_id) or trace.root_span
 
             step_number = getattr(event, 'step_number', None)
             step_span = create_span(
                 trace_id=trace.trace_id,
                 name=f"Step {step_number}: {event.agent_name}",
                 kind="step",
-                parent_span_id=parent_span_id,
+                parent_span_id=parent_span.span_id,
                 attributes={
                     "agent_name": event.agent_name,
                     "step_number": step_number,
@@ -202,7 +201,7 @@ class TraceCollector:
 
             parent_span.children.append(step_span)
             self.open_spans[step_span.span_id] = step_span
-            self.step_span_map[step_span_id] = step_span.span_id
+            self.step_spans[step_span_id] = step_span
 
     async def _handle_generation(self, event: Any) -> None:
         """Create generation child span on the step span."""
@@ -212,8 +211,7 @@ class TraceCollector:
             if not trace:
                 return
 
-            step_span_id = self.step_span_map.get(event.step_span_id)
-            step_span = self.open_spans.get(step_span_id) if step_span_id else None
+            step_span = self.step_spans.get(event.step_span_id)
             if not step_span:
                 return
 
@@ -255,8 +253,7 @@ class TraceCollector:
             if not trace:
                 return
 
-            step_span_id = self.step_span_map.get(getattr(event, 'step_span_id', ''))
-            step_span = self.open_spans.get(step_span_id) if step_span_id else None
+            step_span = self.step_spans.get(getattr(event, 'step_span_id', ''))
             if not step_span:
                 return
 
@@ -292,8 +289,7 @@ class TraceCollector:
     async def _handle_validation_decision(self, event: Any) -> None:
         """Add validation decision as event on the step span."""
         async with self._lock:
-            step_span_id = self.step_span_map.get(event.step_span_id)
-            step_span = self.open_spans.get(step_span_id) if step_span_id else None
+            step_span = self.step_spans.get(event.step_span_id)
             if not step_span:
                 return
 
@@ -318,28 +314,31 @@ class TraceCollector:
             if not step_span_id:
                 return
 
-            span_id = self.step_span_map.pop(step_span_id, None)
-            span = self.open_spans.pop(span_id, None) if span_id else None
-            if span:
-                status = "ok" if event.success else "error"
-                span.close(end_time=event.timestamp, status=status)
-                span.attributes["success"] = event.success
-                span.attributes["duration"] = event.duration
-                if event.error:
-                    span.attributes["error"] = event.error
+            span = self.step_spans.get(step_span_id)
+            if not span:
+                return
+
+            status = "ok" if event.success else "error"
+            span.close(end_time=event.timestamp, status=status)
+            span.attributes["success"] = event.success
+            span.attributes["duration"] = event.duration
+            if event.error:
+                span.attributes["error"] = event.error
+            # Remove from open_spans (timing done) but keep in step_spans
+            # so ValidationDecisionEvent can still attach data.
+            self.open_spans.pop(span.span_id, None)
 
     async def _handle_convergence(self, event: Any) -> None:
         """Add convergence links between parent and child branch spans."""
         async with self._lock:
-            parent_span_id = self.branch_span_map.get(event.parent_branch_id)
-            parent_span = self.open_spans.get(parent_span_id) if parent_span_id else None
+            parent_span = self.branch_spans.get(event.parent_branch_id)
             if not parent_span:
                 return
 
             for child_branch_id in event.child_branch_ids:
-                child_span_id = self.branch_span_map.get(child_branch_id)
-                if child_span_id:
-                    parent_span.add_link(child_span_id, "convergence", {
+                child_span = self.branch_spans.get(child_branch_id)
+                if child_span:
+                    parent_span.add_link(child_span.span_id, "convergence", {
                         "convergence_point": event.convergence_point,
                         "group_id": event.group_id,
                     })
@@ -398,14 +397,15 @@ class TraceCollector:
             if trace.root_span.end_time is None:
                 trace.root_span.close()
 
-            # Clean up maps for this trace
-            self.branch_span_map = {
-                k: v for k, v in self.branch_span_map.items()
-                if v in self.open_spans
+            # Clean up lookup maps for this trace
+            trace_id = trace.trace_id
+            self.branch_spans = {
+                k: v for k, v in self.branch_spans.items()
+                if v.trace_id != trace_id
             }
-            self.step_span_map = {
-                k: v for k, v in self.step_span_map.items()
-                if v in self.open_spans
+            self.step_spans = {
+                k: v for k, v in self.step_spans.items()
+                if v.trace_id != trace_id
             }
 
         # Write trace (outside lock)
