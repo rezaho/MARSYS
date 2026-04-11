@@ -49,7 +49,9 @@ A single unit of work in the trace. Spans form a tree via `parent_span_id`:
 from marsys.coordination.tracing.types import Span
 ```
 
-Span kinds: `execution`, `branch`, `step`, `generation`, `tool`, `validation`.
+Span kinds: `execution`, `branch`, `step`, `generation`, `tool`.
+
+Validation decisions are captured as events on step spans (not separate spans). Convergence is captured as links and events on both the parent branch span and the convergence step span.
 
 ### TraceTree
 
@@ -113,7 +115,7 @@ The JSON output is a tree of spans. Here is an abbreviated example:
   "session_id": "session-001",
   "metadata": {
     "task_summary": "Research quantum computing",
-    "agent_names": ["Coordinator", "Researcher"]
+    "agent_names": ["Coordinator", "Researcher", "FactChecker"]
   },
   "root_span": {
     "name": "Orchestra.run",
@@ -124,38 +126,42 @@ The JSON output is a tree of spans. Here is an abbreviated example:
       {
         "name": "Branch: main",
         "kind": "branch",
+        "links": [
+          {"linked_span_id": "...", "relationship": "convergence"}
+        ],
         "children": [
           {
             "name": "Step 0: Coordinator",
             "kind": "step",
-            "attributes": {
-              "agent_name": "Coordinator",
-              "action_type": "parallel_invoke"
-            },
-            "events": [
-              {
-                "name": "validation_decision",
-                "attributes": {
-                  "is_valid": true,
-                  "action_type": "parallel_invoke",
-                  "next_agents": ["Researcher1", "Researcher2"]
-                }
-              }
-            ],
+            "attributes": { "action_type": "parallel_invoke" },
+            "events": [{"name": "validation_decision", "attributes": {"next_agents": ["Researcher", "FactChecker"]}}],
             "children": [
-              {
-                "name": "Generation: claude-sonnet-4-20250514",
-                "kind": "generation",
-                "duration_ms": 1200.5,
-                "attributes": {
-                  "prompt_tokens": 150,
-                  "completion_tokens": 80,
-                  "provider": "anthropic"
-                }
-              }
+              {"name": "Generation: claude-sonnet-4-20250514", "kind": "generation", "duration_ms": 1200.5, "attributes": {"prompt_tokens": 150, "completion_tokens": 80}}
             ]
+          },
+          {
+            "name": "Step 1: Coordinator",
+            "kind": "step",
+            "attributes": { "action_type": "final_response" },
+            "links": [
+              {"linked_span_id": "researcher-branch-id", "relationship": "convergence"},
+              {"linked_span_id": "factchecker-branch-id", "relationship": "convergence"}
+            ],
+            "events": [{"name": "convergence", "attributes": {"successful_count": 2, "total_count": 2}}]
           }
         ]
+      },
+      {
+        "name": "Branch: Researcher",
+        "kind": "branch",
+        "attributes": { "trigger_type": "parallel" },
+        "children": ["... step spans with generation/tool children ..."]
+      },
+      {
+        "name": "Branch: FactChecker",
+        "kind": "branch",
+        "attributes": { "trigger_type": "parallel" },
+        "children": ["... step spans with generation/tool children ..."]
       }
     ]
   }
@@ -168,15 +174,21 @@ Each execution produces a tree with this structure:
 
 ```
 Execution Span (one per Orchestra.run)
-├── Branch Span (one per branch)
-│   ├── Step Span (one per agent step)
+├── Branch Span (initial branch, e.g. "main")
+│   ├── Step Span (agent step that triggers parallel_invoke)
 │   │   ├── Generation Span (LLM call details)
 │   │   ├── Tool Span (per tool invocation)
-│   │   └── Validation Event (routing decision)
-│   └── Step Span ...
-├── Branch Span (parallel child)
+│   │   └── Validation Event (routing decision — stored as event, not span)
+│   ├── Step Span (convergence step — receives aggregated results)
+│   │   ├── links: [{child_branch_1}, {child_branch_2}]  ← convergence
+│   │   ├── events: [convergence, validation_decision]
+│   │   └── Generation Span ...
 │   └── ...
-└── Convergence Link (child branches → parent)
+├── Branch Span (parallel child 1)
+│   └── Step Span → Generation → Tool → ...
+├── Branch Span (parallel child 2)
+│   └── Step Span → Generation → Tool → ...
+└── (Convergence links also on parent branch span)
 ```
 
 ## Detail Levels

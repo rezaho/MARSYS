@@ -99,7 +99,7 @@ from marsys.coordination.tracing.types import Span
 | `parent_span_id` | `Optional[str]` | Parent span for tree nesting |
 | `trace_id` | `str` | Session-level trace identifier |
 | `name` | `str` | Human-readable name (e.g., `"Step 3: Researcher"`) |
-| `kind` | `str` | `execution`, `branch`, `step`, `generation`, `tool`, or `validation` |
+| `kind` | `str` | `execution`, `branch`, `step`, `generation`, or `tool` |
 | `start_time` | `float` | Epoch seconds |
 | `end_time` | `Optional[float]` | Epoch seconds (set on close) |
 | `duration_ms` | `Optional[float]` | Computed on close |
@@ -240,7 +240,7 @@ Emitted after response validation determines the next action.
 
 ### ConvergenceEvent
 
-Emitted when parallel branches converge.
+Emitted when parallel branches converge. The collector attaches convergence links and events to both the parent branch span and the next step span on that branch (the convergence step that receives aggregated results).
 
 | Field | Type | Description |
 |-------|------|-------------|
