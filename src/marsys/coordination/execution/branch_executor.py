@@ -1079,8 +1079,13 @@ class BranchExecutor:
 
             elif result.success:
                 # Path 4: Content-only response (no tool calls at all)
-                # Agent is thinking/reasoning out loud - continue to next step
-                logger.debug(f"Agent '{agent_name}' produced content-only response - continuing loop")
+                # Agent is thinking/reasoning out loud - continue with same agent
+                result.action_type = "continue"
+                result.next_agent = agent_name
+                if not result.metadata:
+                    result.metadata = {}
+                result.metadata['content_continuation'] = True
+                logger.debug(f"Agent '{agent_name}' produced content-only response - continuing with same agent")
             
             # Apply FLOW_CONTROL rules if we have a rules engine
             if self.rules_engine and result.success:
@@ -1523,8 +1528,9 @@ class BranchExecutor:
                     if (metadata.get('tool_continuation') or
                         metadata.get('invalid_response') or
                         metadata.get('has_tool_calls') or
-                        metadata.get('has_tool_results')):
-                        logger.debug(f"Allowing self-continuation for '{current_agent}' (tools/retry)")
+                        metadata.get('has_tool_results') or
+                        metadata.get('content_continuation')):
+                        logger.debug(f"Allowing self-continuation for '{current_agent}' (tools/retry/content)")
                         return current_agent  # Return pool name
 
                 # Otherwise, check if self-loops are allowed in topology

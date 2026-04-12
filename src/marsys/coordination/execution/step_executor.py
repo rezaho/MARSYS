@@ -475,11 +475,12 @@ class StepExecutor:
                                     if hasattr(raw_response, 'tool_calls') and raw_response.tool_calls:
                                         from ..formats.coordination_tools import is_coordination_tool
                                         for tc in raw_response.tool_calls:
-                                            tc_name = (
-                                                tc.get("function", {}).get("name", "") if isinstance(tc, dict)
-                                                else getattr(getattr(tc, "function", None), "name", getattr(tc, "name", ""))
-                                            )
-                                            tc_id = tc.get("id", "") if isinstance(tc, dict) else getattr(tc, "id", "")
+                                            if isinstance(tc, dict):
+                                                tc_name = tc.get("function", {}).get("name", "")
+                                                tc_id = tc.get("id", "")
+                                            else:
+                                                tc_name = getattr(tc, 'name', "")
+                                                tc_id = getattr(tc, 'id', "")
                                             if is_coordination_tool(tc_name):
                                                 coord_call_id = tc_id
                                                 break
@@ -993,13 +994,19 @@ Available options:
         coordination_call = None  # Only the first coordination call is used
 
         for tc in all_tool_calls:
-            func = tc.get("function", {}) if isinstance(tc, dict) else {}
-            tool_name = func.get("name", "")
+            # Handle both dict format and ToolCallMsg objects
+            if isinstance(tc, dict):
+                tool_name = tc.get("function", {}).get("name", "")
+            else:
+                # ToolCallMsg has .name directly (not nested under .function)
+                tool_name = getattr(tc, 'name', "")
 
             if is_coordination_tool(tool_name):
                 if coordination_call is None:
                     coordination_call = tc
-                    action_name, action_data = parse_coordination_call(tc)
+                    # Convert ToolCallMsg to dict for parse_coordination_call
+                    tc_dict = tc.to_dict() if hasattr(tc, 'to_dict') else tc
+                    action_name, action_data = parse_coordination_call(tc_dict)
                     result.coordination_action = action_name
                     result.coordination_data = action_data
                     logger.debug(

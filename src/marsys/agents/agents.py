@@ -1838,7 +1838,7 @@ class BaseAgent(ABC):
             and any(
                 is_coordination_tool(
                     tc.get("function", {}).get("name", "") if isinstance(tc, dict)
-                    else getattr(getattr(tc, "function", None), "name", getattr(tc, "name", ""))
+                    else getattr(tc, "name", "")
                 )
                 for tc in raw_response.tool_calls
             )
@@ -1859,7 +1859,7 @@ class BaseAgent(ABC):
             for tc in raw_response.tool_calls:
                 tc_name = (
                     tc.get("function", {}).get("name", "") if isinstance(tc, dict)
-                    else getattr(getattr(tc, "function", None), "name", getattr(tc, "name", ""))
+                    else getattr(tc, "name", "")
                 )
                 if is_coordination_tool(tc_name):
                     action_type = tc_name
