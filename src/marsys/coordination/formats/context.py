@@ -50,6 +50,7 @@ class CoordinationContext:
 
     next_agents: List[str] = field(default_factory=list)
     can_return_final_response: bool = False
+    is_conversation_branch: bool = False
 
 
 @dataclass

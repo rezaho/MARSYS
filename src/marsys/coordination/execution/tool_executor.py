@@ -151,6 +151,21 @@ class RealToolExecutor:
                     tool_name = getattr(tool_call, 'name', "unknown")
                     tool_args_str = getattr(tool_call, 'arguments', "{}")
                 
+                # Defensive guard: coordination tools should have been filtered by StepExecutor
+                from ..formats.coordination_tools import is_coordination_tool
+                if is_coordination_tool(tool_name):
+                    logger.warning(
+                        f"Coordination tool '{tool_name}' reached ToolExecutor - "
+                        f"should have been filtered by StepExecutor. Skipping execution."
+                    )
+                    results.append({
+                        "tool_call_id": tool_id,
+                        "tool_name": tool_name,
+                        "result": f"[System] Coordination tool '{tool_name}' processed by framework.",
+                        "_origin": tool_call.get('_origin', 'response') if isinstance(tool_call, dict) else 'response'
+                    })
+                    continue
+
                 # Parse arguments
                 try:
                     if isinstance(tool_args_str, str):
@@ -289,49 +304,20 @@ class RealToolExecutor:
                     # Step executor will determine message pattern based on result type
                     result = raw_result
                 else:
-                    # Check if the "tool" name is actually a peer agent name
-                    next_agents = set()
-                    if hasattr(agent, '_topology_graph_ref') and agent._topology_graph_ref:
-                        next_agents = agent._topology_graph_ref.get_next_agents(agent.name)
+                    # Standard tool-not-found error with fuzzy matching
+                    all_tools = list(self.tool_registry.keys()) + list(agent_tools.keys())
+                    similar_tools = find_similar_tool_names(tool_name, all_tools)
 
-                    if tool_name in next_agents:
-                        full_error = (
-                            f"'{tool_name}' is an agent, not a tool. "
-                            f"You cannot invoke agents via tool calls.\n\n"
-                            f"To invoke the '{tool_name}' agent, respond with JSON in your message content:\n"
-                            f"```json\n"
-                            f'{{\n'
-                            f'  "thought": "your reasoning",\n'
-                            f'  "next_action": "invoke_agent",\n'
-                            f'  "action_input": [\n'
-                            f'    {{\n'
-                            f'      "agent_name": "{tool_name}",\n'
-                            f'      "request": "your task description"\n'
-                            f'    }}\n'
-                            f'  ]\n'
-                            f'}}\n'
-                            f"```\n"
-                            f"Do NOT use tool_calls for agent invocation."
-                        )
-                        logger.warning(
-                            f"Agent '{agent.name}' tried to invoke peer '{tool_name}' "
-                            f"via tool_calls instead of JSON invoke_agent"
-                        )
+                    if similar_tools:
+                        error_msg = f"Tool '{tool_name}' not found. Did you mean: {similar_tools[0]}?"
                     else:
-                        # Standard tool-not-found error with fuzzy matching
-                        all_tools = list(self.tool_registry.keys()) + list(agent_tools.keys())
-                        similar_tools = find_similar_tool_names(tool_name, all_tools)
+                        error_msg = f"Tool '{tool_name}' not found."
+                    suggestion = f"Available tools: {', '.join(all_tools[:10])}"
+                    if len(all_tools) > 10:
+                        suggestion += f"... and {len(all_tools) - 10} more"
 
-                        if similar_tools:
-                            error_msg = f"Tool '{tool_name}' not found. Did you mean: {similar_tools[0]}?"
-                        else:
-                            error_msg = f"Tool '{tool_name}' not found."
-                        suggestion = f"Available tools: {', '.join(all_tools[:10])}"
-                        if len(all_tools) > 10:
-                            suggestion += f"... and {len(all_tools) - 10} more"
-
-                        full_error = f"{error_msg} {suggestion}"
-                        logger.error(full_error)
+                    full_error = f"{error_msg} {suggestion}"
+                    logger.error(full_error)
 
                     # Return error as string (will use single-message pattern)
                     result = full_error

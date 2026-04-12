@@ -146,24 +146,9 @@ class BaseResponseFormat(ABC):
         if planning_instructions:
             parts.append(planning_instructions)
 
-        # 8. Response format guidelines (format-specific)
-        available_actions = self._determine_available_actions(context)
-        if not available_actions:
-            raise ValueError(
-                f"Agent '{context.agent.name}' has no available actions. "
-                "Check topology configuration."
-            )
-
-        action_descriptions = self.build_action_descriptions(available_actions, context)
-        format_instructions = self.build_format_instructions(
-            available_actions, action_descriptions
-        )
-        parts.append(format_instructions)
-
-        # 9. Examples (format-specific)
-        examples = self.get_examples(available_actions, context)
-        if examples:
-            parts.append(examples)
+        # Coordination tools (invoke_agent, return_final_response, etc.) are included
+        # directly in the agent's tool list via CoordinationToolSchemaBuilder.
+        # No additional format instructions needed - the LLM uses native tool calling.
 
         return "\n\n".join(filter(None, parts))
 
@@ -212,9 +197,10 @@ class BaseResponseFormat(ABC):
         return actions
 
     def _strip_schema_hints(self, text: str) -> str:
-        """Remove lines that re-explain the output format."""
+        """Remove lines that re-explain the output format from agent instructions."""
+        # With coordination tools, fewer patterns to strip since routing is via tool calls
         pattern = re.compile(
-            r"(next_action|action_input|tool_calls|JSON\s*object|Response Structure)",
+            r"(next_action|action_input|Response Structure)",
             re.IGNORECASE,
         )
         lines = [ln for ln in text.splitlines() if not pattern.search(ln)]
@@ -333,99 +319,44 @@ class BaseResponseFormat(ABC):
 
     def _build_peer_agent_instructions(self, context: SystemPromptContext) -> str:
         """
-        Build peer agent invocation instructions (format-agnostic parts).
+        Build peer agent invocation instructions.
 
-        Format-specific examples are provided by get_parallel_invocation_examples().
+        With coordination tools, agents invoke peers via the `invoke_agent` tool.
+        This section provides the decision principle and lists available agents.
         """
         next_agents = context.coordination.next_agents
         if not next_agents:
             return ""
 
-        # Import here to avoid circular dependency
         from ...agents.registry import AgentRegistry
 
-        lines = ["\n\n--- AVAILABLE PEER AGENTS ---"]
+        lines = ["\n\n--- PEER AGENT DELEGATION ---"]
         lines.append(
-            "You can invoke other agents to assist you. If you choose this path, "
-            "your response should indicate the agent invocation action."
+            "Use the `invoke_agent` tool to delegate tasks to peer agents. "
+            "Include multiple invocations in a single call for parallel execution."
         )
 
         lines.append("\n**CRITICAL DECISION PRINCIPLE:**")
         lines.append(
-            "Before invoking any agent(s), ask yourself: "
-            "'Do I need the response from these agent(s) to complete my task or make my next decision?'"
+            "Before invoking agent(s), ask: 'Do I need one's response before invoking another?'"
         )
-        lines.append(
-            "- If YES → Invoke those agents first, wait for their responses, then proceed with your next action"
-        )
-        lines.append(
-            "- If NO → You may invoke them alongside other agents or pass control directly"
-        )
+        lines.append("- If YES → Invoke them sequentially (separate tool calls)")
+        lines.append("- If NO → Invoke them together (multiple entries in one tool call)")
 
-        lines.append("\n**EXECUTION SEMANTICS:**")
-        lines.append(
-            "- **Multiple agents in array**: They execute in parallel. Depending on the system topology, "
-            "control may return to you with their responses OR flow directly to another designated agent."
-        )
-        lines.append(
-            "- **Single agent in array**: Standard invocation. Depending on the system topology, "
-            "you may receive its response OR it may continue the workflow to another agent."
-        )
-        lines.append(
-            "- **Key Rule**: NEVER invoke agents together if you need one's response before invoking another. "
-            "Invoke them in separate steps based on your information dependencies."
-        )
-
-        lines.append("\n**REQUEST REQUIREMENTS:**")
-        lines.append("Each invocation object must contain:")
-        lines.append(
-            "- `agent_name`: (String) The name of the agent to invoke from the list below (must be an exact match)."
-        )
-        lines.append(
-            "- `request`: (String or Object) A clear description of what you need the agent to do. This should include:"
-        )
-        lines.append("  • **Task description**: What specific task or action the agent should perform")
-        lines.append("  • **Necessary context**: Any information the agent needs to complete the task")
-        lines.append(
-            "  • **Expected response** (only if you need results back): If the workflow will return control to you "
-            "and you need the agent's results to continue your work, specify what response format or data you expect. "
-            "If the agent is simply the next step in a chain and won't return to you, you don't need to specify this."
-        )
-
-        # Add format-specific parallel invocation examples (implemented by subclasses)
-        parallel_examples = self.get_parallel_invocation_examples(context)
-        if parallel_examples:
-            lines.append(parallel_examples)
-
-        lines.append("\nYou are allowed to invoke the following agents:")
+        lines.append("\nAvailable peer agents:")
 
         for peer_name in next_agents:
-            # Get instance count information
             try:
                 total_instances = AgentRegistry.get_instance_count(peer_name)
                 available_instances = AgentRegistry.get_available_count(peer_name)
-
-                # Format agent name with instance info
                 if total_instances > 1:
-                    # It's a pool - show instance availability
-                    instance_info = f" (Pool: {available_instances}/{total_instances} instances available)"
-                    lines.append(f"- `{peer_name}`{instance_info}")
-                    if available_instances < total_instances:
-                        lines.append(
-                            f"  Note: Some instances are currently in use. "
-                            f"You can invoke up to {available_instances} in parallel."
-                        )
+                    lines.append(f"- `{peer_name}` (Pool: {available_instances}/{total_instances} available)")
                 else:
-                    # Single instance agent
-                    lines.append(f"- `{peer_name}` (Single instance)")
+                    lines.append(f"- `{peer_name}`")
             except Exception:
-                # If registry lookup fails, just list the agent name
                 lines.append(f"- `{peer_name}`")
 
-            # Add simple format note
-            lines.append("  Expected input format: Any string or object")
-
-        lines.append("--- END AVAILABLE PEER AGENTS ---")
+        lines.append("--- END PEER AGENT DELEGATION ---")
         return "\n".join(lines)
 
     def _build_context_instructions(self, agent_ctx: AgentContext) -> str:

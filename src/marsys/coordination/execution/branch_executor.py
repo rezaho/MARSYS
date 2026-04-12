@@ -863,29 +863,8 @@ class BranchExecutor:
                     }
                 )
 
-                # VALIDATION: Ensure StepExecutor didn't set routing fields inappropriately
-                # StepExecutor should NEVER set these fields
-                if result.next_agent is not None:
-                    logger.warning(f"StepExecutor set next_agent='{result.next_agent}' - this should only be set by BranchExecutor - clearing it")
-                    result.next_agent = None
-                if result.action_type is not None:
-                    logger.warning(f"StepExecutor set action_type='{result.action_type}' - this should only be set by BranchExecutor - clearing it")
-                    result.action_type = None
-                if result.parsed_response is not None:
-                    logger.warning("StepExecutor set parsed_response - this should only be set by BranchExecutor - clearing it")
-                    result.parsed_response = None
-                if result.should_end_branch:
-                    logger.warning("StepExecutor set should_end_branch=True - this should only be set by BranchExecutor - clearing it")
-                    result.should_end_branch = False
-                if result.waiting_for_children:
-                    logger.warning("StepExecutor set waiting_for_children=True - this should only be set by BranchExecutor - clearing it")
-                    result.waiting_for_children = False
-                if result.child_branch_ids:
-                    logger.warning("StepExecutor set child_branch_ids - this should only be set by BranchExecutor - clearing it")
-                    result.child_branch_ids = []
-                if result.convergence_target is not None:
-                    logger.warning("StepExecutor set convergence_target - this should only be set by BranchExecutor - clearing it")
-                    result.convergence_target = None
+                # StepExecutor sets coordination_action/coordination_data (extraction data).
+                # BranchExecutor reads those and sets routing fields below.
             else:
                 # Direct execution (fallback)
                 response = await agent.run_step(
@@ -924,54 +903,34 @@ class BranchExecutor:
                     },
                 )
 
-            # Handle tool continuation specially - skip validation but set required attributes
-            if result.tool_results and result.metadata and result.metadata.get('tool_continuation'):
-                # Tool continuation - set routing attributes for agent to continue processing tool results
-                result.action_type = "invoke_agent"  # Self-invocation to continue after tools
-                result.next_agent = agent_name  # Continue with same agent
-                # Don't set parsed_response - it's not needed for tool continuation flow
-                logger.debug(f"Tool continuation for {agent_name} - skipping validation, agent will process tool results")
+            # --- Routing Decision Logic ---
+            # Priority order:
+            # 1. Error messages (role="error") → process through ValidationProcessor error path
+            # 2. Tool continuation (real tools only, no coordination call) → self-invocation
+            # 3. Coordination action (invoke_agent, return_final_response, etc.) → validate and route
+            # 4. Content-only response (no tool calls at all) → agent is thinking, continue loop
 
-                # Emit tracing event for tool continuation decision
-                if self.event_bus:
-                    from ..tracing.events import ValidationDecisionEvent
-                    await self.event_bus.emit(ValidationDecisionEvent(
-                        session_id=context.session_id,
-                        branch_id=context.branch_id,
-                        agent_name=agent_name,
-                        step_number=branch.state.current_step,
-                        step_span_id=context.metadata.get("step_span_id", ""),
-                        is_valid=True,
-                        action_type="invoke_agent",
-                        next_agents=[agent_name],
-                        is_tool_continuation=True,
-                    ))
-            elif self.response_validator and result.success:
-                # Normal validation path
-                # Create a mock ExecutionState for validation
+            from ...agents.memory import Message as _Message
+
+            is_error_message = (
+                isinstance(result.response, _Message) and result.response.role == "error"
+            )
+
+            if is_error_message and self.response_validator and result.success:
+                # Path 1: Error message from API failure → use ValidationProcessor error handling
                 from ..branches.types import ExecutionState
                 exec_state = ExecutionState(
                     session_id=context.session_id,
                     current_step=branch.state.current_step,
                     status="running"
                 )
-                
-                # Pass Message object directly to validator (result.response is now a Message)
                 validation = await self.response_validator.process_response(
-                    raw_response=result.response,
-                    agent=agent,
-                    branch=branch,
-                    exec_state=exec_state
+                    raw_response=result.response, agent=agent, branch=branch, exec_state=exec_state
                 )
 
-                # Emit tracing event for validation decision
                 if self.event_bus:
                     from ..tracing.events import ValidationDecisionEvent
-                    next_agents = []
-                    if validation.next_agents:
-                        next_agents = list(validation.next_agents)
-                    elif validation.invocations:
-                        next_agents = [inv.agent_name for inv in validation.invocations if hasattr(inv, 'agent_name')]
+                    next_agents = list(validation.next_agents) if validation.next_agents else []
                     await self.event_bus.emit(ValidationDecisionEvent(
                         session_id=context.session_id,
                         branch_id=context.branch_id,
@@ -989,50 +948,35 @@ class BranchExecutor:
                     result.action_type = validation.action_type.value if validation.action_type else "continue"
                     result.parsed_response = validation.parsed_response
 
-                    # Clear error context on successful validation
-                    if agent_name in branch.agent_retry_info:
-                        logger.debug(f"Clearing error context for {agent_name} after successful validation")
-                        del branch.agent_retry_info[agent_name]
-
-                    # Handle error recovery routing - transfer error details to metadata
+                    # Handle error recovery/terminal error → route to User
                     if validation.action_type in [ActionType.ERROR_RECOVERY, ActionType.TERMINAL_ERROR]:
-                        # Extract error details
                         error_details = {}
-                        if validation.invocations and len(validation.invocations) > 0:
+                        if validation.invocations:
                             user_invocation = validation.invocations[0]
                             if hasattr(user_invocation, 'request'):
                                 error_details = user_invocation.request.get('error_details', {})
-
-                        # Transfer error details to result metadata
                         if not result.metadata:
                             result.metadata = {}
                         result.metadata['error_details'] = error_details
                         result.metadata['error_action_type'] = validation.action_type.value
+                        result.next_agent = "User"
+                        result.metadata['needs_error_display'] = True
 
-                        # Mark for error recovery routing - _execute_simple_branch will handle User node availability check
-                        result.next_agent = "User"  # Attempt to route to User
-                        result.metadata['needs_error_display'] = True  # Flag for graceful fallback if User not available
-
-                    # Handle auto-retry for timeout/network errors
+                    # Handle auto-retry for transient API errors
                     elif validation.action_type == ActionType.AUTO_RETRY:
-                        # Extract error info and mark for retry
                         parsed = validation.parsed_response or {}
                         error_info = parsed.get('error_info', {})
-
                         result.success = False
-                        result.requires_retry = True  # Trigger retry logic
+                        result.requires_retry = True
                         result.error = error_info.get('message', 'API error - retrying')
-
-                        # Store error context for steering (minimal for API errors)
                         retry_count = branch.retry_counts.get(agent_name, 0) if hasattr(branch, 'retry_counts') else 0
                         branch.agent_retry_info[agent_name] = {
                             "category": ValidationErrorCategory.API_TRANSIENT.value,
                             "error_message": error_info.get('message', 'API error'),
-                            "retry_suggestion": None,  # No format suggestions for API errors
+                            "retry_suggestion": None,
                             "retry_count": retry_count + 1,
                             "classification": error_info.get('classification')
                         }
-
                         if not result.metadata:
                             result.metadata = {}
                         result.metadata.update({
@@ -1042,34 +986,101 @@ class BranchExecutor:
                         })
                         logger.info(f"Auto-retry scheduled for {agent_name}: {error_info.get('classification')}")
 
-                    # Handle parallel invocation
-                    elif validation.action_type == ActionType.PARALLEL_INVOKE:
+            elif result.tool_results and result.metadata and result.metadata.get('tool_continuation'):
+                # Path 2: Tool continuation - agent called real tools only (no coordination call)
+                # Self-invocation so agent can process tool results
+                result.action_type = "invoke_agent"
+                result.next_agent = agent_name
+                logger.debug(f"Tool continuation for {agent_name} - agent will process tool results")
+
+                if self.event_bus:
+                    from ..tracing.events import ValidationDecisionEvent
+                    await self.event_bus.emit(ValidationDecisionEvent(
+                        session_id=context.session_id,
+                        branch_id=context.branch_id,
+                        agent_name=agent_name,
+                        step_number=branch.state.current_step,
+                        step_span_id=context.metadata.get("step_span_id", ""),
+                        is_valid=True,
+                        action_type="invoke_agent",
+                        next_agents=[agent_name],
+                        is_tool_continuation=True,
+                    ))
+
+            elif result.coordination_action and self.response_validator and result.success:
+                # Path 3: Coordination action from native tool calls → validate and route
+                from ..branches.types import ExecutionState
+                exec_state = ExecutionState(
+                    session_id=context.session_id,
+                    current_step=branch.state.current_step,
+                    status="running"
+                )
+                validation = await self.response_validator.validate_coordination_action(
+                    action=result.coordination_action,
+                    data=result.coordination_data or {},
+                    agent=agent,
+                    branch=branch,
+                    exec_state=exec_state,
+                )
+
+                if self.event_bus:
+                    from ..tracing.events import ValidationDecisionEvent
+                    next_agents = list(validation.next_agents) if validation.next_agents else []
+                    await self.event_bus.emit(ValidationDecisionEvent(
+                        session_id=context.session_id,
+                        branch_id=context.branch_id,
+                        agent_name=agent_name,
+                        step_number=branch.state.current_step,
+                        step_span_id=context.metadata.get("step_span_id", ""),
+                        is_valid=validation.is_valid,
+                        action_type=validation.action_type.value if validation.action_type else "",
+                        next_agents=next_agents,
+                        error_category=validation.error_category,
+                        retry_suggestion=getattr(validation, 'retry_suggestion', None),
+                    ))
+
+                if validation.is_valid:
+                    result.action_type = validation.action_type.value if validation.action_type else "continue"
+                    # Store parsed_response with invocations for downstream request extraction
+                    result.parsed_response = validation.parsed_response or {}
+                    if validation.invocations:
+                        result.parsed_response["invocations"] = validation.invocations
+
+                    # Clear error context on successful coordination
+                    if agent_name in branch.agent_retry_info:
+                        del branch.agent_retry_info[agent_name]
+
+                    # Handle parallel invocation (multiple agents in invocations array)
+                    if validation.action_type == ActionType.PARALLEL_INVOKE:
                         logger.info(f"Agent '{agent_name}' requested parallel invocation")
                         return await self._handle_parallel_invocation(
                             agent_name, validation, result, context, branch
                         )
-                    
-                    # Handle single agent invocation
+
+                    # Set next agent for single invocation
                     if validation.next_agents and len(validation.next_agents) > 0:
                         result.next_agent = validation.next_agents[0]
+
                 else:
-                    # Validation failed
+                    # Coordination validation failed (e.g., topology permission denied)
                     result.success = False
                     result.error = validation.error_message
                     result.requires_retry = True
-
-                    # Store error context for SteeringManager (replaces memory injection)
                     retry_count = branch.retry_counts.get(agent_name, 0) if hasattr(branch, 'retry_counts') else 0
-                    # Use category from ValidationProcessor (it knows the exact error type)
-                    error_category = validation.error_category or ValidationErrorCategory.FORMAT_ERROR.value
+                    error_category = validation.error_category or ValidationErrorCategory.PERMISSION_ERROR.value
                     branch.agent_retry_info[agent_name] = {
                         "category": error_category,
                         "error_message": validation.error_message,
                         "retry_suggestion": validation.retry_suggestion,
                         "retry_count": retry_count + 1,
-                        "failed_action": validation.parsed_response.get("next_action") if validation.parsed_response else None
+                        "failed_action": result.coordination_action,
                     }
-                    logger.debug(f"Stored validation error context for {agent_name} (category: {error_category})")
+                    logger.debug(f"Coordination validation failed for {agent_name}: {validation.error_message}")
+
+            elif result.success:
+                # Path 4: Content-only response (no tool calls at all)
+                # Agent is thinking/reasoning out loud - continue to next step
+                logger.debug(f"Agent '{agent_name}' produced content-only response - continuing loop")
             
             # Apply FLOW_CONTROL rules if we have a rules engine
             if self.rules_engine and result.success:

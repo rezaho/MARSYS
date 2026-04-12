@@ -423,89 +423,90 @@ class DynamicBranchSpawner:
     def _has_explicit_single_target(self, response: Any) -> bool:
         """Check if response explicitly specifies a single target agent."""
         if isinstance(response, dict):
-            # Final response - single target (back to parent)
+            # Coordination tools format: invocations array with single entry
+            invocations = response.get("invocations", [])
+            if invocations:
+                # Check for AgentInvocation objects or dicts
+                if len(invocations) == 1:
+                    return True
+                return False  # Multiple invocations = not single target
+
+            # Final response action
+            if response.get("final_response") is not None:
+                return True
+
+            # Legacy: next_action format (kept for backward compat during transition)
             if response.get("next_action") == "final_response":
                 return True
-            
-            # Return action - single target (back to coordinator)
-            if response.get("next_action") == "return":
-                return True
-                
-            # Single agent invocation
             if response.get("next_action") == "invoke_agent":
                 action_input = response.get("action_input")
-                # Check if it's a single agent (not array)
                 if isinstance(action_input, dict) and "agent_name" in action_input:
                     return True
-                if isinstance(action_input, str):  # Legacy format
-                    return True
-                # Array with single agent
                 if isinstance(action_input, list) and len(action_input) == 1:
                     return True
-        
+
         return False
     
     def _extract_explicit_targets(self, response: Any) -> List[str]:
         """Extract explicitly specified target agents from response."""
         targets = []
-        
+
         if isinstance(response, dict):
-            # Check for multi-agent invocation
+            # Coordination tools format: invocations array
+            invocations = response.get("invocations", [])
+            if invocations:
+                for inv in invocations:
+                    if hasattr(inv, 'agent_name'):
+                        targets.append(inv.agent_name)
+                    elif isinstance(inv, dict) and "agent_name" in inv:
+                        targets.append(inv["agent_name"])
+                return targets
+
+            # Legacy: next_action format
             if response.get("next_action") == "invoke_agent":
                 action_input = response.get("action_input")
-                if isinstance(action_input, list) and len(action_input) > 1:
-                    # Multiple agents specified
+                if isinstance(action_input, list):
                     for item in action_input:
                         if isinstance(item, dict) and "agent_name" in item:
                             targets.append(item["agent_name"])
-            
-            # Legacy format support
-            elif response.get("target_agents"):
-                targets_raw = response["target_agents"]
-                if isinstance(targets_raw, list):
-                    targets = targets_raw
-                elif isinstance(targets_raw, str):
-                    targets = [targets_raw]
-        
+
         return targets
     
     def _extract_divergence_request(self, response: Any, target_agent: str) -> Any:
         """Extract request for specific target in divergence."""
         # Check if this is a user-first mode initial response
         if isinstance(response, dict) and response.get("interaction_type") == "initial_query":
-            # This is the initial User interaction in user-first mode
             user_response = response.get("user_response", "")
             pending_task = self.context.get("pending_task")
-
-            # Combine task with user response
             if pending_task:
                 if isinstance(pending_task, dict):
                     combined_task = {**pending_task, "user_response": user_response}
                 elif isinstance(pending_task, str):
-                    combined_task = {
-                        "task": pending_task,
-                        "user_response": user_response
-                    }
+                    combined_task = {"task": pending_task, "user_response": user_response}
                 else:
-                    combined_task = pending_task  # Fallback
+                    combined_task = pending_task
                 logger.info(f"User-first mode: Combined task with user response for {target_agent}")
                 return combined_task
 
-        # Check for agent-specific requests
         if isinstance(response, dict):
-            # Unified format with per-agent requests
+            # Coordination tools format: invocations array with per-agent requests
+            invocations = response.get("invocations", [])
+            for inv in invocations:
+                inv_name = inv.agent_name if hasattr(inv, 'agent_name') else inv.get("agent_name", "")
+                if inv_name == target_agent:
+                    return inv.request if hasattr(inv, 'request') else inv.get("request", "")
+
+            # Legacy: action_input format
             if response.get("action_input") and isinstance(response["action_input"], list):
                 for item in response["action_input"]:
                     if isinstance(item, dict) and item.get("agent_name") == target_agent:
                         return item.get("request", "")
 
-            # Check agent_requests mapping
             if "agent_requests" in response:
                 agent_requests = response["agent_requests"]
                 if isinstance(agent_requests, dict):
                     return agent_requests.get(target_agent, "")
 
-        # Default to response content if available
         if hasattr(response, 'content'):
             return response.content or ""
         elif isinstance(response, dict) and 'content' in response:
@@ -1446,36 +1447,25 @@ class DynamicBranchSpawner:
     
     async def _check_for_parallel_invoke(self, response: Any) -> bool:
         """
-        Check if the response contains a parallel_invoke action.
-        
-        Args:
-            response: The agent's response
-            
-        Returns:
-            True if the response indicates parallel invocation
+        Check if the response contains a parallel invocation.
+
+        With coordination tools, parallel invocation is detected by
+        multiple entries in the invocations array.
         """
-        # Check various response formats
         if isinstance(response, dict):
-            # Check for explicit parallel_invoke action (legacy)
-            if response.get("action") == "parallel_invoke":
+            # Coordination tools format: invocations array with multiple entries
+            invocations = response.get("invocations", [])
+            if len(invocations) > 1:
                 return True
+
+            # Legacy: explicit parallel_invoke action
             if response.get("next_action") == "parallel_invoke":
                 return True
-            
-            # Check for unified format - invoke_agent with array of multiple agents
             if response.get("next_action") == "invoke_agent":
                 action_input = response.get("action_input", {})
                 if isinstance(action_input, list) and len(action_input) > 1:
-                    # Multiple agents in array = parallel invocation
                     return True
-            
-            # Check for tool calls that indicate parallel invocation
-            tool_calls = response.get("tool_calls", [])
-            for call in tool_calls:
-                if call.get("name") == "parallel_invoke_agents":
-                    return True
-        
-        # Could add more sophisticated parsing here
+
         return False
     
     async def _acquire_agent_for_branch(

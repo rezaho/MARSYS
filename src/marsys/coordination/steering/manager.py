@@ -145,146 +145,47 @@ class SteeringManager:
             return self._generic_error_prompt(context)
 
     def _format_error_prompt(self, context: SteeringContext) -> str:
-        """Concise format/parsing error guidance."""
+        """Format error guidance - remind about coordination tools."""
         error = context.error_context
-
-        # Filter out 'tool_calls' from next_action options (tools use native field)
-        valid_next_actions = [a for a in context.available_actions if a != "tool_calls"]
+        coord_tools = [a for a in context.available_actions if a != "tool_calls"]
         has_tools = "tool_calls" in context.available_actions
 
-        # Build the prompt based on available options
-        prompt = "Your previous response had an incorrect format.\n\n"
+        prompt = f"Your previous response had an issue: {error.error_message}\n\n"
+        prompt += "You must use one of your available tools to take action:\n"
 
-        if valid_next_actions:
-            actions_str = ", ".join(f'"{a}"' for a in valid_next_actions)
-            example_action = valid_next_actions[0]
-
-            prompt += f"""Respond with a single JSON object in a markdown block:
-```json
-{{
-  "thought": "your reasoning",
-  "next_action": "{example_action}",
-  "action_input": <depends on action - see below>
-}}
-```
-
-Valid next_action values: {actions_str}"""
-
-            # Add specific format for each action
-            if "invoke_agent" in valid_next_actions:
-                prompt += """
-
-For "invoke_agent", action_input must be an ARRAY of agent invocation objects:
-```json
-{{
-  "next_action": "invoke_agent",
-  "action_input": [
-    {{
-      "agent_name": "AgentName",
-      "request": "specific task or data"
-    }}
-  ]
-}}
-```"""
-
-            if "final_response" in valid_next_actions:
-                prompt += """
-
-For "final_response", action_input contains your final result:
-```json
-{{
-  "next_action": "final_response",
-  "action_input": {{
-    "result": "your final answer or data"
-  }}
-}}
-```"""
-
-        # If agent has tools, explain tool usage separately
+        if "invoke_agent" in coord_tools:
+            prompt += "- `invoke_agent` tool: Delegate to a peer agent\n"
+        if "return_final_response" in coord_tools:
+            prompt += "- `return_final_response` tool: Return your final answer\n"
         if has_tools:
-            prompt += """
-
-To call tools: Use the native tool_calls field in your message (NOT in JSON content):
-- Return tool_calls in message.tool_calls (not as "next_action")
-- Do NOT use "next_action": "tool_calls" - this is invalid"""
+            prompt += "- Your regular tools for task execution\n"
 
         if error.retry_suggestion:
-            prompt += f"\n\n{error.retry_suggestion}"
+            prompt += f"\n{error.retry_suggestion}"
 
         return prompt
 
     def _permission_error_prompt(self, context: SteeringContext) -> str:
         """Permission/topology violation guidance."""
         error = context.error_context
+        coord_tools = [a for a in context.available_actions if a != "tool_calls"]
 
-        # Filter out 'tool_calls' from next_action options
-        valid_next_actions = [a for a in context.available_actions if a != "tool_calls"]
-        has_tools = "tool_calls" in context.available_actions
-
-        available = ", ".join(f'"{a}"' for a in valid_next_actions)
-
-        prompt = f"""Permission denied: {error.error_message}
-
-Valid next_action values: {available}"""
-
-        if has_tools:
-            prompt += "\n\nYou can also use tools via message.tool_calls field."
-
-        prompt += "\n\nPlease choose a valid action from the list above."
+        prompt = f"Permission denied: {error.error_message}\n\n"
+        prompt += f"Available coordination tools: {', '.join(coord_tools)}\n"
+        prompt += "Please use one of the available tools to proceed."
 
         return prompt
 
     def _action_error_prompt(self, context: SteeringContext) -> str:
-        """Invalid action type guidance."""
+        """Invalid action guidance."""
         error = context.error_context
+        coord_tools = [a for a in context.available_actions if a != "tool_calls"]
 
-        # Filter out 'tool_calls' from next_action options
-        valid_next_actions = [a for a in context.available_actions if a != "tool_calls"]
-        has_tools = "tool_calls" in context.available_actions
-
-        actions_str = ", ".join(f'"{a}"' for a in valid_next_actions)
-
-        prompt = f"""Invalid action: {error.error_message}
-
-Valid next_action values: {actions_str}"""
-
-        # Add format examples for valid actions
-        if "invoke_agent" in valid_next_actions:
-            prompt += """
-
-Example for "invoke_agent":
-```json
-{{
-  "next_action": "invoke_agent",
-  "action_input": [
-    {{
-      "agent_name": "AgentName",
-      "request": "task description or data"
-    }}
-  ]
-}}
-```"""
-
-        if "final_response" in valid_next_actions:
-            prompt += """
-
-Example for "final_response":
-```json
-{{
-  "next_action": "final_response",
-  "action_input": {{
-    "result": "your final answer"
-  }}
-}}
-```"""
-
-        if has_tools:
-            prompt += """
-
-Note: To use tools, call them via message.tool_calls (NOT "next_action": "tool_calls")"""
+        prompt = f"Invalid action: {error.error_message}\n\n"
+        prompt += f"Available coordination tools: {', '.join(coord_tools)}\n"
 
         if error.retry_suggestion:
-            prompt += f"\n\n{error.retry_suggestion}"
+            prompt += f"\n{error.retry_suggestion}"
 
         return prompt
 
@@ -324,27 +225,18 @@ This error typically requires configuration changes. {error.retry_suggestion or 
 
     def _build_generic_prompt(self, context: SteeringContext) -> str:
         """Generic steering prompt (no specific error)."""
-        # Filter out 'tool_calls' from next_action options
-        valid_next_actions = [a for a in context.available_actions if a != "tool_calls"]
+        coord_tools = [a for a in context.available_actions if a != "tool_calls"]
         has_tools = "tool_calls" in context.available_actions
 
-        if not valid_next_actions:
+        if not coord_tools and not has_tools:
             return ""
 
-        actions_str = ", ".join(f'"{a}"' for a in valid_next_actions)
-
-        prompt = f"""Respond with valid JSON:
-```json
-{{
-  "thought": "...",
-  "next_action": "one of: {actions_str}",
-  "action_input": <structure depends on next_action>
-}}
-```
-
-Valid next_action values: {actions_str}"""
-
+        parts = ["Use your available tools to take action:"]
+        if "invoke_agent" in coord_tools:
+            parts.append("- `invoke_agent`: Delegate to a peer agent")
+        if "return_final_response" in coord_tools:
+            parts.append("- `return_final_response`: Return your final answer")
         if has_tools:
-            prompt += "\n\nTo use tools: Call via message.tool_calls field (NOT as next_action)"
+            parts.append("- Your regular tools for task execution")
 
-        return prompt
+        return "\n".join(parts)
