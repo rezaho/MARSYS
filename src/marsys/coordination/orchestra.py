@@ -716,14 +716,33 @@ class Orchestra:
             
             duration = time.time() - start_time
             logger.info(f"Orchestration completed in {duration:.2f}s")
-            
+
+            success = result.get("success", True)
+
+            # Emit FinalResponseEvent BEFORE finalize() runs in the finally block,
+            # so the trace collector can close the root span with the correct status.
+            if self.trace_collector and self.event_bus:
+                from .status.events import FinalResponseEvent
+                summary = result.get("final_response", "")
+                if isinstance(summary, str):
+                    summary = summary[:500]
+                else:
+                    summary = str(summary)[:500]
+                await self.event_bus.emit(FinalResponseEvent(
+                    session_id=session_id,
+                    final_response=summary,
+                    total_duration=duration,
+                    total_steps=result.get("total_steps", 0),
+                    success=success,
+                ))
+
             return OrchestraResult(
-                success=result.get("success", True),
+                success=success,
                 final_response=result.get("final_response"),
                 branch_results=result.get("branch_results", []),
                 total_steps=result.get("total_steps", 0),
                 total_duration=duration,
-                error=result.get("error"),  # Pass error from result
+                error=result.get("error"),
                 metadata={
                     "session_id": session_id,
                     "max_steps": max_steps,
@@ -732,7 +751,7 @@ class Orchestra:
                     **result.get("metadata", {})
                 }
             )
-            
+
         except Exception as e:
             logger.error(f"Orchestration failed: {e}")
             duration = time.time() - start_time
@@ -914,6 +933,19 @@ class Orchestra:
                     completed_branches.append(result)
                     all_tasks.remove(completed_task)
                     total_steps += result.total_steps
+
+                    # Emit BranchCompletedEvent for branches not handled by the spawner.
+                    # Branches entering "waiting" state are not truly complete yet.
+                    is_waiting = result.metadata and result.metadata.get("waiting")
+                    if not is_waiting and self.event_bus and result.branch_id not in self.branch_spawner.completed_branches:
+                        from .execution.branch_spawner import BranchCompletedEvent
+                        await self.event_bus.emit(BranchCompletedEvent(
+                            session_id=session_id,
+                            branch_id=result.branch_id,
+                            last_agent=self._get_last_agent(result) or "",
+                            success=result.success,
+                            total_steps=result.total_steps,
+                        ))
 
                     # Check if this branch created a continuation branch at convergence
                     if result.metadata and 'continuation_branch' in result.metadata:
