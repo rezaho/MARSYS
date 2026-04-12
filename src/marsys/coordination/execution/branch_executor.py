@@ -838,12 +838,13 @@ class BranchExecutor:
             
             # If we have a step executor, use it
             if self.step_executor:
-                # Check if this is a tool continuation (agent continuing with itself after tools)
+                # Check if this is a continuation (agent continuing with itself after tools or content)
                 is_tool_continuation = (
                     self._last_agent_name == agent_name and
                     self._last_step_result and
                     hasattr(self._last_step_result, 'metadata') and
-                    self._last_step_result.metadata.get('tool_continuation')
+                    (self._last_step_result.metadata.get('tool_continuation') or
+                     self._last_step_result.metadata.get('content_continuation'))
                 )
                 
                 result = await self.step_executor.execute_step(
@@ -991,6 +992,7 @@ class BranchExecutor:
                 # Self-invocation so agent can process tool results
                 result.action_type = "invoke_agent"
                 result.next_agent = agent_name
+                branch.metadata.pop(f"_content_only_count_{agent_name}", None)  # Reset content counter
                 logger.debug(f"Tool continuation for {agent_name} - agent will process tool results")
 
                 if self.event_bus:
@@ -1046,7 +1048,8 @@ class BranchExecutor:
                     if validation.invocations:
                         result.parsed_response["invocations"] = validation.invocations
 
-                    # Clear error context on successful coordination
+                    # Clear error context and content-only counter on successful coordination
+                    branch.metadata.pop(f"_content_only_count_{agent_name}", None)
                     if agent_name in branch.agent_retry_info:
                         del branch.agent_retry_info[agent_name]
 
@@ -1085,7 +1088,43 @@ class BranchExecutor:
                 if not result.metadata:
                     result.metadata = {}
                 result.metadata['content_continuation'] = True
-                logger.debug(f"Agent '{agent_name}' produced content-only response - continuing with same agent")
+
+                # Track consecutive content-only responses to prevent infinite loops.
+                # After 3 consecutive content-only responses, inject steering to remind
+                # the agent to use coordination tools.
+                content_count_key = f"_content_only_count_{agent_name}"
+                prev_count = branch.metadata.get(content_count_key, 0)
+                branch.metadata[content_count_key] = prev_count + 1
+
+                if prev_count + 1 >= 3:
+                    # Build available coordination tools list for steering
+                    coord_tools = []
+                    if self.topology_graph:
+                        next_agents = self.topology_graph.get_next_agents(agent_name)
+                        invocable = [a for a in next_agents if a.lower() != "user"]
+                        if invocable:
+                            coord_tools.append(f"invoke_agent (to delegate to {', '.join(invocable)})")
+                        if self.topology_graph.has_user_access(agent_name):
+                            coord_tools.append("return_final_response")
+
+                    tools_str = ", ".join(coord_tools) if coord_tools else "your coordination tools"
+                    branch.agent_retry_info[agent_name] = {
+                        "category": ValidationErrorCategory.ACTION_ERROR.value,
+                        "error_message": "You have not used any coordination tools in your recent responses.",
+                        "retry_suggestion": (
+                            f"You must use a coordination tool to take action. "
+                            f"Available: {tools_str}. "
+                            f"Call one of these tools now to proceed."
+                        ),
+                        "retry_count": prev_count + 1,
+                        "failed_action": None,
+                    }
+                    logger.warning(
+                        f"Agent '{agent_name}' produced {prev_count + 1} consecutive "
+                        f"content-only responses - injecting steering"
+                    )
+                else:
+                    logger.debug(f"Agent '{agent_name}' produced content-only response ({prev_count + 1}) - continuing")
             
             # Apply FLOW_CONTROL rules if we have a rules engine
             if self.rules_engine and result.success:
