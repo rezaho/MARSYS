@@ -272,7 +272,8 @@ class StepExecutor:
                 # Build coordination context for the new formats architecture
                 coordination_context = self._build_coordination_context(
                     agent_name,
-                    topology_graph
+                    topology_graph,
+                    branch=branch
                 )
 
                 # Add coordination context and system prompt builder to run_context
@@ -458,14 +459,59 @@ class StepExecutor:
                                 for user_msg in user_messages:
                                     agent.memory.add(**user_msg)
 
-                            # Mark that agent needs to continue processing tool results
-                            # BranchExecutor will set next_agent based on this metadata
+                            # Determine continuation behavior based on coordination action
                             if not hasattr(step_result, 'metadata'):
                                 step_result.metadata = {}
-                            step_result.metadata['tool_continuation'] = True
-                            step_result.metadata['has_tool_results'] = True
 
-                            logger.info(f"Agent '{agent_name}' executed {len(tool_result.tool_results)} tools - will continue in next step")
+                            if step_result.coordination_action:
+                                # Mixed call: agent called real tools AND a coordination tool.
+                                # invoke_agent is a handoff - agent is done after tools execute.
+                                # Add synthetic tool response for the coordination call so there
+                                # are no orphaned tool_call_ids in memory.
+                                if hasattr(agent, 'memory') and hasattr(agent.memory, 'add'):
+                                    from ..formats.coordination_tools import parse_coordination_call
+                                    # Find the coordination tool_call_id from the original message
+                                    coord_call_id = None
+                                    if hasattr(raw_response, 'tool_calls') and raw_response.tool_calls:
+                                        from ..formats.coordination_tools import is_coordination_tool
+                                        for tc in raw_response.tool_calls:
+                                            tc_name = (
+                                                tc.get("function", {}).get("name", "") if isinstance(tc, dict)
+                                                else getattr(getattr(tc, "function", None), "name", getattr(tc, "name", ""))
+                                            )
+                                            tc_id = tc.get("id", "") if isinstance(tc, dict) else getattr(tc, "id", "")
+                                            if is_coordination_tool(tc_name):
+                                                coord_call_id = tc_id
+                                                break
+
+                                    if coord_call_id:
+                                        # Determine target info for synthetic response
+                                        target_info = ""
+                                        if step_result.coordination_action == "invoke_agent":
+                                            invocations = (step_result.coordination_data or {}).get("invocations", [])
+                                            targets = [inv.get("agent_name", "?") for inv in invocations]
+                                            target_info = f" to {', '.join(targets)}"
+                                        elif step_result.coordination_action == "return_final_response":
+                                            target_info = " - delivering final response"
+
+                                        agent.memory.add(
+                                            role='tool',
+                                            content=f"Control delegated{target_info}. Current agent's turn complete.",
+                                            tool_call_id=coord_call_id,
+                                            name=step_result.coordination_action,
+                                        )
+
+                                step_result.metadata['has_tool_results'] = True
+                                # No tool_continuation - coordination action means handoff
+                                logger.info(
+                                    f"Agent '{agent_name}' executed {len(tool_result.tool_results)} tools "
+                                    f"+ coordination action '{step_result.coordination_action}' - handing off"
+                                )
+                            else:
+                                # Regular tools only - agent continues to process results
+                                step_result.metadata['tool_continuation'] = True
+                                step_result.metadata['has_tool_results'] = True
+                                logger.info(f"Agent '{agent_name}' executed {len(tool_result.tool_results)} tools - will continue in next step")
                 
                 # Update statistics
                 duration = time.time() - start_time
@@ -666,6 +712,7 @@ class StepExecutor:
         self,
         agent_name: str,
         topology_graph: Optional['TopologyGraph'],
+        branch: Optional['ExecutionBranch'] = None,
     ) -> CoordinationContext:
         """
         Build CoordinationContext dataclass from topology.
@@ -673,9 +720,10 @@ class StepExecutor:
         Args:
             agent_name: Name of the agent
             topology_graph: The topology graph for determining available actions
+            branch: The current execution branch (for conversation branch detection)
 
         Returns:
-            CoordinationContext with next_agents and can_return_final_response
+            CoordinationContext with next_agents, can_return_final_response, is_conversation_branch
         """
         if not topology_graph:
             return CoordinationContext()
@@ -687,28 +735,23 @@ class StepExecutor:
         if hasattr(topology_graph, 'exit_points') and agent_name in topology_graph.exit_points:
             can_final = True
 
+        # Detect conversation branch for end_conversation tool
+        is_conversation = False
+        if branch is not None:
+            is_conversation = branch.is_conversation_branch() if hasattr(branch, 'is_conversation_branch') else False
+
         return CoordinationContext(
             next_agents=next_agents,
             can_return_final_response=can_final,
+            is_conversation_branch=is_conversation,
         )
-
-    def _get_json_guidelines_concise(self, actions_str: str) -> str:
-        """
-        Get concise JSON format reminder for steering/error messages.
-        Avoids duplication with system prompt to prevent repetition.
-        """
-        return f"""Respond with a single JSON object in a markdown block: ```json {{"thought": "...", "next_action": "...", "action_input": {{...}}}} ```"""
 
     def _get_available_actions(self, agent: 'BaseAgent', step_context: 'StepContext') -> List[str]:
         """
-        Extract available actions from topology for steering.
-
-        Args:
-            agent: The agent being executed
-            step_context: Current step execution context
+        Extract available coordination tools and regular tools for steering.
 
         Returns:
-            List of available action names
+            List of available action/tool names
         """
         available = []
 
@@ -717,22 +760,18 @@ class StepExecutor:
         if topology_graph:
             current_agent = agent.name if hasattr(agent, 'name') else str(agent)
 
-            # Check for next agents
             next_agents = topology_graph.get_next_agents(current_agent)
             if next_agents and [a for a in next_agents if a != "User"]:
                 available.append("invoke_agent")
 
-            # Check for user access (final_response capability)
             if topology_graph.has_user_access(current_agent):
-                available.append("final_response")
+                available.append("return_final_response")
 
-        # Check for tools
         if hasattr(agent, 'tools_schema') and agent.tools_schema:
             available.append("tool_calls")
 
-        # Fallback
         if not available:
-            available.append("final_response")
+            available.append("return_final_response")
 
         return available
 
@@ -916,12 +955,17 @@ Available options:
         context: StepContext
     ) -> StepResult:
         """
-        Process ONLY native tool calls using ToolCallProcessor.
-        NO content parsing, NO routing decisions.
-        ONLY accepts Message responses.
+        Process native tool calls: partition into regular tools vs coordination tools.
+
+        Regular tool calls (web_search, file_read, etc.) go to result.tool_calls
+        for execution by ToolExecutor.
+
+        Coordination tool calls (invoke_agent, return_final_response, end_conversation)
+        go to result.coordination_action/coordination_data for routing by BranchExecutor.
         """
         from ...agents.memory import Message
         from ..formats.processors import ToolCallProcessor
+        from ..formats.coordination_tools import is_coordination_tool, parse_coordination_call
 
         # CRITICAL: Only accept Message responses
         if not isinstance(raw_response, Message):
@@ -936,13 +980,42 @@ Available options:
             response=raw_response  # Store full Message object
         )
 
-        # Extract native tool_calls using ToolCallProcessor
+        # Extract all native tool_calls using ToolCallProcessor
         tool_processor = ToolCallProcessor()
+        all_tool_calls = []
         if tool_processor.can_process(raw_response):
             parsed = tool_processor.process(raw_response)
             if parsed and "tool_calls" in parsed:
-                result.tool_calls = parsed["tool_calls"]
-                logger.debug(f"Extracted {len(result.tool_calls)} native tool_calls from {context.agent_name}")
+                all_tool_calls = parsed["tool_calls"]
+
+        # Partition into regular tools and coordination tools
+        regular_calls = []
+        coordination_call = None  # Only the first coordination call is used
+
+        for tc in all_tool_calls:
+            func = tc.get("function", {}) if isinstance(tc, dict) else {}
+            tool_name = func.get("name", "")
+
+            if is_coordination_tool(tool_name):
+                if coordination_call is None:
+                    coordination_call = tc
+                    action_name, action_data = parse_coordination_call(tc)
+                    result.coordination_action = action_name
+                    result.coordination_data = action_data
+                    logger.debug(
+                        f"Agent '{context.agent_name}' coordination action: {action_name}"
+                    )
+                else:
+                    logger.warning(
+                        f"Agent '{context.agent_name}' made multiple coordination calls - "
+                        f"ignoring extra: {tool_name}"
+                    )
+            else:
+                regular_calls.append(tc)
+
+        if regular_calls:
+            result.tool_calls = regular_calls
+            logger.debug(f"Extracted {len(regular_calls)} regular tool_calls from {context.agent_name}")
 
         # Create memory update with all Message fields
         memory_update = {

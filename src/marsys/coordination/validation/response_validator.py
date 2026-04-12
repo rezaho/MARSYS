@@ -372,6 +372,112 @@ class ValidationProcessor:
             parsed_response=parsed
         )
     
+    async def validate_coordination_action(
+        self,
+        action: str,
+        data: Dict[str, Any],
+        agent: BaseAgent,
+        branch: ExecutionBranch,
+        exec_state: ExecutionState,
+    ) -> ValidationResult:
+        """
+        Validate a coordination action from native tool calls.
+
+        This is the primary entry point for the coordination tools architecture.
+        BranchExecutor calls this with pre-parsed data from StepResult.coordination_action
+        and StepResult.coordination_data.
+
+        Args:
+            action: Coordination action name ("invoke_agent", "return_final_response", "end_conversation")
+            data: Parsed arguments from the coordination tool call
+            agent: The agent that made the coordination call
+            branch: Current execution branch
+            exec_state: Current execution state
+
+        Returns:
+            ValidationResult with routing decisions
+        """
+        # Map coordination tool names to ActionTypes
+        action_map = {
+            "invoke_agent": ActionType.INVOKE_AGENT,
+            "return_final_response": ActionType.FINAL_RESPONSE,
+            "end_conversation": ActionType.END_CONVERSATION,
+        }
+
+        action_type = action_map.get(action)
+        if not action_type:
+            return ValidationResult(
+                is_valid=False,
+                error_message=f"Unknown coordination action: {action}",
+                error_category=ValidationErrorCategory.ACTION_ERROR.value,
+            )
+
+        # Build the parsed dict expected by the existing validators
+        if action == "invoke_agent":
+            # Convert coordination tool data to AgentInvocation objects
+            raw_invocations = data.get("invocations", [])
+            if not raw_invocations:
+                return ValidationResult(
+                    is_valid=False,
+                    error_message="invoke_agent called with no invocations",
+                    error_category=ValidationErrorCategory.FORMAT_ERROR.value,
+                )
+
+            import uuid
+            invocations = []
+            for idx, inv in enumerate(raw_invocations):
+                invocations.append(AgentInvocation(
+                    agent_name=inv.get("agent_name", ""),
+                    request=inv.get("request", ""),
+                    instance_id=f"{inv.get('agent_name', 'unknown')}_{idx}_{uuid.uuid4().hex[:8]}",
+                ))
+
+            parsed = {"invocations": invocations}
+            result = await self._validate_agent_invocation(parsed, agent, branch, exec_state)
+
+            # Enrich with the full coordination data for downstream use
+            if result.is_valid:
+                result.parsed_response = data
+                if result.action_type is None:
+                    result.action_type = action_type
+            return result
+
+        elif action == "return_final_response":
+            # Extract response content from tool call arguments
+            response_content = data.get("response", "")
+
+            # For output_schema agents, the data itself IS the structured response
+            # (CoordinationToolSchemaBuilder merges output_schema into the tool params)
+            if not response_content and data:
+                # The entire data dict might be the structured response
+                response_content = data
+
+            parsed = {
+                "action_input": {"response": response_content},
+                "final_response": response_content,
+            }
+            result = await self._validate_final_response(parsed, agent, branch, exec_state)
+
+            if result.is_valid:
+                result.parsed_response = parsed
+                result.action_type = ActionType.FINAL_RESPONSE
+            return result
+
+        elif action == "end_conversation":
+            parsed = {"summary": data.get("summary", "")}
+            result = await self._validate_end_conversation(parsed, agent, branch, exec_state)
+
+            if result.is_valid:
+                result.parsed_response = parsed
+                result.action_type = ActionType.END_CONVERSATION
+            return result
+
+        return ValidationResult(
+            is_valid=False,
+            error_message=f"Unhandled coordination action: {action}",
+            error_category=ValidationErrorCategory.ACTION_ERROR.value,
+        )
+
     async def _validate_agent_invocation(
         self,
         parsed: Dict[str, Any],

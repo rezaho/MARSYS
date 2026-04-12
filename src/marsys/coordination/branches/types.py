@@ -134,11 +134,15 @@ class StepResult:
     context_selection: Optional[Dict[str, Any]] = None  # Context saved by agent to pass to next
     metadata: Dict[str, Any] = field(default_factory=dict)  # Execution metadata only
 
+    # Coordination tool data (set by StepExecutor from native tool calls)
+    # These carry raw extraction data - BranchExecutor reads them for routing decisions
+    coordination_action: Optional[str] = None  # e.g., "invoke_agent", "return_final_response", "end_conversation"
+    coordination_data: Optional[Dict[str, Any]] = None  # Parsed arguments from the coordination tool call
+
     # Routing decision fields (set by BranchExecutor ONLY, default to None)
-    # StepExecutor must NEVER set these fields (except next_agent for tool continuation)
-    action_type: Optional[str] = None  # Action type from ValidationResult (invoke_agent, final_response, etc.)
-    parsed_response: Optional[Dict[str, Any]] = None  # Parsed content from ValidationResult
-    next_agent: Optional[str] = None  # Next agent to invoke (from ValidationResult OR tool continuation)
+    action_type: Optional[str] = None  # Action type determined by BranchExecutor (invoke_agent, final_response, etc.)
+    parsed_response: Optional[Dict[str, Any]] = None  # Parsed coordination data for downstream use
+    next_agent: Optional[str] = None  # Next agent to invoke
     should_end_branch: bool = False  # Whether branch should complete after this step
     waiting_for_children: bool = False  # Whether branch is waiting for parallel child branches
     child_branch_ids: List[str] = field(default_factory=list)  # IDs of spawned child branches

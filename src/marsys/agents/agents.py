@@ -1633,6 +1633,20 @@ class BaseAgent(ABC):
         coordination_context = context.get("coordination_context")
         system_prompt_builder = context.get("system_prompt_builder")
 
+        # Build coordination tool schemas from topology context
+        # These are merged with regular tools in _run() so the LLM uses native
+        # tool calling for routing actions (invoke_agent, return_final_response, etc.)
+        if coordination_context is not None:
+            from marsys.coordination.formats.coordination_tools import CoordinationToolSchemaBuilder
+            self._coordination_tool_schemas = CoordinationToolSchemaBuilder.build_schemas(
+                next_agents=coordination_context.next_agents,
+                can_return_final_response=coordination_context.can_return_final_response,
+                is_conversation_branch=getattr(coordination_context, 'is_conversation_branch', False),
+                output_schema=self._compiled_output_schema if hasattr(self, '_compiled_output_schema') else None,
+            )
+        else:
+            self._coordination_tool_schemas = []
+
         # Validate required context - agents must run through Orchestra
         if coordination_context is None or system_prompt_builder is None:
             raise AgentConfigurationError(
@@ -1815,32 +1829,41 @@ class BaseAgent(ABC):
         if hasattr(self, "memory"):
             response_msg_id = self.memory.add(message=raw_response)
 
-        # Check if this is a final action that needs context
+        # Check if this is a routing action that needs context passing
+        # Detect coordination tool calls (invoke_agent, return_final_response)
         context_for_next = None
-        if isinstance(raw_response.content, dict):
-            action = raw_response.content.get("next_action")
-            if action in ["invoke_agent", "return_to_user", "final_response"]:
-                # Get saved context and prepare it
-                if hasattr(self, "memory"):
-                    all_messages = self.memory.get_messages()
-                    context_data = self._context_selector.get_saved_context(
-                        all_messages
-                    )
-                    if context_data:
-                        # Prepare context for passing
-                        context_for_next = context_data
-                        # Optionally modify response to include template placeholders
-                        raw_response = self._apply_context_template(
-                            raw_response, context_data
-                        )
+        from marsys.coordination.formats.coordination_tools import is_coordination_tool
+        has_coordination_call = (
+            hasattr(raw_response, 'tool_calls') and raw_response.tool_calls
+            and any(
+                is_coordination_tool(
+                    tc.get("function", {}).get("name", "") if isinstance(tc, dict)
+                    else getattr(getattr(tc, "function", None), "name", getattr(tc, "name", ""))
+                )
+                for tc in raw_response.tool_calls
+            )
+        )
+        if has_coordination_call:
+            if hasattr(self, "memory"):
+                all_messages = self.memory.get_messages()
+                context_data = self._context_selector.get_saved_context(all_messages)
+                if context_data:
+                    context_for_next = context_data
+                    raw_response = self._apply_context_template(raw_response, context_data)
 
         # Call post-step hook (allows subclasses to perform custom actions)
         step_number = context.get("step_number", 0)
-        action_type = (
-            raw_response.content.get("next_action")
-            if isinstance(raw_response.content, dict)
-            else "unknown"
-        )
+        # Determine action type from coordination tool calls if present
+        action_type = "unknown"
+        if has_coordination_call:
+            for tc in raw_response.tool_calls:
+                tc_name = (
+                    tc.get("function", {}).get("name", "") if isinstance(tc, dict)
+                    else getattr(getattr(tc, "function", None), "name", getattr(tc, "name", ""))
+                )
+                if is_coordination_tool(tc_name):
+                    action_type = tc_name
+                    break
         await self._post_step_hook(
             step_number=step_number,
             action_type=action_type,
@@ -3014,10 +3037,21 @@ class Agent(BaseAgent):
         has_tools = bool(self.tools_schema)
         current_tools_schema = self.tools_schema if has_tools else None
 
-        # Configure JSON mode based on output schema or run mode
-        json_mode_for_llm_native = False  # Default: disabled for compatibility
+        # Merge coordination tools (invoke_agent, return_final_response, etc.)
+        # These are built per-step in run_step() from topology context
+        coordination_tools = getattr(self, '_coordination_tool_schemas', None)
+        if coordination_tools:
+            regular_tools = current_tools_schema or []
+            current_tools_schema = list(regular_tools) + coordination_tools
+            has_tools = True
 
-        if self._compiled_output_schema:
+        # Configure JSON mode based on output schema or run mode
+        # When coordination tools are present, output schema is encoded in
+        # return_final_response tool parameters - don't set response_schema on the model call
+        if coordination_tools:
+            # Coordination tools handle structured output via tool call arguments
+            pass
+        elif self._compiled_output_schema:
             # Use structured output with response_schema for schema enforcement
             # This provides much more reliable JSON than json_mode alone
             api_model_kwargs["response_schema"] = self.output_schema
@@ -3026,16 +3060,7 @@ class Agent(BaseAgent):
         elif run_mode == "auto_step" and isinstance(self.model, BaseAPIModel):
             # For auto_step mode with API models, we might need JSON mode
             # but keep it disabled by default for markdown-wrapped JSON compatibility
-            api_model_kwargs["json_mode"] = json_mode_for_llm_native
-
-        # Only request native JSON format when explicitly needed (fallback for old code)
-        if (
-            json_mode_for_llm_native
-            and isinstance(self.model, BaseAPIModel)
-            and getattr(self._model_config, "provider", "") == "openai"
-            and "response_schema" not in api_model_kwargs  # Don't override response_schema
-        ):
-            api_model_kwargs["response_format"] = {"type": "json_object"}
+            api_model_kwargs["json_mode"] = False
 
         try:
             # Use async model call for true parallel execution
