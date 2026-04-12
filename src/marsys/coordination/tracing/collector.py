@@ -375,7 +375,7 @@ class TraceCollector:
             })
 
     async def _handle_final_response(self, event: Any) -> None:
-        """Update root span with final result summary."""
+        """Update root span with final result summary and close it."""
         async with self._lock:
             trace = self._get_trace(event.session_id)
             if not trace:
@@ -390,6 +390,11 @@ class TraceCollector:
                 if len(summary) > self.config.max_content_length:
                     summary = summary[:self.config.max_content_length] + "..."
                 trace.root_span.attributes["final_response_summary"] = summary
+
+            # Close the root span with the correct status
+            status = "ok" if event.success else "error"
+            trace.root_span.close(end_time=event.timestamp, status=status)
+            self.open_spans.pop(trace.root_span.span_id, None)
 
     # ── Finalization ────────────────────────────────────────────────
 
