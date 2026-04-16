@@ -918,15 +918,15 @@ class BranchExecutor:
             )
 
             if is_error_message and self.response_validator and result.success:
-                # Path 1: Error message from API failure → use ValidationProcessor error handling
+                # Path 1: Error message from API failure → classify and route
                 from ..branches.types import ExecutionState
                 exec_state = ExecutionState(
                     session_id=context.session_id,
                     current_step=branch.state.current_step,
                     status="running"
                 )
-                validation = await self.response_validator.process_response(
-                    raw_response=result.response, agent=agent, branch=branch, exec_state=exec_state
+                validation = await self.response_validator.process_error_message(
+                    message=result.response, agent=agent, branch=branch, exec_state=exec_state
                 )
 
                 if self.event_bus:
