@@ -129,41 +129,14 @@ class SteeringManager:
         error = context.error_context
         category = error.category
 
-        if category == ValidationErrorCategory.FORMAT_ERROR:
-            return self._format_error_prompt(context)
-        elif category == ValidationErrorCategory.PERMISSION_ERROR:
+        if category == ValidationErrorCategory.PERMISSION_ERROR:
             return self._permission_error_prompt(context)
         elif category == ValidationErrorCategory.ACTION_ERROR:
             return self._action_error_prompt(context)
         elif category == ValidationErrorCategory.API_TRANSIENT:
             return self._api_transient_prompt(context)
-        elif category == ValidationErrorCategory.API_TERMINAL:
-            return self._api_terminal_prompt(context)
-        elif category == ValidationErrorCategory.TOOL_ERROR:
-            return self._tool_error_prompt(context)
         else:
             return self._generic_error_prompt(context)
-
-    def _format_error_prompt(self, context: SteeringContext) -> str:
-        """Format error guidance - remind about coordination tools."""
-        error = context.error_context
-        coord_tools = [a for a in context.available_actions if a != "tool_calls"]
-        has_tools = "tool_calls" in context.available_actions
-
-        prompt = f"Your previous response had an issue: {error.error_message}\n\n"
-        prompt += "You must use one of your available tools to take action:\n"
-
-        if "invoke_agent" in coord_tools:
-            prompt += "- `invoke_agent` tool: Delegate to a peer agent\n"
-        if "return_final_response" in coord_tools:
-            prompt += "- `return_final_response` tool: Return your final answer\n"
-        if has_tools:
-            prompt += "- Your regular tools for task execution\n"
-
-        if error.retry_suggestion:
-            prompt += f"\n{error.retry_suggestion}"
-
-        return prompt
 
     def _permission_error_prompt(self, context: SteeringContext) -> str:
         """Permission/topology violation guidance."""
@@ -198,22 +171,6 @@ class SteeringManager:
         return f"""Previous API call failed: {classification}. Retrying automatically.
 
 Please proceed with your intended action."""
-
-    def _api_terminal_prompt(self, context: SteeringContext) -> str:
-        """API terminal error - should rarely retry, but if we do..."""
-        error = context.error_context
-
-        return f"""Critical API error: {error.error_message}
-
-This error typically requires configuration changes. {error.retry_suggestion or 'Please check your API settings.'}"""
-
-    def _tool_error_prompt(self, context: SteeringContext) -> str:
-        """Tool execution error guidance."""
-        error = context.error_context
-
-        return f"""Tool execution failed: {error.error_message}
-
-{error.retry_suggestion or 'Try a different tool or approach.'}"""
 
     def _generic_error_prompt(self, context: SteeringContext) -> str:
         """Fallback for uncategorized errors."""
