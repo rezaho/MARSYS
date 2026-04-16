@@ -514,6 +514,48 @@ class StepExecutor:
                                 step_result.metadata['has_tool_results'] = True
                                 logger.info(f"Agent '{agent_name}' executed {len(tool_result.tool_results)} tools - will continue in next step")
                 
+                # 5. Add synthetic tool response for coordination-only calls.
+                # When the agent calls ONLY a coordination tool (no regular tools),
+                # the tool execution block above is skipped entirely. The Message
+                # in agent memory has tool_calls=[invoke_agent] but no matching tool
+                # response. Without this, _clean_orphaned_tool_calls() strips the
+                # tool_call on the next invocation, and the agent loses context of
+                # having already delegated (causing double invocation after convergence).
+                if (step_result.coordination_action
+                        and not step_result.tool_calls
+                        and not step_result.tool_results
+                        and hasattr(agent, 'memory') and hasattr(agent.memory, 'add')):
+                    from ..formats.coordination_tools import is_coordination_tool
+                    coord_call_id = None
+                    if hasattr(raw_response, 'tool_calls') and raw_response.tool_calls:
+                        for tc in raw_response.tool_calls:
+                            if isinstance(tc, dict):
+                                tc_name = tc.get("function", {}).get("name", "")
+                                tc_id = tc.get("id", "")
+                            else:
+                                tc_name = getattr(tc, 'name', "")
+                                tc_id = getattr(tc, 'id', "")
+                            if is_coordination_tool(tc_name):
+                                coord_call_id = tc_id
+                                break
+
+                    if coord_call_id:
+                        target_info = ""
+                        if step_result.coordination_action == "invoke_agent":
+                            invocations = (step_result.coordination_data or {}).get("invocations", [])
+                            targets = [inv.get("agent_name", "?") for inv in invocations]
+                            target_info = f" to {', '.join(targets)}"
+                        elif step_result.coordination_action == "return_final_response":
+                            target_info = " - delivering final response"
+
+                        agent.memory.add(
+                            role='tool',
+                            content=f"Control delegated{target_info}. Current agent's turn complete.",
+                            tool_call_id=coord_call_id,
+                            name=step_result.coordination_action,
+                        )
+                        logger.debug(f"Added synthetic tool response for coordination-only call '{step_result.coordination_action}' (tool_call_id: {coord_call_id})")
+
                 # Update statistics
                 duration = time.time() - start_time
                 self._update_stats(agent_name, step_result, retry_count, duration)
