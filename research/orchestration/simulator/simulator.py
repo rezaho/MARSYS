@@ -72,10 +72,57 @@ class Simulator:
             self._process_events(events)
             self._check_assertions_at(t)
 
-        # Drain runnable queue (anything left that can self-propagate)
-        # For now, after all events processed, we don't force further ticks
-        # — the trace should cover all steps. Leftover runnables are flagged
-        # in no_deadlock assertions.
+        # Final autonomous cycle: drain runnable → abandon unscriptable →
+        # sweep OPEN barriers. Repeat until no state changes. Handles
+        # resume-after-abandon, chained convergence cascades, etc.
+        outer_safety = 0
+        while outer_safety < 100:
+            outer_safety += 1
+            # Inner drain: tick any scriptable runnable branch
+            inner_safety = 0
+            while self.orch.runnable and inner_safety < 10000:
+                def any_scriptable():
+                    for bid in self.orch.runnable:
+                        br = self.orch.branches.get(bid)
+                        if br is None or br.status != "RUNNING":
+                            continue
+                        if self.mock.has_queued(bid) or self.mock.has_agent_script(br.current_agent):
+                            return True
+                    return False
+                if not any_scriptable():
+                    break
+                self._drain()
+                inner_safety += 1
+
+            # Abandon unscriptable RUNNING branches
+            unscriptable: list[str] = []
+            for bid in list(self.orch.runnable):
+                br = self.orch.branches.get(bid)
+                if br is not None and br.status == "RUNNING":
+                    if not self.mock.has_queued(bid) and not self.mock.has_agent_script(br.current_agent):
+                        unscriptable.append(bid)
+            for bid in unscriptable:
+                self.orch.runnable.remove(bid)
+                br = self.orch.branches.get(bid)
+                if br is not None:
+                    self.orch._abandon(br)
+            self.orch._drain_fires()
+
+            # Sweep OPEN barriers
+            for bar_id in list(self.orch.barriers.keys()):
+                bar = self.orch.barriers.get(bar_id)
+                if bar is not None and bar.status == "OPEN":
+                    self.orch._fire_queue.append(bar_id)
+            self.orch._drain_fires()
+
+            # Exit if nothing changed
+            if not self.orch.runnable and not self.orch._fire_queue:
+                # Also check: no RUNNING branches that got resumed
+                any_running = any(
+                    br.status == "RUNNING" for br in self.orch.branches.values()
+                )
+                if not any_running:
+                    break
 
         self._check_assertions_at("final")
 

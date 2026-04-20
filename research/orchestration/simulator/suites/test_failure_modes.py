@@ -193,6 +193,93 @@ def test_f7_resurrection():
     assert root.status == "FIRED", "workflow should complete normally with late delivery"
 
 
+# ───────────────────────────────────────────────────────────────────
+# F2: Orphan branch never delivers (simulated via no scripted events)
+# ───────────────────────────────────────────────────────────────────
+
+def test_f2_orphan_proceed():
+    """min_ratio=0.5, proceed. b1 delivers; b2 "hangs" — never scripted.
+    Since we can't realistically time out (mock runtime is synchronous),
+    we simulate by failing b2 explicitly at t=3 so the policy can proceed."""
+    topo = build_topology(
+        nodes=[SimNode("A", is_entry=True), SimNode("B1"), SimNode("B2")],
+        flows=["A -> B1", "A -> B2", "B1 -> A", "B2 -> A"],
+    )
+    policy = ConvergencePolicy(min_ratio=0.5, on_insufficient="proceed",
+                                terminate_orphans=True)
+    events = [
+        SimEvent(t=0, branch_id="main", kind="CREATE_INITIAL",
+                 payload={"task": "q", "entry_agent": "A"}),
+        SimEvent(t=1, branch_id="main", kind="PARALLEL_INVOKE", payload={
+            "invocations": [
+                {"agent": "B1", "request": "", "alias": "b1"},
+                {"agent": "B2", "request": "", "alias": "b2"},
+            ],
+            "fork_alias": "fork_A",
+        }),
+        SimEvent(t=2, branch_id="b1", kind="FINAL_RESPONSE", payload={"value": "B1_ok"}),
+        # Simulate timeout: b2 "fails" because policy allows proceed with partial
+        SimEvent(t=3, branch_id="b2", kind="FAIL", payload={"error": "timeout"}),
+        SimEvent(t=4, branch_id="main", kind="FINAL_RESPONSE", payload={"value": "partial"}),
+    ]
+    run = run_trace(SimTrace(topology=topo, policy=policy, events=events,
+                             assertions=[], name="F2"))
+    root = run.orchestrator.barriers[run.orchestrator.root_barrier_id]
+    assert root.status == "FIRED", f"quorum proceed should fire; got {root.status}"
+
+
+# ───────────────────────────────────────────────────────────────────
+# F6: Abandonment cascade — child of a fork abandons to a convergence,
+# the fork's upstream-chain adopts the convergence, fork eventually fires
+# once the chain's resolver delivers back.
+# ───────────────────────────────────────────────────────────────────
+
+def test_f6_abandonment_cascade():
+    """A → [B1, B2]; B1 → C (conv); C → A. B2 returns to A normally.
+    b1 abandons fork_A to go to conv_C. fork_A adopts conv_C as upstream.
+    When conv_C fires, c_resolver invokes A, delivers to fork_A."""
+    topo = build_topology(
+        nodes=[
+            SimNode("A", is_entry=True),
+            SimNode("B1"), SimNode("B2"),
+            SimNode("C", convergence_mode="force"),
+        ],
+        flows=["A -> B1", "A -> B2", "B1 -> C", "B2 -> A", "C -> A"],
+    )
+    policy = ConvergencePolicy(min_ratio=1.0, on_insufficient="fail",
+                                terminate_orphans=True)
+    events = [
+        SimEvent(t=0, branch_id="main", kind="CREATE_INITIAL",
+                 payload={"task": "q", "entry_agent": "A"}),
+        SimEvent(t=1, branch_id="main", kind="PARALLEL_INVOKE", payload={
+            "invocations": [
+                {"agent": "B1", "request": "", "alias": "b1"},
+                {"agent": "B2", "request": "", "alias": "b2"},
+            ],
+            "fork_alias": "fork_A",
+        }),
+        # b1 → C (delivers to conv_C). b1 abandons fork_A.
+        SimEvent(t=2, branch_id="b1", kind="SINGLE_INVOKE",
+                 payload={"next_agent": "C", "value": "b1_to_C"}),
+        # b2 returns to A (delivers to fork_A).
+        SimEvent(t=2, branch_id="b2", kind="SINGLE_INVOKE",
+                 payload={"next_agent": "A", "value": "b2_to_A"}),
+        # main resumes after fork_A fires
+        SimEvent(t=3, branch_id="main", kind="FINAL_RESPONSE",
+                 payload={"value": "A_final"}),
+    ]
+    sim = Simulator(SimTrace(topology=topo, policy=policy, events=events,
+                             assertions=[], name="F6"))
+    # When conv_C fires, c_resolver invokes A (delivers to fork_A)
+    sim.mock.queue_agent("C", StepResult(
+        kind="SINGLE_INVOKE", next_agent="A", value="C_aggregated",
+    ))
+    run = sim.run()
+    root = run.orchestrator.barriers[run.orchestrator.root_barrier_id]
+    assert root.status == "FIRED", \
+        f"F6 should complete; root={root.status}, err={run.orchestrator._workflow_error}"
+
+
 if __name__ == "__main__":
     test_f1_strict_fail()
     print("F1 strict fail: PASS")
@@ -204,3 +291,7 @@ if __name__ == "__main__":
     print("F5 partial commitment: PASS")
     test_f7_resurrection()
     print("F7 resurrection: PASS")
+    test_f2_orphan_proceed()
+    print("F2 orphan (proceed policy): PASS")
+    test_f6_abandonment_cascade()
+    print("F6 abandonment cascade: PASS")
