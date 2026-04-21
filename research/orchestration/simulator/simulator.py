@@ -290,7 +290,6 @@ class Simulator:
             return StepResult(
                 kind="PARALLEL_INVOKE",
                 invocations=invs,
-                fork_waits_for_chain=evt.payload.get("fork_waits_for_chain", False),
             )
         if evt.kind == "FINAL_RESPONSE":
             return StepResult(kind="FINAL_RESPONSE", value=evt.payload.get("value"))

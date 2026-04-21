@@ -8,7 +8,9 @@ Invariants (see plan §3.5):
   I3. Branch.candidate_of ⊆ barriers reachable from Branch.current_agent.
   I4. Branch terminates in exactly one of {TERMINATED, FAILED, ABANDONED}.
   I5. Every settle is mirrored in every barrier that had the branch as candidate.
-  I6. Barrier fires when candidates == arrived ∪ failed ∪ abandoned (subject to policy).
+  I6. Barrier fires when candidates == arrived ∪ failed (subject to policy).
+      Branches that settle elsewhere are removed from candidates entirely (not
+      tracked as a separate "abandoned" set); pending shrinks as they depart.
   I7. fire(barrier) is idempotent.
   I8. ROOT.inherits_to == None; every other barrier chains to ROOT eventually.
 """
@@ -50,7 +52,6 @@ class StepResult:
     value: Any = None                          # FINAL_RESPONSE
     error: Optional[str] = None                # FAIL
     request: Any = None                        # SINGLE_INVOKE: request passed to next agent
-    fork_waits_for_chain: bool = False         # see plan §7 Q1
 
 
 _branch_id_counter = itertools.count()
@@ -111,19 +112,15 @@ class Barrier:
     candidates: set[str] = field(default_factory=set)
     arrived: dict[str, Any] = field(default_factory=dict)
     failed: dict[str, str] = field(default_factory=dict)
-    abandoned: set[str] = field(default_factory=set)
     # Upstream / downstream barriers (R3 + R4 gating)
     upstream: set[str] = field(default_factory=set)
     downstream: set[str] = field(default_factory=set)
-    # Fork-specific legacy (unused under Model B; kept for compat)
-    fork_waits_for_chain: bool = False
-    fire_deadline: Optional[float] = None
     created_at: float = field(default_factory=time.time)
     metadata: dict[str, Any] = field(default_factory=dict)
 
     def pending(self) -> set[str]:
-        """Branches that have not yet settled (arrived, failed, or abandoned)."""
-        return self.candidates - set(self.arrived) - set(self.failed) - self.abandoned
+        """Branches in candidates that haven't arrived or failed yet."""
+        return self.candidates - set(self.arrived) - set(self.failed)
 
     def is_ready_to_fire(self) -> bool:
         return len(self.pending()) == 0

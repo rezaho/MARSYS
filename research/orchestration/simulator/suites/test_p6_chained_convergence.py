@@ -56,8 +56,8 @@ def build_p6_topology():
             SimNode("B1"),
             SimNode("B2"),
             SimNode("C1"),
-            SimNode("C2", convergence_mode="force"),
-            SimNode("D", convergence_mode="force"),
+            SimNode("C2"),  # auto-detected as convergence
+            SimNode("D"),   # auto-detected as convergence
         ],
         flows=[
             "A -> B1", "A -> B2",
