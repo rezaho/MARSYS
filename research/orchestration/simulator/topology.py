@@ -67,11 +67,16 @@ class SimTopology:
             return True
         if node.convergence_mode == "disabled":
             return False
-        # auto: only if user explicitly marked via is_convergence attr (none
-        # here) OR it's an exit-point style node. Multi-incoming edges alone
-        # is NOT sufficient — return-edges from children look the same as
-        # aggregation arrivals, so auto is conservative.
-        return False
+        # auto: reciprocal-edge subtraction. Multi-incoming edges where at
+        # least 2 incomings have NO reciprocal outgoing is auto-convergence.
+        # This distinguishes aggregation arrivals (P6's C2 receiving from
+        # B1, B2 with no return edges) from fork-rejoin nodes (P1's B1
+        # receiving returns from B11, B12 that it also dispatched to).
+        name = node.name
+        incomings = set(self.reverse_adjacency.get(name, []))
+        outgoings = set(self.adjacency.get(name, []))
+        pure_incomings = incomings - outgoings
+        return len(pure_incomings) > 1
 
     def get_node(self, name: str) -> SimNode:
         for n in self.nodes:
