@@ -57,9 +57,10 @@ def test_f1_strict_fail():
     root = run.orchestrator.barriers[run.orchestrator.root_barrier_id]
     assert root.status != "FIRED" or run.orchestrator._workflow_error is not None, \
         f"strict policy should fail; got root={root.status}, err={run.orchestrator._workflow_error}"
-    # main should be abandoned
+    # main should not have resumed successfully — either it was abandoned
+    # (legacy semantic) or failed via _fire_with_failure (unified semantic).
     main = run.orchestrator.branches[run.alias_map["main"]]
-    assert main.status in ("ABANDONED", "WAITING"), f"main status={main.status}"
+    assert main.status in ("ABANDONED", "WAITING", "FAILED"), f"main status={main.status}"
 
 
 def test_f1_quorum_proceeds():

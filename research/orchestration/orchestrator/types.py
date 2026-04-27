@@ -1,18 +1,31 @@
-"""Core types for the orchestrator.
+"""Core types for the unified-barrier orchestrator.
 
-Two primary objects: Branch (an execution), Barrier (a rendezvous).
+Two primary objects: Branch (an execution thread) and Barrier (a synchronization
+point). There is ONE Barrier type — no FORK/CONVERGENCE/ROOT enum split.
+Two creation paths produce identical structures:
 
-Invariants (see plan §3.5):
-  I1. Every Branch has exactly one delivery_target (barrier_id, never None).
+  (a) parallel_invoke: barrier with resolver_branch = invoking branch (was
+      RUNNING, goes WAITING). rendezvous_node = None.
+  (b) lazy ensure_barrier(N) for a rendezvous node N: barrier with
+      resolver_branch = a freshly-spawned WAITING branch at N.
+      rendezvous_node = N. delivery_target of the resolver computed at
+      creation by topology forward-walk.
+
+ROOT is the unique exception: workflow-terminal sink; resolver_branch is None.
+
+Invariants:
+  I1. Every Branch has exactly one delivery_target (a barrier id).
   I2. Every Barrier is OPEN exactly once and FIRED/CANCELLED exactly once.
-  I3. Branch.candidate_of ⊆ barriers reachable from Branch.current_agent.
-  I4. Branch terminates in exactly one of {TERMINATED, FAILED, ABANDONED}.
-  I5. Every settle is mirrored in every barrier that had the branch as candidate.
-  I6. Barrier fires when candidates == arrived ∪ failed (subject to policy).
-      Branches that settle elsewhere are removed from candidates entirely (not
-      tracked as a separate "abandoned" set); pending shrinks as they depart.
-  I7. fire(barrier) is idempotent.
-  I8. ROOT.inherits_to == None; every other barrier chains to ROOT eventually.
+  I3. Every non-ROOT Barrier has resolver_branch set at creation.
+  I4. Branch settles in exactly one of {TERMINATED, FAILED, ABANDONED}.
+  I5. When a branch settles, every barrier with it as candidate is notified.
+  I6. fire(barrier) is idempotent.
+  I7. arrived ∩ failed = ∅. A source contributes once.
+
+Mixed key namespace: candidates, arrived, failed accept any string id.
+A real branch's contribution is keyed by branch.id. A parallel_invoke's
+dispatch contribution is keyed by the dispatching fork-barrier's id.
+Reverse lookup: id ∈ self.barriers → fork; id ∈ self.branches → branch.
 """
 from __future__ import annotations
 
@@ -22,7 +35,6 @@ from dataclasses import dataclass, field
 from typing import Any, Literal, Optional
 
 BranchStatus = Literal["RUNNING", "WAITING", "TERMINATED", "FAILED", "ABANDONED"]
-BarrierKind = Literal["FORK", "CONVERGENCE", "ROOT"]
 BarrierStatus = Literal["OPEN", "FIRED", "CANCELLED"]
 
 StepKind = Literal[
@@ -42,16 +54,13 @@ class Invocation:
 
 @dataclass
 class StepResult:
-    """What the runtime returns for one branch tick.
-
-    The orchestrator's `interpret` consumes this and updates state accordingly.
-    """
+    """What the runtime returns for one branch tick."""
     kind: StepKind
-    next_agent: Optional[str] = None           # SINGLE_INVOKE
-    invocations: list[Invocation] = field(default_factory=list)  # PARALLEL_INVOKE
-    value: Any = None                          # FINAL_RESPONSE
-    error: Optional[str] = None                # FAIL
-    request: Any = None                        # SINGLE_INVOKE: request passed to next agent
+    next_agent: Optional[str] = None
+    invocations: list[Invocation] = field(default_factory=list)
+    value: Any = None
+    error: Optional[str] = None
+    request: Any = None
 
 
 _branch_id_counter = itertools.count()
@@ -102,40 +111,53 @@ class ConvergencePolicy:
 @dataclass
 class Barrier:
     id: str
-    kind: BarrierKind
     policy: ConvergencePolicy
     status: BarrierStatus = "OPEN"
-    resolver_agent: Optional[str] = None       # CONVERGENCE kind
-    resolver_branch: Optional[str] = None      # FORK kind
-    convergence_node: Optional[str] = None     # CONVERGENCE kind
-    inherits_to: Optional[str] = None          # barrier_id (None for ROOT)
+
+    # The resolver_branch wakes when this barrier fires. None only for ROOT.
+    resolver_branch: Optional[str] = None
+    # The agent the resolver runs at. Mirrors resolver_branch.current_agent
+    # but kept as a separate field for fast lookup.
+    resolver_agent: Optional[str] = None
+    # Set when barrier was created at a rendezvous node (lazy ensure_barrier).
+    # None for parallel_invoke barriers (forks by origin).
+    rendezvous_node: Optional[str] = None
+
     candidates: set[str] = field(default_factory=set)
     arrived: dict[str, Any] = field(default_factory=dict)
     failed: dict[str, str] = field(default_factory=dict)
-    # Upstream / downstream barriers (R3 + R4 gating)
     upstream: set[str] = field(default_factory=set)
     downstream: set[str] = field(default_factory=set)
     created_at: float = field(default_factory=time.time)
     metadata: dict[str, Any] = field(default_factory=dict)
 
+    @property
+    def is_root(self) -> bool:
+        return self.resolver_branch is None and self.rendezvous_node is None
+
+    @property
+    def kind(self) -> str:
+        """Informational only — for tests and debugging. The orchestrator
+        does not branch on this."""
+        if self.is_root:
+            return "ROOT"
+        if self.rendezvous_node is not None:
+            return "CONVERGENCE"
+        return "FORK"
+
+    @property
+    def convergence_node(self) -> Optional[str]:
+        """Backward-compat alias for rendezvous_node."""
+        return self.rendezvous_node
+
     def pending(self) -> set[str]:
-        """Branches in candidates that haven't arrived or failed yet."""
+        """Sources in candidates that haven't arrived or failed yet."""
         return self.candidates - set(self.arrived) - set(self.failed)
 
     def is_ready_to_fire(self) -> bool:
         return len(self.pending()) == 0
 
     def arrival_ratio(self) -> float:
-        """Ratio of arrived / (arrived + failed).
-
-        Abandoned candidates do NOT count in the denominator: if a branch
-        settled at a different barrier, that's semantically 'it went elsewhere,'
-        not 'it failed to arrive here.' The chain continues through the
-        barrier that branch delivered to.
-
-        If nothing arrived or failed, the barrier is vestigial (handled
-        separately in _maybe_fire).
-        """
         committed = len(self.arrived) + len(self.failed)
         if committed == 0:
             return 0.0

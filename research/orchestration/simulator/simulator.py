@@ -149,7 +149,7 @@ class Simulator:
         if entry_agent is None:
             raise ValueError("No entry agent specified")
 
-        root = self.orch._new_barrier(kind="ROOT", policy=self.orch.policy)
+        root = self.orch._new_root_barrier()
         self.orch.root_barrier_id = root.id
         first = self.orch._spawn(
             agent=entry_agent,
