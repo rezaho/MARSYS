@@ -8,6 +8,7 @@ from __future__ import annotations
 
 from research.orchestration.orchestrator.types import StepResult
 from research.orchestration.simulator.simulator import Simulator, run_trace
+from research.orchestration.simulator.det_nodes import StartNode
 from research.orchestration.simulator.topology import SimNode, build_topology
 from research.orchestration.simulator.trace import (
     ConvergencePolicy,
@@ -23,8 +24,8 @@ from research.orchestration.simulator.trace import (
 
 def _f1_topology():
     return build_topology(
-        nodes=[SimNode("A", is_entry=True), SimNode("B1"), SimNode("B2")],
-        flows=["A -> B1", "A -> B2", "B1 -> A", "B2 -> A"],
+        nodes=[StartNode(), SimNode("A"), SimNode("B1"), SimNode("B2")],
+        flows=["Start -> A", "A -> B1", "A -> B2", "B1 -> A", "B2 -> A"],
     )
 
 
@@ -115,12 +116,13 @@ def test_f5_partial_commitment():
     candidate (b2) abandons elsewhere."""
     topo = build_topology(
         nodes=[
-            SimNode("A", is_entry=True),
+            StartNode(),
+            SimNode("A"),
             SimNode("B1"), SimNode("B2"),
             SimNode("D", convergence_mode="force"),
             SimNode("Alt"),
         ],
-        flows=["A -> B1", "A -> B2", "B1 -> D", "B2 -> D", "B2 -> Alt"],
+        flows=["Start -> A", "A -> B1", "A -> B2", "B1 -> D", "B2 -> D", "B2 -> Alt"],
     )
     policy = ConvergencePolicy(min_ratio=1.0, on_insufficient="fail", terminate_orphans=True)
     events = [
@@ -166,8 +168,8 @@ def test_f7_resurrection():
     delivers fast and fires, the second's delivery arrives late → should
     be gracefully marked ABANDONED, not crash."""
     topo = build_topology(
-        nodes=[SimNode("A", is_entry=True), SimNode("B1"), SimNode("B2")],
-        flows=["A -> B1", "A -> B2", "B1 -> A", "B2 -> A"],
+        nodes=[StartNode(), SimNode("A"), SimNode("B1"), SimNode("B2")],
+        flows=["Start -> A", "A -> B1", "A -> B2", "B1 -> A", "B2 -> A"],
     )
     policy = ConvergencePolicy(min_ratio=0.5, on_insufficient="proceed", terminate_orphans=False)
     events = [
@@ -203,8 +205,8 @@ def test_f2_orphan_proceed():
     Since we can't realistically time out (mock runtime is synchronous),
     we simulate by failing b2 explicitly at t=3 so the policy can proceed."""
     topo = build_topology(
-        nodes=[SimNode("A", is_entry=True), SimNode("B1"), SimNode("B2")],
-        flows=["A -> B1", "A -> B2", "B1 -> A", "B2 -> A"],
+        nodes=[StartNode(), SimNode("A"), SimNode("B1"), SimNode("B2")],
+        flows=["Start -> A", "A -> B1", "A -> B2", "B1 -> A", "B2 -> A"],
     )
     policy = ConvergencePolicy(min_ratio=0.5, on_insufficient="proceed",
                                 terminate_orphans=True)
@@ -241,11 +243,12 @@ def test_f6_abandonment_cascade():
     When conv_C fires, c_resolver invokes A, delivers to fork_A."""
     topo = build_topology(
         nodes=[
-            SimNode("A", is_entry=True),
+            StartNode(),
+            SimNode("A"),
             SimNode("B1"), SimNode("B2"),
             SimNode("C", convergence_mode="force"),
         ],
-        flows=["A -> B1", "A -> B2", "B1 -> C", "B2 -> A", "C -> A"],
+        flows=["Start -> A", "A -> B1", "A -> B2", "B1 -> C", "B2 -> A", "C -> A"],
     )
     policy = ConvergencePolicy(min_ratio=1.0, on_insufficient="fail",
                                 terminate_orphans=True)

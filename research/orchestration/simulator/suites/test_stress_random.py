@@ -25,9 +25,11 @@ from research.orchestration.simulator.trace import (
 
 def _gen_topology(seed: int, n_nodes: int = 10, n_convergences: int = 2):
     """Generate a random topology with a tree-like spine plus optional
-    convergence edges. Entry is 'root'."""
+    convergence edges. Entry is 'root'; topology has explicit Start node
+    with edge to root."""
+    from research.orchestration.simulator.det_nodes import StartNode
     rng = random.Random(seed)
-    nodes: list[SimNode] = [SimNode("root", is_entry=True)]
+    nodes: list = [StartNode(), SimNode("root")]
     # Build a tree by random parent choice
     names = ["root"]
     for i in range(1, n_nodes):
@@ -36,7 +38,7 @@ def _gen_topology(seed: int, n_nodes: int = 10, n_convergences: int = 2):
         is_conv = i in rng.sample(range(1, n_nodes), min(n_convergences, n_nodes - 1))
         nodes.append(SimNode(name, convergence_mode="force" if is_conv else "auto"))
 
-    flows = []
+    flows = [("Start", "root")]
     parents: dict[str, str] = {}
     for i, name in enumerate(names[1:], 1):
         parent = rng.choice(names[:i])
@@ -60,11 +62,11 @@ def _gen_scripts(sim: Simulator, topo, rng: random.Random, max_depth: int = 3):
     of: FINAL_RESPONSE, SINGLE_INVOKE to a random successor, or (non-leaf
     only) PARALLEL_INVOKE to some successors. Depth-limited to prevent
     runaway recursion."""
+    from research.orchestration.simulator.det_nodes import SimDeterministicNode
     for node in topo.nodes:
         name = node.name
-        if node.is_terminal:
-            sim.mock.queue_agent(name, StepResult(
-                kind="FINAL_RESPONSE", value=f"{name}_terminal"))
+        # Skip det-nodes: they don't run scripts (handlers run inline).
+        if isinstance(node, SimDeterministicNode):
             continue
         succ = topo.successors(name)
         if not succ:

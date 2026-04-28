@@ -35,21 +35,22 @@ from research.orchestration.simulator.trace import (
 
 
 def build_p11_topology():
+    from research.orchestration.simulator.det_nodes import EndNode, StartNode
     return build_topology(
         nodes=[
-            SimNode("Start", is_entry=True),
+            StartNode(),
             SimNode("A"),
             SimNode("B1"),
             SimNode("B2"),
             SimNode("C"),
-            SimNode("Final", is_terminal=True),
+            EndNode(),
         ],
         flows=[
             "Start -> A",
             "A -> B1", "A -> B2",
             "B1 -> C", "B2 -> C",
             "C -> A",         # loop
-            "C -> Final",     # terminate
+            "C -> End",       # terminate via End det-node
         ],
     )
 

@@ -19,6 +19,7 @@ We run one trace and check:
 """
 from __future__ import annotations
 
+from research.orchestration.simulator.det_nodes import StartNode
 from research.orchestration.simulator.simulator import run_trace
 from research.orchestration.simulator.topology import SimNode, build_topology
 from research.orchestration.simulator.trace import (
@@ -32,7 +33,8 @@ from research.orchestration.simulator.trace import (
 def build_p1_topology():
     return build_topology(
         nodes=[
-            SimNode("A", is_entry=True),
+            StartNode(),
+            SimNode("A"),
             SimNode("B1"),
             SimNode("B2"),
             SimNode("B11"),
@@ -41,6 +43,7 @@ def build_p1_topology():
             SimNode("B22"),
         ],
         flows=[
+            "Start -> A",
             "A -> B1", "A -> B2",
             "B1 -> B11", "B1 -> B12",
             "B2 -> B21", "B2 -> B22",

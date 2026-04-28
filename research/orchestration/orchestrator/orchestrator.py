@@ -1,44 +1,56 @@
-"""Unified-barrier orchestrator.
+"""Unified-barrier orchestrator with deterministic-node architecture.
 
 One Barrier type. Two creation paths produce identical structures:
 
   (a) parallel_invoke creates a barrier with `resolver_branch` = invoking
       branch (was RUNNING, transitions to WAITING). `rendezvous_node` is None.
   (b) ensure_barrier(N) creates a barrier at rendezvous node N, lazily,
-      with `resolver_branch` = a freshly-spawned WAITING branch at N. The
-      resolver's delivery_target is computed by topology forward-walk.
+      with `resolver_branch` = a freshly-spawned WAITING branch at N.
 
 ROOT is the unique exception: workflow-terminal sink with no resolver_branch.
 
-Step semantics:
+Two node categories in topology:
+  - Agent nodes (`SimNode`): LLM-running.
+  - Deterministic nodes (`SimDeterministicNode` subclasses, e.g., StartNode,
+    EndNode): non-LLM. Specific behavior on invocation. Don't spawn branches.
 
-  NOOP:       re-queue.
+Workflow boundaries:
+  - StartNode (required): orchestrator invokes `start.on_workflow_start(ctx, task)`
+    on `run()`. Start dispatches to its outgoing edges. Replaces `is_entry`.
+  - EndNode (optional): agents invoke explicitly via SINGLE_INVOKE or as a
+    PARALLEL_INVOKE target. End delivers to ROOT.
+
+Step semantics:
+  NOOP:                re-queue.
   SINGLE_INVOKE(Y, value):
-    1. Y has open barrier bar_Y → _deliver(br, bar_Y, value); branch terminates.
-    2. Y is a rendezvous and no open barrier → ensure_barrier(Y), then deliver.
-    3. Otherwise → transition: br.current_agent = Y, refresh reach, re-queue.
+    1. Y is a det-node → det_node.on_single_invoke(ctx, branch, value).
+    2. Y has open barrier → _deliver(br, bar, value); branch terminates.
+    3. Y is rendezvous and no open barrier → ensure_barrier(Y) + deliver.
+    4. Otherwise → transition: br.current_agent = Y, refresh reach, re-queue.
   PARALLEL_INVOKE([invocations]):
-    1. Create fork_X with resolver_branch = self. Self → WAITING. Unregister
+    1. Create fork with resolver_branch = self. self → WAITING. Unregister
        from non-keep barriers.
     2. For each invocation T:
-       - If T has open barrier (or is rendezvous → ensure_barrier(T)):
-         dispatch — record bar_T.arrived[fork_X.id] = req. Wire upstream.
-       - Else: spawn child at T, delivery_target = fork_X. Add to candidates.
+       - T is det-node → det_node.on_dispatch(ctx, fork, request).
+       - T has open barrier (or rendezvous → ensure): _dispatch(fork, bar, request).
+       - Else: spawn child at T, delivery_target = fork.
   FINAL_RESPONSE(value):  _deliver(br, br.delivery_target, value).
   FAIL(error):            _fail_to(br, error).
 
 Fire gates (unified, single path):
   - status == OPEN.
-  - Upstream all FIRED/CANCELLED. If any upstream FIRED-with-failure → cascade.
+  - ROOT defer (Fix 1): if bar.is_root and any branch RUNNING/WAITING → defer.
+  - Upstream all FIRED/CANCELLED. If any FIRED-with-failure → cascade.
   - Pending == ∅.
-  - If arrived ∪ failed empty AND not ROOT → vestigial cancel.
+  - If arrived ∪ failed empty AND not ROOT → vestigial (defer if upstream
+    resolver active; else cancel).
   - Ratio: |arrived| / (|arrived| + |failed|) ≥ min_ratio. Else fire-with-failure.
-  - Else fire(bar): status FIRED; orphan-terminate; wake resolver_branch with
-    aggregated input.
+  - Else fire(bar): status FIRED; orphan-terminate; wake resolver_branch.
 
 Failure cascade:
   fire-with-failure → _fail_to(resolver, error) → records failure at resolver's
-  delivery_target → that barrier re-checks → cascades up the wait-graph.
+  delivery_target → cascades up the wait-graph → ROOT fires-with-failure →
+  _workflow_error set.
 """
 from __future__ import annotations
 
@@ -65,11 +77,12 @@ MAX_STEPS_DEFAULT = 200
 class TopologyLike(Protocol):
     def is_convergence(self, name: str) -> bool: ...
     def is_terminal(self, name: str) -> bool: ...
+    def is_det_node(self, name: str) -> bool: ...
+    def get_det_node(self, name: str): ...
+    def get_start_node(self): ...
     def successors(self, name: str) -> list[str]: ...
     def reachable_convergence_points(self, agent: str) -> frozenset[str]: ...
     def predecessor_convergences(self, cnode: str) -> frozenset[str]: ...
-    @property
-    def entry(self) -> Optional[str]: ...
 
 
 class Runtime(Protocol):
@@ -86,6 +99,10 @@ class WorkflowResult:
 
 
 class Orchestrator:
+    """Unified-barrier orchestrator. Implements `DetNodeContext` Protocol so
+    deterministic-node handlers (StartNode, EndNode, future UserNode) can
+    interact through a narrow API."""
+
     def __init__(
         self,
         topology: TopologyLike,
@@ -107,25 +124,49 @@ class Orchestrator:
         self.root_barrier_id: Optional[str] = None
         self._workflow_error: Optional[str] = None
 
-    # ── Public API ──────────────────────────────────────────────────────
+    # ══════════════════════════════════════════════════════════════════
+    # Public API
+    # ══════════════════════════════════════════════════════════════════
 
-    def run(self, task: Any = None, entry_agent: Optional[str] = None) -> WorkflowResult:
-        entry = entry_agent or self.topology.entry
-        if entry is None:
-            raise ValueError("No entry agent")
+    def init_workflow(
+        self, task: Any = None, entry_agent: Optional[str] = None
+    ) -> list[str]:
+        """Initialize workflow state: create ROOT, invoke Start (or use the
+        entry_agent override). Returns the ids of all entry branches spawned.
 
+        Used by `run()` and external drivers (the simulator). The optional
+        `entry_agent` bypasses Start for tests that need to spawn directly
+        at a specific agent."""
+        if self.root_barrier_id is not None:
+            raise RuntimeError("workflow already initialized")
         root = self._new_root_barrier()
         self.root_barrier_id = root.id
-        entry_br = self._spawn(
-            agent=entry,
-            input=task,
-            delivery_target=root.id,
-            parent_spawn=None,
-        )
-        if entry_br is not None:
-            root.candidates.add(entry_br.id)
-            entry_br.candidate_of.add(root.id)
+
+        pre_branches = set(self.branches.keys())
+
+        if entry_agent is not None:
+            br = self._spawn(
+                agent=entry_agent, input=task,
+                delivery_target=root.id, parent_spawn=None,
+            )
+            if br is not None:
+                root.candidates.add(br.id)
+                br.candidate_of.add(root.id)
+        else:
+            start = self.topology.get_start_node()
+            if start is None:
+                raise ValueError(
+                    "topology has no StartNode and no entry_agent provided"
+                )
+            start.on_workflow_start(self, task)
+
         self._drain_fires()
+        return [bid for bid in self.branches if bid not in pre_branches]
+
+    def run(self, task: Any = None, entry_agent: Optional[str] = None) -> WorkflowResult:
+        """Run the workflow. Topology must contain a StartNode unless
+        `entry_agent` overrides."""
+        self.init_workflow(task, entry_agent=entry_agent)
 
         while self.runnable and self._workflow_error is None:
             bid = self.runnable.popleft()
@@ -148,7 +189,59 @@ class Orchestrator:
                 return True
         return False
 
-    # ── Branch lifecycle ────────────────────────────────────────────────
+    # ══════════════════════════════════════════════════════════════════
+    # DetNodeContext implementation
+    # ══════════════════════════════════════════════════════════════════
+    # The Orchestrator implements the DetNodeContext Protocol; det-nodes
+    # call these methods through the protocol, not orchestrator internals.
+
+    def deliver(self, branch: Branch, target_barrier_id: str, value: Any) -> None:
+        self._deliver(branch, target_barrier_id, value)
+
+    def dispatch(self, fork: Barrier, target_barrier_id: str, request: Any) -> None:
+        self._dispatch(fork, target_barrier_id, request)
+
+    def deliver_to_root(self, branch: Branch, value: Any) -> None:
+        assert self.root_barrier_id is not None
+        self._deliver(branch, self.root_barrier_id, value)
+
+    def dispatch_to_root(self, fork: Barrier, request: Any) -> None:
+        """Side-dispatch from a fork to ROOT (End-style fire-and-forget).
+        Does NOT wire fork.upstream — ROOT is the workflow sink, not a sync
+        gate. Fork continues waiting only for its own children."""
+        assert self.root_barrier_id is not None
+        root = self.barriers[self.root_barrier_id]
+        if root.status != "OPEN":
+            logger.warning("dispatch_to_root from %s skipped (root status=%s)",
+                           fork.id, root.status)
+            return
+        root.candidates.add(fork.id)
+        root.arrived[fork.id] = request
+        self._fire_queue.append(self.root_barrier_id)
+
+    def fail(self, branch: Branch, error: str) -> None:
+        self._fail_to(branch, error)
+
+    def spawn_branch_at(
+        self, agent: str, input: Any, delivery_target: str
+    ) -> Branch:
+        """Spawn a fresh branch at `agent`. Used by StartNode at workflow
+        start. The branch is RUNNING, registered in delivery_target's
+        candidates, no parent_spawn (entry branches)."""
+        br = self._spawn(
+            agent=agent, input=input, delivery_target=delivery_target,
+            parent_spawn=None,
+        )
+        assert br is not None
+        target = self.barriers.get(delivery_target)
+        if target is not None and target.status == "OPEN":
+            target.candidates.add(br.id)
+            br.candidate_of.add(delivery_target)
+        return br
+
+    # ══════════════════════════════════════════════════════════════════
+    # Branch lifecycle
+    # ══════════════════════════════════════════════════════════════════
 
     def _spawn(
         self,
@@ -181,16 +274,6 @@ class Orchestrator:
         if br.step_count > self.max_steps:
             self._fail_to(br, f"max_steps ({self.max_steps}) exceeded")
             return
-        # Validate delivery_target: if the target barrier has closed since
-        # this branch was spawned (e.g., loop iteration retired the barrier
-        # this branch's dt was forward-walked into), recompute via current
-        # forward-walk so a future FINAL_RESPONSE doesn't drop into a fired
-        # barrier.
-        dt_bar = self.barriers.get(br.delivery_target)
-        if dt_bar is None or dt_bar.status != "OPEN":
-            new_dt = self._compute_delivery_target(
-                br.current_agent, exclude=br.parent_spawn or "")
-            br.delivery_target = new_dt
         try:
             step = self.runtime.step(br)
         except Exception as e:  # pragma: no cover
@@ -224,47 +307,62 @@ class Orchestrator:
 
         raise ValueError(f"Unknown step kind: {step.kind}")
 
-    # ── Step interpreters ───────────────────────────────────────────────
+    # ══════════════════════════════════════════════════════════════════
+    # Step interpreters
+    # ══════════════════════════════════════════════════════════════════
 
     def _handle_single_invoke(self, br: Branch, Y: str, value: Any) -> None:
-        """Three cases: open barrier at Y → deliver; rendezvous Y → ensure +
-        deliver; otherwise → transition."""
-        # An open barrier at Y exists if either (a) some branch is WAITING
-        # at Y as a fork resolver, or (b) Y is a rendezvous with an open
-        # barrier already created.
+        """Four cases in priority order:
+          1. Y is a det-node → det_node.on_single_invoke(ctx, branch, value).
+          2. Y has open barrier → deliver.
+          3. Y is rendezvous → ensure barrier + deliver.
+          4. Else → plain transition.
+        """
+        # 1. Det-node check first — agent is invoking a non-LLM node by name.
+        det_node = self.topology.get_det_node(Y)
+        if det_node is not None:
+            det_node.on_single_invoke(self, br, value)
+            return
+
+        # 2. Existing open barrier at Y (fork resolver waiting there, or
+        #    open rendezvous barrier).
         bar_id = self._open_barrier_at(Y)
         if bar_id is not None:
             self._deliver(br, bar_id, value)
             return
 
+        # 3. Y is a rendezvous → ensure_barrier + deliver.
         if self.topology.is_convergence(Y):
             bar_id = self._ensure_barrier(Y)
             self._deliver(br, bar_id, value)
             return
 
-        # Plain transition
+        # 4. Plain transition.
         br.current_agent = Y
         br.input = value
         self._refresh_reachable(br)
         self.runnable.append(br.id)
 
     def _handle_parallel_invoke(self, br: Branch, invocations: list[Invocation]) -> None:
-        """Always create a fork barrier with `br` as resolver. For each
-        invocation: dispatch (target has barrier → record contribution
-        keyed by fork.id) or spawn (regular target → child branch added
-        to fork.candidates).
-        """
+        """Always create a fork barrier with `br` as resolver. Per invocation:
+        det-node target → det_node.on_dispatch; existing barrier or rendezvous
+        target → dispatch; regular agent target → spawn child."""
         fork = self._new_fork_barrier(resolver_branch=br.id, resolver_agent=br.current_agent)
         br.status = "WAITING"
         br.waiting_on = fork.id
-        # R1: unregister from non-keep barriers (br won't arrive elsewhere
-        # while waiting).
         delivered = {bid for bid in br.candidate_of
                      if bid in self.barriers and br.id in self.barriers[bid].arrived}
         keep = {fork.id, br.delivery_target} | delivered
         self._unregister(br, keep=keep)
 
         for inv in invocations:
+            # 1. Det-node target — use its handler.
+            det_node = self.topology.get_det_node(inv.agent)
+            if det_node is not None:
+                det_node.on_dispatch(self, fork, inv.request)
+                continue
+
+            # 2. Existing open barrier or rendezvous → dispatch.
             target_bar_id = self._open_barrier_at(inv.agent)
             if target_bar_id is None and self.topology.is_convergence(inv.agent):
                 target_bar_id = self._ensure_barrier(inv.agent)
@@ -272,6 +370,7 @@ class Orchestrator:
             if target_bar_id is not None:
                 self._dispatch(fork, target_bar_id, inv.request)
             else:
+                # 3. Regular agent target → spawn child.
                 child = self._spawn(
                     agent=inv.agent,
                     input=inv.request,
@@ -284,10 +383,9 @@ class Orchestrator:
 
     def _dispatch(self, fork: Barrier, target_bar_id: str, request: Any) -> None:
         """Record fork's contribution at the target barrier and wire upstream.
-        Source key is fork.id (the dispatching barrier's id)."""
+        Source key is fork.id."""
         target = self.barriers[target_bar_id]
         if target.status != "OPEN":
-            # Late dispatch — barrier already resolved. Skip (logged).
             logger.warning("dispatch from %s to fired barrier %s skipped",
                            fork.id, target_bar_id)
             return
@@ -295,10 +393,8 @@ class Orchestrator:
         target.arrived[fork.id] = request
         fork.upstream.add(target_bar_id)
         target.downstream.add(fork.id)
-        # If fork's resolver was already a candidate of the target, remove it:
-        # fork's dispatch now represents the resolver's contribution. Without
-        # this, target waits for resolver, resolver waits for fork, fork waits
-        # for target — circular deadlock.
+        # Deadlock break: fork's resolver shouldn't be a pending candidate
+        # of target (would create circular wait).
         resolver_id = fork.resolver_branch
         if (
             resolver_id is not None
@@ -312,12 +408,13 @@ class Orchestrator:
                 resolver.candidate_of.discard(target_bar_id)
         self._fire_queue.append(target_bar_id)
 
-    # ── Delivery & failure ──────────────────────────────────────────────
+    # ══════════════════════════════════════════════════════════════════
+    # Delivery & failure
+    # ══════════════════════════════════════════════════════════════════
 
     def _notify_resolver_settled(self, br: Branch) -> None:
-        """If br is a resolver_branch of some barrier, re-queue that barrier's
-        downstream so deferred fire-checks can re-evaluate (the upstream's
-        resolver is no longer active)."""
+        """When a resolver settles, re-queue its barrier's downstream so
+        deferred fire-checks can re-evaluate."""
         if br.parent_spawn is None:
             return
         parent_bar = self.barriers.get(br.parent_spawn)
@@ -326,6 +423,15 @@ class Orchestrator:
         for d_id in parent_bar.downstream:
             self._fire_queue.append(d_id)
 
+    def _notify_branch_settled(self, br: Branch) -> None:
+        """Re-trigger ROOT fire-check when any branch settles. Fix 1 makes
+        ROOT defer until all branches settled; we need to re-check after
+        each settle event."""
+        if self.root_barrier_id is not None:
+            root = self.barriers.get(self.root_barrier_id)
+            if root is not None and root.status == "OPEN":
+                self._fire_queue.append(self.root_barrier_id)
+
     def _deliver(self, br: Branch, bar_id: str, value: Any) -> None:
         """Record br's terminal value at bar_id; mark TERMINATED; cascade."""
         bar = self.barriers[bar_id]
@@ -333,34 +439,28 @@ class Orchestrator:
             br.status = "ABANDONED"
             self._unregister(br, keep=set())
             self._notify_resolver_settled(br)
+            self._notify_branch_settled(br)
             return
         bar.arrived[br.id] = value
         bar.candidates.add(br.id)
         br.status = "TERMINATED"
-        # Inline upstream wiring: for every fork-barrier this branch was a
-        # candidate of (other than where it just arrived), if the arrival
-        # is at a rendezvous, the fork should wait for that rendezvous.
+        # Inline upstream wiring: when leaving a fork to land at a rendezvous,
+        # the fork should wait for that rendezvous chain to complete.
         for other_id in list(br.candidate_of - {bar_id}):
             other = self.barriers.get(other_id)
             if other is None or other.status != "OPEN":
                 br.candidate_of.discard(other_id)
                 continue
             if br.id in other.arrived or br.id in other.failed:
-                # Already settled here per R2; just unlink the membership tracker
                 br.candidate_of.discard(other_id)
                 continue
             other.candidates.discard(br.id)
             br.candidate_of.discard(other_id)
-            # Wire fork → rendezvous as upstream when leaving a fork-by-origin
             if other.rendezvous_node is None and other.resolver_branch is not None:
                 if bar.rendezvous_node is not None:
                     other.upstream.add(bar.id)
                     bar.downstream.add(other.id)
-                    # The fork's resolver (the parent branch) is no longer
-                    # an independent contributor to `bar` — its children's
-                    # arrivals there are its contribution. Leaving it as a
-                    # pending candidate creates a circular deadlock
-                    # (fork waits on bar, bar waits on fork.resolver_branch).
+                    # Resolver-as-candidate-of-target deadlock break.
                     resolver_id = other.resolver_branch
                     if (
                         resolver_id in bar.candidates
@@ -372,9 +472,9 @@ class Orchestrator:
                         if resolver is not None:
                             resolver.candidate_of.discard(bar.id)
             self._fire_queue.append(other_id)
-        # Keep br in the delivered-to barrier's candidates per R2
         self._fire_queue.append(bar.id)
         self._notify_resolver_settled(br)
+        self._notify_branch_settled(br)
 
     def _fail_to(self, br: Branch, error: str) -> None:
         """Mark br FAILED and record a failure at its delivery_target."""
@@ -384,11 +484,11 @@ class Orchestrator:
             br.status = "FAILED"
             self._unregister(br, keep=set())
             self._notify_resolver_settled(br)
+            self._notify_branch_settled(br)
             return
         bar.failed[br.id] = error
         bar.candidates.add(br.id)
         br.status = "FAILED"
-        # Same inline wiring as _deliver
         for other_id in list(br.candidate_of - {target_id}):
             other = self.barriers.get(other_id)
             if other is None or other.status != "OPEN":
@@ -402,8 +502,11 @@ class Orchestrator:
             self._fire_queue.append(other_id)
         self._fire_queue.append(bar.id)
         self._notify_resolver_settled(br)
+        self._notify_branch_settled(br)
 
-    # ── Registration (reach-based) ──────────────────────────────────────
+    # ══════════════════════════════════════════════════════════════════
+    # Registration (reach-based)
+    # ══════════════════════════════════════════════════════════════════
 
     def _register(self, br: Branch) -> None:
         """Add br as candidate of every reachable rendezvous barrier from
@@ -430,7 +533,7 @@ class Orchestrator:
             if bar is None or bar.status != "OPEN":
                 continue
             if bar.rendezvous_node is None:
-                continue  # Fork barrier — not topology-reachable, leave alone
+                continue
             if bar.rendezvous_node not in new_reach:
                 if br.id in bar.arrived or br.id in bar.failed:
                     continue
@@ -463,7 +566,9 @@ class Orchestrator:
             br.candidate_of.discard(bar_id)
             self._fire_queue.append(bar_id)
 
-    # ── Barrier creation ────────────────────────────────────────────────
+    # ══════════════════════════════════════════════════════════════════
+    # Barrier creation
+    # ══════════════════════════════════════════════════════════════════
 
     def _new_root_barrier(self) -> Barrier:
         bar = Barrier(id=new_barrier_id(), policy=self.policy)
@@ -482,9 +587,9 @@ class Orchestrator:
         return bar
 
     def _ensure_barrier(self, cnode: str) -> str:
-        """Return id of an open rendezvous barrier at `cnode`, creating one
-        lazily if needed. Eagerly spawns a WAITING resolver branch at cnode
-        with a forward-walk-derived delivery_target."""
+        """Get-or-create the open rendezvous barrier at `cnode`. New barriers
+        are spawned with a WAITING resolver branch and a forward-walked
+        delivery_target."""
         existing = self.convergence_barriers.get(cnode)
         if existing is not None and self.barriers[existing].status == "OPEN":
             return existing
@@ -492,15 +597,13 @@ class Orchestrator:
         bar = Barrier(
             id=new_barrier_id(),
             policy=self.policy,
-            resolver_branch=None,  # set below
+            resolver_branch=None,
             resolver_agent=cnode,
             rendezvous_node=cnode,
         )
         self.barriers[bar.id] = bar
         self.convergence_barriers[cnode] = bar.id
 
-        # Wire upstream from topology preds. Register self FIRST so cycle
-        # recursion finds the existing entry and breaks.
         for pred in self.topology.predecessor_convergences(cnode):
             up_id = self._ensure_barrier(pred)
             if up_id == bar.id:
@@ -510,7 +613,6 @@ class Orchestrator:
                 bar.upstream.add(up_id)
                 up_bar.downstream.add(bar.id)
 
-        # Spawn resolver WAITING from creation
         delivery_target = self._compute_delivery_target(cnode, exclude=bar.id)
         resolver = self._spawn(
             agent=cnode,
@@ -526,12 +628,8 @@ class Orchestrator:
         return bar.id
 
     def _open_barrier_at(self, agent: str) -> Optional[str]:
-        """An agent has an open barrier if either:
-          (a) A fork's resolver_branch.current_agent == agent, OR
-          (b) A rendezvous barrier at agent is open.
-        Priority: fork over rendezvous (when both, fork takes precedence
-        because main is currently waiting THERE)."""
-        # Check forks first
+        """Find an open barrier at `agent`: a fork with resolver there, or a
+        rendezvous barrier camped there. Forks take precedence."""
         for bar in self.barriers.values():
             if (
                 bar.status == "OPEN"
@@ -542,7 +640,6 @@ class Orchestrator:
                 rb = self.branches.get(bar.resolver_branch)
                 if rb is not None and rb.current_agent == agent:
                     return bar.id
-        # Then rendezvous
         existing = self.convergence_barriers.get(agent)
         if existing is not None and self.barriers[existing].status == "OPEN":
             return existing
@@ -550,9 +647,8 @@ class Orchestrator:
 
     def _compute_delivery_target(self, node: str, exclude: str) -> str:
         """Forward-walk from `node`'s successors to find where a branch at
-        `node` ultimately routes. Returns: open barrier at next agent, or
-        next rendezvous (lazily ensured), or ROOT.
-        `exclude` is the barrier we're computing FOR (don't return it)."""
+        `node` should ultimately deliver. Returns the first match: open fork
+        at successor / next rendezvous (lazily ensured) / ROOT."""
         assert self.root_barrier_id is not None
         visited: set[str] = {node}
         queue: collections.deque[str] = collections.deque(self.topology.successors(node))
@@ -561,8 +657,6 @@ class Orchestrator:
             if n in visited:
                 continue
             visited.add(n)
-            # Open barrier (fork resolver at n) takes precedence over
-            # creating a new rendezvous barrier downstream.
             for bar in self.barriers.values():
                 if (
                     bar.status == "OPEN"
@@ -578,12 +672,12 @@ class Orchestrator:
                 ensured = self._ensure_barrier(n)
                 if ensured != exclude:
                     return ensured
-            if self.topology.is_terminal(n):
-                return self.root_barrier_id
             queue.extend(self.topology.successors(n))
         return self.root_barrier_id
 
-    # ── Fire ────────────────────────────────────────────────────────────
+    # ══════════════════════════════════════════════════════════════════
+    # Fire
+    # ══════════════════════════════════════════════════════════════════
 
     def _drain_fires(self) -> None:
         safety = 0
@@ -600,6 +694,17 @@ class Orchestrator:
     def _maybe_fire(self, bar: Barrier) -> None:
         if bar.status != "OPEN":
             return
+
+        # Fix 1: ROOT defers firing while any branch is RUNNING/WAITING.
+        # Re-triggered via _notify_branch_settled when branches settle.
+        if bar.is_root:
+            any_active = any(
+                br.status in ("RUNNING", "WAITING")
+                for br in self.branches.values()
+            )
+            if any_active:
+                return
+
         # Upstream gate
         upstream_failed = False
         upstream_resolver_active = False
@@ -619,17 +724,18 @@ class Orchestrator:
         if upstream_failed:
             self._fire_with_failure(bar, error="upstream chain failed")
             return
+
         # Pending gate
         if bar.pending():
             return
-        # Vestigial: nothing arrived, nothing failed, not ROOT.
-        # Defer if any upstream's resolver is still in-flight — that resolver
-        # might yet deliver to this barrier (e.g., a loop-back single_invoke).
+
+        # Vestigial cancel: nothing arrived/failed and not ROOT.
         if not bar.arrived and not bar.failed and not bar.is_root:
             if upstream_resolver_active:
                 return
             self._cancel(bar)
             return
+
         # Ratio gate
         total = len(bar.arrived) + len(bar.failed)
         if total > 0 and len(bar.arrived) / total < bar.policy.min_ratio:
@@ -640,21 +746,19 @@ class Orchestrator:
                 self._fire_with_failure(bar, error="insufficient arrivals (user)")
                 return
             # "proceed" falls through
+
         self._fire(bar)
 
     def _fire(self, bar: Barrier) -> None:
         bar.status = "FIRED"
-        # Free convergence_barriers slot
         if bar.rendezvous_node and self.convergence_barriers.get(bar.rendezvous_node) == bar.id:
             del self.convergence_barriers[bar.rendezvous_node]
-        # Orphan-terminate
         if bar.policy.terminate_orphans:
             for sid in list(bar.pending()):
                 br = self.branches.get(sid)
                 if br is not None and not br.is_settled():
                     self._abandon(br)
         aggregated = self._aggregate(bar)
-        # Wake the resolver (single path; ROOT has no resolver_branch)
         if bar.resolver_branch is not None:
             resolver = self.branches.get(bar.resolver_branch)
             if resolver is not None and not resolver.is_settled():
@@ -663,7 +767,6 @@ class Orchestrator:
                 resolver.input = aggregated
                 self._register(resolver)
                 self.runnable.append(resolver.id)
-        # Notify downstream
         for d_id in bar.downstream:
             self._fire_queue.append(d_id)
 
@@ -676,12 +779,9 @@ class Orchestrator:
                 br = self.branches.get(sid)
                 if br is not None and not br.is_settled():
                     self._abandon(br)
-        # Propagate failure: fail the resolver into its delivery_target.
         if bar.resolver_branch is not None:
             resolver = self.branches.get(bar.resolver_branch)
             if resolver is not None and not resolver.is_settled():
-                # If the resolver was WAITING, surface the error at its
-                # delivery_target (no return needed; cascade up).
                 self._fail_to(resolver, error)
         if bar.is_root:
             self._workflow_error = f"ROOT failure: {error}"
@@ -717,6 +817,7 @@ class Orchestrator:
         br.status = "ABANDONED"
         self._unregister(br, keep=set())
         self._notify_resolver_settled(br)
+        self._notify_branch_settled(br)
 
     def _aggregate(self, bar: Barrier) -> Any:
         if not bar.arrived:
@@ -725,7 +826,9 @@ class Orchestrator:
             return next(iter(bar.arrived.values()))
         return list(bar.arrived.values())
 
-    # ── Result ──────────────────────────────────────────────────────────
+    # ══════════════════════════════════════════════════════════════════
+    # Result
+    # ══════════════════════════════════════════════════════════════════
 
     def _build_result(self) -> WorkflowResult:
         if self._workflow_error is not None:
