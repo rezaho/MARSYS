@@ -254,6 +254,16 @@ class SimTopology:
     def predecessor_rendezvous_points(self, cnode: str) -> frozenset[str]:
         return self.predecessor_convergences(cnode)
 
+    def invalidate_caches(self) -> None:
+        """Clear reach and preds caches. Call this if the topology graph is
+        mutated (nodes or edges added/removed) so subsequent lookups
+        recompute. The current bench builds topologies once at construction
+        and doesn't mutate them, but this hook keeps the API ready for
+        runtime mutation (e.g., a future ConditionalNode adding edges
+        based on its decision)."""
+        self._reachability_cache.clear()
+        self._preds_cache.clear()
+
     def can_reach(self, src: str, dst: str) -> bool:
         if src == dst:
             return True
@@ -318,6 +328,16 @@ class SimTopology:
                     if not self.reverse_adjacency.get(n.name, []):
                         continue
                 errors.append(f"node {n.name!r} not reachable from Start")
+
+        # ── Future ConditionalNode rules (placeholders) ─────────────
+        # When ConditionalNode (or other branching det-nodes) are added,
+        # the following rules will be enforced here:
+        #   - Each ConditionalNode has ≥2 outgoing edges.
+        #   - No two ConditionalNodes back-to-back without an agent between
+        #     (otherwise the second's input is undefined).
+        #   - No cycle of only ConditionalNodes (no agent in the cycle to
+        #     run an LLM step that breaks the cycle).
+        # No such det-nodes exist yet, so these rules are no-ops today.
 
         if errors:
             raise TopologyValidationError(errors)
