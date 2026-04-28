@@ -24,14 +24,17 @@ from research.orchestration.simulator.trace import (
 
 
 def build_p5_topology():
+    from research.orchestration.simulator.det_nodes import StartNode
     return build_topology(
         nodes=[
-            SimNode("Req", is_entry=True),
+            StartNode(),
+            SimNode("Req"),
             SimNode("A1"), SimNode("A2"),
             SimNode("D", convergence_mode="force"),
-            SimNode("Final", is_terminal=True),
+            SimNode("Final"),
         ],
         flows=[
+            "Start -> Req",
             "Req -> A1", "Req -> A2",
             "A1 -> D", "A2 -> D",
             "D -> Req",  # loop back

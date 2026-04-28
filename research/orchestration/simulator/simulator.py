@@ -137,35 +137,23 @@ class Simulator:
     # ── Bootstrap ─────────────────────────────────────────────────────
 
     def _bootstrap(self) -> None:
-        """Handle CREATE_INITIAL: pick entry agent, spawn the root branch."""
+        """Handle CREATE_INITIAL: invoke Start (or use entry_agent override)."""
         initial = [e for e in self.trace.events if e.kind == "CREATE_INITIAL"]
         if not initial:
             raise ValueError("Trace missing CREATE_INITIAL event")
         if len(initial) > 1:
             raise ValueError("Trace has multiple CREATE_INITIAL events")
         evt = initial[0]
-        entry_agent = evt.payload.get("entry_agent") or self.trace.topology.entry
+        # entry_agent is an optional test-only override that bypasses Start.
+        entry_agent = evt.payload.get("entry_agent")
         task = evt.payload.get("task")
-        if entry_agent is None:
-            raise ValueError("No entry agent specified")
 
-        root = self.orch._new_root_barrier()
-        self.orch.root_barrier_id = root.id
-        first = self.orch._spawn(
-            agent=entry_agent,
-            input=task,
-            delivery_target=root.id,
-            parent_spawn=None,
-        )
-        if first is not None and first.status == "RUNNING":
-            root.candidates.add(first.id)
-            first.candidate_of.add(root.id)
-            # Drain any fires triggered during bootstrap
-            self.orch._drain_fires()
+        entry_ids = self.orch.init_workflow(task, entry_agent=entry_agent)
 
-        if first is not None:
-            self.alias_map[evt.branch_id] = first.id
-        self.alias_map["ROOT"] = root.id
+        if entry_ids:
+            self.alias_map[evt.branch_id] = entry_ids[0]
+        if self.orch.root_barrier_id is not None:
+            self.alias_map["ROOT"] = self.orch.root_barrier_id
 
     # ── Event processing ──────────────────────────────────────────────
 

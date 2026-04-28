@@ -22,9 +22,11 @@ from research.orchestration.simulator.trace import (
 
 
 def build_p2_topology():
+    from research.orchestration.simulator.det_nodes import StartNode
     return build_topology(
         nodes=[
-            SimNode("A", is_entry=True),
+            StartNode(),
+            SimNode("A"),
             SimNode("B1"),
             SimNode("B2"),
             SimNode("B11"),
@@ -33,6 +35,7 @@ def build_p2_topology():
             SimNode("B112"),
         ],
         flows=[
+            "Start -> A",
             "A -> B1", "A -> B2",
             "B1 -> B11", "B1 -> B12",
             "B11 -> B111", "B11 -> B112",

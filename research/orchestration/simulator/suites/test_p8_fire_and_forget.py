@@ -25,13 +25,15 @@ from research.orchestration.simulator.trace import (
 
 
 def build_p8_topology():
+    from research.orchestration.simulator.det_nodes import StartNode
     return build_topology(
         nodes=[
-            SimNode("A", is_entry=True),
+            StartNode(),
+            SimNode("A"),
             SimNode("B1"), SimNode("B2"),
-            SimNode("Final", is_terminal=True),
+            SimNode("Final"),
         ],
-        flows=["A -> B1", "A -> B2", "A -> Final"],
+        flows=["Start -> A", "A -> B1", "A -> B2", "A -> Final"],
     )
 
 

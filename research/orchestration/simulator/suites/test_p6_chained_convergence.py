@@ -50,9 +50,11 @@ from research.orchestration.simulator.trace import (
 
 
 def build_p6_topology():
+    from research.orchestration.simulator.det_nodes import StartNode
     return build_topology(
         nodes=[
-            SimNode("A", is_entry=True),
+            StartNode(),
+            SimNode("A"),
             SimNode("B1"),
             SimNode("B2"),
             SimNode("C1"),
@@ -60,6 +62,7 @@ def build_p6_topology():
             SimNode("D"),   # auto-detected as convergence
         ],
         flows=[
+            "Start -> A",
             "A -> B1", "A -> B2",
             "B1 -> C1", "B1 -> C2",
             "B2 -> C2", "B2 -> D",

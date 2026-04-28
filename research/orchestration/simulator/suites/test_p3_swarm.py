@@ -19,8 +19,9 @@ from research.orchestration.simulator.trace import (
 
 
 def build_p3_topology(n: int = 4):
-    nodes = [SimNode("Coord", is_entry=True)] + [SimNode(f"W{i}") for i in range(1, n + 1)]
-    flows = [f"Coord -> W{i}" for i in range(1, n + 1)] + [f"W{i} -> Coord" for i in range(1, n + 1)]
+    from research.orchestration.simulator.det_nodes import StartNode
+    nodes = [StartNode(), SimNode("Coord")] + [SimNode(f"W{i}") for i in range(1, n + 1)]
+    flows = ["Start -> Coord"] + [f"Coord -> W{i}" for i in range(1, n + 1)] + [f"W{i} -> Coord" for i in range(1, n + 1)]
     return build_topology(nodes=nodes, flows=flows)
 
 
