@@ -151,16 +151,54 @@ class Orchestrator:
 
     async def run(self, task: Any = None, entry_agent: Optional[str] = None) -> WorkflowResult:
         """Run the workflow. Topology must contain a StartNode unless
-        `entry_agent` overrides. async because the runtime may be (e.g.,
-        RealRuntime wraps an async StepExecutor)."""
+        `entry_agent` overrides.
+
+        Concurrency model: every branch in `runnable` is dispatched as an
+        asyncio task. We then await any-completed (FIRST_COMPLETED), let
+        its `_tick` apply its side effects (interpret, deliver, fire, …),
+        and immediately pick up any newly-runnable branches the side
+        effects produced. This gives true parallelism for I/O-bound
+        runtime.step calls (e.g., concurrent LLM calls in RealRuntime)
+        while keeping the orchestrator's algorithm body single-threaded
+        (asyncio cooperative scheduling — between awaits, sync sections
+        run atomically)."""
+        import asyncio
+
         self.init_workflow(task, entry_agent=entry_agent)
 
-        while self.runnable and self._workflow_error is None:
-            bid = self.runnable.popleft()
-            br = self.branches.get(bid)
-            if br is None or br.status != "RUNNING":
-                continue
-            await self._tick(br)
+        in_flight: set[asyncio.Task] = set()
+
+        while True:
+            # Dispatch every RUNNING branch in the queue as a task.
+            while self.runnable:
+                bid = self.runnable.popleft()
+                br = self.branches.get(bid)
+                if br is None or br.status != "RUNNING":
+                    continue
+                in_flight.add(asyncio.create_task(self._tick(br)))
+
+            if not in_flight:
+                break
+
+            if self._workflow_error is not None:
+                # Cascade failure already set; stop waiting and abandon
+                # outstanding work.
+                for t in in_flight:
+                    t.cancel()
+                in_flight.clear()
+                break
+
+            # Wait for any branch tick to finish.
+            done, in_flight = await asyncio.wait(
+                in_flight, return_when=asyncio.FIRST_COMPLETED
+            )
+            for t in done:
+                exc = t.exception()
+                if exc is not None:
+                    logger.exception("orchestrator branch tick raised: %s", exc)
+            # Side-effect propagation runs inline inside _tick → _interpret
+            # → _deliver/_dispatch/etc, so any new runnable entries are
+            # already queued. Drain pending fires before the next loop.
             self._drain_fires()
 
         return self._build_result()
