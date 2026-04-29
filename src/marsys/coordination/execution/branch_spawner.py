@@ -30,7 +30,7 @@ from ..branches.types import (
 from ..topology.graph import TopologyGraph, ParallelGroup
 from ..topology.core import NodeType
 from ..validation.types import AgentInvocation
-from ..status.events import StatusEvent
+from ..events import BranchCompletedEvent, BranchCreatedEvent
 
 if TYPE_CHECKING:
     from ...agents.registry import AgentRegistry
@@ -40,23 +40,6 @@ if TYPE_CHECKING:
     from ..config import ConvergencePolicyConfig
 
 logger = logging.getLogger(__name__)
-
-
-@dataclass
-class BranchCreatedEvent(StatusEvent):
-    """Event emitted when a new branch is created."""
-    branch_name: str = ""
-    source_agent: str = ""
-    target_agents: List[str] = field(default_factory=list)
-    trigger_type: str = ""  # "divergence", "parallel", "conversation"
-
-
-@dataclass
-class BranchCompletedEvent(StatusEvent):
-    """Event emitted when a branch completes."""
-    last_agent: str = ""
-    success: bool = True
-    total_steps: int = 0
 
 
 @dataclass

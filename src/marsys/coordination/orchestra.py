@@ -900,7 +900,7 @@ class Orchestra:
 
             # Emit BranchCreatedEvent for tracing (initial branches are created here, not by BranchSpawner)
             if self.event_bus:
-                from .execution.branch_spawner import BranchCreatedEvent
+                from .events import BranchCreatedEvent
                 await self.event_bus.emit(BranchCreatedEvent(
                     session_id=session_id,
                     branch_id=branch.id,
@@ -938,7 +938,7 @@ class Orchestra:
                     # Branches entering "waiting" state are not truly complete yet.
                     is_waiting = result.metadata and result.metadata.get("waiting")
                     if not is_waiting and self.event_bus and result.branch_id not in self.branch_spawner.completed_branches:
-                        from .execution.branch_spawner import BranchCompletedEvent
+                        from .events import BranchCompletedEvent
                         await self.event_bus.emit(BranchCompletedEvent(
                             session_id=session_id,
                             branch_id=result.branch_id,
