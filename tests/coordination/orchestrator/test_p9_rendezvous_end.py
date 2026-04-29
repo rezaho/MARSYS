@@ -11,6 +11,8 @@ resolver invokes End, value flows directly to ROOT.
 """
 from __future__ import annotations
 
+import pytest
+
 from marsys.coordination.execution.deterministic_runtime import DeterministicRuntime
 from marsys.coordination.execution.orchestrator import Orchestrator
 from marsys.coordination.execution.orchestrator_types import (
@@ -23,7 +25,8 @@ from marsys.coordination.execution.orchestrator_types import (
 from ._helpers import build_topology
 
 
-def test_p9_rendezvous_to_end():
+@pytest.mark.asyncio
+async def test_p9_rendezvous_to_end():
     reset_ids()
     topo = build_topology(
         nodes=["Start", "A", "B1", "B2", "C", "End"],
@@ -45,7 +48,7 @@ def test_p9_rendezvous_to_end():
     runtime.queue_agent("C", StepResult(kind="SINGLE_INVOKE", next_agent="End", value="FINAL"))
 
     orch = Orchestrator(topo, runtime, ConvergencePolicy())
-    result = orch.run(task="q")
+    result = await orch.run(task="q")
 
     assert result.success, result.error
     assert result.final_response == "FINAL"

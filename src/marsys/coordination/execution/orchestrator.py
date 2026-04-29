@@ -141,9 +141,10 @@ class Orchestrator:
         self._drain_fires()
         return [bid for bid in self.branches if bid not in pre_branches]
 
-    def run(self, task: Any = None, entry_agent: Optional[str] = None) -> WorkflowResult:
+    async def run(self, task: Any = None, entry_agent: Optional[str] = None) -> WorkflowResult:
         """Run the workflow. Topology must contain a StartNode unless
-        `entry_agent` overrides."""
+        `entry_agent` overrides. async because the runtime may be (e.g.,
+        RealRuntime wraps an async StepExecutor)."""
         self.init_workflow(task, entry_agent=entry_agent)
 
         while self.runnable and self._workflow_error is None:
@@ -151,18 +152,18 @@ class Orchestrator:
             br = self.branches.get(bid)
             if br is None or br.status != "RUNNING":
                 continue
-            self._tick(br)
+            await self._tick(br)
             self._drain_fires()
 
         return self._build_result()
 
-    def tick(self) -> bool:
+    async def tick(self) -> bool:
         """Advance one branch step. For external drivers."""
         while self.runnable:
             bid = self.runnable.popleft()
             br = self.branches.get(bid)
             if br and br.status == "RUNNING":
-                self._tick(br)
+                await self._tick(br)
                 self._drain_fires()
                 return True
         return False
@@ -247,13 +248,19 @@ class Orchestrator:
             self.runnable.append(br.id)
         return br
 
-    def _tick(self, br: Branch) -> None:
+    async def _tick(self, br: Branch) -> None:
         br.step_count += 1
         if br.step_count > self.max_steps:
             self._fail_to(br, f"max_steps ({self.max_steps}) exceeded")
             return
         try:
-            step = self.runtime.step(br)
+            step_or_coro = self.runtime.step(br)
+            # Allow both sync and async runtimes: DeterministicRuntime is
+            # synchronous; RealRuntime returns a coroutine.
+            if hasattr(step_or_coro, "__await__"):
+                step = await step_or_coro
+            else:
+                step = step_or_coro
         except Exception as e:  # pragma: no cover
             logger.exception("runtime.step raised for branch %s", br.id)
             self._fail_to(br, f"runtime error: {e}")

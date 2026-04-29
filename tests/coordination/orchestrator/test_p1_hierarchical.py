@@ -12,6 +12,8 @@ else will work.
 """
 from __future__ import annotations
 
+import pytest
+
 from marsys.coordination.execution.deterministic_runtime import DeterministicRuntime
 from marsys.coordination.execution.orchestrator import Orchestrator
 from marsys.coordination.execution.orchestrator_types import (
@@ -24,7 +26,8 @@ from marsys.coordination.execution.orchestrator_types import (
 from ._helpers import build_topology
 
 
-def test_p1_hierarchical_two_levels():
+@pytest.mark.asyncio
+async def test_p1_hierarchical_two_levels():
     reset_ids()
     topo = build_topology(
         nodes=["Start", "A", "B1", "B2", "B11", "B12", "B21", "B22"],
@@ -61,7 +64,7 @@ def test_p1_hierarchical_two_levels():
     runtime.queue_agent("A", StepResult(kind="FINAL_RESPONSE", value="a_final"))
 
     orch = Orchestrator(topo, runtime, ConvergencePolicy())
-    result = orch.run(task="task")
+    result = await orch.run(task="task")
 
     assert result.success, result.error
     assert result.final_response == "a_final"

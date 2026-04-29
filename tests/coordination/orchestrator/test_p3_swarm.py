@@ -6,6 +6,8 @@ Topology:
 """
 from __future__ import annotations
 
+import pytest
+
 from marsys.coordination.execution.deterministic_runtime import DeterministicRuntime
 from marsys.coordination.execution.orchestrator import Orchestrator
 from marsys.coordination.execution.orchestrator_types import (
@@ -18,7 +20,8 @@ from marsys.coordination.execution.orchestrator_types import (
 from ._helpers import build_topology
 
 
-def test_p3_swarm():
+@pytest.mark.asyncio
+async def test_p3_swarm():
     reset_ids()
     topo = build_topology(
         nodes=["Start", "Coord", "W1", "W2", "W3"],
@@ -39,7 +42,7 @@ def test_p3_swarm():
     runtime.queue_agent("Coord", StepResult(kind="FINAL_RESPONSE", value="aggregated"))
 
     orch = Orchestrator(topo, runtime, ConvergencePolicy())
-    result = orch.run(task="task")
+    result = await orch.run(task="task")
 
     assert result.success, result.error
     assert result.final_response == "aggregated"

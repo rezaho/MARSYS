@@ -6,6 +6,8 @@ the workflow ends with success=False.
 """
 from __future__ import annotations
 
+import pytest
+
 from marsys.coordination.execution.deterministic_runtime import DeterministicRuntime
 from marsys.coordination.execution.orchestrator import Orchestrator
 from marsys.coordination.execution.orchestrator_types import (
@@ -18,7 +20,8 @@ from marsys.coordination.execution.orchestrator_types import (
 from ._helpers import build_topology
 
 
-def test_f1_strict_fail_cascade():
+@pytest.mark.asyncio
+async def test_f1_strict_fail_cascade():
     """One sibling fails under strict policy → cascade to ROOT."""
     reset_ids()
     topo = build_topology(
@@ -36,13 +39,14 @@ def test_f1_strict_fail_cascade():
 
     policy = ConvergencePolicy(min_ratio=1.0, on_insufficient="fail", terminate_orphans=True)
     orch = Orchestrator(topo, runtime, policy)
-    result = orch.run(task="q")
+    result = await orch.run(task="q")
 
     assert not result.success
     assert "ROOT failure" in (result.error or "")
 
 
-def test_f_step_count_termination():
+@pytest.mark.asyncio
+async def test_f_step_count_termination():
     """Infinite loop without End — terminates via step_count exhaustion."""
     reset_ids()
     topo = build_topology(
@@ -61,7 +65,7 @@ def test_f_step_count_termination():
         runtime.queue_agent("B2", StepResult(kind="SINGLE_INVOKE", next_agent="A", value="b2_loop"))
 
     orch = Orchestrator(topo, runtime, ConvergencePolicy())
-    result = orch.run(task="q")
+    result = await orch.run(task="q")
 
     # Either workflow_error set, or ROOT not FIRED — both indicate the loop
     # didn't succeed.
