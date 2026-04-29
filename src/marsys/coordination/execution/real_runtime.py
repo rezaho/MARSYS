@@ -69,8 +69,8 @@ class RealRuntime:
         to do with it (deliver, dispatch, fail, etc.).
         """
         # 1. Acquire the agent instance (handles single agents, pools,
-        #    pool instances).
-        instance = await self.registry.get_or_acquire(
+        #    pool instances). AgentRegistry.get_or_acquire is sync.
+        instance = self.registry.get_or_acquire(
             branch.current_agent, branch_id=branch.id
         )
         if instance is None:
