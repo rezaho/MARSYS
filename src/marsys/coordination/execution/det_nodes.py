@@ -1,0 +1,167 @@
+"""Deterministic-node primitives for the unified-barrier orchestrator.
+
+A `DeterministicNode` is a non-LLM node in the topology graph. Subclasses
+define explicit, single-purpose behavior that runs inline when an agent
+invokes the node. Det-nodes never spawn a normal agent step and never
+appear in `Runtime.step`'s contract.
+
+Three concrete subclasses:
+  - `StartNode` — workflow entry point. Receives the task at workflow start
+    and dispatches branches to its outgoing edges.
+  - `EndNode` — workflow exit point. Invocations deliver value to ROOT.
+  - `UserNode` — bidirectional human Q&A. Stub here; the actual I/O is
+    wired through `UserNodeHandler` in step 11 of the migration.
+
+Det-nodes interact with the orchestrator only through the narrow
+`DetNodeContext` Protocol (in `orchestrator_types`), keeping the coupling
+explicit and the API surface minimal.
+
+Reserved names: a topology referring to the string "Start", "End", or
+"User" auto-resolves to the corresponding det-node class via
+`RESERVED_DETNODE_NAMES`.
+"""
+from __future__ import annotations
+
+from abc import ABC, abstractmethod
+from typing import TYPE_CHECKING, Any
+
+if TYPE_CHECKING:
+    from .orchestrator_types import Barrier, Branch, DetNodeContext
+
+
+class DeterministicNode(ABC):
+    """Base for non-LLM nodes.
+
+    Subclasses define behavior on three lifecycle moments:
+      - `on_workflow_start`: called once at workflow start (only StartNode
+        overrides; default is no-op).
+      - `on_single_invoke`: when an agent does SINGLE_INVOKE(this).
+      - `on_dispatch`: when an agent does PARALLEL_INVOKE with this as a
+        target (the fork dispatches here).
+    """
+
+    name: str
+
+    @abstractmethod
+    def on_single_invoke(
+        self, ctx: "DetNodeContext", branch: "Branch", value: Any
+    ) -> None:
+        """Handle SINGLE_INVOKE targeting this node."""
+
+    @abstractmethod
+    def on_dispatch(
+        self, ctx: "DetNodeContext", fork: "Barrier", request: Any
+    ) -> None:
+        """Handle PARALLEL_INVOKE targeting this node from a fork."""
+
+    def on_workflow_start(self, ctx: "DetNodeContext", task: Any) -> None:
+        """Default: no-op. StartNode overrides."""
+
+    def __hash__(self) -> int:
+        return hash(self.name)
+
+    def __eq__(self, other) -> bool:
+        return isinstance(other, DeterministicNode) and self.name == other.name
+
+
+class StartNode(DeterministicNode):
+    """Workflow entry point. Required, exactly one per topology.
+
+    Receives the initial task at the start of a run and dispatches a branch
+    to each outgoing agent. Each spawned branch's `delivery_target` is
+    ROOT; the workflow waits until everything settles (Fix 1: ROOT defer).
+    """
+
+    RESERVED_NAME = "Start"
+
+    def __init__(self, name: str = "Start"):
+        self.name = name
+
+    def on_workflow_start(self, ctx, task):
+        for target in ctx.topology.successors(self.name):
+            ctx.spawn_branch_at(target, task, delivery_target=ctx.root_barrier_id)
+
+    def on_single_invoke(self, ctx, branch, value):
+        raise RuntimeError(
+            f"StartNode {self.name!r} cannot be invoked from an agent "
+            "(StartNode receives the task only at workflow start)"
+        )
+
+    def on_dispatch(self, ctx, fork, request):
+        raise RuntimeError(
+            f"StartNode {self.name!r} cannot appear in parallel_invoke targets"
+        )
+
+
+class EndNode(DeterministicNode):
+    """Workflow exit point. Optional; zero or more per topology.
+
+    Agents with edges to End can invoke it explicitly to deliver the
+    workflow's final answer. Invocations route directly to ROOT.
+
+    SINGLE_INVOKE: branch delivers value to ROOT and terminates.
+    PARALLEL_INVOKE target: fork dispatches request to ROOT (fire-and-forget;
+    no fork.upstream wiring — ROOT is sink, not a sync gate).
+    """
+
+    RESERVED_NAME = "End"
+
+    def __init__(self, name: str = "End"):
+        self.name = name
+
+    def on_single_invoke(self, ctx, branch, value):
+        ctx.deliver_to_root(branch, value)
+
+    def on_dispatch(self, ctx, fork, request):
+        ctx.dispatch_to_root(fork, request)
+
+
+class UserNode(DeterministicNode):
+    """Bidirectional human Q&A node. Differs from EndNode in that the
+    invocation expects a response (the user's input becomes the resumed
+    branch's input).
+
+    Stub: the actual I/O cycle (prompt, await, resume) is wired through
+    `coordination.communication.UserNodeHandler` in step 11. For now,
+    `on_single_invoke` and `on_dispatch` raise; topologies that include
+    a `UserNode` won't run successfully until that wiring lands. The
+    legacy User(Node) class (in `topology.core`) continues to handle
+    Q&A through the existing path.
+    """
+
+    RESERVED_NAME = "User"
+
+    def __init__(self, name: str = "User", handler: Any = None):
+        self.name = name
+        self.handler = handler  # UserNodeHandler bound at workflow construction
+
+    def on_single_invoke(self, ctx, branch, value):
+        raise NotImplementedError(
+            f"UserNode {self.name!r} on_single_invoke is not yet wired "
+            "(see plan 078 step 11). Use the legacy User(Node) for Q&A."
+        )
+
+    def on_dispatch(self, ctx, fork, request):
+        raise NotImplementedError(
+            f"UserNode {self.name!r} on_dispatch is not yet wired "
+            "(see plan 078 step 11)."
+        )
+
+
+# Reserved-name registry: maps a reserved string name to the det-node class.
+# Used by the topology converters when resolving string-form node specs like:
+#   topology = {"agents": ["Start", "A", "End"], "flows": [...]}
+RESERVED_DETNODE_NAMES: dict[str, type[DeterministicNode]] = {
+    StartNode.RESERVED_NAME: StartNode,
+    EndNode.RESERVED_NAME: EndNode,
+    UserNode.RESERVED_NAME: UserNode,
+}
+
+
+__all__ = [
+    "DeterministicNode",
+    "StartNode",
+    "EndNode",
+    "UserNode",
+    "RESERVED_DETNODE_NAMES",
+]
