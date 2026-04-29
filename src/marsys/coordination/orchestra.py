@@ -1353,12 +1353,29 @@ class Orchestra:
         result = await orch.run(task=task, entry_agent=entry_agent)
 
         total_steps = sum(b.step_count for b in result.branches.values())
+
+        # Translate orchestrator Branch instances to legacy BranchResult shape
+        # so callers and tests that iterate result.branch_results keep working.
+        from .branches.types import BranchResult
+
+        branch_results = [
+            BranchResult(
+                branch_id=br.id,
+                success=br.status == "TERMINATED",
+                final_response=br.input,  # input holds the last value at settle time
+                total_steps=br.step_count,
+                execution_trace=[],  # not tracked at this layer
+                branch_memory={br.current_agent: br.memory},
+                metadata={"current_agent": br.current_agent, "status": br.status},
+                error=None if br.status == "TERMINATED" else f"branch ended in status {br.status}",
+            )
+            for br in result.branches.values()
+        ]
+
         return {
             "success": result.success,
             "final_response": result.final_response,
-            "branch_results": [],  # Orchestrator's WorkflowResult holds raw
-            # Branch dataclasses, not the legacy BranchResult; legacy fields
-            # are unused by Orchestra.execute's caller.
+            "branch_results": branch_results,
             "total_steps": total_steps,
             "error": result.error,
             "metadata": {
