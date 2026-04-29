@@ -245,6 +245,10 @@ class ExecutionConfig:
 
     # Migration: select between legacy BranchSpawner-based path and new unified-barrier Orchestrator.
     # Removed once the new path becomes the only path (see implementations/078 plan, step 16).
+    # Currently defaults to False; the new path can be opted into per-run
+    # via execution_config.use_new_orchestrator=True until the legacy
+    # integration tests are migrated to the new orchestrator's per-
+    # transition branch model (~26 tests need their assertions updated).
     use_new_orchestrator: bool = False
 
     # Timeouts (in seconds)
