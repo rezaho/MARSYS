@@ -164,25 +164,30 @@ class Topology:
     
     def __post_init__(self):
         """Validate and index the topology."""
-        # Validate types
-        if not all(isinstance(node, Node) for node in self.nodes):
-            raise TypeError("All nodes must be Node instances")
+        # Validate types — accept Node and DeterministicNode (the unified-
+        # barrier orchestrator path uses StartNode/EndNode/UserNode as
+        # explicit topology nodes alongside agent Nodes).
+        from ..execution.det_nodes import DeterministicNode
+        if not all(isinstance(node, (Node, DeterministicNode)) for node in self.nodes):
+            raise TypeError(
+                "All nodes must be Node or DeterministicNode instances"
+            )
         if not all(isinstance(edge, Edge) for edge in self.edges):
             raise TypeError("All edges must be Edge instances")
         # Note: We can't check Rule type here due to circular import
         # Rule validation will be done when rules are added
-        
+
         # Build indices
         self._rebuild_indices()
-        
+
         # Validate consistency
         self._validate_topology()
-    
+
     def _rebuild_indices(self):
         """Rebuild internal indices for fast lookup."""
         self._node_index = {node.name: node for node in self.nodes}
         self._edge_index = {
-            (edge.source, edge.target, edge.edge_type): edge 
+            (edge.source, edge.target, edge.edge_type): edge
             for edge in self.edges
         }
     
