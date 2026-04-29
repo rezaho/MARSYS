@@ -87,11 +87,15 @@ class Orchestrator:
         runtime: Runtime,
         policy: ConvergencePolicy,
         max_steps: int = MAX_STEPS_DEFAULT,
+        event_bus: Any = None,
+        session_id: str = "",
     ):
         self.topology = topology
         self.runtime = runtime
         self.policy = policy
         self.max_steps = max_steps
+        self.event_bus = event_bus
+        self.session_id = session_id
 
         self.branches: dict[str, Branch] = {}
         self.barriers: dict[str, Barrier] = {}
@@ -101,6 +105,10 @@ class Orchestrator:
         self._fire_queue: list[str] = []
         self.root_barrier_id: Optional[str] = None
         self._workflow_error: Optional[str] = None
+        # Branch ids that have already had a BranchCompletedEvent emitted
+        # (idempotence guard against duplicate emissions when a branch
+        # is settled twice through different paths).
+        self._completed_emitted: set[str] = set()
 
     # ══════════════════════════════════════════════════════════════════
     # Public API
@@ -219,6 +227,90 @@ class Orchestrator:
         return br
 
     # ══════════════════════════════════════════════════════════════════
+    # Event emission (optional; only fires when event_bus is set)
+    # ══════════════════════════════════════════════════════════════════
+
+    def _emit(self, event: Any) -> None:
+        """Fire-and-forget event emission. Safe to call from sync contexts
+        inside an async event loop; the orchestrator's algorithm stays
+        sync while emission is scheduled on the loop."""
+        if self.event_bus is None:
+            return
+        try:
+            self.event_bus.emit_nowait(event)
+        except Exception:  # pragma: no cover
+            logger.debug("event emission failed", exc_info=True)
+
+    def _emit_branch_created(
+        self,
+        branch: Branch,
+        source_agent: str,
+        trigger_type: str,
+    ) -> None:
+        if self.event_bus is None:
+            return
+        from ..events import BranchCreatedEvent
+        self._emit(BranchCreatedEvent(
+            session_id=self.session_id,
+            branch_id=branch.id,
+            branch_name=f"{branch.current_agent}_{branch.id}",
+            source_agent=source_agent,
+            target_agents=[branch.current_agent],
+            trigger_type=trigger_type,
+        ))
+
+    def _emit_branch_completed(self, branch: Branch, success: bool) -> None:
+        if self.event_bus is None or branch.id in self._completed_emitted:
+            return
+        self._completed_emitted.add(branch.id)
+        from ..events import BranchCompletedEvent
+        self._emit(BranchCompletedEvent(
+            session_id=self.session_id,
+            branch_id=branch.id,
+            last_agent=branch.current_agent,
+            success=success,
+            total_steps=branch.step_count,
+        ))
+
+    def _emit_parallel_group(
+        self,
+        fork: Barrier,
+        agent_names: list[str],
+        status: str,
+        completed_count: int = 0,
+        total_count: int = 0,
+    ) -> None:
+        if self.event_bus is None:
+            return
+        from ..status.events import ParallelGroupEvent
+        self._emit(ParallelGroupEvent(
+            session_id=self.session_id,
+            group_id=fork.id,
+            agent_names=agent_names,
+            status=status,  # type: ignore[arg-type]
+            completed_count=completed_count,
+            total_count=total_count,
+        ))
+
+    def _emit_convergence(self, bar: Barrier, success: bool) -> None:
+        if self.event_bus is None or not bar.rendezvous_node:
+            return
+        from ..tracing.events import ConvergenceEvent
+        # bar.candidates includes both branches and other forks; we
+        # report all of them as "child" sources for the convergence.
+        children = list(bar.candidates)
+        successful = len(bar.arrived)
+        total = len(bar.candidates) or 1
+        self._emit(ConvergenceEvent(
+            session_id=self.session_id,
+            child_branch_ids=children,
+            convergence_point=bar.rendezvous_node,
+            group_id=bar.id,
+            successful_count=successful,
+            total_count=total,
+        ))
+
+    # ══════════════════════════════════════════════════════════════════
     # Branch lifecycle
     # ══════════════════════════════════════════════════════════════════
 
@@ -230,6 +322,8 @@ class Orchestrator:
         parent_spawn: Optional[str],
         memory: Optional[list] = None,
         status: str = "RUNNING",
+        source_agent: str = "entry",
+        trigger_type: str = "initial",
     ) -> Optional[Branch]:
         """Create a branch at `agent`. RUNNING by default; pass status="WAITING"
         for rendezvous resolvers (they wake when the barrier fires)."""
@@ -246,6 +340,9 @@ class Orchestrator:
         if status == "RUNNING":
             self._register(br)
             self.runnable.append(br.id)
+            # Only emit BranchCreatedEvent for runnable branches; WAITING
+            # rendezvous resolvers are an internal mechanism.
+            self._emit_branch_created(br, source_agent=source_agent, trigger_type=trigger_type)
         return br
 
     async def _tick(self, br: Branch) -> None:
@@ -335,6 +432,7 @@ class Orchestrator:
         keep = {fork.id, br.delivery_target} | delivered
         self._unregister(br, keep=keep)
 
+        target_agent_names = [inv.agent for inv in invocations]
         for inv in invocations:
             det_node = self.topology.get_det_node(inv.agent)
             if det_node is not None:
@@ -353,10 +451,22 @@ class Orchestrator:
                     input=inv.request,
                     delivery_target=fork.id,
                     parent_spawn=fork.id,
+                    source_agent=br.current_agent,
+                    trigger_type="parallel",
                 )
                 if child is not None:
                     fork.candidates.add(child.id)
                     child.candidate_of.add(fork.id)
+
+        # Emit ParallelGroupEvent at fork creation (status="started").
+        # ConvergenceEvent fires on _fire when the barrier eventually closes.
+        self._emit_parallel_group(
+            fork,
+            agent_names=target_agent_names,
+            status="started",
+            completed_count=0,
+            total_count=len(target_agent_names),
+        )
 
     def _dispatch(self, fork: Barrier, target_bar_id: str, request: Any) -> None:
         """Record fork's contribution at the target barrier and wire upstream.
@@ -415,12 +525,14 @@ class Orchestrator:
         if bar.status != "OPEN":
             br.status = "ABANDONED"
             self._unregister(br, keep=set())
+            self._emit_branch_completed(br, success=False)
             self._notify_resolver_settled(br)
             self._notify_branch_settled(br)
             return
         bar.arrived[br.id] = value
         bar.candidates.add(br.id)
         br.status = "TERMINATED"
+        self._emit_branch_completed(br, success=True)
         # Inline upstream wiring: when leaving a fork to land at a rendezvous,
         # the fork should wait for that rendezvous chain to complete.
         for other_id in list(br.candidate_of - {bar_id}):
@@ -460,12 +572,14 @@ class Orchestrator:
         if bar is None or bar.status != "OPEN":
             br.status = "FAILED"
             self._unregister(br, keep=set())
+            self._emit_branch_completed(br, success=False)
             self._notify_resolver_settled(br)
             self._notify_branch_settled(br)
             return
         bar.failed[br.id] = error
         bar.candidates.add(br.id)
         br.status = "FAILED"
+        self._emit_branch_completed(br, success=False)
         for other_id in list(br.candidate_of - {target_id}):
             other = self.barriers.get(other_id)
             if other is None or other.status != "OPEN":
@@ -736,6 +850,22 @@ class Orchestrator:
                 if br is not None and not br.is_settled():
                     self._abandon(br)
         aggregated = self._aggregate(bar)
+        # ConvergenceEvent: emit when a rendezvous fires (parallel-merge point).
+        # ParallelGroupEvent for forks (status="completed") signals fork closure.
+        if bar.rendezvous_node:
+            self._emit_convergence(bar, success=True)
+        elif bar.resolver_branch is not None and not bar.is_root:
+            resolver = self.branches.get(bar.resolver_branch)
+            agent_names = sorted(
+                {self.branches[b].current_agent for b in bar.candidates if b in self.branches}
+            )
+            self._emit_parallel_group(
+                bar,
+                agent_names=agent_names,
+                status="completed",
+                completed_count=len(bar.arrived),
+                total_count=len(bar.candidates),
+            )
         if bar.resolver_branch is not None:
             resolver = self.branches.get(bar.resolver_branch)
             if resolver is not None and not resolver.is_settled():
@@ -793,6 +923,7 @@ class Orchestrator:
                         self._abandon(child)
         br.status = "ABANDONED"
         self._unregister(br, keep=set())
+        self._emit_branch_completed(br, success=False)
         self._notify_resolver_settled(br)
         self._notify_branch_settled(br)
 
