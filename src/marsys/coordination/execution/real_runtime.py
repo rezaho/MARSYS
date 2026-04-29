@@ -78,6 +78,9 @@ class RealRuntime:
                 kind="FAIL",
                 error=f"agent {branch.current_agent!r} not registered",
             )
+        # Stash the instance for _translate (validator needs it for
+        # topology checks like agent.name → next_agents).
+        self._current_instance = instance
 
         # 2. Build the per-step context expected by StepExecutor.
         context = {
@@ -164,7 +167,7 @@ class RealRuntime:
         validation = await self.validator.validate_coordination_action(
             action=coord_action,
             data=coord_data,
-            agent=None,  # Orchestrator's Branch doesn't carry the instance
+            agent=getattr(self, "_current_instance", None),
             branch=None,
             exec_state=exec_state,
         )
