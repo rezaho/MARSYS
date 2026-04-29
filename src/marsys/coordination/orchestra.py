@@ -708,11 +708,20 @@ class Orchestra:
             
             # Set circular reference - branch_executor needs branch_spawner
             self.branch_executor.branch_spawner = self.branch_spawner
-            
-            # Execute with dynamic branching
-            result = await self._execute_with_dynamic_branching(
-                task, context, session_id, max_steps
-            )
+
+            # Feature flag: dispatch to the new unified-barrier orchestrator
+            # when use_new_orchestrator=True. Legacy path otherwise (default).
+            # Removed in step 16 of plan 078 once the new path is the only
+            # path.
+            if getattr(execution_config, "use_new_orchestrator", False):
+                result = await self._run_with_orchestrator(
+                    task, context, session_id, max_steps
+                )
+            else:
+                # Execute with dynamic branching (legacy)
+                result = await self._execute_with_dynamic_branching(
+                    task, context, session_id, max_steps
+                )
             
             duration = time.time() - start_time
             logger.info(f"Orchestration completed in {duration:.2f}s")
@@ -1269,7 +1278,96 @@ class Orchestra:
             "parent_branch": branch.parent_branch,
             "metadata": branch.metadata
         }
-    
+
+    async def _run_with_orchestrator(
+        self,
+        task: Any,
+        context: Dict[str, Any],
+        session_id: str,
+        max_steps: int,
+    ) -> Dict[str, Any]:
+        """Unified-barrier orchestrator path. Builds RealRuntime + Orchestrator
+        and dispatches to it. Translates the orchestrator's WorkflowResult to
+        the result-dict shape that Orchestra.execute() expects.
+
+        Used when execution_config.use_new_orchestrator=True. Removed in
+        step 16 of plan 078 once this becomes the only path."""
+        from .config import ConvergencePolicyConfig
+        from .execution.orchestrator import Orchestrator
+        from .execution.orchestrator_types import ConvergencePolicy
+        from .execution.real_runtime import RealRuntime
+
+        execution_config = context.get("execution_config")
+
+        cp_config = ConvergencePolicyConfig.from_value(
+            execution_config.convergence_policy if execution_config else 1.0
+        )
+        # Translate the legacy ConvergencePolicyConfig to the orchestrator's
+        # ConvergencePolicy. They're shape-compatible on the relevant fields.
+        policy = ConvergencePolicy(
+            min_ratio=cp_config.min_ratio,
+            on_insufficient=cp_config.on_insufficient,
+            terminate_orphans=cp_config.terminate_orphans,
+        )
+
+        runtime = RealRuntime(
+            registry=self.agent_registry,
+            step_executor=self.step_executor,
+            validator=self.validation_processor,
+            topology_graph=self.topology_graph,
+            session_id=session_id,
+            execution_config=execution_config,
+        )
+
+        orch = Orchestrator(
+            topology=self.topology_graph,
+            runtime=runtime,
+            policy=policy,
+            max_steps=max_steps,
+            event_bus=self.event_bus,
+            session_id=session_id,
+        )
+
+        # If the topology has a StartNode, the orchestrator drives it directly.
+        # Otherwise, fall back to the legacy entry-detection (User-as-entry,
+        # specified entry, structural detection) and pass entry_agent
+        # explicitly. This is the User-shim referenced in plan 078: existing
+        # topologies continue to run without source changes.
+        entry_agent: Optional[str] = None
+        if self.topology_graph.get_start_node() is None:
+            entry_agents = self._find_entry_agents()
+            if not entry_agents:
+                raise TopologyError(
+                    "No entry agents found in topology",
+                    topology_issue="no_entry_agents",
+                    affected_nodes=list(self.topology_graph.nodes.keys()),
+                )
+            # Prefer agent_after_user when User is the entry (legacy User-as-
+            # entry shim).
+            agent_after_user = self.topology_graph.metadata.get("agent_after_user")
+            if entry_agents == ["User"] and agent_after_user:
+                entry_agent = agent_after_user
+            else:
+                entry_agent = entry_agents[0]
+
+        result = await orch.run(task=task, entry_agent=entry_agent)
+
+        total_steps = sum(b.step_count for b in result.branches.values())
+        return {
+            "success": result.success,
+            "final_response": result.final_response,
+            "branch_results": [],  # Orchestrator's WorkflowResult holds raw
+            # Branch dataclasses, not the legacy BranchResult; legacy fields
+            # are unused by Orchestra.execute's caller.
+            "total_steps": total_steps,
+            "error": result.error,
+            "metadata": {
+                "barrier_count": len(result.barriers),
+                "branch_count": len(result.branches),
+                "orchestrator": "unified_barrier",
+            },
+        }
+
     async def _save_execution_state(
         self,
         session_id: str,
