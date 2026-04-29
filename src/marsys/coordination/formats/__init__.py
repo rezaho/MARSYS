@@ -22,7 +22,7 @@ Usage:
 from .base import BaseResponseFormat
 from .builder import SystemPromptBuilder
 from .context import AgentContext, CoordinationContext, SystemPromptContext
-from .json_format import JSONResponseFormat, StructuredJSONProcessor
+from .json_format import JSONResponseFormat
 from .processors import (
     ErrorMessageProcessor,
     ResponseProcessor,
@@ -48,7 +48,6 @@ __all__ = [
     "SystemPromptContext",
     # JSON format implementations
     "JSONResponseFormat",
-    "StructuredJSONProcessor",
     # Shared processors
     "ErrorMessageProcessor",
     "ToolCallProcessor",
