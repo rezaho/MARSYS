@@ -17,7 +17,6 @@ from typing import Any, Dict, List, Optional, Set, Tuple, Callable
 import logging
 
 from ..branches.types import ExecutionBranch, BranchStatus
-from ..execution.branch_spawner import DynamicBranchSpawner
 
 logger = logging.getLogger(__name__)
 

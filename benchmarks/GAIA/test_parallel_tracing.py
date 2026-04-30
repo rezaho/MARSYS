@@ -104,9 +104,6 @@ async def main():
             execution_config=ExecutionConfig(
                 status=StatusConfig.from_verbosity(2),
                 step_timeout=60.0,
-                # Phase 3 acceptance gate: drive the unified-barrier
-                # orchestrator end-to-end (real LLMs + native tool calls).
-                use_new_orchestrator=True,
                 tracing=TracingConfig(
                     enabled=True,
                     output_dir=TRACE_DIR,
