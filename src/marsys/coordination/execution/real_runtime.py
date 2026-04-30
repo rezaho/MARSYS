@@ -23,11 +23,14 @@ from __future__ import annotations
 import logging
 from typing import TYPE_CHECKING, Any, Optional
 
+from ..validation.types import ValidationErrorCategory
 from .orchestrator_types import (
     Branch as OrchestratorBranch,
     Invocation,
     StepResult as OrchestratorStepResult,
 )
+
+CONTENT_ONLY_STEERING_THRESHOLD = 2
 
 if TYPE_CHECKING:
     from ...agents.registry import AgentRegistry
@@ -78,26 +81,34 @@ class RealRuntime:
                 kind="FAIL",
                 error=f"agent {branch.current_agent!r} not registered",
             )
-        # Stash the instance for _translate (validator needs it for
-        # topology checks like agent.name → next_agents).
         self._current_instance = instance
 
-        # 2. Build the per-step context expected by StepExecutor.
+        is_continuation = branch.last_invoked_agent == branch.current_agent
         context = {
             "session_id": self.session_id,
             "branch_id": branch.id,
             "step_number": branch.step_count,
             "topology_graph": self.topology_graph,
             "execution_config": self.execution_config,
-            # branch_executor passes its ExecutionBranch here for dynamic
-            # instructions / format building. The orchestrator's Branch
-            # is a different shape; pass None for now (system prompt
-            # building still works without it).
+            "tool_continuation": is_continuation,
             "branch": None,
         }
+        if branch.consecutive_content_only >= CONTENT_ONLY_STEERING_THRESHOLD:
+            context["metadata"] = {
+                "agent_error_context": {
+                    "category": ValidationErrorCategory.ACTION_ERROR.value,
+                    "error_message": (
+                        "Your last response contained no coordination tool call, "
+                        "so the workflow cannot proceed. You must call one of the "
+                        "available coordination tools (e.g., invoke_agent to delegate "
+                        "to a peer agent, or return_final_response to return your "
+                        "final answer) — plain text alone is not enough to advance."
+                    ),
+                    "retry_count": branch.consecutive_content_only,
+                    "failed_action": "content_only",
+                },
+            }
 
-        # 3. Execute the agent step. Returns a MARSYS branches/types.StepResult
-        #    with raw response + coordination_action / coordination_data.
         try:
             marsys_result = await self.step_executor.execute_step(
                 agent=instance,
@@ -110,6 +121,8 @@ class RealRuntime:
                 "StepExecutor raised for branch %s (agent=%s)", branch.id, branch.current_agent
             )
             return OrchestratorStepResult(kind="FAIL", error=f"step_executor error: {e}")
+        finally:
+            branch.last_invoked_agent = branch.current_agent
 
         # 4. Persist memory back onto the branch. The agent instance
         #    maintains its own memory across calls; we snapshot it here
@@ -149,10 +162,14 @@ class RealRuntime:
 
         coord_action = getattr(marsys_result, "coordination_action", None)
         coord_data = getattr(marsys_result, "coordination_data", None) or {}
+        has_tool_calls = bool(getattr(marsys_result, "tool_calls", None))
 
-        # Tool-only / content-only step → NOOP (the step did work but the
-        # agent hasn't yet decided coordination; orchestrator re-queues).
+        if coord_action or has_tool_calls:
+            branch.consecutive_content_only = 0
+
         if not coord_action:
+            if not has_tool_calls:
+                branch.consecutive_content_only += 1
             return OrchestratorStepResult(kind="NOOP")
 
         # Validate the coordination action against the topology.
