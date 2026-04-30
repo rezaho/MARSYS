@@ -22,7 +22,6 @@ from marsys.agents import Agent
 from marsys.agents.memory import Message, ToolCallMsg
 from marsys.agents.registry import AgentRegistry
 from marsys.coordination import Orchestra
-from marsys.coordination.config import ExecutionConfig
 from marsys.models import ModelConfig
 
 
@@ -123,7 +122,7 @@ class GaiaWorker(Agent):
 
 
 @pytest.mark.asyncio
-async def test_gaia_topology_with_new_orchestrator():
+async def test_gaia_topology_via_real_runtime():
     coord = GaiaCoordinator()
     researcher = GaiaWorker("Researcher", "Speed of light is 299,792 km/s.")
     fact_checker = GaiaWorker("FactChecker", "Confirmed: c = 299,792,458 m/s exactly.")
@@ -141,15 +140,13 @@ async def test_gaia_topology_with_new_orchestrator():
         "exit_points": ["Coordinator"],
     }
 
-    config = ExecutionConfig(use_new_orchestrator=True)
     result = await Orchestra.run(
         task="What is the speed of light and who first measured it?",
         topology=topology,
-        execution_config=config,
         max_steps=20,
     )
 
-    assert result.success, f"new-orchestrator path failed: {result.error}"
+    assert result.success, f"orchestration failed: {result.error}"
     assert coord.dispatched, "coordinator did not dispatch parallel invocation"
     # Both children must have run.
     assert "299,792" in str(result.final_response) or "Speed" in str(result.final_response)

@@ -22,7 +22,6 @@ from marsys.agents import Agent
 from marsys.agents.memory import Message, ToolCallMsg
 from marsys.agents.registry import AgentRegistry
 from marsys.coordination import Orchestra
-from marsys.coordination.config import ExecutionConfig
 from marsys.models import ModelConfig
 
 
@@ -142,15 +141,13 @@ def parallel_topology():
 
 
 @pytest.mark.asyncio
-async def test_parallel_invocation_with_new_orchestrator(parallel_agents, parallel_topology):
+async def test_parallel_invocation_through_real_runtime(parallel_agents, parallel_topology):
     coord, web, db = parallel_agents
-    config = ExecutionConfig(use_new_orchestrator=True)
     result = await Orchestra.run(
         task="Gather data",
         topology=parallel_topology,
-        execution_config=config,
         max_steps=30,
     )
-    assert result.success, f"new-orchestrator path failed: error={result.error}"
+    assert result.success, f"orchestration failed: error={result.error}"
     assert coord.has_initiated_parallel
     assert coord.child_results_received, "coordinator did not receive aggregated child results"

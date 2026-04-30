@@ -20,7 +20,6 @@ from marsys.agents import Agent
 from marsys.agents.memory import Message, ToolCallMsg
 from marsys.agents.registry import AgentRegistry
 from marsys.coordination import Orchestra
-from marsys.coordination.config import ExecutionConfig
 from marsys.models import ModelConfig
 
 
@@ -150,15 +149,8 @@ def parallel_topology():
     }
 
 
-@pytest.fixture(params=[False, True], ids=["legacy", "new_orchestrator"])
-def execution_config(request):
-    """Run each test once on the legacy path and once on the new
-    unified-barrier orchestrator. Both must produce equivalent results."""
-    return ExecutionConfig(use_new_orchestrator=request.param)
-
-
 @pytest.mark.asyncio
-async def test_agent_initiated_parallel_execution(setup_parallel_agents, parallel_topology, execution_config):
+async def test_agent_initiated_parallel_execution(setup_parallel_agents, parallel_topology):
     """Test that agent can initiate parallel execution at runtime."""
     coordinator, web_agent, db_agent, api_agent = setup_parallel_agents
 
@@ -166,7 +158,6 @@ async def test_agent_initiated_parallel_execution(setup_parallel_agents, paralle
     result = await Orchestra.run(
         task="Gather competitive intelligence for Q4 planning",
         topology=parallel_topology,
-        execution_config=execution_config,
         max_steps=50,
     )
     end_time = asyncio.get_event_loop().time()
@@ -188,14 +179,13 @@ async def test_agent_initiated_parallel_execution(setup_parallel_agents, paralle
 
 
 @pytest.mark.asyncio
-async def test_parent_branch_waiting_state(setup_parallel_agents, parallel_topology, execution_config):
+async def test_parent_branch_waiting_state(setup_parallel_agents, parallel_topology):
     """Test that parent branch enters waiting state during child execution."""
     coordinator, web_agent, db_agent, api_agent = setup_parallel_agents
 
     result = await Orchestra.run(
         task="Gather competitive intelligence",
         topology=parallel_topology,
-        execution_config=execution_config,
         max_steps=50,
     )
 
@@ -208,14 +198,13 @@ async def test_parent_branch_waiting_state(setup_parallel_agents, parallel_topol
 
 
 @pytest.mark.asyncio
-async def test_child_result_aggregation(setup_parallel_agents, parallel_topology, execution_config):
+async def test_child_result_aggregation(setup_parallel_agents, parallel_topology):
     """Test that child results are properly aggregated and passed to parent."""
     coordinator, web_agent, db_agent, api_agent = setup_parallel_agents
 
     result = await Orchestra.run(
         task="Gather competitive intelligence",
         topology=parallel_topology,
-        execution_config=execution_config,
         max_steps=50,
     )
 
@@ -226,7 +215,7 @@ async def test_child_result_aggregation(setup_parallel_agents, parallel_topology
 
 
 @pytest.mark.asyncio
-async def test_partial_failure_handling(setup_parallel_agents, parallel_topology, execution_config):
+async def test_partial_failure_handling(setup_parallel_agents, parallel_topology):
     """Test handling when some child branches fail.
 
     With strict policy (default), one failing child causes the workflow to
@@ -243,7 +232,6 @@ async def test_partial_failure_handling(setup_parallel_agents, parallel_topology
     result = await Orchestra.run(
         task="Gather competitive intelligence",
         topology=parallel_topology,
-        execution_config=execution_config,
         max_steps=50,
     )
 
@@ -256,7 +244,7 @@ async def test_partial_failure_handling(setup_parallel_agents, parallel_topology
 
 
 @pytest.mark.asyncio
-async def test_dynamic_parallel_with_different_speeds(setup_parallel_agents, parallel_topology, execution_config):
+async def test_dynamic_parallel_with_different_speeds(setup_parallel_agents, parallel_topology):
     """Test that faster agents don't wait for slower ones unnecessarily."""
     coordinator, web_agent, db_agent, api_agent = setup_parallel_agents
 
@@ -267,7 +255,6 @@ async def test_dynamic_parallel_with_different_speeds(setup_parallel_agents, par
     result = await Orchestra.run(
         task="Gather competitive intelligence",
         topology=parallel_topology,
-        execution_config=execution_config,
         max_steps=50,
     )
 
@@ -283,7 +270,7 @@ async def test_dynamic_parallel_with_different_speeds(setup_parallel_agents, par
 
 
 @pytest.mark.asyncio
-async def test_nested_parallel_invocation(setup_parallel_agents, parallel_topology, execution_config):
+async def test_nested_parallel_invocation(setup_parallel_agents, parallel_topology):
     """Test that child branches cannot initiate further parallel execution
     against agents they don't have edges to.
 
@@ -311,7 +298,6 @@ async def test_nested_parallel_invocation(setup_parallel_agents, parallel_topolo
     result = await Orchestra.run(
         task="Test nested parallel",
         topology=parallel_topology,
-        execution_config=execution_config,
         max_steps=50,
     )
 
@@ -320,7 +306,7 @@ async def test_nested_parallel_invocation(setup_parallel_agents, parallel_topolo
 
 
 @pytest.mark.asyncio
-async def test_empty_child_results_handling(setup_parallel_agents, parallel_topology, execution_config):
+async def test_empty_child_results_handling(setup_parallel_agents, parallel_topology):
     """Test handling when child branches return empty/short results."""
     coordinator, web_agent, db_agent, api_agent = setup_parallel_agents
 
@@ -341,7 +327,6 @@ async def test_empty_child_results_handling(setup_parallel_agents, parallel_topo
     result = await Orchestra.run(
         task="Gather intelligence",
         topology=parallel_topology,
-        execution_config=execution_config,
         max_steps=50,
     )
 
