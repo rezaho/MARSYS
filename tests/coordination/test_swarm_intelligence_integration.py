@@ -233,10 +233,13 @@ class MockSwarmAgent(Agent):
 def setup_swarm_agents():
     """Set up swarm agents."""
     AgentRegistry._agents.clear()
-    
-    # Clear shared discoveries
+
+    # Clear ALL class-level shared state (prevents test pollution between tests
+    # in the same file; swarm logic depends on shared_discoveries presence,
+    # and stochastic branches need a deterministic PRNG seed).
     MockSwarmAgent.shared_discoveries.clear()
-    
+    random.seed(1)
+
     # Create agents
     user_proxy = MockUserProxyAgent("UserProxy")
     coordinator = MockCoordinatorAgent("Coordinator")
