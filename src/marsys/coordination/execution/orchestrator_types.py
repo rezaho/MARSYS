@@ -105,6 +105,8 @@ class Branch:
     parent_spawn: Optional[str] = None
     step_count: int = 0
     created_at: float = field(default_factory=time.time)
+    last_invoked_agent: Optional[str] = None
+    consecutive_content_only: int = 0
 
     def is_settled(self) -> bool:
         return self.status in ("TERMINATED", "FAILED", "ABANDONED")
