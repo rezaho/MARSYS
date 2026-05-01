@@ -1559,46 +1559,23 @@ class BaseAgent(ABC):
         else:
             actual_request = request
 
-        # Add the current request to memory
-        # Determine the role based on the request type
-        role = "user"  # Default role
-        content = actual_request
-        name = None
-        images = None  # NEW: Extract images from request
+        # Add the current request to memory.
+        # Canonical path: an AgentInput carries one or more pre-built Message
+        # objects; we append them verbatim. Legacy paths (str, dict, Message,
+        # list) flow through AgentInput.coerce, so memory ends up with the
+        # same well-typed Messages regardless of caller shape.
+        from .agent_input import AgentInput
 
-        # Handle Message objects
-        if hasattr(actual_request, 'content'):
-            # This is likely a Message object
-            content = actual_request.content or ""
-            role = getattr(actual_request, 'role', 'user')
-            name = getattr(actual_request, 'name', None)
-            images = getattr(actual_request, 'images', None)  # NEW: Extract images from Message
-        # Handle different request types
-        elif isinstance(actual_request, dict):
-            # Check if this is a tool result
-            if actual_request.get("tool_result") is not None:
-                role = "tool"
-                content = actual_request["tool_result"]
-                name = actual_request.get("tool_name")
-            # Check if this is an error/retry message
-            elif actual_request.get("error_feedback") is not None:
-                role = "system"
-                content = actual_request["error_feedback"]
-            # Otherwise extract prompt content
-            elif "prompt" in actual_request:
-                content = actual_request["prompt"]
-            # NEW: Extract content field if present (for multimodal tasks)
-            elif "content" in actual_request:
-                content = actual_request["content"]
-
-            # NEW: Extract images from dict request (for multimodal tasks)
-            if "images" in actual_request:
-                images = actual_request["images"]
-
-        # Add request to memory (skip if None or empty - e.g., tool continuation)
-        # FIX: Don't add empty continuation signals to memory
-        if hasattr(self, "memory") and content is not None and content != "":
-            request_msg_id = self.memory.add(role=role, content=content, name=name, images=images)
+        request_msg_id: Optional[str] = None
+        if hasattr(self, "memory") and actual_request is not None and actual_request != "":
+            ai = (
+                actual_request
+                if isinstance(actual_request, AgentInput)
+                else AgentInput.coerce(actual_request)
+            )
+            if not ai.is_empty():
+                added = ai.add_to_memory(self.memory)
+                request_msg_id = added[-1] if added else None
 
         # Call pre-step hook BEFORE retrieving memory and preparing messages
         # This allows hooks to add context (like screenshots) after tool responses but before LLM call
