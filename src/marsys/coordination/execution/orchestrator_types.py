@@ -255,6 +255,22 @@ class DetNodeContext(Protocol):
     ) -> Branch:
         """Spawn a fresh branch at an agent (used by Start)."""
 
+    def enqueue_user_interaction(
+        self, branch: Branch, prompt: Any, resume_agent: str
+    ) -> None:
+        """Mark the calling branch as waiting on user input, schedule async I/O
+        through the configured UserNodeHandler, and (when the user responds)
+        deliver the response into the orchestrator's resume queue. Used by
+        UserNode.on_single_invoke."""
+
+    def resume_branch_with_user_response(
+        self, suspended_branch_id: str, response: Any, resume_agent: str
+    ) -> None:
+        """Called by the user-interaction completion path. Delivers the user's
+        response by spawning a fresh branch at `resume_agent` with the response
+        as input, terminating the suspended branch, and dispatching the next
+        queued user interaction (if any)."""
+
 
 # ══════════════════════════════════════════════════════════════════════════════
 # Workflow result

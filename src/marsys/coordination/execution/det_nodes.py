@@ -121,12 +121,15 @@ class UserNode(DeterministicNode):
     invocation expects a response (the user's input becomes the resumed
     branch's input).
 
-    Stub: the actual I/O cycle (prompt, await, resume) is wired through
-    `coordination.communication.UserNodeHandler` in step 11. For now,
-    `on_single_invoke` and `on_dispatch` raise; topologies that include
-    a `UserNode` won't run successfully until that wiring lands. The
-    legacy User(Node) class (in `topology.core`) continues to handle
-    Q&A through the existing path.
+    Wiring: an agent invokes this node either via SINGLE_INVOKE("User", question)
+    or via PARALLEL_INVOKE targeting User. Both paths route into
+    `ctx.enqueue_user_interaction`, which delegates the async I/O to the
+    bound `UserNodeHandler`. The orchestrator picks up the user's reply at
+    its next tick and resumes the workflow at `resume_agent`.
+
+    Queue discipline (FIFO single-pending) is owned by the orchestrator: if
+    a second branch invokes UserNode while a first interaction is still
+    awaiting, the second waits in queue until the first is resolved.
     """
 
     RESERVED_NAME = "User"
@@ -135,17 +138,34 @@ class UserNode(DeterministicNode):
         self.name = name
         self.handler = handler  # UserNodeHandler bound at workflow construction
 
+    def _resume_agent_for(self, ctx, branch) -> str:
+        """Pick the resume agent: first non-self successor, else fall back to
+        the branch's last_invoked_agent (the calling agent)."""
+        for target in ctx.topology.successors(self.name):
+            if target == self.name:
+                continue
+            return target
+        return branch.last_invoked_agent or branch.current_agent
+
     def on_single_invoke(self, ctx, branch, value):
-        raise NotImplementedError(
-            f"UserNode {self.name!r} on_single_invoke is not yet wired "
-            "(see plan 078 step 11). Use the legacy User(Node) for Q&A."
-        )
+        if self.handler is None:
+            ctx.fail(branch, f"UserNode {self.name!r} has no handler bound")
+            return
+        resume_agent = self._resume_agent_for(ctx, branch)
+        ctx.enqueue_user_interaction(branch, prompt=value, resume_agent=resume_agent)
 
     def on_dispatch(self, ctx, fork, request):
-        raise NotImplementedError(
-            f"UserNode {self.name!r} on_dispatch is not yet wired "
-            "(see plan 078 step 11)."
+        if self.handler is None:
+            ctx.fail(fork.resolver_branch_obj, f"UserNode {self.name!r} has no handler bound")
+            return
+        # For the parallel-fork case, spawn a placeholder branch at User and
+        # treat it like a single invoke. The placeholder's delivery_target is
+        # the fork barrier, so the user's response flows back into the fork.
+        placeholder = ctx.spawn_branch_at(
+            agent=self.name, input=request, delivery_target=fork.id,
         )
+        resume_agent = self._resume_agent_for(ctx, placeholder)
+        ctx.enqueue_user_interaction(placeholder, prompt=request, resume_agent=resume_agent)
 
 
 # Reserved-name registry: maps a reserved string name to the det-node class.

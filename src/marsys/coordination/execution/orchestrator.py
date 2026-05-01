@@ -89,6 +89,7 @@ class Orchestrator:
         max_steps: int = MAX_STEPS_DEFAULT,
         event_bus: Any = None,
         session_id: str = "",
+        user_node_handler: Any = None,
     ):
         self.topology = topology
         self.runtime = runtime
@@ -96,6 +97,7 @@ class Orchestrator:
         self.max_steps = max_steps
         self.event_bus = event_bus
         self.session_id = session_id
+        self._user_node_handler = user_node_handler
 
         self.branches: dict[str, Branch] = {}
         self.barriers: dict[str, Barrier] = {}
@@ -109,6 +111,14 @@ class Orchestrator:
         # (idempotence guard against duplicate emissions when a branch
         # is settled twice through different paths).
         self._completed_emitted: set[str] = set()
+
+        # User-node interaction queue (FIFO single-pending). Each item:
+        # (suspended_branch_id, prompt, resume_agent). The orchestrator
+        # dispatches one at a time; siblings wait. Resumed via the
+        # _resume_user_responses async-queue.
+        self._user_interactions: collections.deque = collections.deque()
+        self._user_interaction_inflight: bool = False
+        self._resume_user_responses: Optional[Any] = None  # asyncio.Queue lazily created
 
     # ══════════════════════════════════════════════════════════════════
     # Public API
@@ -177,7 +187,21 @@ class Orchestrator:
                     continue
                 in_flight.add(asyncio.create_task(self._tick(br)))
 
+            # Drain any user-interaction responses that landed since last tick
+            # (the handler runs as a background task and pushes here when done).
+            self._drain_user_responses()
+            if self.runnable:
+                continue
+
             if not in_flight:
+                if self._user_interaction_inflight or self._user_interactions:
+                    # An interaction is still pending; wait for it to land.
+                    if self._resume_user_responses is not None:
+                        item = await self._resume_user_responses.get()
+                        bid, resp, resume_agent = item[0], item[1], item[2]
+                        self.resume_branch_with_user_response(bid, resp, resume_agent)
+                        self._drain_fires()
+                        continue
                 break
 
             if self._workflow_error is not None:
@@ -263,6 +287,105 @@ class Orchestrator:
             target.candidates.add(br.id)
             br.candidate_of.add(delivery_target)
         return br
+
+    def enqueue_user_interaction(
+        self, branch: Branch, prompt: Any, resume_agent: str
+    ) -> None:
+        """Suspend `branch` (mark WAITING), enqueue or dispatch the
+        interaction. FIFO discipline: only one interaction is dispatched at
+        a time; the rest wait in self._user_interactions."""
+        import asyncio
+
+        branch.status = "WAITING"
+        branch.waiting_on = "user_interaction"
+
+        item = (branch.id, prompt, resume_agent, branch.delivery_target)
+        if self._user_interaction_inflight:
+            self._user_interactions.append(item)
+            return
+
+        self._user_interaction_inflight = True
+        # Lazily create the resume queue inside an event loop.
+        if self._resume_user_responses is None:
+            try:
+                self._resume_user_responses = asyncio.Queue()
+            except RuntimeError:
+                logger.warning("enqueue_user_interaction outside event loop")
+                return
+
+        async def _drive():
+            try:
+                response = await self._user_node_handler.handle_user_node(
+                    branch=branch,
+                    incoming_message=prompt,
+                    context={
+                        "session_id": self.session_id,
+                        "branch_id": branch.id,
+                        "resume_agent": resume_agent,
+                    },
+                )
+                await self._resume_user_responses.put(
+                    (branch.id, response, resume_agent, branch.delivery_target)
+                )
+            except Exception as exc:  # pragma: no cover
+                logger.exception("user-node handler failed for branch %s", branch.id)
+                await self._resume_user_responses.put(
+                    (branch.id, None, resume_agent, branch.delivery_target, str(exc))
+                )
+
+        try:
+            asyncio.create_task(_drive())
+        except RuntimeError:
+            logger.warning("could not schedule user-interaction task — no running loop")
+
+    def _drain_user_responses(self) -> None:
+        """Drain any user-interaction responses already on the resume queue
+        without awaiting. Called at the top of each tick so completed
+        interactions resume their branches before we dispatch new work."""
+        if self._resume_user_responses is None:
+            return
+        while True:
+            try:
+                item = self._resume_user_responses.get_nowait()
+            except Exception:
+                break
+            bid, resp, resume_agent = item[0], item[1], item[2]
+            self.resume_branch_with_user_response(bid, resp, resume_agent)
+        self._drain_fires()
+
+    def resume_branch_with_user_response(
+        self, suspended_branch_id: str, response: Any, resume_agent: str
+    ) -> None:
+        """Spawn a fresh branch at `resume_agent` with the user's response as
+        input, terminate the suspended branch, and dispatch the next queued
+        interaction (if any)."""
+        suspended = self.branches.get(suspended_branch_id)
+        delivery_target = suspended.delivery_target if suspended else (self.root_barrier_id or "")
+
+        if suspended is not None and suspended.status != "TERMINATED":
+            suspended.status = "TERMINATED"
+            self._completed_emitted.add(suspended.id)
+
+        spawned = self._spawn(
+            agent=resume_agent,
+            input=response,
+            delivery_target=delivery_target,
+            parent_spawn=None,
+        )
+        if spawned is not None and delivery_target in self.barriers:
+            target = self.barriers[delivery_target]
+            if target.status == "OPEN":
+                target.candidates.add(spawned.id)
+                spawned.candidate_of.add(delivery_target)
+
+        if self._user_interactions:
+            next_branch_id, next_prompt, next_resume, _ = self._user_interactions.popleft()
+            next_branch = self.branches.get(next_branch_id)
+            if next_branch is not None:
+                self._user_interaction_inflight = False
+                self.enqueue_user_interaction(next_branch, next_prompt, next_resume)
+        else:
+            self._user_interaction_inflight = False
 
     # ══════════════════════════════════════════════════════════════════
     # Event emission (optional; only fires when event_bus is set)

@@ -221,11 +221,12 @@ class Orchestra:
         self.system_prompt_builder = SystemPromptBuilder(response_format)
 
         # Create execution components
+        self._user_node_handler = None
         if self.communication_manager:
             from .communication.user_node_handler import UserNodeHandler
-            user_node_handler = UserNodeHandler(self.communication_manager, self.event_bus)
+            self._user_node_handler = UserNodeHandler(self.communication_manager, self.event_bus)
             self.step_executor = StepExecutor(
-                user_node_handler=user_node_handler,
+                user_node_handler=self._user_node_handler,
                 event_bus=self.event_bus,
                 system_prompt_builder=self.system_prompt_builder,
             )
@@ -755,7 +756,17 @@ class Orchestra:
                 max_steps=max_steps,
                 event_bus=self.event_bus,
                 session_id=session_id,
+                user_node_handler=self._user_node_handler,
             )
+
+            # Bind UserNodeHandler to any UserNode det-node on the graph
+            # (post-shim). Without a bound handler, UserNode.on_single_invoke
+            # fails with a clear error.
+            if self._user_node_handler is not None:
+                from .execution.det_nodes import UserNode
+                for det in (self.topology_graph.det_nodes or {}).values():
+                    if isinstance(det, UserNode):
+                        det.handler = self._user_node_handler
 
             # Resolve the workflow entry point. Topologies that include a
             # StartNode (the new explicit entry) drive themselves; legacy
