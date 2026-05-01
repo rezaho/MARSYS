@@ -1089,11 +1089,33 @@ class Orchestrator:
         self._notify_branch_settled(br)
 
     def _aggregate(self, bar: Barrier) -> Any:
+        """Build the resolver branch's input from the barrier's `arrived` map.
+
+        Wraps the result in `AgentInput` so the agent step always sees a
+        canonical Message-carrying envelope. Multi-arrival barriers are
+        combined into a single user message with per-source markers, where
+        the source name is the contributing branch's current_agent (its
+        agent identity), not the opaque branch id.
+
+        ROOT delivery preserves a raw value for `final_response` exposure
+        — see `_build_result`."""
         if not bar.arrived:
             return None
-        if len(bar.arrived) == 1:
-            return next(iter(bar.arrived.values()))
-        return list(bar.arrived.values())
+        if bar.is_root:
+            if len(bar.arrived) == 1:
+                return next(iter(bar.arrived.values()))
+            return list(bar.arrived.values())
+        from ...agents.agent_input import AgentInput
+        named: dict[str, Any] = {}
+        for source_branch_id, value in bar.arrived.items():
+            br = self.branches.get(source_branch_id)
+            source = br.current_agent if br is not None else source_branch_id
+            # Disambiguate same-agent multi-arrival (e.g., parallel children
+            # of the same agent type) by suffixing the branch id.
+            if source in named:
+                source = f"{source}#{source_branch_id}"
+            named[source] = value
+        return AgentInput.aggregate(named)
 
     # ══════════════════════════════════════════════════════════════════
     # Result
