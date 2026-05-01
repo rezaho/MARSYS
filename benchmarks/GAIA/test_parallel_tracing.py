@@ -49,11 +49,11 @@ coordinator = Agent(
     name="Coordinator",
     goal="Coordinate research by dispatching to workers in parallel.",
     instruction=(
-        "You are a coordinator. When given a research task, you MUST dispatch "
-        "to BOTH Researcher and FactChecker in parallel by using parallel_invoke. "
-        "When you receive their results, write a final answer.\n\n"
-        "IMPORTANT: On your FIRST response, always use parallel_invoke to send "
-        "the task to both Researcher and FactChecker simultaneously."
+        "You are a coordinator. On your FIRST response, dispatch to BOTH "
+        "Researcher and FactChecker in parallel by calling `invoke_agent` "
+        "with two invocations (one per worker). When you receive their "
+        "results, synthesize a final answer and call `terminate_workflow` "
+        "with the synthesized answer."
     ),
     memory_retention="session",
 )
@@ -64,7 +64,9 @@ researcher = Agent(
     goal="Research a topic and provide findings.",
     instruction=(
         "You are a researcher. When given a topic, provide a brief 2-3 sentence "
-        "research summary. Be concise. Respond with a final_response."
+        "research summary. Be concise. When done, return your findings to "
+        "Coordinator by calling `invoke_agent` with target='Coordinator' and "
+        "your findings as the request."
     ),
     memory_retention="single_run",
 )
@@ -75,7 +77,9 @@ fact_checker = Agent(
     goal="Verify claims and check facts.",
     instruction=(
         "You are a fact checker. When given a topic, provide 2-3 key facts "
-        "that should be verified. Be concise. Respond with a final_response."
+        "that should be verified. Be concise. When done, return your facts to "
+        "Coordinator by calling `invoke_agent` with target='Coordinator' and "
+        "your facts as the request."
     ),
     memory_retention="single_run",
 )
