@@ -309,13 +309,27 @@ class StepExecutor:
                     # Get available actions from topology
                     available_actions = self._get_available_actions(agent, step_context)
 
+                    # Topology peers (peer agents only — det-nodes excluded)
+                    topology_neighbors: list[str] = []
+                    topology_graph = getattr(step_context, "topology_graph", None)
+                    if topology_graph:
+                        try:
+                            raw_next = topology_graph.get_next_agents(agent_name) or []
+                            topology_neighbors = [
+                                a for a in raw_next
+                                if a.lower() not in ("user", "start", "end")
+                            ]
+                        except Exception:
+                            topology_neighbors = []
+
                     # Build steering context
                     steering_ctx = SteeringContext(
                         agent_name=agent_name,
                         available_actions=available_actions,
                         error_context=error_context,
                         is_retry=is_retry,
-                        steering_mode=execution_config.steering_mode
+                        steering_mode=execution_config.steering_mode,
+                        topology_neighbors=topology_neighbors,
                     )
 
                     # Get steering prompt from manager
@@ -758,34 +772,47 @@ class StepExecutor:
         branch: Optional['ExecutionBranch'] = None,
     ) -> CoordinationContext:
         """
-        Build CoordinationContext dataclass from topology.
+        Build CoordinationContext from topology.
 
-        Args:
-            agent_name: Name of the agent
-            topology_graph: The topology graph for determining available actions
-            branch: The current execution branch (for conversation branch detection)
-
-        Returns:
-            CoordinationContext with next_agents, can_return_final_response, is_conversation_branch
+        Topology-driven gating:
+            - can_terminate_workflow: agent has direct edge to End det-node
+              (legacy fallback: agent in exit_points/original_exits metadata,
+              removed in step 7 once shim is fully relied on).
+            - can_ask_user: agent has direct edge to User det-node.
+            - is_conversation_branch: branch is in a conversation loop.
         """
         if not topology_graph:
             return CoordinationContext()
 
         next_agents = topology_graph.get_next_agents(agent_name)
 
-        # Determine if agent can return final response
-        can_final = topology_graph.has_user_access(agent_name)
-        if hasattr(topology_graph, 'exit_points') and agent_name in topology_graph.exit_points:
-            can_final = True
+        can_terminate = False
+        if hasattr(topology_graph, 'has_edge_to_endnode'):
+            can_terminate = topology_graph.has_edge_to_endnode(agent_name)
+        if not can_terminate:
+            # Migration fallback (removed in step 7): legacy exit_points
+            # metadata still gates terminate_workflow until the shim has
+            # synthesized the End edge for every legacy topology.
+            metadata = getattr(topology_graph, 'metadata', None) or {}
+            exit_points = metadata.get('exit_points') or []
+            original_exits = metadata.get('original_exits') or []
+            if agent_name in exit_points or agent_name in original_exits:
+                can_terminate = True
+            elif topology_graph.has_user_access(agent_name):
+                can_terminate = True
 
-        # Detect conversation branch for end_conversation tool
+        can_ask_user = False
+        if hasattr(topology_graph, 'has_edge_to_usernode'):
+            can_ask_user = topology_graph.has_edge_to_usernode(agent_name)
+
         is_conversation = False
         if branch is not None:
             is_conversation = branch.is_conversation_branch() if hasattr(branch, 'is_conversation_branch') else False
 
         return CoordinationContext(
             next_agents=next_agents,
-            can_return_final_response=can_final,
+            can_terminate_workflow=can_terminate,
+            can_ask_user=can_ask_user,
             is_conversation_branch=is_conversation,
         )
 
@@ -803,18 +830,31 @@ class StepExecutor:
         if topology_graph:
             current_agent = agent.name if hasattr(agent, 'name') else str(agent)
 
-            next_agents = topology_graph.get_next_agents(current_agent)
-            if next_agents and [a for a in next_agents if a != "User"]:
+            next_agents = topology_graph.get_next_agents(current_agent) or []
+            invocable = [a for a in next_agents if a.lower() not in ("user", "start", "end")]
+            if invocable:
                 available.append("invoke_agent")
 
-            if topology_graph.has_user_access(current_agent):
-                available.append("return_final_response")
+            if hasattr(topology_graph, 'has_edge_to_endnode') and \
+                    topology_graph.has_edge_to_endnode(current_agent):
+                available.append("terminate_workflow")
+            else:
+                metadata = getattr(topology_graph, 'metadata', None) or {}
+                if current_agent in (metadata.get('exit_points') or []) or \
+                        current_agent in (metadata.get('original_exits') or []):
+                    available.append("terminate_workflow")
+                elif topology_graph.has_user_access(current_agent):
+                    available.append("terminate_workflow")
+
+            if hasattr(topology_graph, 'has_edge_to_usernode') and \
+                    topology_graph.has_edge_to_usernode(current_agent):
+                available.append("ask_user")
 
         if hasattr(agent, 'tools_schema') and agent.tools_schema:
             available.append("tool_calls")
 
         if not available:
-            available.append("return_final_response")
+            available.append("terminate_workflow")
 
         return available
 

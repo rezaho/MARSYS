@@ -31,6 +31,7 @@ from .orchestrator_types import (
 )
 
 CONTENT_ONLY_STEERING_THRESHOLD = 2
+CONTENT_ONLY_HARD_LIMIT = 10
 
 if TYPE_CHECKING:
     from ...agents.registry import AgentRegistry
@@ -83,6 +84,10 @@ class RealRuntime:
             )
         self._current_instance = instance
 
+        if branch.consecutive_content_only >= CONTENT_ONLY_HARD_LIMIT:
+            diagnostic = self._build_content_only_diagnostic(branch, instance)
+            return OrchestratorStepResult(kind="FAIL", error=diagnostic)
+
         is_continuation = branch.last_invoked_agent == branch.current_agent
         context = {
             "session_id": self.session_id,
@@ -98,11 +103,9 @@ class RealRuntime:
                 "agent_error_context": {
                     "category": ValidationErrorCategory.ACTION_ERROR.value,
                     "error_message": (
-                        "Your last response contained no coordination tool call, "
-                        "so the workflow cannot proceed. You must call one of the "
-                        "available coordination tools (e.g., invoke_agent to delegate "
-                        "to a peer agent, or return_final_response to return your "
-                        "final answer) — plain text alone is not enough to advance."
+                        "Your last response contained no coordination tool call. "
+                        "The workflow cannot advance from text content alone — "
+                        "you must invoke one of your available coordination tools."
                     ),
                     "retry_count": branch.consecutive_content_only,
                     "failed_action": "content_only",
@@ -220,13 +223,27 @@ class RealRuntime:
                 request=request,
             )
 
-        if action in (ActionType.FINAL_RESPONSE, ActionType.END_CONVERSATION):
+        if action in (
+            ActionType.FINAL_RESPONSE,
+            ActionType.TERMINATE_WORKFLOW,
+            ActionType.END_CONVERSATION,
+        ):
             value = validation.final_response
+            if value is None:
+                value = (validation.parsed_response or {}).get("final_response")
             if value is None:
                 value = (validation.parsed_response or {}).get("content")
             if value is None:
                 value = getattr(marsys_result, "response", None)
             return OrchestratorStepResult(kind="FINAL_RESPONSE", value=value)
+
+        if action == ActionType.ASK_USER:
+            question = (validation.parsed_response or {}).get("question")
+            return OrchestratorStepResult(
+                kind="SINGLE_INVOKE",
+                next_agent="User",
+                value=question,
+            )
 
         if action == ActionType.TERMINAL_ERROR:
             return OrchestratorStepResult(
@@ -250,6 +267,65 @@ class RealRuntime:
         return OrchestratorStepResult(
             kind="FAIL",
             error=f"unknown coordination action: {action!r}",
+        )
+
+
+    def _build_content_only_diagnostic(
+        self, branch: OrchestratorBranch, instance: Any
+    ) -> str:
+        """Structured diagnostic emitted when a branch hits CONTENT_ONLY_HARD_LIMIT.
+
+        Names what tools the agent had, what it kept emitting, and points at the
+        likely root cause (instruction mismatch or topology gap). Read by tests
+        and humans inspecting workflow failures."""
+        agent_name = branch.current_agent
+        coord_tools: list[str] = []
+        next_agents: list[str] = []
+        try:
+            if self.topology_graph is not None:
+                next_agents = list(self.topology_graph.get_next_agents(agent_name) or [])
+                if any(a for a in next_agents if a.lower() not in ("user", "start", "end")):
+                    coord_tools.append("invoke_agent")
+                if hasattr(self.topology_graph, "has_edge_to_endnode") and \
+                        self.topology_graph.has_edge_to_endnode(agent_name):
+                    coord_tools.append("terminate_workflow")
+                if hasattr(self.topology_graph, "has_edge_to_usernode") and \
+                        self.topology_graph.has_edge_to_usernode(agent_name):
+                    coord_tools.append("ask_user")
+        except Exception:
+            logger.debug("could not inspect topology for diagnostic", exc_info=True)
+
+        regular_tools: list[str] = []
+        try:
+            schema = getattr(instance, "tools_schema", None)
+            if schema:
+                for t in schema:
+                    fn = t.get("function") if isinstance(t, dict) else None
+                    if fn and fn.get("name"):
+                        regular_tools.append(fn["name"])
+        except Exception:
+            pass
+
+        last_content = ""
+        try:
+            for msg in reversed(list(branch.memory or [])):
+                if isinstance(msg, dict) and msg.get("role") == "assistant":
+                    raw = msg.get("content")
+                    if isinstance(raw, str) and raw.strip():
+                        last_content = raw[:200]
+                        break
+        except Exception:
+            pass
+
+        return (
+            f"Content-only loop detected: agent {agent_name!r} produced "
+            f"{branch.consecutive_content_only} consecutive responses with no coordination tool call. "
+            f"Available coordination tools: {coord_tools or '(none)'}. "
+            f"Available regular tools: {regular_tools or '(none)'}. "
+            f"Last assistant content snippet: {last_content!r}. "
+            "Likely cause: the agent's instruction asks for an action that doesn't match its available "
+            "coordination tools, or the topology has no edge that exposes the right tool. Review the "
+            "agent's instruction and the topology gating."
         )
 
 
