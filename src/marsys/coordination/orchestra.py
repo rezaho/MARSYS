@@ -292,6 +292,77 @@ class Orchestra:
             # Default to string notation if all values are strings
             return StringNotationConverter.convert(topology_dict)
 
+    def _apply_legacy_topology_shim(
+        self,
+        topology_graph: "TopologyGraph",
+        canonical_topology: "Topology",
+    ) -> None:
+        """Translate legacy entry_point/exit_points/User(Node) metadata into
+        explicit Start/End/User det-node edges so downstream gating
+        (has_edge_to_endnode, has_edge_to_usernode) works uniformly.
+
+        Emits DeprecationWarning per legacy concept. Idempotent: skipped if
+        the corresponding det-node is already registered. Removed in v0.4."""
+        import warnings
+        from .execution.det_nodes import EndNode, StartNode, UserNode
+        from .topology.core import NodeType
+        from .topology.graph import TopologyEdge
+
+        metadata = canonical_topology.metadata or {}
+
+        entry_point = metadata.get("entry_point")
+        if entry_point and topology_graph.get_start_node() is None:
+            warnings.warn(
+                "Topology metadata 'entry_point' is deprecated; specify a Start "
+                "det-node in your topology nodes/edges instead. "
+                "Will be removed in v0.4.",
+                DeprecationWarning,
+                stacklevel=3,
+            )
+            if "Start" not in topology_graph.nodes:
+                topology_graph.add_node("Start")
+            topology_graph.register_det_node(StartNode())
+            topology_graph.add_edge(TopologyEdge("Start", entry_point))
+
+        exit_points = metadata.get("exit_points") or []
+        if exit_points:
+            existing_end = any(
+                isinstance(n, EndNode)
+                for n in (topology_graph.det_nodes or {}).values()
+            )
+            if not existing_end:
+                warnings.warn(
+                    "Topology metadata 'exit_points' is deprecated; specify an End "
+                    "det-node and edges-to-End in your topology directly. "
+                    "Will be removed in v0.4.",
+                    DeprecationWarning,
+                    stacklevel=3,
+                )
+                if "End" not in topology_graph.nodes:
+                    topology_graph.add_node("End")
+                topology_graph.register_det_node(EndNode())
+                for exit_agent in exit_points:
+                    topology_graph.add_edge(TopologyEdge(exit_agent, "End"))
+
+        legacy_user_present = any(
+            getattr(node, "node_type", None) == NodeType.USER
+            for node in topology_graph.nodes.values()
+        )
+        existing_user_det = any(
+            isinstance(n, UserNode)
+            for n in (topology_graph.det_nodes or {}).values()
+        )
+        if legacy_user_present and not existing_user_det:
+            warnings.warn(
+                "Legacy User(Node) regular nodes are deprecated; use the "
+                "UserNode det-node instead. Will be removed in v0.4.",
+                DeprecationWarning,
+                stacklevel=3,
+            )
+            topology_graph.register_det_node(UserNode())
+
+        topology_graph.invalidate_caches()
+
     async def _auto_cleanup_agents(
         self,
         canonical_topology: 'Topology',
@@ -621,6 +692,14 @@ class Orchestra:
             # Build the topology graph.
             self.topology_graph = self.topology_analyzer.analyze(self.canonical_topology)
             self.topology_graph.metadata["execution_config"] = execution_config
+
+            # Legacy entry/exit/User → det-node shim. Translates legacy
+            # entry_point/exit_points metadata and User(Node) regular nodes
+            # into explicit Start/End/User det-node edges. Emits
+            # DeprecationWarnings; full removal planned for v0.4.
+            self._apply_legacy_topology_shim(
+                self.topology_graph, self.canonical_topology
+            )
 
             # Update trace with topology info now that it's analyzed.
             if self.trace_collector and session_id in self.trace_collector.active_traces:
