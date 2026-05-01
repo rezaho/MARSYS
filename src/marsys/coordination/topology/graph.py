@@ -843,6 +843,37 @@ class TopologyGraph:
         
         return False
     
+    def has_edge_to_endnode(self, agent_name: str) -> bool:
+        """Check if `agent_name` has a direct outgoing edge to a registered EndNode det-node.
+
+        Topology-gated `terminate_workflow` schema reads this. End det-nodes are
+        registered separately from regular nodes (see register_det_node), so we
+        must inspect both edges and the det-node registry."""
+        from ..execution.det_nodes import EndNode
+        node = self.nodes.get(agent_name)
+        if not node:
+            return False
+        for target in node.outgoing_edges:
+            det = self.det_nodes.get(target)
+            if det is not None and isinstance(det, EndNode):
+                return True
+        return False
+
+    def has_edge_to_usernode(self, agent_name: str) -> bool:
+        """Check if `agent_name` has a direct outgoing edge to a registered UserNode det-node.
+
+        Topology-gated `ask_user` schema reads this. Distinct from the legacy
+        has_user_access which inspects NodeType.USER and exit_points metadata."""
+        from ..execution.det_nodes import UserNode
+        node = self.nodes.get(agent_name)
+        if not node:
+            return False
+        for target in node.outgoing_edges:
+            det = self.det_nodes.get(target)
+            if det is not None and isinstance(det, UserNode):
+                return True
+        return False
+
     def validate_topology(self) -> None:
         """
         Validate topology constraints.

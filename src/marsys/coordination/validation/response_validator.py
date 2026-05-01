@@ -30,6 +30,8 @@ class ActionType(Enum):
     INVOKE_AGENT = "invoke_agent"
     PARALLEL_INVOKE = "parallel_invoke"
     FINAL_RESPONSE = "final_response"
+    TERMINATE_WORKFLOW = "terminate_workflow"
+    ASK_USER = "ask_user"
     END_CONVERSATION = "end_conversation"
     ERROR_RECOVERY = "error_recovery"
     TERMINAL_ERROR = "terminal_error"
@@ -101,8 +103,12 @@ class ValidationProcessor:
         """
         if action == "invoke_agent":
             return await self._validate_invoke_agent(data, agent)
+        elif action == "terminate_workflow":
+            return await self._validate_terminate_workflow(data, agent)
         elif action == "return_final_response":
             return await self._validate_return_final_response(data, agent)
+        elif action == "ask_user":
+            return await self._validate_ask_user(data, agent)
         elif action == "end_conversation":
             return await self._validate_end_conversation(data, agent, branch)
         else:
@@ -154,31 +160,91 @@ class ValidationProcessor:
             parsed_response=data,
         )
 
-    async def _validate_return_final_response(
+    async def _validate_terminate_workflow(
         self, data: Dict[str, Any], agent: BaseAgent
     ) -> ValidationResult:
-        """Validate return_final_response: check agent has user access."""
-        if not self.topology_graph.has_user_access(agent.name):
-            next_agents = self.topology_graph.get_next_agents(agent.name)
+        """Validate terminate_workflow: check agent has direct edge to End det-node.
+
+        Falls back to legacy has_user_access / exit_points membership during the
+        migration window (step 4's shim translates these into End edges; the
+        fallback is removed in step 7)."""
+        graph = self.topology_graph
+        gated = False
+        if hasattr(graph, "has_edge_to_endnode") and graph.has_edge_to_endnode(agent.name):
+            gated = True
+        else:
+            metadata = getattr(graph, "metadata", None) or {}
+            if agent.name in (metadata.get("exit_points") or []):
+                gated = True
+            elif agent.name in (metadata.get("original_exits") or []):
+                gated = True
+            elif graph.has_user_access(agent.name):
+                gated = True
+
+        if not gated:
+            next_agents = graph.get_next_agents(agent.name)
             return ValidationResult(
                 is_valid=False,
-                error_message=f"Agent '{agent.name}' cannot return final response (no user access)",
+                error_message=f"Agent '{agent.name}' cannot terminate the workflow (no edge to End)",
                 retry_suggestion=f"You must invoke one of: {next_agents}",
                 error_category=ValidationErrorCategory.PERMISSION_ERROR.value,
             )
 
-        # Extract response content
-        response_content = data.get("response", "")
-        if not response_content and data:
-            # For output_schema agents, the entire data dict is the structured response
-            response_content = data
+        # Extract content. For output_schema agents the entire data dict carries it.
+        answer = data.get("answer", "")
+        if not answer:
+            answer = data.get("response", "")
+        if not answer and data:
+            answer = data
 
         return ValidationResult(
             is_valid=True,
-            action_type=ActionType.FINAL_RESPONSE,
+            action_type=ActionType.TERMINATE_WORKFLOW,
+            final_response=answer if not isinstance(answer, dict) else None,
             parsed_response={
-                "final_response": response_content,
-                "action_input": {"response": response_content},
+                "final_response": answer,
+                "action_input": {"answer": answer},
+            },
+        )
+
+    async def _validate_return_final_response(
+        self, data: Dict[str, Any], agent: BaseAgent
+    ) -> ValidationResult:
+        """Legacy alias for terminate_workflow (deprecated)."""
+        result = await self._validate_terminate_workflow(data, agent)
+        if result.is_valid:
+            # Preserve legacy ActionType for tests that assert on it.
+            result.action_type = ActionType.FINAL_RESPONSE
+        return result
+
+    async def _validate_ask_user(
+        self, data: Dict[str, Any], agent: BaseAgent
+    ) -> ValidationResult:
+        """Validate ask_user: agent has direct edge to User det-node."""
+        graph = self.topology_graph
+        if not (hasattr(graph, "has_edge_to_usernode") and graph.has_edge_to_usernode(agent.name)):
+            next_agents = graph.get_next_agents(agent.name)
+            return ValidationResult(
+                is_valid=False,
+                error_message=f"Agent '{agent.name}' cannot ask the user (no edge to User)",
+                retry_suggestion=f"You must invoke one of: {next_agents}",
+                error_category=ValidationErrorCategory.PERMISSION_ERROR.value,
+            )
+
+        question = data.get("question", "")
+        if not question:
+            return ValidationResult(
+                is_valid=False,
+                error_message="ask_user called with empty question",
+                error_category=ValidationErrorCategory.ACTION_ERROR.value,
+            )
+
+        return ValidationResult(
+            is_valid=True,
+            action_type=ActionType.ASK_USER,
+            parsed_response={
+                "question": question,
+                "action_input": {"question": question},
             },
         )
 

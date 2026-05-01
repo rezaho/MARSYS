@@ -33,6 +33,11 @@ class SteeringContext:
     error_context: Optional[ErrorContext] = None
     is_retry: bool = False
     steering_mode: str = "error"
+    topology_neighbors: List[str] = None  # Peer agents reachable from this agent
+
+    def __post_init__(self):
+        if self.topology_neighbors is None:
+            self.topology_neighbors = []
 
 
 class SteeringManager:
@@ -150,12 +155,49 @@ class SteeringManager:
         return prompt
 
     def _action_error_prompt(self, context: SteeringContext) -> str:
-        """Invalid action guidance."""
+        """Invalid action guidance — tiered by retry count to avoid LLM repetition collapse."""
         error = context.error_context
         coord_tools = [a for a in context.available_actions if a != "tool_calls"]
+        retry = error.retry_count or 0
+        tools_str = ", ".join(coord_tools) if coord_tools else "(none — review topology)"
 
-        prompt = f"Invalid action: {error.error_message}\n\n"
-        prompt += f"Available coordination tools: {', '.join(coord_tools)}\n"
+        if retry <= 2:
+            prompt = (
+                f"Action error: {error.error_message}\n\n"
+                f"Available coordination tools: {tools_str}\n"
+                "Please call one of these to advance the workflow."
+            )
+        elif retry == 3:
+            prompt = (
+                f"Still no coordination tool call detected. "
+                f"You must select one of these tools and invoke it: {tools_str}.\n"
+                "Pick the one that matches your task and call it now — text content alone does not advance the workflow."
+            )
+        else:
+            neighbors = [n for n in context.topology_neighbors if n.lower() not in ("user", "start", "end")]
+            neighbor_hint = ""
+            if neighbors:
+                primary = neighbors[0]
+                neighbor_hint = (
+                    f"You are agent {context.agent_name!r}. "
+                    f"Your peer is {primary!r}; send your output via "
+                    f"`invoke_agent(target='{primary}', request=<your output>)`. "
+                )
+            elif "terminate_workflow" in coord_tools:
+                neighbor_hint = (
+                    f"You are agent {context.agent_name!r}. "
+                    "Call `terminate_workflow(answer=<your final answer>)` to deliver the workflow's final answer."
+                )
+            elif "ask_user" in coord_tools:
+                neighbor_hint = (
+                    f"You are agent {context.agent_name!r}. "
+                    "Call `ask_user(question=<your question>)` to query the user."
+                )
+            prompt = (
+                f"Repeated content-only response (retry {retry}). "
+                f"{neighbor_hint}"
+                f"Available coordination tools: {tools_str}."
+            )
 
         if error.retry_suggestion:
             prompt += f"\n{error.retry_suggestion}"
