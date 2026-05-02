@@ -626,6 +626,73 @@ class MessageChain:
         }
 ```
 
+## `AgentInput`: the orchestrator-agent boundary
+
+When the orchestrator hands input to an agent's step, it always wraps that input in an `AgentInput` object. This abstraction sits at the boundary between coordination state (`Branch`, `Barrier`) and the agent's `ConversationMemory`.
+
+Source: `src/marsys/agents/agent_input.py` (247 LoC).
+
+### Why it exists
+
+A `Barrier` aggregating values from N parallel branches produces N raw values (one per child). Without normalization, that becomes a Python list written into a user message's `content` field. Anthropic's API rejects content lists whose elements aren't typed-block objects (the error reads `messages.X.content.0: Input should be an object`). OpenAI tolerates raw strings but bare-string lists conflate multimodal payloads.
+
+`AgentInput.aggregate(...)` (line 146) normalizes: each arrival becomes a typed-text-block with a per-source marker, packaged in a single user message:
+
+```python
+Message(role="user", content=[
+    {"type": "text", "text": "[from Researcher]\nQ3 revenue grew 12%..."},
+    {"type": "text", "text": "[from FactChecker]\nVerified: 12.3% YoY growth..."},
+])
+```
+
+Multimodal arrivals (e.g., a vision agent emitting a list of typed-text and image blocks) survive aggregation as inline blocks rather than being stringified. This means `aggregate` is safe across providers and across content types.
+
+### Factories
+
+| Factory | When to use |
+|---|---|
+| `AgentInput.from_text(text, role, name)` (line 55) | Plain text user / system / tool message. |
+| `AgentInput.from_message(msg)` (line 65) | Wrap an already-built `Message`. |
+| `AgentInput.from_messages(msgs)` (line 69) | Multiple pre-built messages. |
+| `AgentInput.coerce(value)` (line 73) | Back-compat: accepts `str`, `dict` with magic keys (`tool_result`, `error_feedback`, `prompt`, `content`, `message`), `Message`, `List[Message]`, `AgentInput`, `List[Any]`. |
+| `AgentInput.aggregate(arrived)` (line 146) | Convert `{source_agent: value}` arrivals to a single user message with per-source typed-text blocks. |
+
+### Properties and helpers
+
+| Member | Purpose |
+|---|---|
+| `add_to_memory(memory)` (line 202) | Appends the wrapped messages to a `ConversationMemory` instance. |
+| `primary_content` (line 211) | Returns the primary text content as a string (for logging / inspection). |
+| `__str__` (line 222) | Human-readable summary (truncated). |
+
+### Where AgentInput is constructed
+
+- **`Orchestrator._aggregate(barrier)`** (`orchestrator.py:1091`) returns `AgentInput.aggregate(named_arrivals)` for non-ROOT barriers, with branch-id → agent-name resolution so the per-source markers are readable agent names rather than barrier ids.
+- **`Agent.run_step`** calls `AgentInput.coerce(actual_request)` to normalize any incoming request before adding to memory. This is the back-compat path that accepts whatever shape the caller provides.
+
+### Worked example: parallel-aggregation arrival
+
+When two workers (Researcher + FactChecker) deliver to a Coordinator rendezvous barrier, the orchestrator's `_aggregate(barrier)` produces an `AgentInput` with:
+
+```python
+AgentInput(messages=[
+    Message(role="user", content=[
+        {"type": "text", "text": "[from Researcher]\n<researcher's findings>"},
+        {"type": "text", "text": "[from FactChecker]\n<fact-checker's verified facts>"},
+    ])
+])
+```
+
+A fresh Coordinator branch is then spawned at the rendezvous with that `AgentInput` as its initial input. Coordinator sees both arrivals as a single user turn with two clearly-marked sources, and can synthesize them into one answer.
+
+### See also
+
+- [Coordination tools](coordination-tools.md) — how `invoke_agent` with multiple invocations triggers a fork barrier whose arrivals flow through `aggregate`.
+- [Det-nodes](det-nodes.md) — how `EndNode` and `UserNode` deliveries are wrapped before reaching the next agent.
+- [Execution API](../api/execution.md) — `Branch`, `Barrier`, `Orchestrator._aggregate`.
+
+---
+
 ## 🚦 Next Steps
 
 <div class="grid cards" markdown="1">

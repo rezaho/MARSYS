@@ -126,12 +126,14 @@ nav:
       - Registry: concepts/registry.md
       - Messages: concepts/messages.md
       - Communication: concepts/communication.md
+      - Coordination Tools: concepts/coordination-tools.md
       - Planning: concepts/planning.md
     - Specialized Agents:
       - Overview: concepts/specialized-agents.md
       - Browser Agent: concepts/browser-automation.md
     - Advanced Topics:
       - Topology: concepts/advanced/topology.md
+      - Det-nodes: concepts/det-nodes.md
       - State Management: concepts/state-management.md
       - Observability:
           - Tracing: concepts/tracing.md
