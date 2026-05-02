@@ -120,6 +120,12 @@ class TopologyGraph:
         self.conversation_loops: Set[Tuple[str, str]] = set()
         self.sync_requirements: Dict[str, SyncRequirement] = {}
         self.metadata: Dict[str, Any] = {}  # Add metadata attribute
+
+        # Det-node support (for the unified-barrier orchestrator path).
+        # name → DeterministicNode instance. Populated via register_det_node().
+        self.det_nodes: Dict[str, Any] = {}
+        self._v2_reach_cache: Dict[str, frozenset] = {}
+        self._v2_preds_cache: Dict[str, frozenset] = {}
         
     def add_node(self, name: str, agent: Optional[Any] = None, node_type: Optional['NodeType'] = None, **metadata) -> NodeInfo:
         """Add a node to the graph."""
@@ -199,6 +205,10 @@ class TopologyGraph:
         self.metadata["analyzed"] = True
         self.metadata["analysis_time"] = datetime.now().isoformat()
     
+    # REMOVE-IN-V0.4: auto_detect_convergence config flag (config.py) and
+    # this method's auto-detection branch are deprecated. After v0.4 users
+    # mark convergence points explicitly. The "exit_points" fallback inside
+    # this method also goes once explicit End det-nodes are universal.
     def mark_dynamic_convergence_points(self, auto_detect: Optional[bool] = None) -> None:
         """
         Automatically mark nodes as convergence points based on topology.
@@ -561,6 +571,8 @@ class TopologyGraph:
         if not user_node:
             self.metadata.pop("agent_after_user", None)
     
+    # REMOVE-IN-V0.4: legacy auto-detection of exit points. After v0.4
+    # users specify End det-nodes explicitly and this method is unnecessary.
     def find_exit_points_with_manual(
         self,
         manual_exits: Optional[List[str]] = None,
@@ -680,6 +692,10 @@ class TopologyGraph:
                 conversation_nodes.append(agent2)
         return conversation_nodes
     
+    # REMOVE-IN-V0.4: legacy auto-injection of User node. New topologies
+    # specify Start/End/User det-nodes explicitly; this auto-injection runs
+    # only when `auto_inject_user=True` is set in metadata, which itself
+    # comes from legacy code paths.
     def auto_inject_user_node(self, entry_agent: str, exit_agents: List[str]) -> None:
         """
         Automatically inject User node if not present.
@@ -795,13 +811,20 @@ class TopologyGraph:
         
         return agents_with_access
     
+    # REMOVE-IN-V0.4: superseded by has_edge_to_endnode + has_edge_to_usernode.
+    # Kept until v0.4 because external consumers (BaseAgent.can_return_final_response
+    # historically called it; some examples may too) still reference it. The
+    # internal coordination code no longer relies on it.
     def has_user_access(self, agent_name: str) -> bool:
         """
+        DEPRECATED: use `has_edge_to_endnode` (terminate workflow) or
+        `has_edge_to_usernode` (ask user) instead.
+
         Check if a specific agent has edges to User nodes or is an exit point.
-        
+
         Args:
             agent_name: Name of the agent to check
-            
+
         Returns:
             True if the agent has access to User nodes or is an exit point, False otherwise
         """
@@ -837,6 +860,37 @@ class TopologyGraph:
         
         return False
     
+    def has_edge_to_endnode(self, agent_name: str) -> bool:
+        """Check if `agent_name` has a direct outgoing edge to a registered EndNode det-node.
+
+        Topology-gated `terminate_workflow` schema reads this. End det-nodes are
+        registered separately from regular nodes (see register_det_node), so we
+        must inspect both edges and the det-node registry."""
+        from ..execution.det_nodes import EndNode
+        node = self.nodes.get(agent_name)
+        if not node:
+            return False
+        for target in node.outgoing_edges:
+            det = self.det_nodes.get(target)
+            if det is not None and isinstance(det, EndNode):
+                return True
+        return False
+
+    def has_edge_to_usernode(self, agent_name: str) -> bool:
+        """Check if `agent_name` has a direct outgoing edge to a registered UserNode det-node.
+
+        Topology-gated `ask_user` schema reads this. Distinct from the legacy
+        has_user_access which inspects NodeType.USER and exit_points metadata."""
+        from ..execution.det_nodes import UserNode
+        node = self.nodes.get(agent_name)
+        if not node:
+            return False
+        for target in node.outgoing_edges:
+            det = self.det_nodes.get(target)
+            if det is not None and isinstance(det, UserNode):
+                return True
+        return False
+
     def validate_topology(self) -> None:
         """
         Validate topology constraints.
@@ -973,3 +1027,464 @@ class TopologyGraph:
             "parallel_groups": [{"agents": g.agents, "trigger": g.trigger_point}
                               for g in self.parallel_groups]
         }
+
+    # ══════════════════════════════════════════════════════════════════
+    # Unified-barrier orchestrator support (TopologyLike Protocol)
+    # ══════════════════════════════════════════════════════════════════
+    # Methods below extend TopologyGraph to satisfy the TopologyLike
+    # Protocol consumed by `coordination.execution.orchestrator.Orchestrator`.
+    # The legacy `is_convergence_point()` (above) keeps the original
+    # `len(incoming) > 1` rule for backward compatibility; the new
+    # orchestrator calls `is_convergence_point_v2()` (reciprocal-edge
+    # subtraction) so legacy and new paths can coexist behind the
+    # `use_new_orchestrator` feature flag.
+
+    def register_det_node(self, node: Any) -> None:
+        """Register a DeterministicNode (StartNode/EndNode/UserNode) on the
+        graph. The node's name must match a regular topology node entry
+        (created via add_node + edges). Also invalidates v2 reach/preds
+        caches so subsequent queries reflect det-node transparency."""
+        name = node.name
+        if name in self.det_nodes and self.det_nodes[name] is not node:
+            raise ValueError(
+                f"det-node {name!r} already registered with a different instance"
+            )
+        self.det_nodes[name] = node
+        self.invalidate_caches()
+
+    def is_det_node(self, name: str) -> bool:
+        return name in self.det_nodes
+
+    def get_det_node(self, name: str) -> Optional[Any]:
+        return self.det_nodes.get(name)
+
+    def get_start_node(self) -> Optional[Any]:
+        """Return the StartNode instance if one is registered, else None.
+        Topologies built for the new orchestrator must have exactly one."""
+        from ..execution.det_nodes import StartNode
+
+        starts = [
+            n for n in self.det_nodes.values() if isinstance(n, StartNode)
+        ]
+        if len(starts) > 1:
+            raise TopologyError(
+                f"multiple StartNodes registered: {[s.name for s in starts]}",
+                topology_issue="multiple_start_nodes",
+                affected_nodes=[s.name for s in starts],
+            )
+        return starts[0] if starts else None
+
+    def successors(self, name: str) -> List[str]:
+        """Outgoing neighbors. Alias matching the orchestrator's expected
+        TopologyLike API; equivalent to `adjacency[name]` (list, not the
+        normalized form used by `get_next_agents`)."""
+        return list(self.adjacency.get(name, []))
+
+    def is_terminal(self, name: str) -> bool:
+        """A node has no outgoing edges. EndNodes always satisfy this; some
+        agent nodes may too (topologies that terminate via FINAL_RESPONSE)."""
+        return len(self.adjacency.get(name, [])) == 0
+
+    def is_convergence_point_v2(self, name: str) -> bool:
+        """Reciprocal-edge subtraction rule for auto-detecting rendezvous
+        nodes. A node is a rendezvous iff:
+
+          |incomings - outgoings| > 1
+
+        i.e. ≥2 incoming edges have NO reciprocal outgoing edge. This
+        distinguishes aggregation arrivals (multiple paths converge here
+        and don't loop back) from fork-rejoin nodes (parent dispatches to
+        children which return — those incomings ARE reciprocal). Det-nodes
+        are never rendezvous regardless of edges."""
+        if name in self.det_nodes:
+            return False
+        node = self.nodes.get(name)
+        if node is None:
+            return False
+        incomings = set(node.incoming_edges)
+        outgoings = set(node.outgoing_edges)
+        pure_incomings = incomings - outgoings
+        return len(pure_incomings) > 1
+
+    def is_convergence(self, name: str) -> bool:
+        """The orchestrator's rendezvous test. Defaults to v2."""
+        return self.is_convergence_point_v2(name)
+
+    def reachable_convergence_points(self, agent_name: str) -> frozenset:
+        """Forward BFS from `agent_name`'s successors. Returns rendezvous
+        nodes a branch currently AT `agent_name` could deliver to. Walks
+        through det-nodes uniformly (det-nodes are transparent in
+        traversal — their outgoing edges are walked). Stops at:
+          - rendezvous nodes (include them, don't recurse past),
+          - terminal leaves,
+          - already-visited nodes."""
+        cached = self._v2_reach_cache.get(agent_name)
+        if cached is not None:
+            return cached
+
+        from collections import deque
+        result: Set[str] = set()
+        visited: Set[str] = {agent_name}
+        queue = deque(self.successors(agent_name))
+
+        while queue:
+            current = queue.popleft()
+            if current in visited:
+                continue
+            visited.add(current)
+            if self.is_convergence_point_v2(current):
+                result.add(current)
+                continue
+            if self.is_terminal(current):
+                continue
+            queue.extend(self.successors(current))
+
+        frozen = frozenset(result)
+        self._v2_reach_cache[agent_name] = frozen
+        return frozen
+
+    def reachable_rendezvous_points(self, agent_name: str) -> frozenset:
+        """Alias of `reachable_convergence_points` (rendezvous == convergence)."""
+        return self.reachable_convergence_points(agent_name)
+
+    def predecessor_convergences(self, cnode: str) -> frozenset:
+        """Backward BFS from `cnode`. Returns rendezvous nodes whose output
+        flows into `cnode` via a path that does NOT cross `cnode`'s forward
+        reachability (cycle break: `cnode` and its forward-reach are NOT
+        considered upstream of `cnode` itself)."""
+        cached = self._v2_preds_cache.get(cnode)
+        if cached is not None:
+            return cached
+
+        if not self.is_convergence_point_v2(cnode):
+            frozen = frozenset()
+            self._v2_preds_cache[cnode] = frozen
+            return frozen
+
+        from collections import deque
+
+        # Forward-reachable set from cnode (cycle break).
+        forward: Set[str] = set()
+        fq = deque(self.adjacency.get(cnode, []))
+        fvisited: Set[str] = {cnode}
+        while fq:
+            n = fq.popleft()
+            if n in fvisited:
+                continue
+            fvisited.add(n)
+            forward.add(n)
+            fq.extend(self.adjacency.get(n, []))
+
+        result: Set[str] = set()
+        visited: Set[str] = {cnode}
+        node = self.nodes.get(cnode)
+        if node is None:
+            frozen = frozenset()
+            self._v2_preds_cache[cnode] = frozen
+            return frozen
+        queue = deque(node.incoming_edges)
+
+        while queue:
+            current = queue.popleft()
+            if current in visited:
+                continue
+            visited.add(current)
+            if self.is_convergence_point_v2(current):
+                if current not in forward:
+                    result.add(current)
+                continue
+            cur_node = self.nodes.get(current)
+            if cur_node is not None:
+                queue.extend(cur_node.incoming_edges)
+
+        frozen = frozenset(result)
+        self._v2_preds_cache[cnode] = frozen
+        return frozen
+
+    def predecessor_rendezvous_points(self, cnode: str) -> frozenset:
+        """Alias of `predecessor_convergences`."""
+        return self.predecessor_convergences(cnode)
+
+    def invalidate_caches(self) -> None:
+        """Clear v2 reach/preds caches. Call after mutating the graph
+        (nodes, edges, det-node registration) so subsequent queries
+        recompute."""
+        self._v2_reach_cache.clear()
+        self._v2_preds_cache.clear()
+
+    def strongly_connected_components(self) -> List[List[str]]:
+        """Compute non-trivial strongly connected components (SCCs) of the
+        topology, used by compile-time validation to detect cycles.
+
+        Excludes Start and End det-nodes from the analysis: Start cannot
+        have incoming edges (per its invariant) and End cannot have outgoing
+        edges (per its invariant), so neither can structurally participate
+        in any cycle. Every other node — agents, User det-nodes, future
+        conditional/router det-nodes — is included.
+
+        Returns SCCs of size ≥ 2 (multi-node cycles) plus single-node SCCs
+        that have a self-edge (degenerate cycles). Trivial single-node SCCs
+        without self-edges are omitted.
+
+        Iterative Tarjan's algorithm to avoid recursion-depth issues on
+        large topologies. Standard reference: Tarjan 1972."""
+        from ..execution.det_nodes import EndNode, StartNode
+
+        det = self.det_nodes or {}
+        excluded: Set[str] = {
+            name for name, node in det.items()
+            if isinstance(node, (StartNode, EndNode))
+        }
+
+        index: Dict[str, int] = {}
+        lowlink: Dict[str, int] = {}
+        on_stack: Set[str] = set()
+        stack: List[str] = []
+        sccs: List[List[str]] = []
+        counter = [0]
+
+        def succ(name: str) -> List[str]:
+            node = self.nodes.get(name)
+            if node is None:
+                return []
+            return [t for t in node.outgoing_edges if t not in excluded and t in self.nodes]
+
+        def has_self_edge(name: str) -> bool:
+            node = self.nodes.get(name)
+            return node is not None and name in node.outgoing_edges
+
+        def strongconnect(start: str) -> None:
+            # Iterative variant: each frame is (node, succ_iter).
+            work_stack: List[tuple] = [(start, iter(succ(start)))]
+            index[start] = counter[0]
+            lowlink[start] = counter[0]
+            counter[0] += 1
+            stack.append(start)
+            on_stack.add(start)
+
+            while work_stack:
+                v, it = work_stack[-1]
+                try:
+                    w = next(it)
+                except StopIteration:
+                    work_stack.pop()
+                    if lowlink[v] == index[v]:
+                        component: List[str] = []
+                        while True:
+                            n = stack.pop()
+                            on_stack.discard(n)
+                            component.append(n)
+                            if n == v:
+                                break
+                        # Keep multi-node SCCs and self-looping single-node SCCs.
+                        if len(component) > 1 or has_self_edge(component[0]):
+                            sccs.append(component)
+                    if work_stack:
+                        parent = work_stack[-1][0]
+                        lowlink[parent] = min(lowlink[parent], lowlink[v])
+                    continue
+                if w not in index:
+                    index[w] = counter[0]
+                    lowlink[w] = counter[0]
+                    counter[0] += 1
+                    stack.append(w)
+                    on_stack.add(w)
+                    work_stack.append((w, iter(succ(w))))
+                elif w in on_stack:
+                    lowlink[v] = min(lowlink[v], index[w])
+
+        for name in self.nodes:
+            if name in excluded or name in index:
+                continue
+            strongconnect(name)
+
+        return sccs
+
+    def validate(self) -> None:
+        """Structural validation: det-node invariants only.
+
+          - Exactly one StartNode if any det-nodes are registered.
+          - StartNode has no incoming edges, ≥1 outgoing.
+          - EndNodes have no outgoing edges.
+          - All nodes reachable from Start (orphan EndNodes excepted).
+
+        Raises TopologyError on violation. Skipped (no-op) if no det-nodes
+        are registered, since the legacy path doesn't require these rules.
+
+        Workflow-completeness rules (every non-terminal node must reach End
+        or User; cycles must have an escape) live in `validate_workflow`,
+        which is invoked by `Orchestra.execute`. They aren't enforced here
+        so the orchestrator bench can build minimal topologies that exercise
+        a single mechanism without satisfying full-workflow constraints.
+        """
+        if not self.det_nodes:
+            return
+
+        from ..execution.det_nodes import EndNode, StartNode
+
+        errors: List[str] = []
+
+        starts = [n for n in self.det_nodes.values() if isinstance(n, StartNode)]
+        if len(starts) == 0:
+            errors.append("topology has det-nodes but no StartNode")
+        elif len(starts) > 1:
+            errors.append(
+                f"multiple StartNodes: {[s.name for s in starts]} (only one allowed)"
+            )
+
+        if len(starts) == 1:
+            start_name = starts[0].name
+            start_node_info = self.nodes.get(start_name)
+            if start_node_info is None:
+                errors.append(f"StartNode {start_name!r} has no graph node entry")
+            else:
+                if start_node_info.incoming_edges:
+                    errors.append(
+                        f"StartNode {start_name!r} has incoming edges: "
+                        f"{start_node_info.incoming_edges}"
+                    )
+                if not start_node_info.outgoing_edges:
+                    errors.append(
+                        f"StartNode {start_name!r} has no outgoing edges"
+                    )
+
+        ends = [n for n in self.det_nodes.values() if isinstance(n, EndNode)]
+        for end_node in ends:
+            end_info = self.nodes.get(end_node.name)
+            if end_info is None:
+                continue
+            if end_info.outgoing_edges:
+                errors.append(
+                    f"EndNode {end_node.name!r} has outgoing edges: "
+                    f"{end_info.outgoing_edges}"
+                )
+
+        # All nodes reachable from Start (orphan EndNodes excepted).
+        if len(starts) == 1:
+            start_name = starts[0].name
+            from collections import deque
+            reachable: Set[str] = set()
+            queue = deque([start_name])
+            while queue:
+                n = queue.popleft()
+                if n in reachable:
+                    continue
+                reachable.add(n)
+                queue.extend(self.adjacency.get(n, []))
+
+            for name, node in self.nodes.items():
+                if name in reachable:
+                    continue
+                # Orphan EndNodes (no incoming) are allowed but unused.
+                det = self.det_nodes.get(name)
+                if isinstance(det, EndNode) and not node.incoming_edges:
+                    continue
+                errors.append(f"node {name!r} not reachable from Start")
+
+        # Future ConditionalNode rules go here (placeholders):
+        #   - Each ConditionalNode has ≥2 outgoing edges.
+        #   - No back-to-back ConditionalNodes without an agent between.
+
+        if errors:
+            raise TopologyError(
+                "topology validation failed:\n  - " + "\n  - ".join(errors),
+                topology_issue="validation_failed",
+                affected_nodes=[],
+            )
+
+    def validate_workflow(self) -> None:
+        """Workflow-completeness validation for the production execution path.
+
+        Layered on top of `validate()` (which enforces det-node invariants).
+        Adds the rules a real workflow must satisfy to terminate cleanly:
+          - Every non-Start non-End node must reach End or User transitively.
+            User itself is a valid terminal target.
+          - Every non-trivial SCC (multi-node cycle, or self-loop) must have
+            at least one outgoing edge to a node OUTSIDE the SCC that
+            transitively reaches End or User.
+
+        Applies uniformly to agents, User det-nodes, and any future
+        conditional/router det-nodes. Skipped if no det-nodes are registered
+        (legacy-only topologies handled by the shim).
+
+        Raises TopologyError listing every offending node/cycle in one shot
+        so users see all problems at once."""
+        if not self.det_nodes:
+            return
+        from ..execution.det_nodes import EndNode, StartNode, UserNode
+
+        errors: List[str] = []
+        starts = [n for n in self.det_nodes.values() if isinstance(n, StartNode)]
+        end_names = {n.name for n in self.det_nodes.values() if isinstance(n, EndNode)}
+        user_names = {n.name for n in self.det_nodes.values() if isinstance(n, UserNode)}
+        excluded = {s.name for s in starts} | end_names
+
+        for name in self.nodes:
+            if name in excluded:
+                continue
+            if name in user_names:
+                continue
+            if any(self._reaches(name, t) for t in (end_names | user_names)):
+                continue
+            node = self.nodes.get(name)
+            outgoing = list(node.outgoing_edges) if node else []
+            errors.append(
+                f"node {name!r} cannot reach End or User "
+                f"(outgoing edges: {outgoing or '(none — leaf)'}). "
+                "Add an edge to End, User, or to a node that reaches them."
+            )
+
+        for scc in self.strongly_connected_components():
+            scc_set = set(scc)
+            external: Set[str] = set()
+            for member in scc:
+                node = self.nodes.get(member)
+                if node is None:
+                    continue
+                for t in node.outgoing_edges:
+                    if t not in scc_set:
+                        external.add(t)
+            has_escape = False
+            for t in external:
+                if t in end_names or t in user_names:
+                    has_escape = True
+                    break
+                if any(self._reaches(t, e) for e in (end_names | user_names)):
+                    has_escape = True
+                    break
+            if not has_escape:
+                errors.append(
+                    f"nodes {scc} form a cycle with no edge that reaches "
+                    "End or User. Add an edge from one of them to End, User, "
+                    "or a node that reaches them."
+                )
+
+        if errors:
+            raise TopologyError(
+                "topology workflow validation failed:\n  - " + "\n  - ".join(errors),
+                topology_issue="workflow_validation_failed",
+                affected_nodes=[],
+            )
+
+    def _reaches(self, src: str, target: str) -> bool:
+        """BFS-based reachability from `src` to `target` along outgoing edges.
+        Used by compile-time validation; doesn't stop at User nodes (unlike
+        `can_reach`)."""
+        if src == target:
+            return True
+        from collections import deque
+        visited: Set[str] = {src}
+        queue = deque([src])
+        while queue:
+            n = queue.popleft()
+            node = self.nodes.get(n)
+            if node is None:
+                continue
+            for t in node.outgoing_edges:
+                if t == target:
+                    return True
+                if t in visited:
+                    continue
+                visited.add(t)
+                queue.append(t)
+        return False

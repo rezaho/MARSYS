@@ -30,7 +30,7 @@ from marsys.agents.memory import Message
 @pytest.fixture
 def topology_graph():
     """Topology: Agent1 → Agent2, Agent3; Agent2 → Agent1; Agent3 → Agent1.
-    Agent1 is an exit point (has user access)."""
+    Agent1 is an exit point (has user access; has edge to End)."""
     graph = Mock(spec=TopologyGraph)
     edges = {
         "Agent1": ["Agent2", "Agent3"],
@@ -39,6 +39,9 @@ def topology_graph():
     }
     graph.get_next_agents = MagicMock(side_effect=lambda a: edges.get(a, []))
     graph.has_user_access = MagicMock(side_effect=lambda a: a == "Agent1")
+    graph.has_edge_to_endnode = MagicMock(side_effect=lambda a: a == "Agent1")
+    graph.has_edge_to_usernode = MagicMock(return_value=False)
+    graph.metadata = {}
     return graph
 
 

@@ -23,7 +23,7 @@ from marsys.coordination.tracing.events import (
     ValidationDecisionEvent,
     ConvergenceEvent,
 )
-from marsys.coordination.execution.branch_spawner import (
+from marsys.coordination.events import (
     BranchCreatedEvent,
     BranchCompletedEvent,
 )

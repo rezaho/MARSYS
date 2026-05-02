@@ -84,10 +84,6 @@ class Router:
             return self._route_parallel_invocation(
                 validation_result, current_branch, routing_context
             )
-        elif action_type == ActionType.CALL_TOOL:
-            return self._route_tool_execution(
-                validation_result, current_branch, routing_context
-            )
         elif action_type == ActionType.FINAL_RESPONSE:
             return self._route_final_response(
                 validation_result, current_branch, routing_context
@@ -104,10 +100,6 @@ class Router:
         elif action_type == ActionType.TERMINAL_ERROR:
             # Route terminal error to user for display
             return self._route_terminal_error(
-                validation_result, current_branch, routing_context
-            )
-        elif action_type == ActionType.WAIT_AND_AGGREGATE:
-            return self._route_wait_and_aggregate(
                 validation_result, current_branch, routing_context
             )
         else:
@@ -232,33 +224,6 @@ class Router:
             }
         )
     
-    def _route_tool_execution(
-        self,
-        validation_result: ValidationResult,
-        current_branch: ExecutionBranch,
-        routing_context: RoutingContext
-    ) -> RoutingDecision:
-        """Handle tool execution routing."""
-        if not validation_result.tool_calls:
-            logger.error("No tool calls specified")
-            return self._create_completion_decision("No tool calls specified")
-        
-        # Create tool execution step
-        step = ExecutionStep(
-            step_type=StepType.TOOL,
-            agent_name=routing_context.current_agent,
-            tool_calls=validation_result.tool_calls,
-            metadata={
-                "tool_count": len(validation_result.tool_calls)
-            }
-        )
-        
-        return RoutingDecision(
-            next_steps=[step],
-            should_continue=True,  # Continue after tool execution
-            metadata={"routing_type": "tool_execution"}
-        )
-    
     def _route_final_response(
         self,
         validation_result: ValidationResult,
@@ -309,29 +274,6 @@ class Router:
             should_continue=False,
             completion_reason="Conversation ended",
             metadata={"routing_type": "conversation_end"}
-        )
-    
-    def _route_wait_and_aggregate(
-        self,
-        validation_result: ValidationResult,
-        current_branch: ExecutionBranch,
-        routing_context: RoutingContext
-    ) -> RoutingDecision:
-        """Handle wait and aggregate routing."""
-        # Create aggregation step
-        step = ExecutionStep(
-            step_type=StepType.AGGREGATE,
-            agent_name=routing_context.current_agent,
-            metadata={
-                "aggregation_type": validation_result.parsed_response.get("aggregation_type", "default")
-            }
-        )
-        
-        return RoutingDecision(
-            next_steps=[step],
-            should_continue=False,
-            should_wait=True,
-            metadata={"routing_type": "wait_aggregate"}
         )
     
     def _route_conversation_continuation(

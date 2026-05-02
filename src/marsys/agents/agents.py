@@ -343,15 +343,19 @@ class BaseAgent(ABC):
 
     def can_return_final_response(self) -> bool:
         """
-        Dynamically check if this agent can return final responses.
-        Uses topology graph to determine if agent has user access.
+        Dynamically check if this agent can terminate the workflow.
+
+        Reads the topology graph: True iff this agent has a direct edge to
+        an End det-node. Legacy entry/exit/User-edge metadata is translated
+        into End edges by Orchestra._apply_legacy_topology_shim before this
+        is called.
 
         Returns:
-            True if agent can return final responses, False otherwise
+            True if agent can call terminate_workflow, False otherwise
         """
-        if self._topology_graph_ref:
-            return self._topology_graph_ref.has_user_access(self.name)
-        return False  # Default to False if no topology available
+        if self._topology_graph_ref and hasattr(self._topology_graph_ref, "has_edge_to_endnode"):
+            return self._topology_graph_ref.has_edge_to_endnode(self.name)
+        return False
 
     def _format_parameters(self, properties: Dict, required: List[str], indent: int = 2) -> List[str]:
         """Recursively format parameters including nested structures."""
@@ -1559,46 +1563,23 @@ class BaseAgent(ABC):
         else:
             actual_request = request
 
-        # Add the current request to memory
-        # Determine the role based on the request type
-        role = "user"  # Default role
-        content = actual_request
-        name = None
-        images = None  # NEW: Extract images from request
+        # Add the current request to memory.
+        # Canonical path: an AgentInput carries one or more pre-built Message
+        # objects; we append them verbatim. Legacy paths (str, dict, Message,
+        # list) flow through AgentInput.coerce, so memory ends up with the
+        # same well-typed Messages regardless of caller shape.
+        from .agent_input import AgentInput
 
-        # Handle Message objects
-        if hasattr(actual_request, 'content'):
-            # This is likely a Message object
-            content = actual_request.content or ""
-            role = getattr(actual_request, 'role', 'user')
-            name = getattr(actual_request, 'name', None)
-            images = getattr(actual_request, 'images', None)  # NEW: Extract images from Message
-        # Handle different request types
-        elif isinstance(actual_request, dict):
-            # Check if this is a tool result
-            if actual_request.get("tool_result") is not None:
-                role = "tool"
-                content = actual_request["tool_result"]
-                name = actual_request.get("tool_name")
-            # Check if this is an error/retry message
-            elif actual_request.get("error_feedback") is not None:
-                role = "system"
-                content = actual_request["error_feedback"]
-            # Otherwise extract prompt content
-            elif "prompt" in actual_request:
-                content = actual_request["prompt"]
-            # NEW: Extract content field if present (for multimodal tasks)
-            elif "content" in actual_request:
-                content = actual_request["content"]
-
-            # NEW: Extract images from dict request (for multimodal tasks)
-            if "images" in actual_request:
-                images = actual_request["images"]
-
-        # Add request to memory (skip if None or empty - e.g., tool continuation)
-        # FIX: Don't add empty continuation signals to memory
-        if hasattr(self, "memory") and content is not None and content != "":
-            request_msg_id = self.memory.add(role=role, content=content, name=name, images=images)
+        request_msg_id: Optional[str] = None
+        if hasattr(self, "memory") and actual_request is not None and actual_request != "":
+            ai = (
+                actual_request
+                if isinstance(actual_request, AgentInput)
+                else AgentInput.coerce(actual_request)
+            )
+            if not ai.is_empty():
+                added = ai.add_to_memory(self.memory)
+                request_msg_id = added[-1] if added else None
 
         # Call pre-step hook BEFORE retrieving memory and preparing messages
         # This allows hooks to add context (like screenshots) after tool responses but before LLM call
@@ -1640,7 +1621,8 @@ class BaseAgent(ABC):
             from marsys.coordination.formats.coordination_tools import CoordinationToolSchemaBuilder
             self._coordination_tool_schemas = CoordinationToolSchemaBuilder.build_schemas(
                 next_agents=coordination_context.next_agents,
-                can_return_final_response=coordination_context.can_return_final_response,
+                can_terminate_workflow=coordination_context.can_terminate_workflow,
+                can_ask_user=coordination_context.can_ask_user,
                 is_conversation_branch=getattr(coordination_context, 'is_conversation_branch', False),
                 output_schema=self._compiled_output_schema if hasattr(self, '_compiled_output_schema') else None,
             )

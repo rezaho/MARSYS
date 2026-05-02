@@ -8,6 +8,21 @@ MARSYS includes several built-in tools for common operations. Each tool has spec
 
 ---
 
+## 🔌 Coordination tools
+
+Four tool names are **reserved** by the orchestrator and never executed by `ToolExecutor`. They drive the orchestrator's state machine instead of doing work themselves:
+
+- **`invoke_agent(invocations=[…])`** — delegate to one or more peer agents (multiple invocations dispatch concurrently as parallel child branches).
+- **`terminate_workflow(answer=…)`** — emit the workflow's final answer (gated by the agent's outgoing edge to the `End` det-node).
+- **`ask_user(question=…)`** — query the user via the workflow's communication channel (gated by the agent's outgoing edge to the `User` det-node).
+- **`end_conversation(summary=…)`** — terminate a conversation branch.
+
+Each agent's tool schema is computed from its outgoing topology edges — a peer-only worker sees only `invoke_agent`; a coordinator with an edge to `End` also sees `terminate_workflow`. See [Coordination Tools](../concepts/coordination-tools.md) for the full reference, gating rules, and worked examples.
+
+(The legacy alias `return_final_response` is preserved for one release; removal in v0.4. See [ADR-006](../architecture/framework/decisions/ADR-006-deprecation-timeline.md).)
+
+---
+
 ## 🔍 Web Search Tools
 
 !!! warning "Production Recommendation"

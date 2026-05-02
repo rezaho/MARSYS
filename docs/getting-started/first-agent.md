@@ -530,35 +530,17 @@ editor = Agent(
 )
 ```
 
-### Agent Response Formats
+### Coordination tools
 
-Agents should return responses in standard formats:
+When an agent finishes deciding what to do, it emits a **native tool call**. Three coordination tools drive the orchestrator's state machine — they're reserved tool names, never executed by `ToolExecutor`:
 
-```python
-# For invoking another agent
-response = {
-    "thought": "I need more information about this topic",
-    "next_action": "invoke_agent",
-    "action_input": "Researcher"
-}
+- `invoke_agent(invocations=[{"agent_name": "...", "request": "..."}])` — delegate to one or more peer agents. Multiple invocations dispatch concurrently as parallel child branches.
+- `terminate_workflow(answer="...")` — emit the workflow's final answer. Available only if the agent has a direct edge to the `End` det-node.
+- `ask_user(question="...")` — query the user via the workflow's communication channel. Available only if the agent has a direct edge to the `User` det-node.
 
-# For parallel invocation
-response = {
-    "thought": "I'll gather data from multiple sources",
-    "next_action": "parallel_invoke",
-    "agents": ["DataSource1", "DataSource2"],
-    "agent_requests": {
-        "DataSource1": "Get sales data",
-        "DataSource2": "Get marketing data"
-    }
-}
+The orchestrator gates which of these tools each agent can call based on its outgoing topology edges. A peer-only worker (no edge to End/User) sees just `invoke_agent` in its tool schema. The model produces the tool calls in standard OpenAI/Anthropic native format; user code rarely constructs them by hand.
 
-# For final response
-response = {
-    "next_action": "final_response",
-    "content": "Here is my analysis..."
-}
-```
+See [Coordination Tools](../concepts/coordination-tools.md) for the gating rules and worked examples.
 
 ## 📝 Input/Output Schemas
 

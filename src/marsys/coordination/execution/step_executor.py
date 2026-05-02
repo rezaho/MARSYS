@@ -168,24 +168,13 @@ class StepExecutor:
             StepResult with execution outcome
         """
         start_time = time.time()
-        
-        # Check if this is a User node
-        if isinstance(agent, str) and agent.lower() == "user":
-            if self.user_node_handler and context.get("branch"):
-                return await self.user_node_handler.handle_user_node(
-                    branch=context["branch"],
-                    incoming_message=request,
-                    context=context
-                )
-            else:
-                # No handler - skip User node
-                return StepResult(
-                    agent_name="User",
-                    response="User interaction skipped",
-                    action_type="skip",
-                    success=True
-                )
-        
+
+        # User-node dispatch is handled at the orchestrator level via the
+        # UserNode det-node's on_single_invoke (orchestrator.py:441-444),
+        # which fires before RealRuntime.step ever sees a User branch. The
+        # legacy string-based "agent='User'" path used to live here but is
+        # unreachable in production; removed in step 7 cleanup.
+
         # Normal agent handling
         agent_name = agent.name if hasattr(agent, 'name') else str(agent)
 
@@ -309,13 +298,27 @@ class StepExecutor:
                     # Get available actions from topology
                     available_actions = self._get_available_actions(agent, step_context)
 
+                    # Topology peers (peer agents only — det-nodes excluded)
+                    topology_neighbors: list[str] = []
+                    topology_graph = getattr(step_context, "topology_graph", None)
+                    if topology_graph:
+                        try:
+                            raw_next = topology_graph.get_next_agents(agent_name) or []
+                            topology_neighbors = [
+                                a for a in raw_next
+                                if a.lower() not in ("user", "start", "end")
+                            ]
+                        except Exception:
+                            topology_neighbors = []
+
                     # Build steering context
                     steering_ctx = SteeringContext(
                         agent_name=agent_name,
                         available_actions=available_actions,
                         error_context=error_context,
                         is_retry=is_retry,
-                        steering_mode=execution_config.steering_mode
+                        steering_mode=execution_config.steering_mode,
+                        topology_neighbors=topology_neighbors,
                     )
 
                     # Get steering prompt from manager
@@ -758,34 +761,39 @@ class StepExecutor:
         branch: Optional['ExecutionBranch'] = None,
     ) -> CoordinationContext:
         """
-        Build CoordinationContext dataclass from topology.
+        Build CoordinationContext from topology.
 
-        Args:
-            agent_name: Name of the agent
-            topology_graph: The topology graph for determining available actions
-            branch: The current execution branch (for conversation branch detection)
+        Topology-driven gating, single source of truth:
+            - can_terminate_workflow: agent has direct edge to End det-node.
+            - can_ask_user: agent has direct edge to User det-node.
+            - is_conversation_branch: branch is in a conversation loop.
 
-        Returns:
-            CoordinationContext with next_agents, can_return_final_response, is_conversation_branch
+        Legacy entry_point / exit_points / User-edge patterns are translated
+        into explicit det-node edges by Orchestra._apply_legacy_topology_shim
+        before this function runs; that shim is the only legacy support layer.
         """
         if not topology_graph:
             return CoordinationContext()
 
         next_agents = topology_graph.get_next_agents(agent_name)
 
-        # Determine if agent can return final response
-        can_final = topology_graph.has_user_access(agent_name)
-        if hasattr(topology_graph, 'exit_points') and agent_name in topology_graph.exit_points:
-            can_final = True
+        can_terminate = (
+            hasattr(topology_graph, 'has_edge_to_endnode')
+            and topology_graph.has_edge_to_endnode(agent_name)
+        )
+        can_ask_user = (
+            hasattr(topology_graph, 'has_edge_to_usernode')
+            and topology_graph.has_edge_to_usernode(agent_name)
+        )
 
-        # Detect conversation branch for end_conversation tool
         is_conversation = False
         if branch is not None:
             is_conversation = branch.is_conversation_branch() if hasattr(branch, 'is_conversation_branch') else False
 
         return CoordinationContext(
             next_agents=next_agents,
-            can_return_final_response=can_final,
+            can_terminate_workflow=can_terminate,
+            can_ask_user=can_ask_user,
             is_conversation_branch=is_conversation,
         )
 
@@ -803,194 +811,27 @@ class StepExecutor:
         if topology_graph:
             current_agent = agent.name if hasattr(agent, 'name') else str(agent)
 
-            next_agents = topology_graph.get_next_agents(current_agent)
-            if next_agents and [a for a in next_agents if a != "User"]:
+            next_agents = topology_graph.get_next_agents(current_agent) or []
+            invocable = [a for a in next_agents if a.lower() not in ("user", "start", "end")]
+            if invocable:
                 available.append("invoke_agent")
 
-            if topology_graph.has_user_access(current_agent):
-                available.append("return_final_response")
+            if hasattr(topology_graph, 'has_edge_to_endnode') and \
+                    topology_graph.has_edge_to_endnode(current_agent):
+                available.append("terminate_workflow")
+
+            if hasattr(topology_graph, 'has_edge_to_usernode') and \
+                    topology_graph.has_edge_to_usernode(current_agent):
+                available.append("ask_user")
 
         if hasattr(agent, 'tools_schema') and agent.tools_schema:
             available.append("tool_calls")
 
         if not available:
-            available.append("return_final_response")
+            available.append("terminate_workflow")
 
         return available
 
-    def _get_steering_prompt(self, agent: BaseAgent, context: StepContext,
-                             is_retry: bool = False) -> str:
-        """
-        Generate steering prompt to guide agent behavior.
-        
-        Args:
-            agent: The agent being executed
-            context: Current execution context
-            is_retry: Whether this is a retry attempt
-
-        Returns:
-            Steering prompt to inject as last user message
-        """
-        # Get available actions from topology
-        topology_graph = context.topology_graph if hasattr(context, 'topology_graph') else None
-        branch = context.branch if hasattr(context, 'branch') else None
-        
-        # Get available next agents
-        if topology_graph and branch:
-            # Get next agents from topology graph
-            current_agent = agent.name if hasattr(agent, 'name') else str(agent)
-            next_agents = topology_graph.get_next_agents(current_agent)
-            
-            # Filter out User and duplicates
-            next_agents = [a for a in next_agents if a != "User"]
-            next_agents = list(dict.fromkeys(next_agents))  # Remove duplicates while preserving order
-        else:
-            next_agents = []
-        
-        # Determine available actions
-        available_actions = []
-        action_descriptions = []
-        
-        # Add invoke_agent if there are next agents
-        if next_agents:
-            available_actions.append("'invoke_agent'")
-            action_descriptions.append(
-                f'- If `next_action` is `"invoke_agent"`:\n'
-                f'     `{{"agent_name": "AgentName", "request": {{"task": "specific task details"}}}}`\n'
-                f'     Available agents: {", ".join(next_agents)}'
-            )
-        
-        # Add tool_calls if agent has tools
-        if hasattr(agent, 'tools_schema') and agent.tools_schema:
-            available_actions.append("'tool_calls'")
-            action_descriptions.append(
-                '- If you want to call tools:\n'
-                '     Use the native tool_calls response format (NOT as next_action)\n'
-                '     The model will automatically handle tool execution'
-            )
-
-        # CRITICAL: Only add final_response if agent has permission
-        # This must match the logic in _get_dynamic_format_instructions (lines 614-631)
-        can_return_final = False
-        current_agent = agent.name if hasattr(agent, 'name') else str(agent)
-
-        # Check if agent has user access in topology (the official way)
-        if topology_graph and topology_graph.has_user_access(current_agent):
-            can_return_final = True
-
-        # Also check if agent is an exit point (for auto_run scenarios)
-        if topology_graph and hasattr(topology_graph, 'exit_points') and current_agent in topology_graph.exit_points:
-            can_return_final = True
-
-        if can_return_final:
-            available_actions.append("'final_response'")
-            action_descriptions.append(
-                '- If `next_action` is `"final_response"`:\n'
-                '     `{"content": "Your final answer..."}`'
-            )
-
-        # Ensure agent has at least one available action
-        if not available_actions:
-            raise RuntimeError(
-                f"Agent '{current_agent}' has no available actions in steering prompt. "
-                f"The agent cannot invoke other agents, use tools, or return final response. "
-                f"This suggests a topology configuration error."
-            )
-
-        actions_str = ", ".join(available_actions)
-
-        # Use concise guidelines for steering to avoid duplication with system prompt
-        json_guidelines_concise = self._get_json_guidelines_concise(actions_str)
-
-        # Build action guidance from descriptions
-        action_guidance = "\n\n".join(action_descriptions) if action_descriptions else ""
-
-        # Build steering based on retry
-        if is_retry:
-            return f"""Your previous response had an incorrect format. Let's try again with the correct structure.
-{json_guidelines_concise}
-
-Available options:
-{action_guidance}"""
-        else:
-            return f"""Make sure to format your response correctly:
-{json_guidelines_concise}
-
-Available options:
-{action_guidance}"""
-    
-    def _get_agent_request_example(self, agent_name: str) -> str:
-        """
-        Get an example request format for an agent based on its input schema.
-        Returns either a schema-based example or a generic placeholder.
-        """
-        try:
-            # Try to import AgentRegistry to get schema
-            from marsys.agents.registry import AgentRegistry
-            
-            # Try to get the agent from registry
-            agent = AgentRegistry.get(agent_name)
-            if agent and hasattr(agent, '_compiled_input_schema'):
-                schema = agent._compiled_input_schema
-                if schema:
-                    # Generate example based on schema
-                    return self._generate_example_from_schema(schema)
-        except (ImportError, Exception):
-            pass
-        
-        # Default to generic example
-        return '{"task": "task details"}'
-    
-    def _generate_example_from_schema(self, schema: Dict[str, Any]) -> str:
-        """
-        Generate an example request based on a JSON schema.
-        """
-        if not schema or not isinstance(schema, dict):
-            return '{"task": "task details"}'
-        
-        schema_type = schema.get('type', 'any')
-        
-        # Handle string type
-        if schema_type == 'string':
-            return '"<your-request-string>"'
-        
-        # Handle object type
-        if schema_type == 'object':
-            properties = schema.get('properties', {})
-            required = schema.get('required', [])
-            
-            if not properties:
-                return '{}'
-            
-            # Build example object
-            example_obj = {}
-            for prop_name, prop_schema in properties.items():
-                prop_type = prop_schema.get('type', 'any')
-                is_required = prop_name in required
-                
-                # Generate example based on type and requirement
-                if prop_type == 'string':
-                    placeholder = f'{prop_name}_value{" (required)" if is_required else ""}'
-                elif prop_type == 'array':
-                    placeholder = f'["{prop_name}_item1", "{prop_name}_item2"]'
-                elif prop_type == 'object':
-                    placeholder = f'{{"key": "{prop_name}_data"}}'
-                elif prop_type == 'number' or prop_type == 'integer':
-                    placeholder = 123
-                elif prop_type == 'boolean':
-                    placeholder = True
-                else:
-                    placeholder = f'{prop_name}_value'
-                
-                example_obj[prop_name] = placeholder
-            
-            # Convert to JSON string with proper formatting
-            import json
-            return json.dumps(example_obj, indent=2)
-        
-        # For any other type or unknown schema
-        return '<request-data-specific-to-agent>'
-    
     async def _process_tool_calls(
         self,
         raw_response: Any,

@@ -29,7 +29,12 @@ class ActionType(Enum):
     """Action types produced by validation."""
     INVOKE_AGENT = "invoke_agent"
     PARALLEL_INVOKE = "parallel_invoke"
+    # REMOVE-IN-V0.4: FINAL_RESPONSE is the legacy enum name; the canonical
+    # action is now TERMINATE_WORKFLOW. Tests on tests/coordination/test_response_validator.py
+    # still assert FINAL_RESPONSE for the legacy "return_final_response" tool name.
     FINAL_RESPONSE = "final_response"
+    TERMINATE_WORKFLOW = "terminate_workflow"
+    ASK_USER = "ask_user"
     END_CONVERSATION = "end_conversation"
     ERROR_RECOVERY = "error_recovery"
     TERMINAL_ERROR = "terminal_error"
@@ -101,8 +106,14 @@ class ValidationProcessor:
         """
         if action == "invoke_agent":
             return await self._validate_invoke_agent(data, agent)
+        elif action == "terminate_workflow":
+            return await self._validate_terminate_workflow(data, agent)
+        # REMOVE-IN-V0.4: legacy "return_final_response" tool name; renamed to
+        # "terminate_workflow". Drop this branch and _validate_return_final_response.
         elif action == "return_final_response":
             return await self._validate_return_final_response(data, agent)
+        elif action == "ask_user":
+            return await self._validate_ask_user(data, agent)
         elif action == "end_conversation":
             return await self._validate_end_conversation(data, agent, branch)
         else:
@@ -154,31 +165,88 @@ class ValidationProcessor:
             parsed_response=data,
         )
 
-    async def _validate_return_final_response(
+    async def _validate_terminate_workflow(
         self, data: Dict[str, Any], agent: BaseAgent
     ) -> ValidationResult:
-        """Validate return_final_response: check agent has user access."""
-        if not self.topology_graph.has_user_access(agent.name):
-            next_agents = self.topology_graph.get_next_agents(agent.name)
+        """Validate terminate_workflow: agent must have a direct edge to an End det-node.
+
+        Legacy entry/exit/User-edge metadata is translated to det-node edges
+        by the topology shim before validation runs, so this is the single
+        source of truth."""
+        graph = self.topology_graph
+        gated = (
+            hasattr(graph, "has_edge_to_endnode")
+            and graph.has_edge_to_endnode(agent.name)
+        )
+
+        if not gated:
+            next_agents = graph.get_next_agents(agent.name)
             return ValidationResult(
                 is_valid=False,
-                error_message=f"Agent '{agent.name}' cannot return final response (no user access)",
+                error_message=f"Agent '{agent.name}' cannot terminate the workflow (no edge to End)",
                 retry_suggestion=f"You must invoke one of: {next_agents}",
                 error_category=ValidationErrorCategory.PERMISSION_ERROR.value,
             )
 
-        # Extract response content
-        response_content = data.get("response", "")
-        if not response_content and data:
-            # For output_schema agents, the entire data dict is the structured response
-            response_content = data
+        # Extract content. For output_schema agents the entire data dict carries it.
+        answer = data.get("answer", "")
+        if not answer:
+            answer = data.get("response", "")
+        if not answer and data:
+            answer = data
 
         return ValidationResult(
             is_valid=True,
-            action_type=ActionType.FINAL_RESPONSE,
+            action_type=ActionType.TERMINATE_WORKFLOW,
+            final_response=answer if not isinstance(answer, dict) else None,
             parsed_response={
-                "final_response": response_content,
-                "action_input": {"response": response_content},
+                "final_response": answer,
+                "action_input": {"answer": answer},
+            },
+        )
+
+    # REMOVE-IN-V0.4: legacy alias for terminate_workflow. Tool name
+    # "return_final_response" was renamed to "terminate_workflow"; this
+    # dispatcher and ActionType.FINAL_RESPONSE remap stay until v0.4 to
+    # keep existing user code and 3 test cases in
+    # tests/coordination/test_response_validator.py working.
+    async def _validate_return_final_response(
+        self, data: Dict[str, Any], agent: BaseAgent
+    ) -> ValidationResult:
+        """Legacy alias for terminate_workflow (deprecated)."""
+        result = await self._validate_terminate_workflow(data, agent)
+        if result.is_valid:
+            result.action_type = ActionType.FINAL_RESPONSE
+        return result
+
+    async def _validate_ask_user(
+        self, data: Dict[str, Any], agent: BaseAgent
+    ) -> ValidationResult:
+        """Validate ask_user: agent has direct edge to User det-node."""
+        graph = self.topology_graph
+        if not (hasattr(graph, "has_edge_to_usernode") and graph.has_edge_to_usernode(agent.name)):
+            next_agents = graph.get_next_agents(agent.name)
+            return ValidationResult(
+                is_valid=False,
+                error_message=f"Agent '{agent.name}' cannot ask the user (no edge to User)",
+                retry_suggestion=f"You must invoke one of: {next_agents}",
+                error_category=ValidationErrorCategory.PERMISSION_ERROR.value,
+            )
+
+        question = data.get("question", "")
+        if not question:
+            return ValidationResult(
+                is_valid=False,
+                error_message="ask_user called with empty question",
+                error_category=ValidationErrorCategory.ACTION_ERROR.value,
+            )
+
+        return ValidationResult(
+            is_valid=True,
+            action_type=ActionType.ASK_USER,
+            parsed_response={
+                "question": question,
+                "action_input": {"question": question},
             },
         )
 
