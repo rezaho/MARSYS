@@ -1,3 +1,12 @@
+!!! warning "Updated for v0.3.0 — code examples below may use legacy formats"
+    The JSON `{"next_action": "..."}` response format shown in some examples on
+    this page was **removed** in commit `bc19b98` (no shim). Coordination now
+    uses native tool calls: `invoke_agent`, `terminate_workflow`, `ask_user`,
+    `end_conversation`. See [Coordination Tools](../concepts/coordination-tools.md)
+    for the canonical reference, and [ADR-006](../architecture/framework/decisions/ADR-006-deprecation-timeline.md)
+    for the full v0.2.x → v0.3.0 migration table. The conceptual content on
+    this page is otherwise still accurate.
+
 # API Reference
 
 Complete API documentation for the MARSYS framework with detailed class references, method signatures, and usage examples.
