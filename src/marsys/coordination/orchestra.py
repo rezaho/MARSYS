@@ -797,6 +797,14 @@ class Orchestra:
                 self.topology_graph, self.canonical_topology
             )
 
+            # Compile-time topology validation: runs AFTER the shim so error
+            # messages reference real det-nodes the user can address. Calls
+            # both `validate()` (det-node invariants) and `validate_workflow()`
+            # (workflow-completeness — every node reaches End/User; cycles
+            # have an escape). Skipped silently if no det-nodes registered.
+            self.topology_graph.validate()
+            self.topology_graph.validate_workflow()
+
             # Update trace with topology info now that it's analyzed.
             if self.trace_collector and session_id in self.trace_collector.active_traces:
                 trace = self.trace_collector.active_traces[session_id]
@@ -869,6 +877,18 @@ class Orchestra:
             # specified entry, or a node with no incoming edges).
             entry_agent: Optional[str] = None
             if self.topology_graph.get_start_node() is None:
+                # REMOVE-IN-V0.4: legacy auto-detection of entry agents.
+                # After v0.4 every topology must declare an explicit Start
+                # det-node (the shim normally synthesizes one; if even the
+                # shim couldn't infer entry, this fallback fires).
+                import warnings
+                warnings.warn(
+                    "No StartNode in topology; falling back to legacy "
+                    "auto-detection of entry agents. Specify a Start "
+                    "det-node explicitly. Will be removed in v0.4.",
+                    DeprecationWarning,
+                    stacklevel=2,
+                )
                 entry_agents = self._find_entry_agents()
                 if not entry_agents:
                     raise TopologyError(

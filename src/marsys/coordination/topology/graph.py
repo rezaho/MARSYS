@@ -1212,8 +1212,97 @@ class TopologyGraph:
         self._v2_reach_cache.clear()
         self._v2_preds_cache.clear()
 
+    def strongly_connected_components(self) -> List[List[str]]:
+        """Compute non-trivial strongly connected components (SCCs) of the
+        topology, used by compile-time validation to detect cycles.
+
+        Excludes Start and End det-nodes from the analysis: Start cannot
+        have incoming edges (per its invariant) and End cannot have outgoing
+        edges (per its invariant), so neither can structurally participate
+        in any cycle. Every other node — agents, User det-nodes, future
+        conditional/router det-nodes — is included.
+
+        Returns SCCs of size ≥ 2 (multi-node cycles) plus single-node SCCs
+        that have a self-edge (degenerate cycles). Trivial single-node SCCs
+        without self-edges are omitted.
+
+        Iterative Tarjan's algorithm to avoid recursion-depth issues on
+        large topologies. Standard reference: Tarjan 1972."""
+        from ..execution.det_nodes import EndNode, StartNode
+
+        det = self.det_nodes or {}
+        excluded: Set[str] = {
+            name for name, node in det.items()
+            if isinstance(node, (StartNode, EndNode))
+        }
+
+        index: Dict[str, int] = {}
+        lowlink: Dict[str, int] = {}
+        on_stack: Set[str] = set()
+        stack: List[str] = []
+        sccs: List[List[str]] = []
+        counter = [0]
+
+        def succ(name: str) -> List[str]:
+            node = self.nodes.get(name)
+            if node is None:
+                return []
+            return [t for t in node.outgoing_edges if t not in excluded and t in self.nodes]
+
+        def has_self_edge(name: str) -> bool:
+            node = self.nodes.get(name)
+            return node is not None and name in node.outgoing_edges
+
+        def strongconnect(start: str) -> None:
+            # Iterative variant: each frame is (node, succ_iter).
+            work_stack: List[tuple] = [(start, iter(succ(start)))]
+            index[start] = counter[0]
+            lowlink[start] = counter[0]
+            counter[0] += 1
+            stack.append(start)
+            on_stack.add(start)
+
+            while work_stack:
+                v, it = work_stack[-1]
+                try:
+                    w = next(it)
+                except StopIteration:
+                    work_stack.pop()
+                    if lowlink[v] == index[v]:
+                        component: List[str] = []
+                        while True:
+                            n = stack.pop()
+                            on_stack.discard(n)
+                            component.append(n)
+                            if n == v:
+                                break
+                        # Keep multi-node SCCs and self-looping single-node SCCs.
+                        if len(component) > 1 or has_self_edge(component[0]):
+                            sccs.append(component)
+                    if work_stack:
+                        parent = work_stack[-1][0]
+                        lowlink[parent] = min(lowlink[parent], lowlink[v])
+                    continue
+                if w not in index:
+                    index[w] = counter[0]
+                    lowlink[w] = counter[0]
+                    counter[0] += 1
+                    stack.append(w)
+                    on_stack.add(w)
+                    work_stack.append((w, iter(succ(w))))
+                elif w in on_stack:
+                    lowlink[v] = min(lowlink[v], index[w])
+
+        for name in self.nodes:
+            if name in excluded or name in index:
+                continue
+            strongconnect(name)
+
+        return sccs
+
     def validate(self) -> None:
-        """Structural validation for the new orchestrator path:
+        """Structural validation: det-node invariants only.
+
           - Exactly one StartNode if any det-nodes are registered.
           - StartNode has no incoming edges, ≥1 outgoing.
           - EndNodes have no outgoing edges.
@@ -1221,6 +1310,12 @@ class TopologyGraph:
 
         Raises TopologyError on violation. Skipped (no-op) if no det-nodes
         are registered, since the legacy path doesn't require these rules.
+
+        Workflow-completeness rules (every non-terminal node must reach End
+        or User; cycles must have an escape) live in `validate_workflow`,
+        which is invoked by `Orchestra.execute`. They aren't enforced here
+        so the orchestrator bench can build minimal topologies that exercise
+        a single mechanism without satisfying full-workflow constraints.
         """
         if not self.det_nodes:
             return
@@ -1289,7 +1384,6 @@ class TopologyGraph:
         # Future ConditionalNode rules go here (placeholders):
         #   - Each ConditionalNode has ≥2 outgoing edges.
         #   - No back-to-back ConditionalNodes without an agent between.
-        #   - No all-conditional cycle.
 
         if errors:
             raise TopologyError(
@@ -1297,3 +1391,100 @@ class TopologyGraph:
                 topology_issue="validation_failed",
                 affected_nodes=[],
             )
+
+    def validate_workflow(self) -> None:
+        """Workflow-completeness validation for the production execution path.
+
+        Layered on top of `validate()` (which enforces det-node invariants).
+        Adds the rules a real workflow must satisfy to terminate cleanly:
+          - Every non-Start non-End node must reach End or User transitively.
+            User itself is a valid terminal target.
+          - Every non-trivial SCC (multi-node cycle, or self-loop) must have
+            at least one outgoing edge to a node OUTSIDE the SCC that
+            transitively reaches End or User.
+
+        Applies uniformly to agents, User det-nodes, and any future
+        conditional/router det-nodes. Skipped if no det-nodes are registered
+        (legacy-only topologies handled by the shim).
+
+        Raises TopologyError listing every offending node/cycle in one shot
+        so users see all problems at once."""
+        if not self.det_nodes:
+            return
+        from ..execution.det_nodes import EndNode, StartNode, UserNode
+
+        errors: List[str] = []
+        starts = [n for n in self.det_nodes.values() if isinstance(n, StartNode)]
+        end_names = {n.name for n in self.det_nodes.values() if isinstance(n, EndNode)}
+        user_names = {n.name for n in self.det_nodes.values() if isinstance(n, UserNode)}
+        excluded = {s.name for s in starts} | end_names
+
+        for name in self.nodes:
+            if name in excluded:
+                continue
+            if name in user_names:
+                continue
+            if any(self._reaches(name, t) for t in (end_names | user_names)):
+                continue
+            node = self.nodes.get(name)
+            outgoing = list(node.outgoing_edges) if node else []
+            errors.append(
+                f"node {name!r} cannot reach End or User "
+                f"(outgoing edges: {outgoing or '(none — leaf)'}). "
+                "Add an edge to End, User, or to a node that reaches them."
+            )
+
+        for scc in self.strongly_connected_components():
+            scc_set = set(scc)
+            external: Set[str] = set()
+            for member in scc:
+                node = self.nodes.get(member)
+                if node is None:
+                    continue
+                for t in node.outgoing_edges:
+                    if t not in scc_set:
+                        external.add(t)
+            has_escape = False
+            for t in external:
+                if t in end_names or t in user_names:
+                    has_escape = True
+                    break
+                if any(self._reaches(t, e) for e in (end_names | user_names)):
+                    has_escape = True
+                    break
+            if not has_escape:
+                errors.append(
+                    f"nodes {scc} form a cycle with no edge that reaches "
+                    "End or User. Add an edge from one of them to End, User, "
+                    "or a node that reaches them."
+                )
+
+        if errors:
+            raise TopologyError(
+                "topology workflow validation failed:\n  - " + "\n  - ".join(errors),
+                topology_issue="workflow_validation_failed",
+                affected_nodes=[],
+            )
+
+    def _reaches(self, src: str, target: str) -> bool:
+        """BFS-based reachability from `src` to `target` along outgoing edges.
+        Used by compile-time validation; doesn't stop at User nodes (unlike
+        `can_reach`)."""
+        if src == target:
+            return True
+        from collections import deque
+        visited: Set[str] = {src}
+        queue = deque([src])
+        while queue:
+            n = queue.popleft()
+            node = self.nodes.get(n)
+            if node is None:
+                continue
+            for t in node.outgoing_edges:
+                if t == target:
+                    return True
+                if t in visited:
+                    continue
+                visited.add(t)
+                queue.append(t)
+        return False
