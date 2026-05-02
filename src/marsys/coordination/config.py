@@ -272,6 +272,22 @@ class ExecutionConfig:
     # Response format for agent outputs
     response_format: str = "json"  # Format name (e.g., "json", "xml")
 
+    # Content-only loop detection (RealRuntime). When an agent emits N
+    # consecutive content-only responses (no coord tool call, no regular tool
+    # call), steering kicks in at content_only_steering_threshold and the
+    # branch is FAILED with a structured diagnostic at content_only_hard_limit.
+    # Threshold MUST be strictly less than hard_limit (enforced in __post_init__).
+    content_only_steering_threshold: int = 2
+    content_only_hard_limit: int = 10
+
+    def __post_init__(self) -> None:
+        if self.content_only_steering_threshold >= self.content_only_hard_limit:
+            raise ValueError(
+                f"content_only_steering_threshold ({self.content_only_steering_threshold}) "
+                f"must be strictly less than content_only_hard_limit "
+                f"({self.content_only_hard_limit})."
+            )
+
     def should_apply_steering(self, is_retry: bool = False, has_error: bool = False) -> bool:
         """
         Determine if steering should be applied.

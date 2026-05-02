@@ -134,3 +134,45 @@ def test_constants_relationship():
     """Steering threshold must be strictly less than the hard limit."""
     assert CONTENT_ONLY_STEERING_THRESHOLD < CONTENT_ONLY_HARD_LIMIT
     assert CONTENT_ONLY_HARD_LIMIT == 10
+
+
+def test_execution_config_validates_threshold_below_hard_limit():
+    """ExecutionConfig.__post_init__ rejects threshold >= hard_limit."""
+    from marsys.coordination.config import ExecutionConfig
+    with pytest.raises(ValueError, match="content_only_steering_threshold"):
+        ExecutionConfig(
+            content_only_steering_threshold=10,
+            content_only_hard_limit=10,
+        )
+    with pytest.raises(ValueError):
+        ExecutionConfig(
+            content_only_steering_threshold=15,
+            content_only_hard_limit=5,
+        )
+
+
+def test_execution_config_default_thresholds_consistent():
+    """Default ExecutionConfig honors threshold < hard_limit."""
+    from marsys.coordination.config import ExecutionConfig
+    cfg = ExecutionConfig()
+    assert cfg.content_only_steering_threshold < cfg.content_only_hard_limit
+
+
+@pytest.mark.asyncio
+async def test_hard_limit_reads_from_execution_config():
+    """Custom hard-limit value on ExecutionConfig is honored by RealRuntime."""
+    from marsys.coordination.config import ExecutionConfig
+    cfg = ExecutionConfig(
+        content_only_steering_threshold=1,
+        content_only_hard_limit=3,
+    )
+
+    runtime = _make_runtime()
+    runtime.execution_config = cfg
+
+    # At 3 consecutive content-only — exactly the configured hard limit — fail.
+    branch = _make_branch(consecutive=3)
+    result = await runtime.step(branch)
+    assert result.kind == "FAIL"
+    assert "Content-only loop" in result.error
+    runtime.step_executor.execute_step.assert_not_called()

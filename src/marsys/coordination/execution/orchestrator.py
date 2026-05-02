@@ -454,18 +454,29 @@ class Orchestrator:
         ))
 
     def _emit_convergence(self, bar: Barrier, success: bool) -> None:
-        if self.event_bus is None or not bar.rendezvous_node:
+        """Emit a ConvergenceEvent for any multi-arrival barrier — both
+        rendezvous barriers (rendezvous_node set, agent-invoked) and fork
+        barriers (parallel_invoke aggregation). Both are "convergence" from
+        the trace consumer's perspective: a parent step inherits inputs
+        from multiple source branches and should link back to them."""
+        if self.event_bus is None:
+            return
+        # Single-arrival barriers aren't convergence — skip.
+        if len(bar.arrived) < 2:
             return
         from ..tracing.events import ConvergenceEvent
-        # bar.candidates includes both branches and other forks; we
-        # report all of them as "child" sources for the convergence.
-        children = list(bar.candidates)
+        children = list(bar.arrived.keys()) or list(bar.candidates)
         successful = len(bar.arrived)
-        total = len(bar.candidates) or 1
+        total = len(bar.candidates) or successful
+        parent_branch_id = bar.resolver_branch or ""
+        # Convergence "point" is the rendezvous node when present, else the
+        # resolver agent (where the resume step runs).
+        convergence_point = bar.rendezvous_node or bar.resolver_agent or ""
         self._emit(ConvergenceEvent(
             session_id=self.session_id,
+            parent_branch_id=parent_branch_id,
             child_branch_ids=children,
-            convergence_point=bar.rendezvous_node,
+            convergence_point=convergence_point,
             group_id=bar.id,
             successful_count=successful,
             total_count=total,
@@ -1011,11 +1022,12 @@ class Orchestrator:
                 if br is not None and not br.is_settled():
                     self._abandon(br)
         aggregated = self._aggregate(bar)
-        # ConvergenceEvent: emit when a rendezvous fires (parallel-merge point).
-        # ParallelGroupEvent for forks (status="completed") signals fork closure.
-        if bar.rendezvous_node:
-            self._emit_convergence(bar, success=True)
-        elif bar.resolver_branch is not None and not bar.is_root:
+        # ConvergenceEvent: emit for any multi-arrival barrier (both
+        # rendezvous barriers and fork barriers when ≥2 children deliver).
+        # ParallelGroupEvent (for forks, status="completed") additionally
+        # signals fork closure for parallel-aggregation traces.
+        self._emit_convergence(bar, success=True)
+        if bar.rendezvous_node is None and bar.resolver_branch is not None and not bar.is_root:
             resolver = self.branches.get(bar.resolver_branch)
             agent_names = sorted(
                 {self.branches[b].current_agent for b in bar.candidates if b in self.branches}
@@ -1030,11 +1042,22 @@ class Orchestrator:
         if bar.resolver_branch is not None:
             resolver = self.branches.get(bar.resolver_branch)
             if resolver is not None and not resolver.is_settled():
+                was_waiting = resolver.status == "WAITING"
                 resolver.status = "RUNNING"
                 resolver.waiting_on = None
                 resolver.input = aggregated
                 self._register(resolver)
                 self.runnable.append(resolver.id)
+                # Rendezvous resolver branches are spawned WAITING (internal
+                # mechanism) and skip BranchCreatedEvent. Emit it now that
+                # they're transitioning to RUNNING so trace spans exist for
+                # link attachment (convergence links target branch_spans).
+                if was_waiting and bar.rendezvous_node:
+                    self._emit_branch_created(
+                        resolver,
+                        source_agent=bar.rendezvous_node,
+                        trigger_type="rendezvous",
+                    )
         for d_id in bar.downstream:
             self._fire_queue.append(d_id)
 
