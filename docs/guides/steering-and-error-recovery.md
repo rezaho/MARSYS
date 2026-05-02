@@ -217,14 +217,23 @@ class ErrorContext:
     failed_action: Optional[str] = None        # Which action attempted
 ```
 
-### Constants
+### Configurable thresholds
 
-| Name | Value | File:line |
-|------|-------|-----------|
-| `CONTENT_ONLY_STEERING_THRESHOLD` | `2` | `real_runtime.py:33` |
-| `CONTENT_ONLY_HARD_LIMIT` | `10` | `real_runtime.py:34` |
+| Name | Default | ExecutionConfig field | Module fallback |
+|------|---------|----------------------|-----------------|
+| Steering threshold | `2` | `content_only_steering_threshold` | `real_runtime.py:33` (`CONTENT_ONLY_STEERING_THRESHOLD`) |
+| Hard limit | `10` | `content_only_hard_limit` | `real_runtime.py:34` (`CONTENT_ONLY_HARD_LIMIT`) |
 
-The threshold controls when steering activates (after 2 content-only responses); the hard limit controls when the branch fails (after 10).
+Both values are configurable per-workflow via `ExecutionConfig` (added in commit `73ee5a3`). `RealRuntime` reads the values from `self.execution_config`, falling back to the module constants when the config field is missing (test-friendly default). `ExecutionConfig.__post_init__` validates that `content_only_steering_threshold < content_only_hard_limit`.
+
+```python
+config = ExecutionConfig(
+    content_only_steering_threshold=3,   # delay steering one more round
+    content_only_hard_limit=15,          # give the agent more chances
+)
+```
+
+The threshold controls when steering activates; the hard limit controls when the branch fails.
 
 ## Related documentation
 

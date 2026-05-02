@@ -402,8 +402,8 @@ Context from the coordination system for prompt building.
 | `next_agents` | `List[str]` | Peer agents this agent can invoke (populated from outgoing topology edges) |
 | `can_terminate_workflow` | `bool` | Whether the agent has a direct edge to the `End` det-node (drives `terminate_workflow` availability) |
 
-!!! warning "Deprecated alias"
-    `can_return_final_response` is preserved as a `@property` shim that aliases `can_terminate_workflow`. Reading or writing it emits `DeprecationWarning`. Removal target: v0.4. See [ADR-006](../architecture/framework/decisions/ADR-006-deprecation-timeline.md).
+!!! warning "Removed in v0.3.0"
+    `can_return_final_response` (the `CoordinationContext` field, not the agent-level property) was removed in commit `82ff393` (step-7 cleanup). The earlier `@property` shim is gone. Code that constructs `CoordinationContext(can_return_final_response=...)` or reads `.can_return_final_response` raises now. Use `can_terminate_workflow`. See [ADR-006](../architecture/framework/decisions/ADR-006-deprecation-timeline.md).
 
 ### Format Registry
 
@@ -531,7 +531,7 @@ This means an agent's tool schema and its validation are both driven by the same
 ### DON'T
 - Parse coordination tool calls outside `ValidationProcessor`.
 - Construct `next_action` JSON dicts. The legacy parsing path was removed.
-- Use the `can_return_final_response` field directly. Use `can_terminate_workflow`.
+- Use the `can_return_final_response` field on `CoordinationContext` — it was removed in v0.3.0. Use `can_terminate_workflow`.
 
 ---
 
