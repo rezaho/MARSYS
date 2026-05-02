@@ -12,7 +12,6 @@ from .types import AgentInvocation, ValidationError, ValidationErrorCategory
 # Re-export processors from formats module for backward compatibility
 from ..formats import (
     ResponseProcessor,
-    StructuredJSONProcessor,
     ToolCallProcessor,
     ErrorMessageProcessor,
 )
@@ -22,7 +21,6 @@ __all__ = [
     "ValidationResult",
     "ActionType",
     "ResponseProcessor",
-    "StructuredJSONProcessor",
     "ToolCallProcessor",
     "ErrorMessageProcessor",
     "AgentInvocation",

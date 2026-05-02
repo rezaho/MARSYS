@@ -26,28 +26,48 @@ EDGE_PATTERNS = {
 }
 
 
-def parse_node(node: Union[str, Node, Any]) -> Node:
+def parse_node(node: Union[str, Node, Any]) -> Any:
     """
-    Parse various node formats into a Node object.
-    
+    Parse various node formats into a Node or DeterministicNode object.
+
     Args:
         node: Can be:
-            - String: Node name (e.g., "Agent1" or "User")
-            - Node: Returned as-is
-            - Agent instance: Uses agent.name attribute
-            - Dict: {"name": "...", "type": "...", "metadata": {...}}
-            
+            - String: Node name (e.g., "Agent1" or "User"). The reserved
+              names "Start" and "End" auto-resolve to StartNode and EndNode
+              det-node instances (used by the unified-barrier orchestrator).
+              "User" remains a regular Node(NodeType.USER) for backward
+              compatibility with existing topologies.
+            - Node: Returned as-is.
+            - DeterministicNode (StartNode / EndNode / UserNode): returned
+              as-is.
+            - Agent instance: Uses agent.name attribute.
+            - Dict: {"name": "...", "type": "...", "metadata": {...}}.
+
     Returns:
-        Node instance
-        
+        Node or DeterministicNode instance. Callers must isinstance-check
+        if they need to distinguish (the topology analyzer does this and
+        registers DeterministicNodes on the graph via register_det_node).
+
     Raises:
-        ValueError: If node format is invalid
+        ValueError: If node format is invalid.
     """
+    # Det-node instance — passed through.
+    from ...execution.det_nodes import DeterministicNode, RESERVED_DETNODE_NAMES
+    if isinstance(node, DeterministicNode):
+        return node
+
     if isinstance(node, Node):
         return node
-    
+
     if isinstance(node, str):
-        # Detect "User" string and create User node type
+        # Reserved det-node names: "Start" -> StartNode, "End" -> EndNode.
+        # "User" is intentionally kept as Node(USER) for backward
+        # compatibility — existing topologies use User as entry/exit/Q&A
+        # via the legacy code path.
+        if node in RESERVED_DETNODE_NAMES and node != "User":
+            cls = RESERVED_DETNODE_NAMES[node]
+            return cls()
+        # Detect "User" string and create User node type (legacy behavior).
         node_type = NodeType.USER if node.lower() == "user" else NodeType.AGENT
         return Node(name=node, node_type=node_type)
     

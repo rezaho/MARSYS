@@ -19,11 +19,15 @@ from typing import Any, Dict, List, Optional, Set, Tuple
 
 logger = logging.getLogger(__name__)
 
-# Reserved coordination tool names - these are never passed to ToolExecutor
+# Reserved coordination tool names - these are never passed to ToolExecutor.
 COORDINATION_TOOL_NAMES: Set[str] = frozenset({
     "invoke_agent",
-    "return_final_response",
+    "terminate_workflow",
+    "ask_user",
     "end_conversation",
+    # REMOVE-IN-V0.4: legacy alias for "terminate_workflow"; kept so agents
+    # emitting the old name still validate. See DEPRECATIONS.md.
+    "return_final_response",
 })
 
 
@@ -66,15 +70,17 @@ class CoordinationToolSchemaBuilder:
 
     Each agent gets a tailored set of coordination tools:
     - invoke_agent: only if the agent has peer agents, with agent_name enum
-      populated from the topology's next_agents
-    - return_final_response: only if the agent has user access
+      populated from the topology's next_agents (det-nodes excluded)
+    - terminate_workflow: only if the agent has direct edge to End det-node
+    - ask_user: only if the agent has direct edge to User det-node
     - end_conversation: only in conversation branches
     """
 
     @staticmethod
     def build_schemas(
         next_agents: List[str],
-        can_return_final_response: bool,
+        can_terminate_workflow: bool = False,
+        can_ask_user: bool = False,
         is_conversation_branch: bool = False,
         output_schema: Optional[Dict[str, Any]] = None,
     ) -> List[Dict[str, Any]]:
@@ -83,26 +89,39 @@ class CoordinationToolSchemaBuilder:
 
         Args:
             next_agents: List of agent names this agent can invoke (from topology)
-            can_return_final_response: Whether this agent can return a final response
+            can_terminate_workflow: Whether this agent can call terminate_workflow
+                (gated on direct edge to End det-node)
+            can_ask_user: Whether this agent can call ask_user (gated on direct
+                edge to User det-node)
             is_conversation_branch: Whether this agent is in a conversation branch
-            output_schema: Optional output schema to merge into return_final_response
+            output_schema: Optional output schema to merge into terminate_workflow
 
         Returns:
             List of OpenAI-format tool definition dicts
         """
         schemas = []
 
-        # Filter out "User" from invocable agents - User is handled differently
-        invocable_agents = [a for a in next_agents if a.lower() != "user"]
+        # Det-nodes (User, Start, End) are excluded from the invoke_agent enum;
+        # they're routed via dedicated tools (ask_user, terminate_workflow) or
+        # by the orchestrator (Start).
+        invocable_agents = [
+            a for a in next_agents
+            if a.lower() not in ("user", "start", "end")
+        ]
 
         if invocable_agents:
             schemas.append(
                 CoordinationToolSchemaBuilder._build_invoke_agent_schema(invocable_agents)
             )
 
-        if can_return_final_response:
+        if can_terminate_workflow:
             schemas.append(
-                CoordinationToolSchemaBuilder._build_return_final_response_schema(output_schema)
+                CoordinationToolSchemaBuilder._build_terminate_workflow_schema(output_schema)
+            )
+
+        if can_ask_user:
+            schemas.append(
+                CoordinationToolSchemaBuilder._build_ask_user_schema()
             )
 
         if is_conversation_branch:
@@ -162,11 +181,10 @@ class CoordinationToolSchemaBuilder:
         }
 
     @staticmethod
-    def _build_return_final_response_schema(
+    def _build_terminate_workflow_schema(
         output_schema: Optional[Dict[str, Any]] = None,
     ) -> Dict[str, Any]:
         if output_schema and output_schema.get("properties"):
-            # Merge agent's output_schema into the tool parameters
             parameters = {
                 "type": "object",
                 "properties": output_schema["properties"],
@@ -176,23 +194,48 @@ class CoordinationToolSchemaBuilder:
             parameters = {
                 "type": "object",
                 "properties": {
-                    "response": {
+                    "answer": {
                         "type": "string",
-                        "description": "Your final response to the request.",
+                        "description": "The workflow's final answer.",
                     },
                 },
-                "required": ["response"],
+                "required": ["answer"],
             }
 
         return {
             "type": "function",
             "function": {
-                "name": "return_final_response",
+                "name": "terminate_workflow",
                 "description": (
-                    "Return your final response. Use this when your assigned task "
-                    "is fully complete and you are ready to deliver the result."
+                    "Emit the workflow's final answer. The answer is delivered to "
+                    "the workflow's output channel; no reply is expected. Use this "
+                    "when your task is the final step before returning to the caller."
                 ),
                 "parameters": parameters,
+            },
+        }
+
+    @staticmethod
+    def _build_ask_user_schema() -> Dict[str, Any]:
+        return {
+            "type": "function",
+            "function": {
+                "name": "ask_user",
+                "description": (
+                    "Ask the user (via the workflow's communication channel) a "
+                    "question and wait for their reply. Use this when you need "
+                    "clarification or input before continuing."
+                ),
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "question": {
+                            "type": "string",
+                            "description": "The question to ask the user.",
+                        },
+                    },
+                    "required": ["question"],
+                },
             },
         }
 

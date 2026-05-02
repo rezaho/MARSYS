@@ -1,16 +1,26 @@
 # Validation API
 
-Complete API reference for the response validation and routing system that processes agent responses and determines execution flow.
+!!! warning "Updated for v0.3.0"
+    The validation system is now driven by **native tool calls**, not JSON `next_action` literals. The legacy parsing path (`{"next_action": "invoke_agent", "action_input": "..."}`) was removed in commit `bc19b98`. New `ActionType` members `TERMINATE_WORKFLOW` and `ASK_USER` were added; `FINAL_RESPONSE` is retained as a back-compat alias. See [ADR-006](../architecture/framework/decisions/ADR-006-deprecation-timeline.md) for the migration table.
 
-## 🎯 Overview
+Complete API reference for the validation and routing system that processes coordination tool calls and ensures topology compliance.
 
-The Validation API provides centralized response processing and routing decisions, handling multiple response formats and ensuring all actions comply with topology permissions.
+## Overview
 
-## 📦 Core Classes
+When an agent emits a response, the model produces native **tool calls**. MARSYS classifies each tool call as either:
+
+- **Coordination tool** — one of `invoke_agent`, `terminate_workflow`, `ask_user`, `end_conversation` (plus the legacy alias `return_final_response`). These are reserved names; they're never executed by `ToolExecutor`. Instead, `ValidationProcessor` validates them against the topology graph and produces a `ValidationResult` with an `ActionType` that drives the orchestrator's state machine.
+- **Regular tool** — anything else; passed through to `ToolExecutor`.
+
+`ValidationProcessor` is the single source of truth for coordination tool parsing — never parse responses anywhere else (DP-002).
+
+## Core classes
 
 ### ValidationProcessor
 
-Central hub for all response parsing in the coordination system.
+Central hub for all coordination tool call validation.
+
+**Source:** `src/marsys/coordination/validation/response_validator.py:71`
 
 **Import:**
 ```python
@@ -21,59 +31,79 @@ from marsys.coordination.validation import ValidationProcessor
 ```python
 ValidationProcessor(
     topology_graph: TopologyGraph,
-    response_format: str = "json"
+    response_format: str = "json",
 )
 ```
 
-**Constructor Parameters:**
+**Constructor parameters:**
 | Parameter | Type | Description | Default |
 |-----------|------|-------------|---------|
 | `topology_graph` | `TopologyGraph` | The topology graph for permission validation | Required |
-| `response_format` | `str` | Response format name (e.g., "json") | `"json"` |
+| `response_format` | `str` | Response format name (purely informational; native tool calls bypass format-specific parsing) | `"json"` |
 
-**Key Methods:**
+**Two entry points:**
 
-#### process_response
+#### validate_coordination_action
+
 ```python
-async def process_response(
-    raw_response: Any,
+async def validate_coordination_action(
+    action: str,
+    data: Dict[str, Any],
     agent: BaseAgent,
-    branch: ExecutionBranch,
-    exec_state: ExecutionState
+    branch: Branch,
+    exec_state: ExecutionState,
 ) -> ValidationResult
 ```
 
-**Parameters:**
-| Parameter | Type | Description | Default |
-|-----------|------|-------------|---------|
-| `raw_response` | `Any` | Agent response to validate | Required |
-| `agent` | `BaseAgent` | The responding agent instance | Required |
-| `branch` | `ExecutionBranch` | Current execution branch | Required |
-| `exec_state` | `ExecutionState` | Current execution state | Required |
+Validate one parsed coordination tool call. Called by `RealRuntime.step()` with the tool name as `action` and the deserialized arguments as `data`.
 
-**Returns:** `ValidationResult` with parsed action and validation status
+**Action dispatch:**
+| `action` value | Validator |
+|---|---|
+| `invoke_agent` | `_validate_invoke_agent` — checks every invocation target is in the agent's outgoing topology edges |
+| `terminate_workflow` | `_validate_terminate_workflow` (line 163) — checks agent has direct edge to `End` det-node |
+| `return_final_response` | `_validate_return_final_response` (line 210) — legacy alias, routes to `_validate_terminate_workflow` and returns `ActionType.FINAL_RESPONSE` |
+| `ask_user` | `_validate_ask_user` (line 220) — checks agent has direct edge to `User` det-node |
+| `end_conversation` | `_validate_end_conversation` — checks the branch is a conversation branch |
+
+#### process_error_message
+
+Classifies API error `Message` objects (role="error") into a `ValidationErrorCategory`. Used by the steering system. See [Steering and Error Recovery](../guides/steering-and-error-recovery.md).
 
 **Example:**
 ```python
 processor = ValidationProcessor(topology_graph)
 
-result = await processor.process_response(
-    raw_response={"next_action": "invoke_agent", "action_input": "Analyzer"},
+# Native tool call (parsed from the model response):
+tool_call = {
+    "id": "call_abc",
+    "type": "function",
+    "function": {
+        "name": "invoke_agent",
+        "arguments": '{"invocations": [{"agent_name": "Researcher", "request": "Look up Q3 earnings"}]}',
+    },
+}
+
+# Validation:
+import json
+result = await processor.validate_coordination_action(
+    action=tool_call["function"]["name"],
+    data=json.loads(tool_call["function"]["arguments"]),
     agent=coordinator_agent,
     branch=current_branch,
-    exec_state=execution_state
+    exec_state=execution_state,
 )
 
 if result.is_valid:
-    print(f"Action: {result.action_type}")
-    print(f"Next agents: {result.next_agents}")
+    print(f"Action: {result.action_type}")          # ActionType.INVOKE_AGENT
+    print(f"Next agents: {result.next_agents}")     # ["Researcher"]
 ```
 
 ---
 
 ### ValidationResult
 
-Result of response validation.
+Result of validating one coordination tool call.
 
 **Import:**
 ```python
@@ -84,107 +114,105 @@ from marsys.coordination.validation import ValidationResult
 | Attribute | Type | Description |
 |-----------|------|-------------|
 | `is_valid` | `bool` | Whether validation succeeded |
-| `action_type` | `ActionType` | Type of action to execute |
-| `parsed_response` | `Dict[str, Any]` | Parsed response data |
-| `error_message` | `str` | Error description if invalid |
-| `retry_suggestion` | `str` | Suggestion for retry |
-| `invocations` | `List[AgentInvocation]` | Agent invocation details |
-| `tool_calls` | `List[Dict]` | Tool call specifications |
+| `action_type` | `Optional[ActionType]` | Type of action validated |
+| `parsed_response` | `Optional[Dict[str, Any]]` | Parsed coordination data |
+| `error_message` | `Optional[str]` | Error description if invalid |
+| `retry_suggestion` | `Optional[str]` | Suggestion for retry (used by steering) |
+| `error_category` | `Optional[str]` | `ValidationErrorCategory` value |
+| `invocations` | `List[AgentInvocation]` | Per-target invocation details |
+| `tool_calls` | `List[Dict]` | Original tool call list (for tool-bridging) |
+| `next_agent` | `Optional[str]` | Convenience: first target's name (for single-invoke) |
+| `should_end_branch` | `bool` | Whether the branch should terminate |
+| `requires_tool_continuation` | `bool` | Whether more tool calls are pending |
+| `final_response` | `Optional[Any]` | Resolved final answer (for `terminate_workflow`) |
 
 **Properties:**
 | Property | Type | Description |
 |----------|------|-------------|
-| `next_agents` | `List[str]` | Agent names to invoke |
+| `next_agents` | `List[str]` | All target agent names (across all invocations) |
 
 **Example:**
 ```python
 if result.is_valid:
     if result.action_type == ActionType.INVOKE_AGENT:
-        next_agent = result.next_agents[0]
-        print(f"Invoking: {next_agent}")
+        print(f"Invoking: {result.next_agents[0]}")
     elif result.action_type == ActionType.PARALLEL_INVOKE:
         print(f"Parallel invoke: {result.next_agents}")
-    elif result.action_type == ActionType.FINAL_RESPONSE:
-        print(f"Final: {result.parsed_response['content']}")
+    elif result.action_type == ActionType.TERMINATE_WORKFLOW:
+        print(f"Final answer: {result.final_response}")
+    elif result.action_type == ActionType.ASK_USER:
+        print(f"User question: {result.parsed_response['question']}")
 ```
 
 ---
 
 ### ActionType
 
-Enumeration of supported action types.
+Enumeration of action types produced by validation.
+
+**Source:** `src/marsys/coordination/validation/response_validator.py:28`
 
 **Import:**
 ```python
 from marsys.coordination.validation import ActionType
 ```
 
-**Values:**
-| Value | Description | Response Format |
-|-------|-------------|-----------------|
-| `INVOKE_AGENT` | Sequential agent invocation | `{"next_action": "invoke_agent", "action_input": "Agent"}` |
-| `PARALLEL_INVOKE` | Parallel agent execution | `{"next_action": "parallel_invoke", "agents": [...], "agent_requests": {...}}` |
-| `CALL_TOOL` | Tool execution | `{"next_action": "call_tool", "tool_calls": [...]}` |
-| `FINAL_RESPONSE` | Complete execution | `{"next_action": "final_response", "content": "..."}` |
-| `END_CONVERSATION` | End conversation branch | `{"next_action": "end_conversation"}` |
-| `WAIT_AND_AGGREGATE` | Wait for parallel results | `{"next_action": "wait_and_aggregate"}` |
-| `ERROR_RECOVERY` | Route to user for recovery | `{"next_action": "error_recovery", "error_details": {...}}` |
-| `TERMINAL_ERROR` | Display terminal error | `{"next_action": "terminal_error", "error": "..."}` |
+**Members:**
+
+| Member | Value | Triggered by | Notes |
+|---|---|---|---|
+| `INVOKE_AGENT` | `"invoke_agent"` | `invoke_agent` tool call with one invocation | Single peer dispatch |
+| `PARALLEL_INVOKE` | `"parallel_invoke"` | `invoke_agent` tool call with N invocations | Concurrent fork — orchestrator creates a fork barrier |
+| `TERMINATE_WORKFLOW` | `"terminate_workflow"` | `terminate_workflow` tool call (or `return_final_response` legacy alias if test expects new name) | Branch terminates; value goes to ROOT |
+| `FINAL_RESPONSE` | `"final_response"` | `return_final_response` tool call (legacy alias) | Returned for back-compat; semantically equivalent to `TERMINATE_WORKFLOW`. **Removal target: v0.4.** |
+| `ASK_USER` | `"ask_user"` | `ask_user` tool call | Branch transitions to WAITING; question queued through `UserNodeHandler` |
+| `END_CONVERSATION` | `"end_conversation"` | `end_conversation` tool call | Conversation-branch terminator |
+| `ERROR_RECOVERY` | `"error_recovery"` | Internal — routed to User node for recovery | Used by steering |
+| `TERMINAL_ERROR` | `"terminal_error"` | Internal — non-recoverable error (auth failure, etc.) | Branch fails |
+| `AUTO_RETRY` | `"auto_retry"` | Internal — transient error retry | Branch retries with steering hint |
+
+**Triggering tool calls:**
+
+```python
+# invoke_agent (one or more invocations)
+{"function": {"name": "invoke_agent", "arguments": '{"invocations": [{"agent_name": "Researcher", "request": "..."}]}'}}
+
+# terminate_workflow
+{"function": {"name": "terminate_workflow", "arguments": '{"answer": "..."}'}}
+
+# ask_user
+{"function": {"name": "ask_user", "arguments": '{"question": "..."}'}}
+
+# end_conversation
+{"function": {"name": "end_conversation", "arguments": '{}'}}
+```
+
+See [Coordination Tools](../concepts/coordination-tools.md) for the full schemas and topology gating.
 
 ---
 
 ### Router
 
-Converts validation results into execution decisions.
+Translates validation results into orchestrator-level routing decisions. Internal to the coordination system; user code rarely interacts with it directly.
 
-**Import:**
-```python
-from marsys.coordination.routing import Router
-```
+**Source:** `src/marsys/coordination/routing/router.py`
 
 **Constructor:**
 ```python
 Router(topology_graph: TopologyGraph)
 ```
 
-**Key Methods:**
-
 #### route
+
 ```python
 async def route(
     validation_result: ValidationResult,
-    current_branch: ExecutionBranch,
-    routing_context: RoutingContext
+    current_branch: Branch,
+    routing_context: RoutingContext,
 ) -> RoutingDecision
 ```
 
-**Parameters:**
-| Parameter | Type | Description | Default |
-|-----------|------|-------------|---------|
-| `validation_result` | `ValidationResult` | Result from validation | Required |
-| `current_branch` | `ExecutionBranch` | Current execution branch | Required |
-| `routing_context` | `RoutingContext` | Additional routing context | Required |
-
-**Returns:** `RoutingDecision` with next steps and branch specifications
-
-**Example:**
-```python
-router = Router(topology_graph)
-
-decision = await router.route(
-    validation_result=validation_result,
-    current_branch=current_branch,
-    routing_context=RoutingContext(
-        metadata={"retry_count": 0},
-        error_info=None
-    )
-)
-
-# Process routing decision
-for step in decision.next_steps:
-    if step.step_type == StepType.AGENT_INVOCATION:
-        await invoke_agent(step.target)
-```
+Returns a `RoutingDecision` describing the next steps the orchestrator should take.
 
 ---
 
@@ -192,66 +220,15 @@ for step in decision.next_steps:
 
 Decision about next execution steps.
 
-**Import:**
-```python
-from marsys.coordination.routing import RoutingDecision
-```
-
-**Attributes:**
 | Attribute | Type | Description |
 |-----------|------|-------------|
 | `next_steps` | `List[ExecutionStep]` | Steps to execute |
 | `should_continue` | `bool` | Whether to continue execution |
-| `branch_specs` | `List[BranchSpec]` | Specifications for new branches |
+| `branch_specs` | `List[BranchSpec]` | Specifications for new branches (for parallel-fork) |
 | `metadata` | `Dict[str, Any]` | Additional metadata |
-
-**Example:**
-```python
-decision = RoutingDecision(
-    next_steps=[
-        ExecutionStep(
-            step_type=StepType.AGENT_INVOCATION,
-            target="Analyzer",
-            data={"request": "Analyze data"}
-        )
-    ],
-    should_continue=True,
-    branch_specs=[],
-    metadata={"step_count": 5}
-)
-```
-
----
-
-### RoutingContext
-
-Context information for routing decisions.
-
-**Import:**
-```python
-from marsys.coordination.routing import RoutingContext
-```
-
-**Attributes:**
-| Attribute | Type | Description |
-|-----------|------|-------------|
-| `metadata` | `Dict[str, Any]` | General metadata |
-| `error_info` | `Optional[Dict]` | Error information if present |
-| `retry_count` | `int` | Number of retry attempts |
-| `steering_enabled` | `bool` | Whether steering is enabled |
-
----
 
 ### ExecutionStep
 
-Individual step to execute.
-
-**Import:**
-```python
-from marsys.coordination.routing import ExecutionStep, StepType
-```
-
-**Attributes:**
 | Attribute | Type | Description |
 |-----------|------|-------------|
 | `step_type` | `StepType` | Type of step |
@@ -259,7 +236,7 @@ from marsys.coordination.routing import ExecutionStep, StepType
 | `data` | `Dict[str, Any]` | Step data |
 | `metadata` | `Dict[str, Any]` | Step metadata |
 
-**StepType Enum:**
+**StepType:**
 ```python
 class StepType(Enum):
     AGENT_INVOCATION = "agent_invocation"
@@ -272,145 +249,117 @@ class StepType(Enum):
 
 ---
 
-## 🎨 Response Formats
+## Native tool-call examples
 
-### Standard JSON Response
+Coordination tool calls are emitted by the model in the standard OpenAI/Anthropic tool-use format. The orchestrator validates and dispatches them; user code rarely constructs them by hand.
+
+### Sequential invocation
+
+The Coordinator agent dispatches to a single peer:
+
 ```python
-# Sequential invocation
+# Tool call (native, produced by the model):
 {
-    "thought": "I need to analyze this data",
-    "next_action": "invoke_agent",
-    "action_input": "DataAnalyzer"
-}
-
-# With request data
-{
-    "next_action": "invoke_agent",
-    "action_input": "DataAnalyzer",
-    "request": "Analyze sales data for Q4"
-}
-```
-
-### Parallel Invocation
-```python
-{
-    "thought": "These can run in parallel",
-    "next_action": "parallel_invoke",
-    "agents": ["Worker1", "Worker2", "Worker3"],
-    "agent_requests": {
-        "Worker1": "Process segment A",
-        "Worker2": "Process segment B",
-        "Worker3": "Process segment C"
-    }
-}
-```
-
-### Tool Calls
-```python
-{
-    "next_action": "call_tool",
-    "tool_calls": [
-        {
-            "id": "call_123",
-            "type": "function",
-            "function": {
-                "name": "search",
-                "arguments": "{\"query\": \"AI trends\"}"
-            }
-        }
-    ]
-}
-```
-
-### Final Response
-```python
-# Text response
-{
-    "next_action": "final_response",
-    "content": "Here is the analysis result..."
-}
-
-# Structured response
-{
-    "next_action": "final_response",
-    "content": {
-        "title": "Analysis Report",
-        "sections": [...],
-        "conclusion": "..."
-    }
-}
-```
-
-### Error Recovery
-```python
-{
-    "next_action": "error_recovery",
-    "error_details": {
-        "type": "api_quota_exceeded",
-        "message": "OpenAI API quota exceeded",
-        "provider": "openai"
+    "id": "call_abc",
+    "type": "function",
+    "function": {
+        "name": "invoke_agent",
+        "arguments": '{"invocations": [{"agent_name": "DataAnalyzer", "request": "Analyze sales data for Q4"}]}',
     },
-    "suggested_action": "retry"
 }
+# → ActionType.INVOKE_AGENT, next_agent="DataAnalyzer"
+```
+
+### Parallel invocation
+
+The model emits `invoke_agent` with multiple invocations in a single tool call:
+
+```python
+{
+    "function": {
+        "name": "invoke_agent",
+        "arguments": json.dumps({
+            "invocations": [
+                {"agent_name": "Worker1", "request": "Process segment A"},
+                {"agent_name": "Worker2", "request": "Process segment B"},
+                {"agent_name": "Worker3", "request": "Process segment C"},
+            ]
+        }),
+    },
+}
+# → ActionType.PARALLEL_INVOKE
+# Orchestrator creates a fork barrier and spawns three child branches concurrently.
+```
+
+### Terminate workflow
+
+```python
+{
+    "function": {
+        "name": "terminate_workflow",
+        "arguments": '{"answer": "The quarterly report is attached."}',
+    },
+}
+# → ActionType.TERMINATE_WORKFLOW
+# Available only if the agent has a direct outgoing edge to the End det-node.
+```
+
+### Ask user
+
+```python
+{
+    "function": {
+        "name": "ask_user",
+        "arguments": '{"question": "Should I include Q3 forecasts as well?"}',
+    },
+}
+# → ActionType.ASK_USER
+# Available only if the agent has a direct outgoing edge to the User det-node.
 ```
 
 ---
 
-## 📐 Response Format System
+## Response format system
 
-MARSYS uses a pluggable response format architecture that separates system prompt building from response parsing.
+MARSYS uses a pluggable response format architecture, but **the orchestrator's default path is native tool calls** — no format-specific parsing required. `JSONResponseFormat` exists as an opt-in custom format for use cases that need a structured plain-text response (e.g., local models without robust tool-call support).
 
-### Architecture Overview
+### Architecture
 
 The format system consists of:
-- **BaseResponseFormat**: Abstract base class defining the format interface
-- **SystemPromptBuilder**: Builds system prompts using the configured format
-- **ResponseProcessor**: Base class for response parsing
-- **Format Registry**: Registry for available formats
+
+- **`BaseResponseFormat`** — abstract base for custom formats.
+- **`SystemPromptBuilder`** — builds system prompts using the configured format.
+- **`CoordinationToolSchemaBuilder`** — builds the topology-gated coordination tool schemas (`invoke_agent`, `terminate_workflow`, `ask_user`, `end_conversation`). Source: `src/marsys/coordination/formats/coordination_tools.py:75`.
+- **`ResponseProcessor`** — base class for response parsing in custom formats.
+- **Format Registry** — registry for available formats.
 
 ```python
 from marsys.coordination.formats import (
     SystemPromptBuilder,
     BaseResponseFormat,
-    JSONResponseFormat,
     AgentContext,
     CoordinationContext,
 )
 ```
 
----
-
 ### SystemPromptBuilder
 
-Builds system prompts for agents using the configured response format.
-
-**Import:**
-```python
-from marsys.coordination.formats import SystemPromptBuilder
-```
+Builds system prompts for agents using the configured response format and the topology-driven coordination context.
 
 **Constructor:**
 ```python
 SystemPromptBuilder(response_format: str = "json")
 ```
 
-**Key Methods:**
-
 #### build
+
 ```python
 def build(
     agent_context: AgentContext,
     coordination_context: CoordinationContext,
-    environmental: Optional[dict] = None
+    environmental: Optional[dict] = None,
 ) -> str
 ```
-
-**Parameters:**
-| Parameter | Type | Description | Default |
-|-----------|------|-------------|---------|
-| `agent_context` | `AgentContext` | Agent-specific context | Required |
-| `coordination_context` | `CoordinationContext` | Topology context | Required |
-| `environmental` | `Optional[dict]` | Environmental data (date, etc.) | `None` |
 
 **Example:**
 ```python
@@ -420,27 +369,19 @@ system_prompt = builder.build(
     agent_context=AgentContext(
         name="Coordinator",
         goal="Coordinate tasks",
-        instruction="You coordinate worker agents..."
+        instruction="You coordinate worker agents...",
     ),
     coordination_context=CoordinationContext(
         next_agents=["Worker1", "Worker2"],
-        can_return_final_response=True
-    )
+        can_terminate_workflow=True,
+    ),
 )
 ```
-
----
 
 ### AgentContext
 
 Context derived from the agent for prompt building.
 
-**Import:**
-```python
-from marsys.coordination.formats import AgentContext
-```
-
-**Attributes:**
 | Attribute | Type | Description |
 |-----------|------|-------------|
 | `name` | `str` | Agent name |
@@ -452,260 +393,153 @@ from marsys.coordination.formats import AgentContext
 | `output_schema` | `Optional[Dict]` | Expected output format |
 | `memory_retention` | `str` | Memory retention policy |
 
----
-
 ### CoordinationContext
 
 Context from the coordination system for prompt building.
 
-**Import:**
-```python
-from marsys.coordination.formats import CoordinationContext
-```
-
-**Attributes:**
 | Attribute | Type | Description |
 |-----------|------|-------------|
-| `next_agents` | `List[str]` | Agents this agent can invoke |
-| `can_return_final_response` | `bool` | Whether agent can return final response |
+| `next_agents` | `List[str]` | Peer agents this agent can invoke (populated from outgoing topology edges) |
+| `can_terminate_workflow` | `bool` | Whether the agent has a direct edge to the `End` det-node (drives `terminate_workflow` availability) |
 
----
+!!! warning "Removed in v0.3.0"
+    `can_return_final_response` (the `CoordinationContext` field, not the agent-level property) was removed in commit `82ff393` (step-7 cleanup). The earlier `@property` shim is gone. Code that constructs `CoordinationContext(can_return_final_response=...)` or reads `.can_return_final_response` raises now. Use `can_terminate_workflow`. See [ADR-006](../architecture/framework/decisions/ADR-006-deprecation-timeline.md).
 
 ### Format Registry
 
 Functions for managing available response formats.
 
-**Import:**
 ```python
 from marsys.coordination.formats import (
     register_format,
     get_format,
     list_formats,
     set_default_format,
-    is_format_registered
+    is_format_registered,
 )
 ```
 
-**Functions:**
-
-| Function | Description | Returns |
-|----------|-------------|---------|
-| `register_format(name, format_class)` | Register a new format | `None` |
-| `get_format(name)` | Get format instance | `BaseResponseFormat` |
-| `list_formats()` | List registered formats | `List[str]` |
-| `set_default_format(name)` | Set default format | `None` |
-| `is_format_registered(name)` | Check if format exists | `bool` |
-
-**Example:**
-```python
-# List available formats
-formats = list_formats()  # ["json"]
-
-# Get specific format
-json_format = get_format("json")
-
-# Register custom format
-register_format("xml", XMLResponseFormat)
-```
-
----
+| Function | Description |
+|----------|-------------|
+| `register_format(name, format_class)` | Register a new format |
+| `get_format(name)` | Get format instance |
+| `list_formats()` | List registered formats |
+| `set_default_format(name)` | Set default format |
+| `is_format_registered(name)` | Check if format exists |
 
 ### BaseResponseFormat
 
-Abstract base class for implementing response formats.
+Abstract base class for implementing custom response formats. Source: `src/marsys/coordination/formats/base.py`.
 
-**Import:**
-```python
-from marsys.coordination.formats import BaseResponseFormat
-```
-
-**Abstract Methods:**
+**Abstract methods:**
 | Method | Description |
 |--------|-------------|
-| `get_format_name()` | Return format name (e.g., "json") |
+| `get_format_name()` | Return format name (e.g., `"json"`) |
 | `build_format_instructions(actions, descriptions)` | Build format-specific instructions |
 | `build_action_descriptions(actions, context)` | Build action descriptions |
 | `get_examples(actions, context)` | Generate format-specific examples |
 | `get_parallel_invocation_examples(context)` | Examples for parallel invocation |
 | `create_processor()` | Create response processor for this format |
 
-**Built-in Format:**
-- `JSONResponseFormat` - Default JSON format with `next_action`/`action_input` structure
+### JSONResponseFormat
+
+**Opt-in** custom format for environments where the orchestrator's default native tool-call path isn't suitable (e.g., local models without strong tool-use support). Source: `src/marsys/coordination/formats/json_format/format.py:18`.
+
+This is **not the orchestrator default**. It's a registered format that asks the agent to emit a structured JSON object instead of native tool calls; the format's `ResponseProcessor` then parses the JSON back into the same `ValidationResult` shape that native tool calls produce.
+
+```python
+# Opt-in usage:
+config = ExecutionConfig(response_format="json")
+```
+
+For most users on first-party providers (Anthropic, OpenAI, Google), the default native-tool-call path is preferred.
 
 ---
 
-## 🔧 Response Processors
-
-### Built-in Processors
+## Validation flow
 
 ```python
-# Structured JSON Processor
-class StructuredJSONProcessor(ResponseProcessor):
-    """Handles JSON responses with next_action structure."""
+# 1. RealRuntime acquires the agent and runs one step.
+step_result = await step_executor.execute_step(...)
 
-    def can_process(self, response: Any) -> bool:
-        return isinstance(response, dict) and "next_action" in response
+# 2. RealRuntime extracts native tool calls from the response.
+for tool_call in step_result.tool_calls:
+    name = tool_call["function"]["name"]
+    args = json.loads(tool_call["function"]["arguments"])
 
-    def priority(self) -> int:
-        return 80  # Below error and tool processors
+    # 3. Coordination tools route through ValidationProcessor.
+    if name in COORDINATION_TOOL_NAMES:
+        validation_result = await validator.validate_coordination_action(
+            action=name,
+            data=args,
+            agent=agent,
+            branch=branch,
+            exec_state=exec_state,
+        )
 
-# Tool Call Processor
-class ToolCallProcessor(ResponseProcessor):
-    """Handles native tool call responses."""
-
-    def can_process(self, response: Any) -> bool:
-        return hasattr(response, 'tool_calls')
-
-    def priority(self) -> int:
-        return 90
-
-# Error Message Processor
-class ErrorMessageProcessor(ResponseProcessor):
-    """Handles error Messages from agents."""
-
-    def can_process(self, response: Any) -> bool:
-        return isinstance(response, Message) and response.role == "error"
-
-    def priority(self) -> int:
-        return 100  # Highest priority
-```
-
-### Custom Processor
-
-```python
-from marsys.coordination.formats import ResponseProcessor
-
-class CustomFormatProcessor(ResponseProcessor):
-    """Process custom response format."""
-
-    def can_process(self, response: Any) -> bool:
-        return isinstance(response, dict) and "custom_action" in response
-
-    def process(self, response: Any) -> Optional[Dict[str, Any]]:
-        return {
-            "next_action": self._map_action(response["custom_action"]),
-            "content": response.get("data")
-        }
-
-    def priority(self) -> int:
-        return 75  # Between JSON and tool processors
-
-# Register processor
-validation_processor.register_processor(CustomFormatProcessor())
+        # 4. Translate to orchestrator StepResult.
+        if validation_result.is_valid:
+            return runtime._translate(validation_result, branch)
+        else:
+            # Invalid → SteeringManager builds retry prompt
+            return _retry_with_steering(validation_result)
+    else:
+        # Regular tool → ToolExecutor
+        await tool_executor.execute_tool_calls([tool_call], ...)
 ```
 
 ---
 
-## 🔄 Validation Flow
+## Error handling
 
-### Complete Validation Process
-
-```python
-# 1. Receive agent response
-response = await agent.run(prompt)
-
-# 2. Process response
-validation_result = await validation_processor.process_response(
-    raw_response=response,
-    agent=agent,
-    branch=current_branch,
-    exec_state=execution_state
-)
-
-# 3. Route based on validation
-if validation_result.is_valid:
-    routing_decision = await router.route(
-        validation_result=validation_result,
-        current_branch=current_branch,
-        routing_context=context
-    )
-
-    # 4. Execute next steps
-    for step in routing_decision.next_steps:
-        await execute_step(step)
-else:
-    # Handle validation error
-    logger.error(f"Validation failed: {validation_result.error_message}")
-    if validation_result.retry_suggestion:
-        # Apply steering for retry
-        await apply_steering(validation_result.retry_suggestion)
-```
-
----
-
-## 🚦 Error Handling
-
-### Validation Errors
+### Validation errors
 
 ```python
 if not result.is_valid:
-    error_type = result.error_message
+    category = result.error_category  # ValidationErrorCategory value
 
-    if "not allowed" in error_type:
-        # Permission denied - agent not in topology
-        logger.error(f"Permission denied: {error_type}")
+    if category == ValidationErrorCategory.PERMISSION_ERROR.value:
+        # Agent invoked a target it doesn't have a topology edge to,
+        # or used a coordination tool gated off its outgoing edges.
+        logger.error(f"Permission denied: {result.error_message}")
 
-    elif "format" in error_type:
-        # Invalid response format
-        logger.error(f"Format error: {error_type}")
-
-        # Use retry suggestion
-        if result.retry_suggestion:
-            steering = f"Please retry with: {result.retry_suggestion}"
-
-    elif "missing" in error_type:
-        # Missing required fields
-        logger.error(f"Missing fields: {error_type}")
+    elif category == ValidationErrorCategory.ACTION_ERROR.value:
+        # Agent emitted text content but no recognizable coordination tool.
+        logger.error(f"Action error: {result.error_message}")
+        # SteeringManager will inject a retry-tiered prompt.
 ```
 
-### Error Recovery
+### Permission errors
 
-```python
-# Agent can trigger error recovery
-response = {
-    "next_action": "error_recovery",
-    "error_details": {
-        "type": "rate_limit",
-        "message": "API rate limit exceeded",
-        "retry_after": 60
-    },
-    "suggested_action": "wait_and_retry"
-}
+Each validator enforces topology gating:
 
-# Routes to User node for intervention
-```
+- `_validate_invoke_agent` checks every target is in `topology_graph.get_next_agents(agent.name)`.
+- `_validate_terminate_workflow` checks `topology_graph.has_edge_to_endnode(agent.name)`.
+- `_validate_ask_user` checks `topology_graph.has_edge_to_usernode(agent.name)`.
+
+This means an agent's tool schema and its validation are both driven by the same topology truth.
 
 ---
 
-## 📋 Best Practices
+## Best practices
 
-### ✅ DO:
-- Validate all agent responses through ValidationProcessor
-- Use structured response formats for clarity
-- Include error recovery actions in critical workflows
-- Check topology permissions before invocation
-- Provide retry suggestions for recoverable errors
+### DO
+- Let `ValidationProcessor` be the single source of truth for coordination tool parsing (DP-002).
+- Set explicit `End`/`User` det-node edges so the gating is unambiguous.
+- Provide specific `retry_suggestion` text on invalid results — it feeds into steering.
 
-### ❌ DON'T:
-- Parse responses manually outside ValidationProcessor
-- Skip validation for "trusted" agents
-- Ignore validation errors
-- Mix response formats within single agent
-- Hard-code routing logic outside Router
+### DON'T
+- Parse coordination tool calls outside `ValidationProcessor`.
+- Construct `next_action` JSON dicts. The legacy parsing path was removed.
+- Use the `can_return_final_response` field on `CoordinationContext` — it was removed in v0.3.0. Use `can_terminate_workflow`.
 
 ---
 
-## 🚦 Related Documentation
+## Related documentation
 
-- [Execution API](execution.md) - Execution system using validation
-- [Topology API](topology.md) - Topology permissions
-- [Router Patterns](../concepts/routing.md) - Routing patterns
-- [Error Handling](../concepts/error-handling.md) - Error recovery
-
----
-
-!!! tip "Pro Tip"
-    The ValidationProcessor supports multiple response formats simultaneously. Processors are evaluated by priority, allowing fallback from structured to unstructured formats.
-
-!!! warning "Important"
-    All response parsing MUST go through ValidationProcessor to ensure consistency and topology compliance.
+- [Execution API](execution.md) — `Orchestrator`, `RealRuntime`, `StepExecutor`.
+- [Coordination Tools](../concepts/coordination-tools.md) — full schemas and topology gating.
+- [Topology API](topology.md) — `has_edge_to_endnode`, `has_edge_to_usernode`.
+- [Steering and Error Recovery](../guides/steering-and-error-recovery.md) — retry-tiered prompts and `CONTENT_ONLY_HARD_LIMIT`.
+- [ADR-002: Centralized response validation](../architecture/framework/decisions/ADR-002-centralized-response-validation.md) — the design principle.
+- [ADR-006: Deprecation timeline](../architecture/framework/decisions/ADR-006-deprecation-timeline.md).

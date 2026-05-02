@@ -1,0 +1,164 @@
+"""Core types for the unified-barrier orchestrator.
+
+Two primary objects: Branch (an execution thread) and Barrier (a synchronization
+point). There is ONE Barrier type — no FORK/CONVERGENCE/ROOT enum split.
+Two creation paths produce identical structures:
+
+  (a) parallel_invoke: barrier with resolver_branch = invoking branch (was
+      RUNNING, goes WAITING). rendezvous_node = None.
+  (b) lazy ensure_barrier(N) for a rendezvous node N: barrier with
+      resolver_branch = a freshly-spawned WAITING branch at N.
+      rendezvous_node = N. delivery_target of the resolver computed at
+      creation by topology forward-walk.
+
+ROOT is the unique exception: workflow-terminal sink; resolver_branch is None.
+
+Invariants:
+  I1. Every Branch has exactly one delivery_target (a barrier id).
+  I2. Every Barrier is OPEN exactly once and FIRED/CANCELLED exactly once.
+  I3. Every non-ROOT Barrier has resolver_branch set at creation.
+  I4. Branch settles in exactly one of {TERMINATED, FAILED, ABANDONED}.
+  I5. When a branch settles, every barrier with it as candidate is notified.
+  I6. fire(barrier) is idempotent.
+  I7. arrived ∩ failed = ∅. A source contributes once.
+
+Mixed key namespace: candidates, arrived, failed accept any string id.
+A real branch's contribution is keyed by branch.id. A parallel_invoke's
+dispatch contribution is keyed by the dispatching fork-barrier's id.
+Reverse lookup: id ∈ self.barriers → fork; id ∈ self.branches → branch.
+"""
+from __future__ import annotations
+
+import itertools
+import time
+from dataclasses import dataclass, field
+from typing import Any, Literal, Optional
+
+BranchStatus = Literal["RUNNING", "WAITING", "TERMINATED", "FAILED", "ABANDONED"]
+BarrierStatus = Literal["OPEN", "FIRED", "CANCELLED"]
+
+StepKind = Literal[
+    "NOOP",
+    "SINGLE_INVOKE",
+    "PARALLEL_INVOKE",
+    "FINAL_RESPONSE",
+    "FAIL",
+]
+
+
+@dataclass
+class Invocation:
+    agent: str
+    request: Any = None
+
+
+@dataclass
+class StepResult:
+    """What the runtime returns for one branch tick."""
+    kind: StepKind
+    next_agent: Optional[str] = None
+    invocations: list[Invocation] = field(default_factory=list)
+    value: Any = None
+    error: Optional[str] = None
+    request: Any = None
+
+
+_branch_id_counter = itertools.count()
+_barrier_id_counter = itertools.count()
+
+
+def new_branch_id() -> str:
+    return f"br_{next(_branch_id_counter):04d}"
+
+
+def new_barrier_id() -> str:
+    return f"bar_{next(_barrier_id_counter):04d}"
+
+
+def reset_ids() -> None:
+    """Tests call this at setup to get deterministic ids."""
+    global _branch_id_counter, _barrier_id_counter
+    _branch_id_counter = itertools.count()
+    _barrier_id_counter = itertools.count()
+
+
+@dataclass
+class Branch:
+    id: str
+    current_agent: str
+    status: BranchStatus
+    delivery_target: str
+    input: Any = None
+    memory: list[dict[str, Any]] = field(default_factory=list)
+    waiting_on: Optional[str] = None
+    candidate_of: set[str] = field(default_factory=set)
+    parent_spawn: Optional[str] = None
+    step_count: int = 0
+    created_at: float = field(default_factory=time.time)
+
+    def is_settled(self) -> bool:
+        return self.status in ("TERMINATED", "FAILED", "ABANDONED")
+
+
+@dataclass
+class ConvergencePolicy:
+    min_ratio: float = 1.0
+    on_insufficient: Literal["fail", "proceed", "user"] = "fail"
+    terminate_orphans: bool = True
+    timeout: Optional[float] = None
+
+
+@dataclass
+class Barrier:
+    id: str
+    policy: ConvergencePolicy
+    status: BarrierStatus = "OPEN"
+
+    # The resolver_branch wakes when this barrier fires. None only for ROOT.
+    resolver_branch: Optional[str] = None
+    # The agent the resolver runs at. Mirrors resolver_branch.current_agent
+    # but kept as a separate field for fast lookup.
+    resolver_agent: Optional[str] = None
+    # Set when barrier was created at a rendezvous node (lazy ensure_barrier).
+    # None for parallel_invoke barriers (forks by origin).
+    rendezvous_node: Optional[str] = None
+
+    candidates: set[str] = field(default_factory=set)
+    arrived: dict[str, Any] = field(default_factory=dict)
+    failed: dict[str, str] = field(default_factory=dict)
+    upstream: set[str] = field(default_factory=set)
+    downstream: set[str] = field(default_factory=set)
+    created_at: float = field(default_factory=time.time)
+    metadata: dict[str, Any] = field(default_factory=dict)
+
+    @property
+    def is_root(self) -> bool:
+        return self.resolver_branch is None and self.rendezvous_node is None
+
+    @property
+    def kind(self) -> str:
+        """Informational only — for tests and debugging. The orchestrator
+        does not branch on this."""
+        if self.is_root:
+            return "ROOT"
+        if self.rendezvous_node is not None:
+            return "CONVERGENCE"
+        return "FORK"
+
+    @property
+    def convergence_node(self) -> Optional[str]:
+        """Backward-compat alias for rendezvous_node."""
+        return self.rendezvous_node
+
+    def pending(self) -> set[str]:
+        """Sources in candidates that haven't arrived or failed yet."""
+        return self.candidates - set(self.arrived) - set(self.failed)
+
+    def is_ready_to_fire(self) -> bool:
+        return len(self.pending()) == 0
+
+    def arrival_ratio(self) -> float:
+        committed = len(self.arrived) + len(self.failed)
+        if committed == 0:
+            return 0.0
+        return len(self.arrived) / committed

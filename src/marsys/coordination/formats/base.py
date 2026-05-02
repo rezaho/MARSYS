@@ -2,95 +2,33 @@
 Base response format handler for MARSYS.
 
 This module provides the abstract base class that all response format
-implementations must inherit from.
+implementations must inherit from. Each format provides system-prompt
+construction; coordination is driven by native tool_calls (see
+formats.coordination_tools), so the legacy content-form parsing /
+schema-emission methods are no longer required.
 """
 
 import re
 from abc import ABC, abstractmethod
 from datetime import datetime
-from typing import Any, Dict, List, Optional, TYPE_CHECKING
+from typing import Any, Dict, List, Optional
+
 
 from .context import AgentContext, CoordinationContext, SystemPromptContext
 
-if TYPE_CHECKING:
-    from .processors import ResponseProcessor
-
 
 class BaseResponseFormat(ABC):
-    """
-    Abstract base class for response format handlers.
+    """Abstract base class for response format handlers.
 
-    Each format implementation (JSON, XML, etc.) must provide:
-    1. System prompt format instructions
-    2. Response processor for validation
-    3. Action descriptions and examples
-    """
-
-    # ==========================================================================
-    # Abstract Methods - Must be implemented by subclasses
-    # ==========================================================================
+    Subclasses provide a format name and inherit the shared system-prompt
+    builder logic. Coordination tool schemas (`invoke_agent`,
+    `return_final_response`, `end_conversation`) are injected separately
+    into the agent's tool list by `CoordinationToolSchemaBuilder`; format
+    handlers don't emit instructions for them anymore."""
 
     @abstractmethod
     def get_format_name(self) -> str:
         """Return the format name (e.g., 'json', 'xml')."""
-        pass
-
-    @abstractmethod
-    def build_format_instructions(
-        self, available_actions: List[str], action_descriptions: List[str]
-    ) -> str:
-        """
-        Build the format-specific instructions for the system prompt.
-
-        Args:
-            available_actions: List of action names available to the agent
-            action_descriptions: Detailed descriptions for each action
-
-        Returns:
-            Format instruction string to include in system prompt
-        """
-        pass
-
-    @abstractmethod
-    def build_action_descriptions(
-        self, available_actions: List[str], context: SystemPromptContext
-    ) -> List[str]:
-        """
-        Build format-specific descriptions for each available action.
-
-        Args:
-            available_actions: List of action names
-            context: Full system prompt context
-
-        Returns:
-            List of action description strings
-        """
-        pass
-
-    @abstractmethod
-    def get_examples(
-        self, available_actions: List[str], context: SystemPromptContext
-    ) -> str:
-        """
-        Generate format-specific examples for available actions.
-
-        Args:
-            available_actions: List of action names
-            context: Full system prompt context
-
-        Returns:
-            Examples string to include in system prompt
-        """
-        pass
-
-    @abstractmethod
-    def create_processor(self) -> "ResponseProcessor":
-        """
-        Create a response processor for this format.
-
-        Returns:
-            ResponseProcessor instance for parsing responses in this format
-        """
         pass
 
     # ==========================================================================
@@ -190,8 +128,8 @@ class BaseResponseFormat(ABC):
         if context.coordination.next_agents:
             actions.append("invoke_agent")
 
-        # Check for final_response permission
-        if context.coordination.can_return_final_response:
+        # Check for terminate_workflow permission (legacy alias: final_response)
+        if context.coordination.can_terminate_workflow:
             actions.append("final_response")
 
         return actions
@@ -300,22 +238,6 @@ class BaseResponseFormat(ABC):
                 )
 
         return lines
-
-    @abstractmethod
-    def get_parallel_invocation_examples(self, context: SystemPromptContext) -> str:
-        """
-        Get format-specific examples for parallel agent invocation.
-
-        This method must be implemented by format subclasses to provide
-        examples in the specific format (JSON, XML, etc.).
-
-        Args:
-            context: Full system prompt context
-
-        Returns:
-            Format-specific examples string showing correct/incorrect patterns
-        """
-        pass
 
     def _build_peer_agent_instructions(self, context: SystemPromptContext) -> str:
         """

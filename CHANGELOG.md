@@ -7,6 +7,58 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
+## [0.3.0] - 2026-05-02
+
+### Added
+- **Unified-barrier orchestration**: single `Orchestrator` event loop owning the entire `Branch` / `Barrier` graph (`src/marsys/coordination/execution/orchestrator.py`). One `Barrier` shape, two creation paths (parallel-fork via `invoke_agent` with multiple invocations; lazy `ensure_barrier` rendezvous at convergence points). Six fire gates evaluated in fixed order: status → ROOT-defer → upstream → pending → vestigial-cancel → ratio. Seven invariants documented in `orchestrator_types.py:17-24`.
+- **`RealRuntime`** per-branch driver (`src/marsys/coordination/execution/real_runtime.py`) implementing the orchestrator's `Runtime` Protocol: agent acquisition, memory rehydration, `StepExecutor` invocation, `ValidationProcessor` invocation, coordination-action translation. Detects content-only response loops with configurable thresholds.
+- **Three reserved det-node singletons**: `StartNode`, `EndNode`, `UserNode` (`src/marsys/coordination/execution/det_nodes.py`). Non-LLM nodes with explicit lifecycle hooks (`on_workflow_start`, `on_single_invoke`, `on_dispatch`) interacting with the orchestrator only through the narrow `DetNodeContext` Protocol. Reserved names auto-resolve in topology converters.
+- **Four topology-gated coordination tools** (`src/marsys/coordination/formats/coordination_tools.py`): `invoke_agent(invocations=[…])` (single or parallel peer dispatch), `terminate_workflow(answer=…)` (gated by edge to `End` det-node), `ask_user(question=…)` (gated by edge to `User` det-node), `end_conversation(summary=…)`. Tool gating computed by `StepExecutor._build_coordination_context` from outgoing topology edges.
+- **`AgentInput` abstraction** (`src/marsys/agents/agent_input.py`) at the orchestrator-agent boundary. Aggregates multi-source barrier arrivals into typed-text-block content lists (Anthropic-native, OpenAI-compat) so multi-source convergence packages cleanly into one user `Message`. Factories: `from_text`, `from_message`, `from_messages`, `coerce`, `aggregate`.
+- **Retry-tiered steering messages** (`src/marsys/coordination/steering/manager.py:_action_error_prompt`) keyed off retry count: tier 1 generic, tier 2 emphasizes tool choice, tier 3+ names topology peers explicitly. Prevents LLM repetition collapse on content-only loops.
+- **Content-only loop detection** with `CONTENT_ONLY_STEERING_THRESHOLD = 2` and `CONTENT_ONLY_HARD_LIMIT = 10` (configurable per-workflow via `ExecutionConfig.content_only_steering_threshold` / `content_only_hard_limit`). On hard-limit breach, `RealRuntime._build_content_only_diagnostic` produces a structured diagnostic naming the agent's available coordination tools, regular tools, last assistant content snippet, and the likely root cause (instruction-topology mismatch).
+- **Legacy migration shim** in `Orchestra._apply_legacy_topology_shim` (`src/marsys/coordination/orchestra.py:296`): translates legacy `entry_point` / `exit_points` / `User(Node)` topology metadata into explicit `Start` / `End` / `User` det-node edges with `DeprecationWarning`. Idempotent.
+- **Compile-time topology validation** (commit `c3dae26`): reachability + cycle-without-escape rules. Malformed topologies fail at `Orchestra.run` with actionable errors before any agents run.
+- **Documentation overhaul (Phases 1–6)**:
+  - New ADRs: ADR-005 (unified-barrier algorithm), ADR-006 (deprecation timeline).
+  - New concept docs: `concepts/coordination-tools.md`, `concepts/det-nodes.md`. AgentInput section added to `concepts/messages.md`.
+  - New component YAMLs: `real-runtime.yaml`, `det-nodes.yaml`, `agent-input.yaml`.
+  - Architecture overview rewritten; design-principles DP-002, DP-003, DP-004 refreshed.
+  - User-facing docs (`api/execution.md`, `api/validation.md`, `guides/steering-and-error-recovery.md`, `getting-started/first-agent.md`) rewritten around the unified-barrier model.
+
+### Renamed (alias kept for one release; removal target v0.4)
+- `return_final_response` (tool name) → `terminate_workflow`. Legacy alias still in `COORDINATION_TOOL_NAMES`; routes through `_validate_terminate_workflow` and returns `ActionType.FINAL_RESPONSE` for back-compat.
+- `final_response` (action string) → `terminate_workflow` (tool). `ActionType.FINAL_RESPONSE` retained as enum alias.
+
+### Deprecated (removal target v0.4)
+- Topology metadata `entry_point` / `exit_points` — use explicit `StartNode` / `EndNode` det-node edges. Auto-shim handles existing usage with `DeprecationWarning`.
+- Legacy `User(Node)` regular nodes — use `UserNode()` det-node directly. Auto-translated by the shim.
+- `TopologyGraph.has_user_access(agent)` — superseded by `has_edge_to_endnode(agent)` and `has_edge_to_usernode(agent)`. Retained at `topology/graph.py:818` while internal validators transition.
+
+### Removed
+- **`BranchSpawner` / `DynamicBranchSpawner`** classes (commit `bc19b98`, Phase 3 cutover) — replaced by `Orchestrator` event loop.
+- **`BranchExecutor`** large class (commit `bc19b98`) — replaced by `RealRuntime.step()` driving `StepExecutor`.
+- **Legacy JSON `next_action` response format** (commit `bc19b98`, no shim) — coordination uses native tool calls. Agents emitting `{"next_action": "invoke_agent", "action_input": "X"}` no longer validate.
+- **`parallel_invoke` action string** — replaced by `invoke_agent` with multiple invocations in one tool call (orchestrator dispatches concurrently).
+- **`wait_and_aggregate` action string** — implicit in the orchestrator's barrier semantics.
+- **`CoordinationContext.can_return_final_response`** field shim (commit `82ff393`, step-7 cleanup) — was a `@property` aliasing `can_terminate_workflow`. Constructor kwarg shim also removed. Use `can_terminate_workflow` directly.
+- Internal compatibility fallbacks in `step_executor` / `response_validator`: `metadata["exit_points"]` / `["original_exits"]` paths and `has_user_access` fallback in `_build_coordination_context`, `_get_available_actions`, `_validate_terminate_workflow`. The shim guarantees the explicit `End` edge.
+- `BaseAgent.can_return_final_response` now reads `has_edge_to_endnode` (was `has_user_access`).
+
+### Changed (internal)
+- `ConvergenceEvent` now fires for any multi-arrival barrier (rendezvous AND parallel-invoke fork barriers), not just rendezvous (commit `73ee5a3`). Tags `parent_branch_id = bar.resolver_branch` for trace cross-span links. Rendezvous resolver branches now emit `BranchCreatedEvent` when transitioning `WAITING → RUNNING`.
+- `tool_executor` empty-args parsing: pre-checks empty/whitespace strings, maps directly to `{}` without parse attempt (commit `73ee5a3`). Parse failures on non-empty input log at WARNING (was ERROR).
+
+### Documentation
+- `Multi-Agent_Patterns.md` annotated with v0.3.0 historical-reference banner pointing at the canonical concept docs and ADRs.
+- `examples/README.md` rewritten: removed dead `router_integration_example.py` reference; promoted `examples/00_documentation_examples/` as canonical entry point.
+- `examples/router_integration_example.py` deleted (used `BranchExecutor` and JSON `next_action`).
+- 17 example files annotated with v0.3.0 migration notes (10 use deprecated `entry_point`/`exit_points` and still work via shim; 7 use removed JSON `next_action` and will not run under current code).
+- `examples/notebooks/test_Deep_Research_multi-agent.ipynb` annotated with WILL-NOT-RUN markdown header.
+- `examples/01_IP_Valuation/05_BACKWARD_DEDUCTION_AGENT_DESIGN.md` annotated with side-by-side legacy → canonical migration table.
+
+---
+
 ## [0.2.1-beta] - 2026-03-01
 
 ### Added
@@ -193,6 +245,7 @@ The first public beta release of MARSYS - Multi-Agent Reasoning Systems framewor
 
 | Version | Date | Status | Highlights |
 |---------|------|--------|------------|
+| 0.3.0 | 2026-05-02 | Released | Unified-barrier orchestrator, det-nodes, native-tool-call coordination, AgentInput, retry-tiered steering, full docs overhaul |
 | 0.2.1-beta | 2026-03-01 | Released | Active context compaction, modular adapters, new agents, RunFileSystem |
 | 0.1.2 | 2025-12-21 | Released | OpenAI Responses API, xAI provider, steering system |
 | 0.1.0-beta | 2025-01 | Released | Initial public beta with full framework |
