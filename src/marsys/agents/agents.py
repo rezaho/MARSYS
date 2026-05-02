@@ -343,15 +343,19 @@ class BaseAgent(ABC):
 
     def can_return_final_response(self) -> bool:
         """
-        Dynamically check if this agent can return final responses.
-        Uses topology graph to determine if agent has user access.
+        Dynamically check if this agent can terminate the workflow.
+
+        Reads the topology graph: True iff this agent has a direct edge to
+        an End det-node. Legacy entry/exit/User-edge metadata is translated
+        into End edges by Orchestra._apply_legacy_topology_shim before this
+        is called.
 
         Returns:
-            True if agent can return final responses, False otherwise
+            True if agent can call terminate_workflow, False otherwise
         """
-        if self._topology_graph_ref:
-            return self._topology_graph_ref.has_user_access(self.name)
-        return False  # Default to False if no topology available
+        if self._topology_graph_ref and hasattr(self._topology_graph_ref, "has_edge_to_endnode"):
+            return self._topology_graph_ref.has_edge_to_endnode(self.name)
+        return False
 
     def _format_parameters(self, properties: Dict, required: List[str], indent: int = 2) -> List[str]:
         """Recursively format parameters including nested structures."""
@@ -1617,7 +1621,8 @@ class BaseAgent(ABC):
             from marsys.coordination.formats.coordination_tools import CoordinationToolSchemaBuilder
             self._coordination_tool_schemas = CoordinationToolSchemaBuilder.build_schemas(
                 next_agents=coordination_context.next_agents,
-                can_return_final_response=coordination_context.can_return_final_response,
+                can_terminate_workflow=coordination_context.can_terminate_workflow,
+                can_ask_user=coordination_context.can_ask_user,
                 is_conversation_branch=getattr(coordination_context, 'is_conversation_branch', False),
                 output_schema=self._compiled_output_schema if hasattr(self, '_compiled_output_schema') else None,
             )

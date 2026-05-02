@@ -241,6 +241,8 @@ class ExecutionConfig:
     # Convergence behavior
     dynamic_convergence_enabled: bool = True
     parent_completes_on_spawn: bool = True
+    # REMOVE-IN-V0.4: auto-detection of convergence points; users will mark
+    # convergence explicitly in their topology after v0.4.
     auto_detect_convergence: bool = True  # Automatically mark exit nodes and parents as convergence
 
     # Timeouts (in seconds)

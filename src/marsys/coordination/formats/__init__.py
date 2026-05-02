@@ -15,7 +15,7 @@ Usage:
     # Build system prompt
     system_prompt = builder.build(
         agent_context=AgentContext(name="Agent1", goal="...", instruction="..."),
-        coordination_context=CoordinationContext(next_agents=["Agent2"], can_return_final_response=True)
+        coordination_context=CoordinationContext(next_agents=["Agent2"], can_terminate_workflow=True)
     )
 """
 
