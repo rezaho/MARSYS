@@ -86,15 +86,6 @@ class TestSchemaBuilder:
         assert "question" in params
         assert params["question"]["type"] == "string"
 
-    def test_legacy_can_return_final_response_alias_with_warning(self):
-        with pytest.warns(DeprecationWarning):
-            schemas = CoordinationToolSchemaBuilder.build_schemas(
-                next_agents=["Coordinator"],
-                can_return_final_response=True,
-            )
-        names = [s["function"]["name"] for s in schemas]
-        assert "terminate_workflow" in names
-
     def test_terminate_workflow_with_output_schema(self):
         output_schema = {
             "properties": {

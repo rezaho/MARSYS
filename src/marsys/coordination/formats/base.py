@@ -128,8 +128,8 @@ class BaseResponseFormat(ABC):
         if context.coordination.next_agents:
             actions.append("invoke_agent")
 
-        # Check for final_response permission
-        if context.coordination.can_return_final_response:
+        # Check for terminate_workflow permission (legacy alias: final_response)
+        if context.coordination.can_terminate_workflow:
             actions.append("final_response")
 
         return actions

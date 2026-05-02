@@ -205,6 +205,10 @@ class TopologyGraph:
         self.metadata["analyzed"] = True
         self.metadata["analysis_time"] = datetime.now().isoformat()
     
+    # REMOVE-IN-V0.4: auto_detect_convergence config flag (config.py) and
+    # this method's auto-detection branch are deprecated. After v0.4 users
+    # mark convergence points explicitly. The "exit_points" fallback inside
+    # this method also goes once explicit End det-nodes are universal.
     def mark_dynamic_convergence_points(self, auto_detect: Optional[bool] = None) -> None:
         """
         Automatically mark nodes as convergence points based on topology.
@@ -567,6 +571,8 @@ class TopologyGraph:
         if not user_node:
             self.metadata.pop("agent_after_user", None)
     
+    # REMOVE-IN-V0.4: legacy auto-detection of exit points. After v0.4
+    # users specify End det-nodes explicitly and this method is unnecessary.
     def find_exit_points_with_manual(
         self,
         manual_exits: Optional[List[str]] = None,
@@ -686,6 +692,10 @@ class TopologyGraph:
                 conversation_nodes.append(agent2)
         return conversation_nodes
     
+    # REMOVE-IN-V0.4: legacy auto-injection of User node. New topologies
+    # specify Start/End/User det-nodes explicitly; this auto-injection runs
+    # only when `auto_inject_user=True` is set in metadata, which itself
+    # comes from legacy code paths.
     def auto_inject_user_node(self, entry_agent: str, exit_agents: List[str]) -> None:
         """
         Automatically inject User node if not present.
@@ -801,13 +811,20 @@ class TopologyGraph:
         
         return agents_with_access
     
+    # REMOVE-IN-V0.4: superseded by has_edge_to_endnode + has_edge_to_usernode.
+    # Kept until v0.4 because external consumers (BaseAgent.can_return_final_response
+    # historically called it; some examples may too) still reference it. The
+    # internal coordination code no longer relies on it.
     def has_user_access(self, agent_name: str) -> bool:
         """
+        DEPRECATED: use `has_edge_to_endnode` (terminate workflow) or
+        `has_edge_to_usernode` (ask user) instead.
+
         Check if a specific agent has edges to User nodes or is an exit point.
-        
+
         Args:
             agent_name: Name of the agent to check
-            
+
         Returns:
             True if the agent has access to User nodes or is an exit point, False otherwise
         """

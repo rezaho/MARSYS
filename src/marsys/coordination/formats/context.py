@@ -40,46 +40,12 @@ class CoordinationContext:
     Topology-driven gating signals for the system prompt: which peers an agent
     can invoke, whether it can terminate the workflow (edge to End), whether it
     can ask the user (edge to User), and whether it sits in a conversation branch.
-
-    `can_return_final_response` is kept as a deprecated alias for
-    `can_terminate_workflow` during the legacy transition.
     """
 
     next_agents: List[str] = field(default_factory=list)
     can_terminate_workflow: bool = False
     can_ask_user: bool = False
     is_conversation_branch: bool = False
-
-    def __init__(
-        self,
-        next_agents: Optional[List[str]] = None,
-        can_terminate_workflow: bool = False,
-        can_ask_user: bool = False,
-        is_conversation_branch: bool = False,
-        can_return_final_response: Optional[bool] = None,
-    ):
-        self.next_agents = list(next_agents) if next_agents is not None else []
-        self.can_ask_user = can_ask_user
-        self.is_conversation_branch = is_conversation_branch
-        if can_return_final_response is not None and not can_terminate_workflow:
-            import warnings
-            warnings.warn(
-                "CoordinationContext.can_return_final_response is deprecated; "
-                "use can_terminate_workflow.",
-                DeprecationWarning,
-                stacklevel=2,
-            )
-            self.can_terminate_workflow = bool(can_return_final_response)
-        else:
-            self.can_terminate_workflow = can_terminate_workflow
-
-    @property
-    def can_return_final_response(self) -> bool:
-        return self.can_terminate_workflow
-
-    @can_return_final_response.setter
-    def can_return_final_response(self, value: bool) -> None:
-        self.can_terminate_workflow = bool(value)
 
 
 @dataclass

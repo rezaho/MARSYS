@@ -29,6 +29,9 @@ class ActionType(Enum):
     """Action types produced by validation."""
     INVOKE_AGENT = "invoke_agent"
     PARALLEL_INVOKE = "parallel_invoke"
+    # REMOVE-IN-V0.4: FINAL_RESPONSE is the legacy enum name; the canonical
+    # action is now TERMINATE_WORKFLOW. Tests on tests/coordination/test_response_validator.py
+    # still assert FINAL_RESPONSE for the legacy "return_final_response" tool name.
     FINAL_RESPONSE = "final_response"
     TERMINATE_WORKFLOW = "terminate_workflow"
     ASK_USER = "ask_user"
@@ -105,6 +108,8 @@ class ValidationProcessor:
             return await self._validate_invoke_agent(data, agent)
         elif action == "terminate_workflow":
             return await self._validate_terminate_workflow(data, agent)
+        # REMOVE-IN-V0.4: legacy "return_final_response" tool name; renamed to
+        # "terminate_workflow". Drop this branch and _validate_return_final_response.
         elif action == "return_final_response":
             return await self._validate_return_final_response(data, agent)
         elif action == "ask_user":
@@ -163,23 +168,16 @@ class ValidationProcessor:
     async def _validate_terminate_workflow(
         self, data: Dict[str, Any], agent: BaseAgent
     ) -> ValidationResult:
-        """Validate terminate_workflow: check agent has direct edge to End det-node.
+        """Validate terminate_workflow: agent must have a direct edge to an End det-node.
 
-        Falls back to legacy has_user_access / exit_points membership during the
-        migration window (step 4's shim translates these into End edges; the
-        fallback is removed in step 7)."""
+        Legacy entry/exit/User-edge metadata is translated to det-node edges
+        by the topology shim before validation runs, so this is the single
+        source of truth."""
         graph = self.topology_graph
-        gated = False
-        if hasattr(graph, "has_edge_to_endnode") and graph.has_edge_to_endnode(agent.name):
-            gated = True
-        else:
-            metadata = getattr(graph, "metadata", None) or {}
-            if agent.name in (metadata.get("exit_points") or []):
-                gated = True
-            elif agent.name in (metadata.get("original_exits") or []):
-                gated = True
-            elif graph.has_user_access(agent.name):
-                gated = True
+        gated = (
+            hasattr(graph, "has_edge_to_endnode")
+            and graph.has_edge_to_endnode(agent.name)
+        )
 
         if not gated:
             next_agents = graph.get_next_agents(agent.name)
@@ -207,13 +205,17 @@ class ValidationProcessor:
             },
         )
 
+    # REMOVE-IN-V0.4: legacy alias for terminate_workflow. Tool name
+    # "return_final_response" was renamed to "terminate_workflow"; this
+    # dispatcher and ActionType.FINAL_RESPONSE remap stay until v0.4 to
+    # keep existing user code and 3 test cases in
+    # tests/coordination/test_response_validator.py working.
     async def _validate_return_final_response(
         self, data: Dict[str, Any], agent: BaseAgent
     ) -> ValidationResult:
         """Legacy alias for terminate_workflow (deprecated)."""
         result = await self._validate_terminate_workflow(data, agent)
         if result.is_valid:
-            # Preserve legacy ActionType for tests that assert on it.
             result.action_type = ActionType.FINAL_RESPONSE
         return result
 

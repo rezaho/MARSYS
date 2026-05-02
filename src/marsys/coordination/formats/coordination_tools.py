@@ -20,13 +20,13 @@ from typing import Any, Dict, List, Optional, Set, Tuple
 logger = logging.getLogger(__name__)
 
 # Reserved coordination tool names - these are never passed to ToolExecutor.
-# `return_final_response` is kept as a recognized alias for `terminate_workflow`
-# during the legacy transition (removed in step 7 cleanup post-GAIA).
 COORDINATION_TOOL_NAMES: Set[str] = frozenset({
     "invoke_agent",
     "terminate_workflow",
     "ask_user",
     "end_conversation",
+    # REMOVE-IN-V0.4: legacy alias for "terminate_workflow"; kept so agents
+    # emitting the old name still validate. See DEPRECATIONS.md.
     "return_final_response",
 })
 
@@ -83,7 +83,6 @@ class CoordinationToolSchemaBuilder:
         can_ask_user: bool = False,
         is_conversation_branch: bool = False,
         output_schema: Optional[Dict[str, Any]] = None,
-        can_return_final_response: Optional[bool] = None,
     ) -> List[Dict[str, Any]]:
         """
         Build coordination tool schemas for an agent.
@@ -96,21 +95,10 @@ class CoordinationToolSchemaBuilder:
                 edge to User det-node)
             is_conversation_branch: Whether this agent is in a conversation branch
             output_schema: Optional output schema to merge into terminate_workflow
-            can_return_final_response: DEPRECATED alias for can_terminate_workflow
 
         Returns:
             List of OpenAI-format tool definition dicts
         """
-        if can_return_final_response is not None and not can_terminate_workflow:
-            import warnings
-            warnings.warn(
-                "build_schemas(can_return_final_response=...) is deprecated; "
-                "use can_terminate_workflow.",
-                DeprecationWarning,
-                stacklevel=2,
-            )
-            can_terminate_workflow = bool(can_return_final_response)
-
         schemas = []
 
         # Det-nodes (User, Start, End) are excluded from the invoke_agent enum;

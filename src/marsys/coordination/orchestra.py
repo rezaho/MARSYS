@@ -293,6 +293,10 @@ class Orchestra:
             # Default to string notation if all values are strings
             return StringNotationConverter.convert(topology_dict)
 
+    # REMOVE-IN-V0.4: entire _apply_legacy_topology_shim method translates legacy
+    # entry_point / exit_points / User(Node)-as-terminal patterns into explicit
+    # Start / End / User det-node edges. After v0.4, users specify det-nodes
+    # directly and this shim is unnecessary. See DEPRECATIONS.md for migration.
     def _apply_legacy_topology_shim(
         self,
         topology_graph: "TopologyGraph",
@@ -303,13 +307,29 @@ class Orchestra:
         (has_edge_to_endnode, has_edge_to_usernode) works uniformly.
 
         Emits DeprecationWarning per legacy concept. Idempotent: skipped if
-        the corresponding det-node is already registered. Removed in v0.4."""
+        the corresponding det-node is already registered.
+
+        Three legacy patterns are translated:
+          1. entry_point=A metadata → StartNode + edge Start→A
+          2. exit_points=[X,Y] metadata → EndNode + edges X→End, Y→End
+          3. legacy User(Node) regular node → UserNode det-node, AND for
+             every agent with an "agent → User" edge, also EndNode +
+             edge "agent → End" (preserves the legacy implicit semantic
+             that "User edge = this agent can deliver the final response")
+        """
         import warnings
         from .execution.det_nodes import EndNode, StartNode, UserNode
         from .topology.core import NodeType
         from .topology.graph import TopologyEdge
 
-        metadata = canonical_topology.metadata or {}
+        # Merge canonical (user-specified, e.g. entry_point) with
+        # topology_graph (post-analysis, e.g. analyzer-auto-detected
+        # exit_points). canonical takes precedence so explicit user
+        # values override any analyzer overrides.
+        metadata = {
+            **(topology_graph.metadata or {}),
+            **(canonical_topology.metadata or {}),
+        }
 
         entry_point = metadata.get("entry_point")
         if entry_point and topology_graph.get_start_node() is None:
@@ -361,6 +381,81 @@ class Orchestra:
                 stacklevel=3,
             )
             topology_graph.register_det_node(UserNode())
+
+            # Legacy User-as-entry pattern: a `User → X` edge meant "workflow
+            # starts with X receiving input from the user". In the new model,
+            # entry is the Start det-node. Synthesize Start + Start → X if
+            # no Start exists yet and there's a User-rooted entry edge.
+            if topology_graph.get_start_node() is None:
+                user_node_names = {
+                    name for name, node in topology_graph.nodes.items()
+                    if getattr(node, "node_type", None) == NodeType.USER
+                }
+                entry_targets: list[str] = []
+                for u_name in user_node_names:
+                    u_node = topology_graph.nodes.get(u_name)
+                    if u_node is None:
+                        continue
+                    for target in u_node.outgoing_edges:
+                        if target not in user_node_names:
+                            entry_targets.append(target)
+                if entry_targets:
+                    if "Start" not in topology_graph.nodes:
+                        topology_graph.add_node("Start")
+                    topology_graph.register_det_node(StartNode())
+                    for entry_target in entry_targets:
+                        topology_graph.add_edge(TopologyEdge("Start", entry_target))
+
+            # Legacy semantic: an "agent → User" edge meant "this agent can
+            # deliver the final response to the user" (not just ask_user).
+            # The new model separates these via terminate_workflow / ask_user
+            # tools gated on End / User edges respectively. Translate:
+            # for every agent with an "agent → User" edge, also add an
+            # "agent → End" edge so terminate_workflow gating works.
+            user_node_names = {
+                name for name, node in topology_graph.nodes.items()
+                if getattr(node, "node_type", None) == NodeType.USER
+            }
+            agents_with_user_edge: list[str] = []
+            for name, node in topology_graph.nodes.items():
+                if name in user_node_names:
+                    continue
+                if any(target in user_node_names for target in node.outgoing_edges):
+                    agents_with_user_edge.append(name)
+
+            if agents_with_user_edge:
+                end_present = any(
+                    isinstance(n, EndNode)
+                    for n in (topology_graph.det_nodes or {}).values()
+                )
+                if not end_present:
+                    if "End" not in topology_graph.nodes:
+                        topology_graph.add_node("End")
+                    topology_graph.register_det_node(EndNode())
+                for agent_name in agents_with_user_edge:
+                    if not topology_graph.has_edge_to_endnode(agent_name):
+                        topology_graph.add_edge(TopologyEdge(agent_name, "End"))
+
+        # Final invariant: if any det-node was added by the shim and Start
+        # is still missing, synthesize Start using the analyzer-detected
+        # entry agent(s). The validator requires Start when det-nodes are
+        # present, and the shim should leave the topology in a valid state.
+        if topology_graph.det_nodes and topology_graph.get_start_node() is None:
+            entry_candidates: list[str] = []
+            try:
+                entry_candidates = list(topology_graph.find_entry_points()) or []
+            except Exception:
+                entry_candidates = []
+            entry_candidates = [
+                a for a in entry_candidates
+                if a not in topology_graph.det_nodes
+            ]
+            if entry_candidates:
+                if "Start" not in topology_graph.nodes:
+                    topology_graph.add_node("Start")
+                topology_graph.register_det_node(StartNode())
+                for entry in entry_candidates:
+                    topology_graph.add_edge(TopologyEdge("Start", entry))
 
         topology_graph.invalidate_caches()
 
@@ -856,6 +951,10 @@ class Orchestra:
                 except Exception as e:
                     logger.warning(f"Trace finalization failed: {e}")
     
+    # REMOVE-IN-V0.4: legacy auto-detection of entry agents when no
+    # StartNode det-node is registered. After v0.4 every topology must
+    # declare an explicit Start det-node; this fallback path is removed
+    # along with the call site at orchestra.py:827.
     def _find_entry_agents(self) -> List[str]:
         """Get the entry agent from topology."""
         try:

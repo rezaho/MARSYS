@@ -168,24 +168,13 @@ class StepExecutor:
             StepResult with execution outcome
         """
         start_time = time.time()
-        
-        # Check if this is a User node
-        if isinstance(agent, str) and agent.lower() == "user":
-            if self.user_node_handler and context.get("branch"):
-                return await self.user_node_handler.handle_user_node(
-                    branch=context["branch"],
-                    incoming_message=request,
-                    context=context
-                )
-            else:
-                # No handler - skip User node
-                return StepResult(
-                    agent_name="User",
-                    response="User interaction skipped",
-                    action_type="skip",
-                    success=True
-                )
-        
+
+        # User-node dispatch is handled at the orchestrator level via the
+        # UserNode det-node's on_single_invoke (orchestrator.py:441-444),
+        # which fires before RealRuntime.step ever sees a User branch. The
+        # legacy string-based "agent='User'" path used to live here but is
+        # unreachable in production; removed in step 7 cleanup.
+
         # Normal agent handling
         agent_name = agent.name if hasattr(agent, 'name') else str(agent)
 
@@ -774,36 +763,28 @@ class StepExecutor:
         """
         Build CoordinationContext from topology.
 
-        Topology-driven gating:
-            - can_terminate_workflow: agent has direct edge to End det-node
-              (legacy fallback: agent in exit_points/original_exits metadata,
-              removed in step 7 once shim is fully relied on).
+        Topology-driven gating, single source of truth:
+            - can_terminate_workflow: agent has direct edge to End det-node.
             - can_ask_user: agent has direct edge to User det-node.
             - is_conversation_branch: branch is in a conversation loop.
+
+        Legacy entry_point / exit_points / User-edge patterns are translated
+        into explicit det-node edges by Orchestra._apply_legacy_topology_shim
+        before this function runs; that shim is the only legacy support layer.
         """
         if not topology_graph:
             return CoordinationContext()
 
         next_agents = topology_graph.get_next_agents(agent_name)
 
-        can_terminate = False
-        if hasattr(topology_graph, 'has_edge_to_endnode'):
-            can_terminate = topology_graph.has_edge_to_endnode(agent_name)
-        if not can_terminate:
-            # Migration fallback (removed in step 7): legacy exit_points
-            # metadata still gates terminate_workflow until the shim has
-            # synthesized the End edge for every legacy topology.
-            metadata = getattr(topology_graph, 'metadata', None) or {}
-            exit_points = metadata.get('exit_points') or []
-            original_exits = metadata.get('original_exits') or []
-            if agent_name in exit_points or agent_name in original_exits:
-                can_terminate = True
-            elif topology_graph.has_user_access(agent_name):
-                can_terminate = True
-
-        can_ask_user = False
-        if hasattr(topology_graph, 'has_edge_to_usernode'):
-            can_ask_user = topology_graph.has_edge_to_usernode(agent_name)
+        can_terminate = (
+            hasattr(topology_graph, 'has_edge_to_endnode')
+            and topology_graph.has_edge_to_endnode(agent_name)
+        )
+        can_ask_user = (
+            hasattr(topology_graph, 'has_edge_to_usernode')
+            and topology_graph.has_edge_to_usernode(agent_name)
+        )
 
         is_conversation = False
         if branch is not None:
@@ -838,13 +819,6 @@ class StepExecutor:
             if hasattr(topology_graph, 'has_edge_to_endnode') and \
                     topology_graph.has_edge_to_endnode(current_agent):
                 available.append("terminate_workflow")
-            else:
-                metadata = getattr(topology_graph, 'metadata', None) or {}
-                if current_agent in (metadata.get('exit_points') or []) or \
-                        current_agent in (metadata.get('original_exits') or []):
-                    available.append("terminate_workflow")
-                elif topology_graph.has_user_access(current_agent):
-                    available.append("terminate_workflow")
 
             if hasattr(topology_graph, 'has_edge_to_usernode') and \
                     topology_graph.has_edge_to_usernode(current_agent):
