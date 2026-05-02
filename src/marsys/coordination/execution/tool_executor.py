@@ -166,15 +166,24 @@ class RealToolExecutor:
                     })
                     continue
 
-                # Parse arguments
-                try:
-                    if isinstance(tool_args_str, str):
-                        tool_args = json.loads(tool_args_str)
+                # Parse arguments. Empty/whitespace-only strings map to {}
+                # without a parse attempt — the model often emits "" for tools
+                # with no required parameters, and treating that as a parse
+                # error pollutes logs with false-positive ERRORs.
+                if isinstance(tool_args_str, str):
+                    if not tool_args_str.strip():
+                        tool_args = {}
                     else:
-                        tool_args = tool_args_str
-                except json.JSONDecodeError as e:
-                    logger.error(f"Failed to parse tool arguments for {tool_name}: {e}")
-                    tool_args = {}
+                        try:
+                            tool_args = json.loads(tool_args_str)
+                        except json.JSONDecodeError as e:
+                            logger.warning(
+                                f"Failed to parse tool arguments for {tool_name}: {e}; "
+                                "defaulting to empty args"
+                            )
+                            tool_args = {}
+                else:
+                    tool_args = tool_args_str if tool_args_str is not None else {}
 
                 # Separate reasoning from tool args for event emission
                 event_args = {**tool_args} if isinstance(tool_args, dict) else tool_args

@@ -30,6 +30,10 @@ from .orchestrator_types import (
     StepResult as OrchestratorStepResult,
 )
 
+# Default thresholds for content-only-loop detection. The runtime reads
+# the actual values from `execution_config` (so workflows can tune them);
+# these constants remain as fallbacks for tests that instantiate
+# RealRuntime without an ExecutionConfig.
 CONTENT_ONLY_STEERING_THRESHOLD = 2
 CONTENT_ONLY_HARD_LIMIT = 10
 
@@ -84,7 +88,16 @@ class RealRuntime:
             )
         self._current_instance = instance
 
-        if branch.consecutive_content_only >= CONTENT_ONLY_HARD_LIMIT:
+        steering_threshold = getattr(
+            self.execution_config, "content_only_steering_threshold",
+            CONTENT_ONLY_STEERING_THRESHOLD,
+        )
+        hard_limit = getattr(
+            self.execution_config, "content_only_hard_limit",
+            CONTENT_ONLY_HARD_LIMIT,
+        )
+
+        if branch.consecutive_content_only >= hard_limit:
             diagnostic = self._build_content_only_diagnostic(branch, instance)
             return OrchestratorStepResult(kind="FAIL", error=diagnostic)
 
@@ -98,7 +111,7 @@ class RealRuntime:
             "tool_continuation": is_continuation,
             "branch": None,
         }
-        if branch.consecutive_content_only >= CONTENT_ONLY_STEERING_THRESHOLD:
+        if branch.consecutive_content_only >= steering_threshold:
             context["metadata"] = {
                 "agent_error_context": {
                     "category": ValidationErrorCategory.ACTION_ERROR.value,
