@@ -570,17 +570,22 @@ async def run_gaia_benchmark(
     logger.info(f"🤖 FileOps/WebSearch: claude-haiku-4.5 (temp={temperature})")
     logger.info(f"🤖 BrowserAgent: gemini-2.5-flash")
 
-    # Define topology (reused for all tasks)
+    # Define topology (reused for all tasks). Explicit Start/End det-nodes;
+    # Coordinator routes between workers and emits the final answer via
+    # terminate_workflow (gated on the Coordinator -> End edge).
     topology = {
         "agents": [
+            "Start",
             "Coordinator",
             "Planner",
             "FileOps",
             "WebSearch",
             "BrowserAgent",
             "Reasoner",
+            "End",
         ],
         "flows": [
+            "Start -> Coordinator",
             # Coordinator orchestrates everything
             "Coordinator -> Planner",
             "Planner -> Coordinator",
@@ -592,9 +597,8 @@ async def run_gaia_benchmark(
             "BrowserAgent -> Coordinator",
             "Coordinator -> Reasoner",
             "Reasoner -> Coordinator",
+            "Coordinator -> End",
         ],
-        "entry_point": "Coordinator",
-        "exit_points": ["Coordinator"],
         "rules": ["timeout(1200)", "max_steps(200)"],  # 20 min per question, max 200 steps
     }
 
