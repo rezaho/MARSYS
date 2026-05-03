@@ -110,14 +110,17 @@ Always delegate work to Worker - do not try to do the work yourself.""",
 Be thorough and precise in your work.""",
     )
 
-    # Define topology with User interaction
+    # Topology: explicit Start/End det-nodes; User det-node for the
+    # interactive Q&A loop with Coordinator (clarifications, results).
     topology = {
-        "agents": ["User", "Coordinator", "Worker"],
+        "agents": ["Start", "Coordinator", "Worker", "User", "End"],
         "flows": [
-            "User -> Coordinator",
+            "Start -> Coordinator",
             "Coordinator -> User",
+            "User -> Coordinator",
             "Coordinator -> Worker",
             "Worker -> Coordinator",
+            "Coordinator -> End",
         ],
         "rules": ["timeout(1200)"],  # 20 minute workflow timeout (overrides default 300s)
     }
