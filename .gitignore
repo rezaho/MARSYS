@@ -1,0 +1,119 @@
+# Environment and secrets
+.env
+*.env
+.env.bak
+auth.json
+*.key
+*.pem
+*.p12
+*.pfx
+
+# Python
+__pycache__
+*.py[cod]
+*$py.class
+*.so
+.Python
+docs/architecture/
+docs/implementation/
+# Distribution / packaging
+dist/
+build/
+*.egg-info/
+.eggs/
+*.egg
+MANIFEST
+pip-log.txt
+pip-delete-this-directory.txt
+
+# PyPI
+.pypirc
+
+# Virtual environments
+.venv/
+venv/
+env/
+ENV/
+
+# IDEs
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+.DS_Store
+
+# Testing
+.pytest_cache/
+.coverage
+htmlcov/
+.tox/
+.nox/
+*.cover
+*.log
+.hypothesis/
+
+# Type checking
+.mypy_cache/
+.dmypy.json
+dmypy.json
+.pyre/
+.pytype/
+
+# Documentation
+site/
+docs/_docs_legacy*/
+.mkdocs_cache/
+docs/_build/
+docs/.doctrees/
+
+# Project specific
+INITIAL_PLAN.md
+tmp/
+output/
+new_docs/
+simplifying/
+implementations/
+examples/**/output/**
+examples/**/sessions/
+sessions/
+*.log
+
+# **examples**
+**/results/
+pitch_materials_bak/
+pitch_materials/
+private/
+
+# GAIA benchmark cache
+benchmarks/GAIA/.cache/
+marsys_cloud/
+# Legacy
+CLAUDE.md
+BRAINDUMP.md
+.crossnote
+.codex
+.cursor
+.github
+.pypirc
+.cache
+**.csv
+**.json
+**.jsonl
+**.pdf
+**.xls
+
+
+.bak/
+docs/acrhitecture/
+slides/
+
+# Workspace artifacts (Spren umbrella)
+node_modules/
+apps/*/dist/
+apps/desktop/target/
+target/
+packages/spren/src/spren/_webui/
+**/routeTree.gen.ts
+playwright-report/
+test-results/
