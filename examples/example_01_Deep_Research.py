@@ -60,10 +60,16 @@ async def main():
         model_config=model_config,
         name="OrchestratorAgent",
         goal="Manage research workflow and coordinate agents",
-        instruction=f"""You manage a research workflow. First, ask clarifying questions to understand the user's intent.
-Once clear, invoke RetrievalAgent with the search query. The scratch_pad_file is: {scratch_pad_file}
-After sources are collected, invoke SynthesizerAgent to create the report.
-The report will be saved to: {report_file}""",
+        instruction=f"""You manage a research workflow.
+
+WORKFLOW:
+1. If the user's initial request is ambiguous, ask the user for clarification
+   (topic scope, depth of research, output format).
+2. Once the intent is clear, delegate to RetrievalAgent with the search query.
+   Scratch pad file: {scratch_pad_file}
+3. After RetrievalAgent returns the collected sources, delegate to SynthesizerAgent
+   to create the report. Report file: {report_file}
+4. Once the report is saved, deliver a brief confirmation message as the final answer.""",
     )
 
     retrieval_agent = Agent(
@@ -167,10 +173,14 @@ Return to OrchestratorAgent after the report is saved.""",
     )
 
     topology = {
-        "agents": ["User", "OrchestratorAgent", "RetrievalAgent", "WebSearchAgent", "BrowserAgent", "SynthesizerAgent"],
+        "agents": [
+            "Start", "OrchestratorAgent", "RetrievalAgent", "WebSearchAgent",
+            "BrowserAgent", "SynthesizerAgent", "User", "End",
+        ],
         "flows": [
-            "User -> OrchestratorAgent",
+            "Start -> OrchestratorAgent",
             "OrchestratorAgent -> User",
+            "User -> OrchestratorAgent",
             "OrchestratorAgent -> RetrievalAgent",
             "OrchestratorAgent -> SynthesizerAgent",
             "RetrievalAgent -> OrchestratorAgent",
@@ -179,6 +189,7 @@ Return to OrchestratorAgent after the report is saved.""",
             "WebSearchAgent -> RetrievalAgent",
             "BrowserAgent -> RetrievalAgent",
             "SynthesizerAgent -> OrchestratorAgent",
+            "OrchestratorAgent -> End",
         ],
         "rules": ["timeout(600)"],  # 10 minute workflow timeout
     }
