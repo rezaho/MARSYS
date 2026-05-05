@@ -46,4 +46,9 @@ Native installers, brew tap, winget manifest, apt repo, npm wrapper, pipx, and D
 
 ## License
 
-Apache-2.0. See [`LICENSE`](./LICENSE).
+This monorepo distributes code under two distinct licenses:
+
+- `packages/framework/` is licensed under the Apache License, Version 2.0 (`Apache-2.0`). Permissive, with no restrictions on use, modification, or commercial distribution beyond attribution.
+- `packages/spren/`, `apps/web/`, `apps/desktop/`, and `apps/tui/` are licensed under the Functional Source License, Version 1.1, ALv2 Future License (`FSL-1.1-ALv2`). Source-available with a 2-year non-compete that automatically converts to Apache 2.0. Free for individual use, internal company use, education, research, modification, and redistribution with attribution preserved. Forbids offering as a competing commercial managed or hosted service.
+
+See [`LICENSE`](./LICENSE) for the full umbrella explainer and the per-package `LICENSE` files for the canonical license texts.
