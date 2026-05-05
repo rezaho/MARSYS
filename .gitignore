@@ -103,6 +103,16 @@ BRAINDUMP.md
 **.pdf
 **.xls
 
+# Re-enable JSON config files for the umbrella workspace (the **.json above
+# was overly broad — meant to keep framework benchmark outputs out, but
+# also caught package.json, tsconfig.json, tauri.conf.json, etc.)
+!**/package.json
+!**/tsconfig.json
+!**/tsconfig.*.json
+!**/tauri.conf.json
+!**/vitest.config.json
+!**/.vscode/*.json
+
 
 .bak/
 docs/acrhitecture/
@@ -113,7 +123,9 @@ node_modules/
 apps/*/dist/
 apps/desktop/target/
 target/
+apps/desktop/gen/
 packages/spren/src/spren/_webui/
 **/routeTree.gen.ts
 playwright-report/
 test-results/
+**/*.tsbuildinfo
