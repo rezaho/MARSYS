@@ -8,7 +8,7 @@ version = "0.3.0"
 description = "MARSYS Spren — local-first OSS personal AI assistant on top of the marsys framework."
 readme = "README.md"
 requires-python = ">=3.12"
-license = {text = "Apache-2.0"}
+license = {text = "FSL-1.1-ALv2"}
 authors = [{name = "Reza Hosseini", email = "reza@marsys.ai"}]
 dependencies = [
     "marsys",

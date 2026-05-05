@@ -3,7 +3,7 @@ name = "spren-desktop"
 version = "0.3.0"
 edition = "2021"
 description = "Tauri 2 desktop shell for MARSYS Spren — wraps the Python sidecar + webview."
-license = "Apache-2.0"
+license = "LicenseRef-FSL-1.1-ALv2"
 
 [build-dependencies]
 tauri-build = { version = "2", features = [] }
