@@ -1,0 +1,25 @@
+[package]
+name = "spren-desktop"
+version = "0.3.0"
+edition = "2021"
+description = "Tauri 2 desktop shell for MARSYS Spren — wraps the Python sidecar + webview."
+license = "Apache-2.0"
+
+[build-dependencies]
+tauri-build = { version = "2", features = [] }
+
+[dependencies]
+tauri = { version = "2", features = [] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+regex = "1"
+tokio = { version = "1", features = ["macros", "rt-multi-thread", "process", "io-util"] }
+log = "0.4"
+env_logger = "0.11"
+
+[[bin]]
+name = "spren-desktop"
+path = "src/main.rs"
+
+[features]
+custom-protocol = ["tauri/custom-protocol"]
