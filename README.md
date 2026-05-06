@@ -35,6 +35,45 @@ just dev-desktop  # adds the Tauri shell
 just test         # runs all tests across Python, JS, Rust
 ```
 
+### Windows dev setup
+
+The Justfile recipes work on Windows 11 PowerShell. Recipes that use bash-only idioms (`dev`, `dev-desktop`, `build`, `clean`) are split into `[unix]` and `[windows]` variants; the rest run unchanged across shells.
+
+Install the toolchain via winget:
+
+```powershell
+winget install astral-sh.uv
+winget install OpenJS.NodeJS.LTS
+winget install pnpm.pnpm
+winget install Rustlang.Rustup
+winget install Microsoft.VisualStudio.2022.BuildTools --override "--quiet --wait --add Microsoft.VisualStudio.Workload.VCTools --includeRecommended"
+winget install Casey.Just
+winget install GitHub.cli
+winget install Git.Git
+cargo install tauri-cli --version "^2"
+```
+
+Notes:
+
+- The Visual Studio Build Tools install must include the **Desktop development with C++** workload. The `--override` flag above selects it; if you install through the GUI, pick the workload manually.
+- WebView2 ships with Windows 11. If missing, get the Evergreen Bootstrapper from Microsoft.
+- Clone into a path on a local NTFS drive (e.g. `C:\dev\marsys-spren`). Working from a WSL share (`\\wsl$\...` or a drive mapped to `\\wsl.localhost\...`) breaks `uv` venv creation because the venv layout uses POSIX symlinks the share cannot represent.
+- If your repo path is deep, enable long path support: `git config --global core.longpaths true`.
+- `cargo install tauri-cli` takes ~5 min on first build.
+
+Verified versions used during the Windows fixup: Python 3.12.12 (managed by uv), Node 22+, pnpm 10.33+, Rust 1.95 / cargo 1.95, just 1.50, GitHub CLI 2.92.
+
+Then the same flow as Linux works:
+
+```powershell
+git clone https://github.com/rezaho/marsys.git marsys-spren
+cd marsys-spren
+just install
+just dev
+just dev-desktop
+just test
+```
+
 ### Spren as an end-user product
 
 Native installers, brew tap, winget manifest, apt repo, npm wrapper, pipx, and Docker arrive in v0.3 release (Session 10).
