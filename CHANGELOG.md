@@ -26,6 +26,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Removed
 - **`JSONFileTraceWriter`** (`coordination/tracing/writers/json_writer.py`). Forward-only removal per project `CLAUDE.md` §2.6 (clean code is the default; deprecation only on explicit user direction). The new NDJSON writer is the sole on-disk trace format. Users with archived legacy `.json` traces deserialize them with `json.load()` directly — the file shape already mirrors `TraceTree.to_dict()`.
 - **`JSONFileTraceWriter`** export from `coordination.tracing.writers.__init__`.
+- **`TracingConfig.detail_level`** field. Was only consumed by the legacy `JSONFileTraceWriter._filter_span` which is now deleted; no production code path read it after the streaming writer landed. Callers passing `detail_level=...` must drop the kwarg.
+- **`TracingConfig.max_content_length`** field. Was technically still referenced by `TraceCollector._handle_final_response` to truncate `final_response_summary`, but the default value `0` caused any non-empty summary to truncate to `"..."` (the whole content was lost). Bug was hidden because no test emits `FinalResponseEvent`. Truncation block removed; summaries are now stored verbatim. Callers passing `max_content_length=...` must drop the kwarg.
 
 ### Dependencies
 - Added: `python-ulid>=3.1.0,<4` (MIT-licensed; transitive dep `typing_extensions` already present).
