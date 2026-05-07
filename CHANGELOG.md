@@ -7,6 +7,36 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
+## [Unreleased]
+
+### Added
+- **Streaming NDJSON tracing writer** (`packages/framework/src/marsys/coordination/tracing/writers/ndjson_writer.py`): one JSON object per closed span at `{TracingConfig.output_dir}/{trace_id}.ndjson`, written incrementally by `TraceCollector` as each span closes. Mid-run process crashes preserve every span emitted up to the crash; late subscribers tail-follow the file from start to current EOF. Bounded `asyncio.Queue` (default `maxsize=10000`) + dedicated drain task keeps `write_span` non-blocking on the disk path; drop-oldest on overflow with a `dropped_span_count` metric. After 100 consecutive `OSError`s the writer self-disables (a `stream_event` warning line is emitted, subsequent spans drop into `disabled_dropped_count`). `fsync_per_span` is opt-in (default off).
+- **Streaming NDJSON reader** (`coordination/tracing/readers/ndjson_reader.py`): generator yielding span dicts in file order, with `follow=True` tail-follow mode, truncated-trailing-line tolerance, and `completion_status` ∈ `{complete, truncated, crashed}`. Tolerates unknown top-level fields and unknown `attributes` keys (additive-only schema-evolution policy); rejects `schema_version > 1` with `NDJSONVersionError`.
+- **`TraceTree.from_ndjson(path)`** classmethod for post-mortem reconstruction. Symmetric with `TraceTree.to_dict()`. Spans whose `parent_span_id` is unknown surface in a new `TraceTree.orphans: List[Span]` field rather than being silently dropped.
+- **`TraceWriter.write_span(span)`** per-span hook on the ABC (default no-op). Streaming writers override; finalize-only writers ignore.
+- **`OrchestraResult.metadata["tracing"]`** exposes writer counts after `Orchestra.execute()` returns: `total_spans`, `disk_error_count`, `dropped_span_count`, `disabled_dropped_count`, `disabled`. Programmatic consumers (Cloud worker, CI) detect partial / disabled traces from this dict.
+- **`coordination/tracing/_ids.py`** — single-source ULID factory (`new_id()`) used by `StatusEvent.event_id`, `Span.span_id`, and `TraceTree.trace_id`.
+
+### Changed
+- **`StatusEvent.event_id`** factory: `uuid.uuid4()` → ULID via `new_id()`. Type unchanged (`str`); subscribers treating `event_id` as opaque are unaffected. ULIDs are 26-character uppercase Crockford-base32, monotonic-orderable within a process — required by Spren's SSE `Last-Event-ID` resume contract.
+- **`Span.span_id`** factory in `create_span()`: same UUID4 → ULID migration. `TraceTree.trace_id` (generated in `_handle_execution_start`) likewise.
+- **`Orchestra.execute()`** now calls `await self.trace_collector.close()` after `finalize()` in its `finally` block, bounded by `asyncio.wait_for(timeout=NDJSONTraceWriter.CLOSE_TIMEOUT_SECONDS)` (5.0s). Required for the streaming writer's drain-and-flush lifecycle. Both success and exception paths now assign to a `result` local variable so the finally block can populate `result.metadata["tracing"]` before return — no behaviour change for callers that ignore metadata.
+- **`Orchestra.__init__()`** instantiates `NDJSONTraceWriter` instead of `JSONFileTraceWriter` when `TracingConfig.enabled` is true.
+
+### Removed
+- **`JSONFileTraceWriter`** (`coordination/tracing/writers/json_writer.py`). Forward-only removal per project `CLAUDE.md` §2.6 (clean code is the default; deprecation only on explicit user direction). The new NDJSON writer is the sole on-disk trace format. Users with archived legacy `.json` traces deserialize them with `json.load()` directly — the file shape already mirrors `TraceTree.to_dict()`.
+- **`JSONFileTraceWriter`** export from `coordination.tracing.writers.__init__`.
+
+### Dependencies
+- Added: `python-ulid>=3.1.0,<4` (MIT-licensed; transitive dep `typing_extensions` already present).
+
+### Migration notes
+- The on-disk trace format changed from `{output_dir}/{session_id}.json` (single tree-shaped JSON) to `{output_dir}/{trace_id}.ndjson` (one closed span per line). Callers that previously consumed `.json` files via `json.load()` should switch to either `NDJSONTraceReader.stream()` (live consumer) or `TraceTree.from_ndjson(path)` (post-mortem); the latter returns a `TraceTree` whose `to_dict()` shape matches the legacy file shape.
+- ULID identifiers are 26 chars vs UUID4's 36 chars. Downstream consumers asserting on length 36 will break; consumers treating IDs as opaque strings are unaffected. ULIDs are case-sensitive uppercase.
+- This release does NOT add OTel-protocol export to LangSmith / Phoenix / Langfuse. NDJSON-on-disk is the durability half; OTel-on-the-wire is a separate concern for a later release via the `TelemetrySink` protocol.
+
+---
+
 ## [0.3.0] - 2026-05-02
 
 ### Added
