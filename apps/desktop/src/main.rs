@@ -24,11 +24,14 @@ pub fn parse_ready_line(line: &str) -> Option<(u16, String)> {
     Some((port, token))
 }
 
-/// Resolve the path to the workspace `.venv/bin/python` (dev mode only).
+/// Resolve the path to the workspace venv's Python (dev mode only).
 fn resolve_python() -> PathBuf {
-    // `apps/desktop/` → `<workspace>/.venv/bin/python`
-    let crate_dir = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
-    crate_dir.join("../../.venv/bin/python")
+    let venv = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../.venv");
+    if cfg!(windows) {
+        venv.join("Scripts").join("python.exe")
+    } else {
+        venv.join("bin").join("python")
+    }
 }
 
 fn spawn_sidecar() -> std::io::Result<Child> {
@@ -56,7 +59,9 @@ fn main() {
     // Read first line — must be the ready signal.
     let mut reader = BufReader::new(stdout);
     let mut line = String::new();
-    reader.read_line(&mut line).expect("failed to read sidecar ready line");
+    reader
+        .read_line(&mut line)
+        .expect("failed to read sidecar ready line");
     let (port, token) = parse_ready_line(&line)
         .unwrap_or_else(|| panic!("sidecar did not emit a ready signal; got: {line:?}"));
 
@@ -64,10 +69,8 @@ fn main() {
 
     // Drain remaining stdout in a background thread so the child doesn't block.
     std::thread::spawn(move || {
-        for line in reader.lines() {
-            if let Ok(l) = line {
-                log::debug!("[sidecar] {l}");
-            }
+        for l in reader.lines().map_while(Result::ok) {
+            log::debug!("[sidecar] {l}");
         }
     });
 
