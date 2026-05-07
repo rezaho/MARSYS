@@ -10,10 +10,16 @@ validation decisions, branching, and convergence.
 from .config import TracingConfig
 from .types import Span, TraceTree
 from .collector import TraceCollector
+from .readers import NDJSONTraceReader, NDJSONVersionError
+from .writers import NDJSONTraceWriter, TraceWriter
 
 __all__ = [
     "TracingConfig",
     "Span",
     "TraceTree",
     "TraceCollector",
+    "TraceWriter",
+    "NDJSONTraceWriter",
+    "NDJSONTraceReader",
+    "NDJSONVersionError",
 ]

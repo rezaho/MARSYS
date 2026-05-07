@@ -3,9 +3,11 @@ Core data types for the tracing module.
 """
 
 from dataclasses import dataclass, field
+import pathlib
 from typing import Any, Dict, List, Optional
 import time
-import uuid
+
+from ._ids import new_id
 
 
 @dataclass
@@ -93,21 +95,48 @@ class TraceTree:
     A complete execution trace rooted at an execution span.
 
     One TraceTree is produced per Orchestra.run() invocation.
+
+    ``orphans`` holds spans whose ``parent_span_id`` was not present in the
+    file when reconstructed via ``from_ndjson`` — populated when a run
+    crashed before a parent span closed. Empty for healthy runs.
     """
 
     trace_id: str
     session_id: str
     root_span: Span
     metadata: Dict[str, Any] = field(default_factory=dict)
+    orphans: List[Span] = field(default_factory=list)
 
     def to_dict(self) -> Dict[str, Any]:
         """Serialize the full trace tree for JSON output."""
-        return {
+        result: Dict[str, Any] = {
             "trace_id": self.trace_id,
             "session_id": self.session_id,
             "metadata": self.metadata,
             "root_span": self.root_span.to_dict(),
         }
+        if self.orphans:
+            result["orphans"] = [span.to_dict() for span in self.orphans]
+        return result
+
+    @classmethod
+    def from_ndjson(cls, path: pathlib.Path) -> "TraceTree":
+        """Reconstruct a ``TraceTree`` from an NDJSON trace file.
+
+        Walks the file once, indexes spans by ``span_id``, then attaches each
+        span as a child of its ``parent_span_id``. The execution-kind span
+        with ``parent_span_id is None`` becomes the root. Spans referencing
+        an unknown parent are placed in ``TraceTree.orphans``.
+
+        Marker / diagnostic lines (``stream_completed``, ``stream_event``)
+        are ignored. Truncated final lines are ignored too — for live-status
+        information use ``NDJSONTraceReader`` directly.
+        """
+        # Local import to avoid circular dependency (reader → types → reader).
+        from .readers.ndjson_reader import NDJSONTraceReader
+
+        reader = NDJSONTraceReader(path)
+        return reader.to_tree()
 
 
 def create_span(
@@ -120,7 +149,7 @@ def create_span(
 ) -> Span:
     """Factory function for creating spans with generated IDs."""
     return Span(
-        span_id=str(uuid.uuid4()),
+        span_id=new_id(),
         parent_span_id=parent_span_id,
         trace_id=trace_id,
         name=name,
