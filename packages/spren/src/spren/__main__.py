@@ -5,11 +5,16 @@ to parse, and runs uvicorn until shutdown.
 
 Ready signal format (single line, flushed):
     spren-ready: port=<N> token=<T> data-dir=<path>
+
+Shutdown protocol: a stdin-reader thread consumes lines from sys.stdin and
+triggers uvicorn's graceful shutdown when it sees `shutdown\\n`. EOF on stdin
+also triggers graceful shutdown — the sidecar should never outlive its parent.
 """
 from __future__ import annotations
 
 import socket
 import sys
+import threading
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -36,6 +41,18 @@ def _resolve_port(requested: int) -> int:
             return probe.getsockname()[1]
 
 
+def _watch_stdin_for_shutdown(server: uvicorn.Server) -> None:
+    """Trigger graceful shutdown when stdin emits `shutdown\\n` or EOF."""
+    try:
+        for line in sys.stdin:
+            if line.strip() == "shutdown":
+                break
+    finally:
+        # Either the shutdown line arrived, stdin hit EOF, or sys.stdin
+        # raised. In all three cases we want uvicorn to exit cleanly.
+        server.should_exit = True
+
+
 @click.command()
 @click.option("--port", default=8765, show_default=True, help="Port to bind 127.0.0.1 to. 0 = random free.")
 @click.option("--data-dir", type=click.Path(path_type=Path), default=None, help="Override data dir.")
@@ -57,7 +74,12 @@ def main(port: int, data_dir: Path | None) -> None:
         data_dir=data_path,
         started_at=datetime.now(timezone.utc),
     )
-    uvicorn.run(app, host="127.0.0.1", port=resolved_port, log_level="warning")
+    config = uvicorn.Config(app, host="127.0.0.1", port=resolved_port, log_level="warning")
+    server = uvicorn.Server(config)
+
+    threading.Thread(target=_watch_stdin_for_shutdown, args=(server,), daemon=True).start()
+
+    server.run()
 
 
 if __name__ == "__main__":
