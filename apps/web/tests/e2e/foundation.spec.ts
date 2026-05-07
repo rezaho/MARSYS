@@ -36,8 +36,8 @@ test("placeholder home renders bootstrap when token is present", async ({ page }
   // Inject port + token before scripts run, simulating the Tauri shell's init_script.
   await page.addInitScript(
     ({ port, token }) => {
-      (window as unknown as { __SPREN_AUTH__: string; __SPREN_PORT__: number }).__SPREN_AUTH__ = token;
-      (window as unknown as { __SPREN_AUTH__: string; __SPREN_PORT__: number }).__SPREN_PORT__ = port;
+      window.__SPREN_AUTH__ = token;
+      window.__SPREN_PORT__ = port;
     },
     { port: sidecarPort, token: sidecarToken },
   );
