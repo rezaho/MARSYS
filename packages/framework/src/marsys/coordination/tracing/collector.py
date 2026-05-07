@@ -390,10 +390,7 @@ class TraceCollector:
             trace.root_span.attributes["total_duration"] = event.total_duration
 
             if self.config.include_message_content:
-                summary = str(event.final_response)
-                if len(summary) > self.config.max_content_length:
-                    summary = summary[:self.config.max_content_length] + "..."
-                trace.root_span.attributes["final_response_summary"] = summary
+                trace.root_span.attributes["final_response_summary"] = str(event.final_response)
 
             # Close the root span with the correct status
             status = "ok" if event.success else "error"

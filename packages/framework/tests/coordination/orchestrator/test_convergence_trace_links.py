@@ -144,9 +144,7 @@ async def test_convergence_step_has_links_to_source_branches(tmp_path):
         tracing=TracingConfig(
             enabled=True,
             output_dir=str(tmp_path),
-            detail_level="verbose",
             include_message_content=True,
-            max_content_length=1000,
         ),
     )
     result = await Orchestra.run(
