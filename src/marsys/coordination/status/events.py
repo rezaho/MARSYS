@@ -5,14 +5,15 @@ Status event definitions for the coordination system.
 from dataclasses import dataclass, field
 from typing import Any, Dict, List, Literal, Optional
 import time
-import uuid
+
+from ..tracing._ids import new_id
 
 
 @dataclass
 class StatusEvent:
     """Base class for all status events."""
     session_id: str  # Required field
-    event_id: str = field(default_factory=lambda: str(uuid.uuid4()), kw_only=True)
+    event_id: str = field(default_factory=new_id, kw_only=True)
     timestamp: float = field(default_factory=time.time, kw_only=True)
     branch_id: Optional[str] = field(default=None, kw_only=True)
     metadata: Dict[str, Any] = field(default_factory=dict, kw_only=True)
