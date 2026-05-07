@@ -98,6 +98,7 @@ test:
 [unix]
 build:
     pnpm --filter @marsys/spren-web build
+    test -f apps/web/dist/index.html || { echo "ERROR: vite build did not produce apps/web/dist/index.html" >&2; exit 1; }
     rm -rf packages/spren/src/spren/_webui
     cp -r apps/web/dist packages/spren/src/spren/_webui
 
@@ -107,6 +108,10 @@ build:
 build:
     $ErrorActionPreference = 'Stop'
     pnpm --filter '@marsys/spren-web' build
+    if (-not (Test-Path 'apps/web/dist/index.html')) {
+        Write-Error 'ERROR: vite build did not produce apps/web/dist/index.html'
+        exit 1
+    }
     $dst = 'packages/spren/src/spren/_webui'
     if (Test-Path $dst) { Remove-Item -Recurse -Force $dst }
     Copy-Item -Recurse 'apps/web/dist' $dst

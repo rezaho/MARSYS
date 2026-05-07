@@ -11,7 +11,7 @@
     "lint": "eslint . --max-warnings 0",
     "typecheck": "tsc --noEmit",
     "test": "vitest",
-    "test:e2e": "playwright test"
+    "test:e2e": "node scripts/preflight-e2e.mjs && playwright test"
   },
   "dependencies": {
     "@tanstack/react-query": "^5.100.0",
