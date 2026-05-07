@@ -4,22 +4,22 @@ Structured execution traces for multi-agent workflow observability.
 
 ## Overview
 
-The tracing module captures the full execution flow of an Orchestra run as a hierarchical span tree, enabling post-hoc analysis of:
+The tracing module captures the full execution flow of an Orchestra run as a hierarchical span tree, enabling live observability and post-hoc analysis of:
 
-- **Agent steps**: Which agents ran, in what order, and how long each took
-- **LLM generations**: Token usage, model identity, API latency, and finish reason per generation
-- **Validation decisions**: What action type was determined and what routing was chosen
-- **Tool calls**: Which tools were invoked, their arguments, results, and duration
-- **Branch lifecycle**: Branch creation, parallel execution, and convergence
-- **Convergence**: Which child branches fed into which parent, and what was aggregated
+- **Agent steps** — which agents ran, in what order, and how long each took
+- **LLM generations** — token usage, model identity, API latency, finish reason per generation
+- **Validation decisions** — what action type was determined and what routing was chosen
+- **Tool calls** — which tools were invoked, their arguments, results, and duration
+- **Branch lifecycle** — branch creation, parallel execution, and convergence
+- **Convergence** — which child branches fed into which parent, and what was aggregated
 
-Traces are written as structured JSON files, one per execution session.
+Traces stream as **newline-delimited JSON** (NDJSON), one object per closed span, written incrementally as the run progresses. A late subscriber can tail-follow the file, and a process crash mid-run preserves every span emitted up to the crash.
 
 ## Core Components
 
 ### TracingConfig
 
-Controls whether tracing is enabled and what detail level to capture:
+Controls whether tracing is enabled and what content to capture:
 
 ```python
 from marsys.coordination.tracing.config import TracingConfig
@@ -27,19 +27,21 @@ from marsys.coordination.tracing.config import TracingConfig
 config = TracingConfig(
     enabled=True,
     output_dir="./traces",
-    detail_level="verbose",  # minimal | standard | verbose
+    include_generation_details=True,   # token counts, model metadata
+    include_message_content=True,       # final response summary on root
+    include_tool_results=True,          # tool args and result summaries
 )
 ```
 
 ### TraceCollector
 
-EventBus consumer that subscribes to execution events and builds a span tree:
+EventBus consumer that subscribes to execution events and builds the span tree:
 
 ```python
 from marsys.coordination.tracing import TraceCollector
 ```
 
-You don't create this directly — Orchestra creates it automatically when `TracingConfig.enabled=True`.
+You don't create this directly — Orchestra creates it automatically when `TracingConfig.enabled=True`, and registers an `NDJSONTraceWriter` as its single writer.
 
 ### Span
 
@@ -49,9 +51,11 @@ A single unit of work in the trace. Spans form a tree via `parent_span_id`:
 from marsys.coordination.tracing.types import Span
 ```
 
-Span kinds: `execution`, `branch`, `step`, `generation`, `tool`.
+Span kinds: `execution`, `branch`, `step`, `generation`, `tool` — all lowercase.
 
-Validation decisions are captured as events on step spans (not separate spans). Convergence is captured as links and events on both the parent branch span and the convergence step span.
+Validation decisions are captured as `events` on step spans (not separate spans). Convergence is captured as `links` and events on both the parent branch span and the convergence step span.
+
+`span_id`, `parent_span_id`, and `trace_id` are ULIDs — 26-character uppercase Crockford-base32 strings, monotonic-orderable per process.
 
 ### TraceTree
 
@@ -59,14 +63,41 @@ A complete trace rooted at an execution span:
 
 ```python
 from marsys.coordination.tracing.types import TraceTree
+
+tree = TraceTree.from_ndjson(pathlib.Path("./traces/01J....ndjson"))
+print(tree.root_span.duration_ms, len(tree.orphans))
 ```
 
-### TraceWriter
+`from_ndjson` is the post-mortem entry point: it walks the file once, indexes spans by `span_id`, and attaches each span as a child of its `parent_span_id`. Spans whose parent was never written (e.g. because the run crashed) populate `tree.orphans` rather than being silently dropped.
 
-Abstract base for output backends. `JSONFileTraceWriter` is the built-in implementation:
+### NDJSONTraceWriter
+
+The streaming writer used by Orchestra by default. One JSON object per closed span; lazy file open at `{config.output_dir}/{trace_id}.ndjson` on the first span. The writer enqueues spans on a bounded `asyncio.Queue` and a single dedicated drain task does the disk I/O — `write_span` is non-blocking on the calling path so a slow disk doesn't back-pressure event emission.
 
 ```python
-from marsys.coordination.tracing.writers import JSONFileTraceWriter
+from marsys.coordination.tracing import NDJSONTraceWriter
+```
+
+A terminal `stream_completed` marker is written on `close()`. Missing marker = process crashed before close, surfaced to readers as `completion_status == "crashed"`.
+
+### NDJSONTraceReader
+
+The streaming reader. Two modes:
+
+```python
+from marsys.coordination.tracing import NDJSONTraceReader
+
+reader = NDJSONTraceReader(path)
+
+# Post-mortem: drain the file, get span dicts
+for span in reader.stream():
+    print(span["kind"], span["name"])
+print(reader.completion_status)  # "complete" | "truncated" | "crashed"
+
+# Live: tail-follow a running trace
+for span in reader.stream(follow=True):
+    print(span["kind"], span["name"])
+# Loop exits when the stream_completed marker is read.
 ```
 
 ## Basic Usage
@@ -91,7 +122,13 @@ result = await Orchestra.run(
 )
 ```
 
-After execution, find the trace at `./traces/{session_id}.json`.
+After the run completes, find the trace at `./traces/{trace_id}.ndjson`. Read writer counts from `result.metadata["tracing"]`:
+
+```python
+print(result.metadata["tracing"])
+# {'total_spans': 142, 'disk_error_count': 0, 'dropped_span_count': 0,
+#  'disabled_dropped_count': 0, 'disabled': False}
+```
 
 For `auto_run`, the same config applies since it uses Orchestra internally:
 
@@ -107,62 +144,38 @@ result = await agent.auto_run(
 
 ## Trace Output
 
-The JSON output is a tree of spans. Here is an abbreviated example:
+Each line of the NDJSON file is a closed span. Abbreviated example:
+
+```jsonl
+{"schema_version":1,"ts":1714220642.5,"trace_id":"01J9X4...","span_id":"01J9X5...","parent_span_id":"01J9X4...","name":"Generation: claude-sonnet-4","kind":"generation","start_time":1714220641.3,"end_time":1714220642.5,"duration_ms":1200.5,"status":"ok","attributes":{"prompt_tokens":150,"completion_tokens":80}}
+{"schema_version":1,"ts":1714220645.1,"trace_id":"01J9X4...","span_id":"01J9X6...","parent_span_id":"01J9X4...","name":"Step 0: Coordinator","kind":"step","start_time":1714220641.0,"end_time":1714220645.1,"duration_ms":4123.0,"status":"ok","attributes":{"agent_name":"Coordinator","step_number":0,"action_type":"invoke_agent"},"events":[{"name":"validation_decision","attributes":{"is_valid":true}}]}
+{"schema_version":1,"ts":1714220650.0,"kind":"stream_completed","attributes":{"total_spans":42,"disk_error_count":0,"dropped_span_count":0,"disabled_dropped_count":0,"disabled":false}}
+```
+
+Reconstructing the tree gives the same shape `TraceTree.to_dict()` produces:
 
 ```json
 {
-  "trace_id": "5228247d-...",
+  "trace_id": "01J9X4...",
   "session_id": "session-001",
-  "metadata": {
-    "task_summary": "Research quantum computing",
-    "agent_names": ["Coordinator", "Researcher", "FactChecker"]
-  },
+  "metadata": {"task_summary": "...", "agent_names": ["Coordinator", "Researcher", "FactChecker"]},
   "root_span": {
     "name": "Orchestra.run",
     "kind": "execution",
     "duration_ms": 12450.3,
     "status": "ok",
     "children": [
-      {
-        "name": "Branch: main",
-        "kind": "branch",
-        "links": [
-          {"linked_span_id": "...", "relationship": "convergence"}
-        ],
-        "children": [
-          {
-            "name": "Step 0: Coordinator",
-            "kind": "step",
-            "attributes": { "action_type": "parallel_invoke" },
-            "events": [{"name": "validation_decision", "attributes": {"next_agents": ["Researcher", "FactChecker"]}}],
-            "children": [
-              {"name": "Generation: claude-sonnet-4-20250514", "kind": "generation", "duration_ms": 1200.5, "attributes": {"prompt_tokens": 150, "completion_tokens": 80}}
-            ]
-          },
-          {
-            "name": "Step 1: Coordinator",
-            "kind": "step",
-            "attributes": { "action_type": "final_response" },
-            "links": [
-              {"linked_span_id": "researcher-branch-id", "relationship": "convergence"},
-              {"linked_span_id": "factchecker-branch-id", "relationship": "convergence"}
-            ],
-            "events": [{"name": "convergence", "attributes": {"successful_count": 2, "total_count": 2}}]
-          }
-        ]
-      },
-      {
-        "name": "Branch: Researcher",
-        "kind": "branch",
-        "attributes": { "trigger_type": "parallel" },
-        "children": ["... step spans with generation/tool children ..."]
-      },
-      {
-        "name": "Branch: FactChecker",
-        "kind": "branch",
-        "attributes": { "trigger_type": "parallel" },
-        "children": ["... step spans with generation/tool children ..."]
-      }
+      {"name": "Branch: main", "kind": "branch",
+       "links": [{"linked_span_id": "...", "relationship": "convergence"}],
+       "children": [
+         {"name": "Step 0: Coordinator", "kind": "step",
+          "attributes": {"action_type": "invoke_agent"},
+          "events": [{"name": "validation_decision", "attributes": {"next_agents": ["Researcher", "FactChecker"]}}],
+          "children": [
+            {"name": "Generation: claude-sonnet-4", "kind": "generation", "duration_ms": 1200.5,
+             "attributes": {"prompt_tokens": 150, "completion_tokens": 80}}
+          ]}
+       ]}
     ]
   }
 }
@@ -191,40 +204,46 @@ Execution Span (one per Orchestra.run)
 └── (Convergence links also on parent branch span)
 ```
 
-## Detail Levels
+## Schema Versioning
 
-| Level | What's captured | Use case |
-|-------|----------------|----------|
-| `minimal` | Span hierarchy + timing only, no attributes | Performance profiling |
-| `standard` | All spans with attributes, content truncated to `max_content_length` | Production with size limits |
-| `verbose` | Everything including full message content | Default, full visibility during development |
+Each line carries `schema_version: 1`. The format follows additive-only evolution within v1:
+
+- New top-level fields and new keys inside `attributes` may be added without bumping the version. Readers MUST ignore unknown fields silently.
+- Removed or renamed fields, type changes, and semantic changes require a new schema version.
+- The reader rejects `schema_version > SUPPORTED_SCHEMA_VERSION` with `NDJSONVersionError`.
+
+## Crash Detection
+
+The writer's lifecycle gives consumers a clear way to detect partial traces:
+
+- File ends with `stream_completed` marker → `reader.completion_status == "complete"`. Healthy run.
+- File ends without marker but with full lines → `"crashed"`. Process died before `close()`. Spans before death are preserved.
+- File ends with a partial last line (no trailing `\n`) → `"truncated"`. Writer was mid-write or file was copied during a write. Reader yields the N-1 full spans.
+
+Use this together with `OrchestraResult.metadata["tracing"]` (writer counts surfaced by Orchestra after `close()`) to alert on `disabled` or non-zero `dropped_span_count` from a programmatic consumer.
 
 ## Best Practices
 
-### 1. Use Meaningful Session IDs
+### Keep `./traces/` out of version control
+By default trace files contain full LLM prompts and responses. Add the directory to `.gitignore`.
 
-```python
-context = {"session_id": "research_quantum_2026_04"}
-```
+### Choose a meaningful trace organization
+Files are keyed by `trace_id`. If you want a stable filename per logical run, derive a separate index file in your application — the trace_id alone is opaque to humans.
 
-This makes trace files easy to find and correlate.
+### Be mindful of content sensitivity
+Set `include_message_content=False` to skip the final response summary on the root span. Set `include_tool_results=False` to skip tool arguments and result summaries (useful when tools handle credentials or PII). For finer-grained redaction, write a custom `TraceWriter` subclass that scrubs `Span.attributes` in `write_span` before forwarding.
 
-### 2. Choose the Right Detail Level
-
-Use `verbose` (default) during development for full visibility. Use `minimal` in production for low overhead. Use `standard` with `max_content_length` when you want attributes but need to control file size.
-
-### 3. Be Mindful of Content Sensitivity
-
-By default, trace files contain full LLM prompts and responses. Keep trace output directories secure and excluded from version control. Set `include_message_content=False` or use `detail_level="minimal"` to exclude content.
+### Use `fsync_per_span=True` only when you need it
+The default writer flushes per line and fsyncs once on close — fast and durable enough for typical workloads. `fsync_per_span=True` adds an `os.fsync` per write; only enable when you need durability against kernel-level crashes between span writes.
 
 ## Limitations
 
-- Only `JSONFileTraceWriter` is implemented (Chrome Trace Format export planned for follow-up)
-- Traces are written on completion — no streaming/incremental output during execution
-- Tracing for standalone `agent.run()` calls (outside Orchestra) is not supported
+- One writer per file. Two concurrent runs use distinct trace_ids and produce distinct files; cross-trace mixing into a shared file is not supported.
+- No OTel-protocol export to LangSmith / Phoenix / Langfuse. NDJSON-on-disk is the durability half; OTel-on-the-wire will land via a separate `TelemetrySink` protocol.
+- Tracing for standalone `agent.run()` calls (outside Orchestra) is not exercised by Orchestra's lifecycle, so the writer's `close()` won't run automatically — call it explicitly if you instantiate the writer manually.
 
 ## Related Documentation
 
-- [Tracing API Reference](../api/tracing.md) - Complete class and method reference
-- [Configuration](../getting-started/configuration.md) - ExecutionConfig setup
-- [Architecture Overview](../architecture/overview.md) - How tracing fits in the system
+- [Tracing API Reference](../api/tracing.md) — complete class and method reference
+- [Configuration](../getting-started/configuration.md) — `ExecutionConfig` setup
+- [Architecture Overview](../architecture/overview.md) — how tracing fits in the system
