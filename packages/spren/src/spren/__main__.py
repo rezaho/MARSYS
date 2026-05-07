@@ -12,7 +12,9 @@ also triggers graceful shutdown — the sidecar should never outlive its parent.
 """
 from __future__ import annotations
 
+import os
 import socket
+import stat as stat_module
 import sys
 import threading
 from datetime import datetime, timezone
@@ -39,6 +41,22 @@ def _resolve_port(requested: int) -> int:
         except OSError:
             probe.bind(("127.0.0.1", 0))
             return probe.getsockname()[1]
+
+
+def _stdin_is_pipe() -> bool:
+    """True iff stdin is a pipe from a managing parent (vs tty / null / file).
+
+    The Tauri shell spawns the sidecar with `Stdio::piped()` for stdin so it
+    can write `shutdown\\n` on window-close; that surfaces as a FIFO on the
+    child's fd 0. CI tools that pass `stdio=ignore` (or DEVNULL) hand the
+    child a character device pointing at /dev/null, which would otherwise
+    look like immediate EOF and shut the sidecar down before uvicorn starts.
+    """
+    try:
+        mode = os.fstat(0).st_mode
+    except OSError:
+        return False
+    return stat_module.S_ISFIFO(mode)
 
 
 def _watch_stdin_for_shutdown(server: uvicorn.Server) -> None:
@@ -77,7 +95,10 @@ def main(port: int, data_dir: Path | None) -> None:
     config = uvicorn.Config(app, host="127.0.0.1", port=resolved_port, log_level="warning")
     server = uvicorn.Server(config)
 
-    threading.Thread(target=_watch_stdin_for_shutdown, args=(server,), daemon=True).start()
+    if _stdin_is_pipe():
+        threading.Thread(
+            target=_watch_stdin_for_shutdown, args=(server,), daemon=True
+        ).start()
 
     server.run()
 
