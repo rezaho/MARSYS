@@ -9,9 +9,9 @@ via registered TraceWriters.
 import asyncio
 import logging
 import time
-import uuid
 from typing import Any, Dict, List, Optional, TYPE_CHECKING
 
+from ._ids import new_id
 from .types import Span, TraceTree, create_span
 from .config import TracingConfig
 
@@ -84,7 +84,7 @@ class TraceCollector:
     async def _handle_execution_start(self, event: Any) -> None:
         """Create root execution span."""
         async with self._lock:
-            trace_id = str(uuid.uuid4())
+            trace_id = new_id()
             root_span = create_span(
                 trace_id=trace_id,
                 name="Orchestra.run",
@@ -169,6 +169,7 @@ class TraceCollector:
             span.attributes["total_steps"] = event.total_steps
             span.attributes["success"] = event.success
             self.open_spans.pop(span.span_id, None)
+            await self._stream_span(span)
 
     async def _handle_agent_start(self, event: Any) -> None:
         """Create step span as child of branch span."""
@@ -257,6 +258,7 @@ class TraceCollector:
             gen_span.close(end_time=event.timestamp)
 
             step_span.children.append(gen_span)
+            await self._stream_span(gen_span)
 
     async def _handle_tool_call(self, event: Any) -> None:
         """Create/close tool span based on status."""
@@ -298,6 +300,7 @@ class TraceCollector:
                     result_summary = getattr(event, 'result_summary', None)
                     if result_summary and self.config.include_tool_results:
                         tool_span.attributes["result_summary"] = result_summary
+                    await self._stream_span(tool_span)
 
     async def _handle_validation_decision(self, event: Any) -> None:
         """Add validation decision as event on the step span."""
@@ -340,6 +343,7 @@ class TraceCollector:
             # Remove from open_spans (timing done) but keep in step_spans
             # so ValidationDecisionEvent can still attach data.
             self.open_spans.pop(span.span_id, None)
+            await self._stream_span(span)
 
     async def _handle_convergence(self, event: Any) -> None:
         """Add convergence links to parent branch span and record for next step."""
@@ -395,6 +399,25 @@ class TraceCollector:
             status = "ok" if event.success else "error"
             trace.root_span.close(end_time=event.timestamp, status=status)
             self.open_spans.pop(trace.root_span.span_id, None)
+            await self._stream_span(trace.root_span)
+
+    # ── Streaming hook ──────────────────────────────────────────────
+
+    async def _stream_span(self, span: Span) -> None:
+        """Forward a closed span to every writer's ``write_span`` hook.
+
+        Errors are logged and swallowed so a misbehaving writer cannot break
+        the collector's event-handling path. Default ABC ``write_span`` is a
+        no-op, so non-streaming writers cost nothing.
+        """
+        for writer in self.writers:
+            try:
+                await writer.write_span(span)
+            except Exception as e:
+                logger.error(
+                    "Trace writer %s.write_span failed: %s",
+                    type(writer).__name__, e, exc_info=True,
+                )
 
     # ── Finalization ────────────────────────────────────────────────
 
@@ -413,18 +436,21 @@ class TraceCollector:
                 return None
 
             # Close any remaining open spans (marks as error — they weren't closed normally)
-            orphaned_span_ids = []
+            orphaned_spans: List[Span] = []
             for span_id, span in self.open_spans.items():
                 if span.trace_id == trace.trace_id and span.end_time is None:
                     span.close(status="error")
-                    orphaned_span_ids.append(span_id)
+                    orphaned_spans.append(span)
 
-            for span_id in orphaned_span_ids:
-                self.open_spans.pop(span_id, None)
+            for span in orphaned_spans:
+                self.open_spans.pop(span.span_id, None)
+                await self._stream_span(span)
 
-            # Close root span if still open
+            # Close root span if still open (crash before final_response).
+            # Stream it here because _handle_final_response never ran.
             if trace.root_span.end_time is None:
                 trace.root_span.close()
+                await self._stream_span(trace.root_span)
 
             # Clean up lookup maps for this trace
             trace_id = trace.trace_id

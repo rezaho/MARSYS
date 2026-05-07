@@ -206,13 +206,13 @@ class Orchestra:
         self.trace_collector = None
         if execution_config.tracing.enabled:
             from .tracing.collector import TraceCollector
-            from .tracing.writers.json_writer import JSONFileTraceWriter
+            from .tracing.writers.ndjson_writer import NDJSONTraceWriter
 
-            json_writer = JSONFileTraceWriter(execution_config.tracing)
+            ndjson_writer = NDJSONTraceWriter(execution_config.tracing)
             self.trace_collector = TraceCollector(
                 event_bus=self.event_bus,
                 config=execution_config.tracing,
-                writers=[json_writer],
+                writers=[ndjson_writer],
             )
             logger.info("Tracing enabled, output dir: %s", execution_config.tracing.output_dir)
 
@@ -922,7 +922,7 @@ class Orchestra:
                     success=workflow.success,
                 ))
 
-            return OrchestraResult(
+            result = OrchestraResult(
                 success=workflow.success,
                 final_response=workflow.final_response,
                 branch_results=[
@@ -954,7 +954,7 @@ class Orchestra:
         except Exception as e:
             logger.error(f"Orchestration failed: {e}")
             duration = time.time() - start_time
-            return OrchestraResult(
+            result = OrchestraResult(
                 success=False,
                 final_response=None,
                 branch_results=[],
@@ -970,6 +970,51 @@ class Orchestra:
                     await self.trace_collector.finalize(session_id)
                 except Exception as e:
                     logger.warning(f"Trace finalization failed: {e}")
+                # Drain streaming writers and close file handles. Bounded so a
+                # stuck disk does not hang Orchestra.execute() indefinitely.
+                from .tracing.writers.ndjson_writer import NDJSONTraceWriter
+                try:
+                    await asyncio.wait_for(
+                        self.trace_collector.close(),
+                        timeout=NDJSONTraceWriter.CLOSE_TIMEOUT_SECONDS,
+                    )
+                except asyncio.TimeoutError:
+                    logger.warning(
+                        "trace_collector.close timed out after %.1fs",
+                        NDJSONTraceWriter.CLOSE_TIMEOUT_SECONDS,
+                    )
+                except Exception as e:
+                    logger.warning(f"Trace collector close failed: {e}")
+                # Surface tracing state into result.metadata (best-effort).
+                if result is not None:
+                    try:
+                        tracing_meta = self._collect_tracing_metadata()
+                        if tracing_meta:
+                            result.metadata["tracing"] = tracing_meta
+                    except Exception as e:
+                        logger.warning(f"Collect tracing metadata failed: {e}")
+
+        return result
+
+    def _collect_tracing_metadata(self) -> Dict[str, Any]:
+        """Read writer counters into a metadata dict for ``OrchestraResult``.
+
+        Returns an empty dict if no streaming writer is registered. Programmatic
+        consumers (Cloud worker, CI) inspect this to detect partial / disabled
+        traces without having to instantiate the writer themselves.
+        """
+        if self.trace_collector is None:
+            return {}
+        for writer in self.trace_collector.writers:
+            if hasattr(writer, "total_spans") and hasattr(writer, "disabled"):
+                return {
+                    "total_spans": writer.total_spans,
+                    "disk_error_count": writer.disk_error_count,
+                    "dropped_span_count": writer.dropped_span_count,
+                    "disabled_dropped_count": writer.disabled_dropped_count,
+                    "disabled": writer.disabled,
+                }
+        return {}
     
     # REMOVE-IN-V0.4: legacy auto-detection of entry agents when no
     # StartNode det-node is registered. After v0.4 every topology must
