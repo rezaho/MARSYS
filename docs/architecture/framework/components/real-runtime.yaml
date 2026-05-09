@@ -1,0 +1,58 @@
+name: RealRuntime
+criticality: TRUNK-CRITICAL
+
+purpose: |
+  Production Runtime adapter. Bridges the unified-barrier orchestrator and
+  the MARSYS step-execution stack: agent acquisition, memory rehydration,
+  StepExecutor invocation, ValidationProcessor invocation, and translation
+  of validated coordination actions into orchestrator StepResult shapes.
+
+responsibilities:
+  - Per-branch step execution: one Runtime.step call per orchestrator tick
+  - Acquire the agent instance from AgentRegistry (handles single agents and pools)
+  - Rehydrate branch.memory into the agent before stepping
+  - Invoke StepExecutor.execute_step to run one model turn
+  - Invoke ValidationProcessor.validate_coordination_action on tool calls
+  - Translate ValidationResult -> orchestrator_types.StepResult (NOOP / SINGLE_INVOKE / PARALLEL_INVOKE / FINAL_RESPONSE / FAIL)
+  - Detect content-only response loops (CONTENT_ONLY_STEERING_THRESHOLD = 2; CONTENT_ONLY_HARD_LIMIT = 10)
+  - Build structured diagnostic on hard-limit breach (_build_content_only_diagnostic)
+
+not_responsible_for:
+  - Orchestrator state mutation (Branch / Barrier graph, fire gates) — owned by Orchestrator
+  - Topology construction or analysis — owned by TopologyAnalyzer / TopologyGraph
+  - Coordination tool schema construction — owned by CoordinationToolSchemaBuilder
+  - Tool execution semantics (regular tool dispatch) — owned by ToolExecutor
+  - Steering prompt construction — owned by SteeringManager (RealRuntime feeds context to it)
+
+design_principles:
+  - DP-001 (agent _run remains pure)
+  - DP-002 (validation goes through ValidationProcessor)
+  - DP-003 (yields StepResult kinds the orchestrator interprets)
+
+relationships:
+  called_by:
+    - Orchestrator.tick (via Runtime.step Protocol)
+  calls:
+    - AgentRegistry.get_or_acquire
+    - StepExecutor.execute_step
+    - ValidationProcessor.validate_coordination_action
+    - TopologyGraph (has_edge_to_endnode, has_edge_to_usernode, get_next_agents)
+    - SteeringManager (context build)
+  never_calls:
+    - Orchestrator state directly (only returns StepResult)
+    - Provider API layers (those live behind the model adapters)
+
+boundaries:
+  add_here:
+    - Step lifecycle (acquire, rehydrate, step, validate, translate)
+    - Content-only loop detection and structured diagnostic construction
+    - Memory snapshot transfer between branch.memory and the agent instance
+  not_here:
+    - Branch / Barrier mutations (Orchestrator)
+    - Coordination tool parsing rules (ValidationProcessor)
+    - Prompt construction (SystemPromptBuilder)
+
+invariants:
+  - step(branch) returns exactly one orchestrator_types.StepResult per call.
+  - When a branch's consecutive_content_only reaches CONTENT_ONLY_HARD_LIMIT, RealRuntime returns StepResult(kind="FAIL") with the structured diagnostic; the orchestrator settles the branch.
+  - Memory snapshots are rehydrated from branch.memory at every step; mutations persist back into branch.memory before returning.

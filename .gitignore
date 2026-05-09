@@ -14,8 +14,6 @@ __pycache__
 *$py.class
 *.so
 .Python
-docs/architecture/
-docs/implementation/
 # Distribution / packaging
 dist/
 build/
@@ -76,7 +74,6 @@ simplifying/
 implementations/
 examples/**/output/**
 examples/**/sessions/
-sessions/
 *.log
 
 # **examples**

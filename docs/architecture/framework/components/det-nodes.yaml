@@ -1,0 +1,56 @@
+name: DeterministicNode
+criticality: TRUNK-CRITICAL
+
+purpose: |
+  Non-LLM nodes in the topology graph with explicit, single-purpose
+  behavior. Reserved singleton subclasses (StartNode, EndNode, UserNode)
+  drive workflow entry, exit, and bidirectional human Q&A. Det-nodes
+  interact with the orchestrator only through the narrow DetNodeContext
+  Protocol, keeping coupling explicit and the API surface minimal.
+
+members:
+  - StartNode (workflow entry; required, exactly one per topology)
+  - EndNode (workflow exit; optional, zero or more)
+  - UserNode (bidirectional human Q&A; optional, zero or more, FIFO single-pending)
+
+responsibilities:
+  - Provide explicit, deterministic behavior at workflow entry, exit, and human-interaction points
+  - Implement three lifecycle hooks per subclass: on_workflow_start, on_single_invoke, on_dispatch
+  - Drive coordination tool gating via topology edges (has_edge_to_endnode, has_edge_to_usernode)
+  - Reserve the names "Start", "End", "User" at the topology level (RESERVED_DETNODE_NAMES)
+
+not_responsible_for:
+  - Branch / Barrier state mutation — owned by Orchestrator
+  - LLM execution — det-nodes never make model calls
+  - User I/O specifics — UserNode delegates to a bound UserNodeHandler
+
+design_principles:
+  - DP-003 (interact with the orchestrator's Branch / Barrier graph through DetNodeContext)
+  - DP-005 (topology-driven: outgoing edges to det-nodes drive coordination tool gating)
+
+relationships:
+  called_by:
+    - Orchestrator (via DetNodeContext Protocol)
+  calls:
+    - DetNodeContext methods (deliver, deliver_to_root, dispatch_to_root, spawn_branch_at, enqueue_user_interaction, fail)
+  never_calls:
+    - Agent / model APIs
+    - Branch / Barrier state directly (only via DetNodeContext)
+
+boundaries:
+  add_here:
+    - New det-node subclass (subclass DeterministicNode; add to RESERVED_DETNODE_NAMES; implement the three lifecycle hooks)
+    - New DetNodeContext methods if a new det-node type needs them (added to the Protocol so all implementers stay in sync)
+  not_here:
+    - LLM calls
+    - Direct manipulation of Branch / Barrier dicts (use DetNodeContext only)
+    - Topology graph mutation (det-nodes are registered via topology.register_det_node, not via the Orchestrator)
+
+invariants:
+  - At most one StartNode, one EndNode, one UserNode per topology (singletons).
+  - StartNode.on_workflow_start dispatches to all outgoing edges with delivery_target = ROOT.
+  - StartNode.on_single_invoke / on_dispatch raise (Start cannot be invoked from agents).
+  - EndNode.on_single_invoke calls deliver_to_root (branch terminates, value -> ROOT).
+  - EndNode.on_dispatch calls dispatch_to_root (fire-and-forget, fork doesn't wait for ROOT).
+  - UserNode FIFO single-pending: at most one user question outstanding; siblings queue.
+  - Reserved names "Start", "End", "User" auto-resolve in topology converters via RESERVED_DETNODE_NAMES.
