@@ -148,58 +148,6 @@ class StepExecutor:
             "tool_executions": 0
         })
     
-    def _serialize_input_messages(
-        self,
-        agent: Any,
-        request: Any,
-    ) -> Optional[List[Dict[str, Any]]]:
-        """Serialize the agent's effective input messages for trace capture.
-
-        Combines the agent's existing memory (the conversation so far) with
-        the current ``request`` so the trace records exactly what would be
-        sent on this step's API call. Returns ``None`` when the agent
-        exposes no memory or serialization fails — the collector then
-        falls back to the legacy ``request_summary``-only path.
-
-        Phase 3 captures dicts (per ``Message.to_api_format``) rather than
-        the live ``Message`` objects to avoid coupling the trace event to
-        the agent memory class lifecycle.
-        """
-        try:
-            messages: List[Dict[str, Any]] = []
-
-            # Agent's own memory: prior turns + system message.
-            memory = getattr(agent, "memory", None)
-            if memory is not None and hasattr(memory, "get_messages"):
-                for msg in memory.get_messages():
-                    api_form = (
-                        msg.to_api_format() if hasattr(msg, "to_api_format")
-                        else (dict(msg) if isinstance(msg, dict) else None)
-                    )
-                    if api_form is not None:
-                        messages.append(api_form)
-
-            # Current request — the new turn this step is about to deliver.
-            if request is not None:
-                if hasattr(request, "to_api_format"):
-                    messages.append(request.to_api_format())
-                elif isinstance(request, dict):
-                    messages.append(dict(request))
-                elif isinstance(request, list):
-                    for item in request:
-                        if hasattr(item, "to_api_format"):
-                            messages.append(item.to_api_format())
-                        elif isinstance(item, dict):
-                            messages.append(dict(item))
-                else:
-                    messages.append({"role": "user", "content": str(request)})
-
-            return messages if messages else None
-        except Exception as e:  # noqa: BLE001
-            # Tracing must never break the run.
-            logger.debug("Trace input-capture serialization skipped: %s", e)
-            return None
-
     async def _emit_error_event(
         self,
         *,
@@ -210,45 +158,29 @@ class StepExecutor:
         retry_count: int,
         context: Dict[str, Any],
     ) -> None:
-        """Emit a structured ``ErrorEvent`` for an exception propagating out of a step.
+        """Emit a structured ``ErrorEvent`` for an exception propagating into the executor.
 
-        Coexists with the legacy bare-string ``AgentCompleteEvent.error``;
-        the tracing collector prefers this structured form when both are
-        present on the same step span.
+        Used for framework errors (``AgentFrameworkError``,
+        ``PoolExhaustedError``, ``FrameworkTimeoutError``) and
+        ``REQUEST_TOO_LARGE`` retries that exceed compaction. Most agent-
+        internal exceptions are caught inside ``Agent._run`` and emit via
+        ``Agent._emit_step_error_event`` before being converted to error
+        Messages — this executor-level path is the fallback when something
+        actually crosses the boundary. Both sites share ``build_error_event``
+        so trace consumers see identical event shape.
         """
         if not self.event_bus:
             return
-        import traceback as _tb
-        from ..status.events import ErrorEvent
+        from ..status.events import build_error_event
 
-        classification: Optional[str] = None
-        recoverable = False
-        provider: Optional[str] = None
-        if isinstance(exception, ModelAPIError):
-            classification = exception.classification
-            recoverable = bool(getattr(exception, "is_retryable", False))
-            provider = getattr(exception, "provider", None)
-
-        try:
-            traceback_str = _tb.format_exc()
-        except Exception:
-            traceback_str = ""
-        if traceback_str and len(traceback_str) > 4096:
-            traceback_str = traceback_str[-4096:]  # keep the most relevant frames
-
-        await self.event_bus.emit(ErrorEvent(
+        await self.event_bus.emit(build_error_event(
+            exception,
             session_id=context.get("session_id", "unknown"),
             branch_id=context.get("branch_id"),
             agent_name=agent_name,
             step_number=step_number,
             step_span_id=step_span_id,
-            error_class=type(exception).__name__,
-            error_message=str(exception),
-            traceback=traceback_str or None,
-            classification=classification,
-            recoverable=recoverable,
             retry_count=retry_count,
-            provider=provider,
         ))
 
     def _apply_runtime_context(
@@ -316,23 +248,14 @@ class StepExecutor:
         step_span_id = str(uuid.uuid4())
         step_number = context.get("step_number", 0)
 
-        # Emit start event if event_bus is available
+        # Emit start event if event_bus is available. Full-input capture
+        # (Phase 3) is now driven by ``Agent._run`` emitting a separate
+        # ``AgentMessagesPreparedEvent`` at the model-dispatch site —
+        # see agents.py:_run.
         if self.event_bus:
             from ..status.events import AgentStartEvent
 
-            # Create request summary
             request_summary = str(request)[:100] if request else None
-
-            # Full-input capture (Phase 3). When TracingConfig.capture_full_input
-            # is on, serialize the agent's input messages to dicts so the
-            # tracing collector can hash them into the content-addressed
-            # MessageStore. Skipped silently when disabled or when the agent
-            # has no memory yet (deterministic fallback).
-            messages_for_trace: Optional[List[Dict[str, Any]]] = None
-            execution_config_obj = context.get("execution_config")
-            tracing_cfg = getattr(execution_config_obj, "tracing", None) if execution_config_obj else None
-            if tracing_cfg is not None and getattr(tracing_cfg, "capture_full_input", False):
-                messages_for_trace = self._serialize_input_messages(agent, request)
 
             await self.event_bus.emit(AgentStartEvent(
                 session_id=context.get("session_id", "unknown"),
@@ -341,7 +264,6 @@ class StepExecutor:
                 request_summary=request_summary,
                 step_number=step_number,
                 step_span_id=step_span_id,
-                messages=messages_for_trace,
             ))
 
         # Store span ID in context for downstream use (tool executor, generation event)
@@ -388,6 +310,7 @@ class StepExecutor:
                     "step_number": step_context.step_number,  # Pass step_number for planning triggers
                     "session_id": step_context.session_id,  # Required for planning events emission
                     "branch_id": step_context.branch_id,  # For consistent event tracking
+                    "step_span_id": step_span_id,  # Required so the agent can stamp tracing events with the correct span (Part A — full-input capture)
                 }
 
                 # Mark as continuation if this is a tool continuation
@@ -1030,6 +953,35 @@ class StepExecutor:
                 f"Agent {context.agent_name} must return Message object, "
                 f"got {type(raw_response).__name__}"
             )
+
+        # Item 5: a role=error response means Agent._run caught an exception
+        # and converted it to an error Message. The agent already emitted a
+        # structured ErrorEvent before the conversion (see
+        # Agent._emit_step_error_event). Mark the step failed so the span
+        # gets status="error" and RealRuntime._translate returns kind="FAIL"
+        # immediately — no point letting the content-only-loop heuristic
+        # halt the branch ten retries later.
+        if raw_response.role == "error":
+            error_text = (
+                raw_response.content
+                if isinstance(raw_response.content, str)
+                else "agent error"
+            )
+            failed = StepResult(
+                agent_name=context.agent_name,
+                success=False,
+                error=error_text,
+                response=raw_response,
+            )
+            # Still write to memory so prior error stays in the conversation
+            # (steering / validation may consult it on a follow-up step).
+            failed.memory_updates = [{
+                "role": raw_response.role,
+                "content": raw_response.content,
+                "name": raw_response.name or context.agent_name,
+                "timestamp": time.time(),
+            }]
+            return failed
 
         result = StepResult(
             agent_name=context.agent_name,

@@ -95,6 +95,7 @@ class TraceCollector:
             'ConvergenceEvent': self._handle_convergence,
             # Existing events (enriched)
             'AgentStartEvent': self._handle_agent_start,
+            'AgentMessagesPreparedEvent': self._handle_agent_messages_prepared,
             'AgentCompleteEvent': self._handle_agent_complete,
             'ToolCallEvent': self._handle_tool_call,
             # Branch lifecycle events
@@ -247,29 +248,9 @@ class TraceCollector:
             self.open_spans[step_span.span_id] = step_span
             self.step_spans[step_span_id] = step_span
 
-            # Phase 3: full-input capture. When the step executor populated
-            # ``event.messages`` (driven by ``TracingConfig.capture_full_input``),
-            # redact each message, write content-addressed blobs to the store,
-            # and attach the ref dict to span attributes. Same idiom as the
-            # redactor — runs once here so all downstream consumers see the
-            # ref uniformly. ``branch_id`` keys the per-branch history so each
-            # step's diff anchors against its predecessor on the same branch.
-            messages = getattr(event, "messages", None)
-            if self._message_store is not None and messages:
-                try:
-                    redacted_messages = self._redact_messages_for_store(messages)
-                    prev_history = self._last_history.get(branch_id) if branch_id else None
-                    ref = build_input_messages_ref(
-                        redacted_messages,
-                        store=self._message_store,
-                        prev_history=prev_history,
-                    )
-                    step_span.attributes["input_messages_ref"] = ref
-                    if branch_id:
-                        self._last_history[branch_id] = list(ref["history"])
-                except Exception as e:  # noqa: BLE001
-                    # Tracing must never break the run.
-                    logger.warning("Full-input capture skipped for step %s: %s", step_span_id, e)
+            # Phase 3 full-input capture lives in
+            # ``_handle_agent_messages_prepared`` — fired by the agent at
+            # the model-dispatch site, separately from ``AgentStartEvent``.
 
             # Attach pending convergence info to this step (it's the convergence step)
             pending = getattr(self, '_pending_convergence', {})
@@ -279,6 +260,58 @@ class TraceCollector:
                         step_span.add_link(child_span_id, "convergence", conv["convergence_data"])
                     step_span.add_event("convergence", conv["convergence_data"])
                 del pending[branch_id]
+
+    async def _handle_agent_messages_prepared(self, event: Any) -> None:
+        """Hash the prepared messages into the store, attach the ref to the step span.
+
+        Why this handler is special: ``AgentMessagesPreparedEvent.messages``
+        is the only event payload in the framework that scales with
+        conversation length (potentially MB per step). The ``EventBus.events``
+        list retains every emitted event for the run's lifetime, so without
+        explicit cleanup the bus would accumulate duplicated message bytes
+        N steps deep. We mutate ``event.messages = None`` after hashing to
+        release the dicts/strings — the bus retains the event shell for
+        debuggability.
+
+        Same in-place-mutation idiom as ``SecretRedactor.redact_span`` —
+        consume the payload at the right boundary so all later observers
+        see the reduced form. No other event class needs this treatment
+        because their payloads are bounded.
+        """
+        if self._message_store is None:
+            return
+        async with self._lock:
+            step_span_id = getattr(event, "step_span_id", None) or ""
+            step_span = self.step_spans.get(step_span_id)
+            if step_span is None:
+                return
+            messages = event.messages
+            if not messages:
+                # Even with no messages, fall through to the cleanup below
+                # so the event shell stays consistent.
+                event.messages = None
+                return
+            try:
+                redacted_messages = self._redact_messages_for_store(messages)
+                branch_id = getattr(event, "branch_id", None)
+                prev_history = self._last_history.get(branch_id) if branch_id else None
+                ref = build_input_messages_ref(
+                    redacted_messages,
+                    store=self._message_store,
+                    prev_history=prev_history,
+                )
+                step_span.attributes["input_messages_ref"] = ref
+                if branch_id:
+                    self._last_history[branch_id] = list(ref["history"])
+            except Exception as e:  # noqa: BLE001
+                # Tracing must never break the run; collector failures are
+                # warnings only — same convention as the legacy block this
+                # handler replaced.
+                logger.warning(
+                    "Full-input capture skipped for step %s: %s", step_span_id, e
+                )
+            # Release the heavy payload — see this handler's docstring.
+            event.messages = None
 
     def _redact_messages_for_store(
         self,

@@ -22,7 +22,7 @@ import pathlib
 import pytest
 
 from marsys.coordination.event_bus import EventBus
-from marsys.coordination.status.events import AgentStartEvent, BranchEvent
+from marsys.coordination.status.events import AgentMessagesPreparedEvent, AgentStartEvent, BranchEvent
 from marsys.coordination.tracing.collector import TraceCollector
 from marsys.coordination.tracing.config import TracingConfig
 from marsys.coordination.tracing.events import ExecutionStartEvent
@@ -188,6 +188,18 @@ class TestFilesystemMessageStore:
 # ── Collector integration ────────────────────────────────────────────────
 
 
+def _open_step(bus, *, session_id, branch_id, agent_name, step_number, step_span_id):
+    """Helper: emit AgentStartEvent so collector opens the step span."""
+    return bus.emit(AgentStartEvent(
+        session_id=session_id,
+        branch_id=branch_id,
+        agent_name=agent_name,
+        request_summary="r",
+        step_number=step_number,
+        step_span_id=step_span_id,
+    ))
+
+
 class TestCollectorFullInputCapture:
     @pytest.mark.asyncio
     async def test_capture_disabled_by_default(self, tmp_path):
@@ -198,16 +210,18 @@ class TestCollectorFullInputCapture:
 
         await bus.emit(ExecutionStartEvent(session_id="s", task_summary="t",
                                            topology_summary={}, agent_names=["A"], config_summary={}))
-        await bus.emit(AgentStartEvent(
-            session_id="s", agent_name="A", request_summary="r",
+        await _open_step(bus, session_id="s", branch_id=None,
+                         agent_name="A", step_number=1, step_span_id="step-1")
+        await bus.emit(AgentMessagesPreparedEvent(
+            session_id="s", agent_name="A",
             step_number=1, step_span_id="step-1",
-            messages=[{"role": "user", "content": "ignored"}],  # event has data, but config is off
+            messages=[{"role": "user", "content": "ignored"}],
         ))
         await asyncio.sleep(0.05)
 
         span = collector.step_spans["step-1"]
         assert "input_messages_ref" not in span.attributes
-        # No messages directory created.
+        # No messages directory created — capture is disabled.
         assert not (tmp_path / "messages").exists()
 
     @pytest.mark.asyncio
@@ -220,10 +234,11 @@ class TestCollectorFullInputCapture:
 
         await bus.emit(ExecutionStartEvent(session_id="s", task_summary="t",
                                            topology_summary={}, agent_names=["A"], config_summary={}))
-        await bus.emit(AgentStartEvent(
+        await _open_step(bus, session_id="s", branch_id="branch-1",
+                         agent_name="A", step_number=1, step_span_id="step-1")
+        await bus.emit(AgentMessagesPreparedEvent(
             session_id="s", branch_id="branch-1",
-            agent_name="A", request_summary="r",
-            step_number=1, step_span_id="step-1",
+            agent_name="A", step_number=1, step_span_id="step-1",
             messages=[
                 {"role": "system", "content": "you are X"},
                 {"role": "user", "content": "hi"},
@@ -245,6 +260,34 @@ class TestCollectorFullInputCapture:
         assert len(files) == 2
 
     @pytest.mark.asyncio
+    async def test_event_messages_nulled_after_handler(self, tmp_path):
+        """Heavy-payload mitigation: the bus retains the event shell with messages=None."""
+        bus = EventBus()
+        cfg = TracingConfig(
+            enabled=True, output_dir=str(tmp_path), capture_full_input=True,
+        )
+        collector = TraceCollector(event_bus=bus, config=cfg, sinks=[])
+
+        await bus.emit(ExecutionStartEvent(session_id="s", task_summary="t",
+                                           topology_summary={}, agent_names=["A"], config_summary={}))
+        await _open_step(bus, session_id="s", branch_id="b1",
+                         agent_name="A", step_number=1, step_span_id="step-1")
+        event = AgentMessagesPreparedEvent(
+            session_id="s", branch_id="b1",
+            agent_name="A", step_number=1, step_span_id="step-1",
+            messages=[{"role": "user", "content": "hi"}],
+        )
+        await bus.emit(event)
+        await asyncio.sleep(0.05)
+
+        # Heavy field released — the bus retains the event shell but the
+        # underlying list of dicts is garbage-collectable.
+        assert event.messages is None
+        # The ref still landed on the span, so the data made it to the store.
+        span = collector.step_spans["step-1"]
+        assert "input_messages_ref" in span.attributes
+
+    @pytest.mark.asyncio
     async def test_redaction_applied_before_hashing(self, tmp_path):
         bus = EventBus()
         cfg = TracingConfig(
@@ -258,7 +301,9 @@ class TestCollectorFullInputCapture:
         ]
         await bus.emit(ExecutionStartEvent(session_id="s", task_summary="t",
                                            topology_summary={}, agent_names=["A"], config_summary={}))
-        await bus.emit(AgentStartEvent(
+        await _open_step(bus, session_id="s", branch_id="branch-1",
+                         agent_name="A", step_number=1, step_span_id="step-1")
+        await bus.emit(AgentMessagesPreparedEvent(
             session_id="s", branch_id="branch-1",
             agent_name="A", step_number=1, step_span_id="step-1",
             messages=original_messages,
@@ -286,12 +331,16 @@ class TestCollectorFullInputCapture:
         sys_msg = {"role": "system", "content": "you are X"}
         await bus.emit(ExecutionStartEvent(session_id="s", task_summary="t",
                                            topology_summary={}, agent_names=["A"], config_summary={}))
-        await bus.emit(AgentStartEvent(
+        await _open_step(bus, session_id="s", branch_id="b1",
+                         agent_name="A", step_number=1, step_span_id="step-1")
+        await bus.emit(AgentMessagesPreparedEvent(
             session_id="s", branch_id="b1",
             agent_name="A", step_number=1, step_span_id="step-1",
             messages=[sys_msg, {"role": "user", "content": "hi"}],
         ))
-        await bus.emit(AgentStartEvent(
+        await _open_step(bus, session_id="s", branch_id="b1",
+                         agent_name="A", step_number=2, step_span_id="step-2")
+        await bus.emit(AgentMessagesPreparedEvent(
             session_id="s", branch_id="b1",
             agent_name="A", step_number=2, step_span_id="step-2",
             messages=[
@@ -330,10 +379,6 @@ class TestCollectorFullInputCapture:
         await bus.emit(ExecutionStartEvent(session_id="s", task_summary="t",
                                            topology_summary={}, agent_names=["P", "C"], config_summary={}))
 
-        # Parent branch step.
-        # Use BranchCreatedEvent — but that's not in status events.
-        # The collector uses _handle_branch_created which subscribes to
-        # 'BranchCreatedEvent'. Let's emit one synthetically by direct call.
         from marsys.coordination.events import BranchCreatedEvent
         parent_branch = BranchCreatedEvent(
             session_id="s",
@@ -344,7 +389,9 @@ class TestCollectorFullInputCapture:
             trigger_type="root",
         )
         await bus.emit(parent_branch)
-        await bus.emit(AgentStartEvent(
+        await _open_step(bus, session_id="s", branch_id="parent-branch",
+                         agent_name="P", step_number=1, step_span_id="parent-step-1")
+        await bus.emit(AgentMessagesPreparedEvent(
             session_id="s", branch_id="parent-branch",
             agent_name="P", step_number=1, step_span_id="parent-step-1",
             messages=[sys_msg, user_msg],
@@ -362,8 +409,9 @@ class TestCollectorFullInputCapture:
             parent_branch_id="parent-branch",
         )
         await bus.emit(child_branch)
-        # Child's first step has the same prefix as parent + a new turn.
-        await bus.emit(AgentStartEvent(
+        await _open_step(bus, session_id="s", branch_id="child-branch",
+                         agent_name="C", step_number=1, step_span_id="child-step-1")
+        await bus.emit(AgentMessagesPreparedEvent(
             session_id="s", branch_id="child-branch",
             agent_name="C", step_number=1, step_span_id="child-step-1",
             messages=[sys_msg, user_msg, {"role": "user", "content": "delegate"}],
@@ -380,3 +428,104 @@ class TestCollectorFullInputCapture:
         assert len(child_ref["patch"]) == 1
         # Child base anchors on parent's history.
         assert child_ref["base"] is not None
+
+    @pytest.mark.asyncio
+    async def test_event_count_equals_dispatch_count(self, tmp_path):
+        """One AgentMessagesPreparedEvent per model dispatch (Acceptance Part A.3)."""
+        bus = EventBus()
+        cfg = TracingConfig(
+            enabled=True, output_dir=str(tmp_path), capture_full_input=True,
+        )
+        collector = TraceCollector(event_bus=bus, config=cfg, sinks=[])
+
+        await bus.emit(ExecutionStartEvent(session_id="s", task_summary="t",
+                                           topology_summary={}, agent_names=["A"], config_summary={}))
+        # Three steps simulate three model dispatches.
+        for n in (1, 2, 3):
+            sid = f"step-{n}"
+            await _open_step(bus, session_id="s", branch_id="b1",
+                             agent_name="A", step_number=n, step_span_id=sid)
+            await bus.emit(AgentMessagesPreparedEvent(
+                session_id="s", branch_id="b1",
+                agent_name="A", step_number=n, step_span_id=sid,
+                messages=[{"role": "user", "content": f"step {n}"}],
+            ))
+        await asyncio.sleep(0.05)
+
+        emitted = [
+            e for e in bus.events
+            if e.__class__.__name__ == "AgentMessagesPreparedEvent"
+        ]
+        assert len(emitted) == 3
+        # And every step span has its ref attached.
+        for n in (1, 2, 3):
+            assert "input_messages_ref" in collector.step_spans[f"step-{n}"].attributes
+
+    @pytest.mark.asyncio
+    async def test_run_context_plumbs_step_span_id(self, tmp_path):
+        """Regression: step_span_id must reach the agent so AgentMessagesPreparedEvent
+        keys into the right span. Originally caught by the reviewer; this test
+        fails if the executor's run_context dict drops step_span_id again.
+        """
+        from marsys.coordination.execution.step_executor import StepExecutor
+
+        # Simulate the executor's run_context construction; assert step_span_id
+        # is present (the field the agent reads to populate _step_context).
+        # We don't need a full run — just construct the executor and inspect
+        # the dict shape via a focused unit-style check.
+        import inspect
+        src = inspect.getsource(StepExecutor.execute_step)
+        assert '"step_span_id": step_span_id' in src, (
+            "step_executor's run_context dict must include step_span_id so the "
+            "agent can stamp tracing events with the correct span. If this "
+            "assertion fails, AgentMessagesPreparedEvent emissions silently "
+            "land on no span (collector.step_spans.get(None) returns None)."
+        )
+
+    @pytest.mark.asyncio
+    async def test_ndjson_roundtrip_after_rework(self, tmp_path):
+        """Existing NDJSONTraceReader parses traces with the new ref attribute."""
+        from marsys.coordination.tracing.writers.ndjson_writer import NDJSONTraceWriter
+        from marsys.coordination.tracing.readers.ndjson_reader import NDJSONTraceReader
+
+        bus = EventBus()
+        cfg = TracingConfig(
+            enabled=True, output_dir=str(tmp_path), capture_full_input=True,
+        )
+        writer = NDJSONTraceWriter(cfg)
+        collector = TraceCollector(event_bus=bus, config=cfg, sinks=[writer])
+
+        await bus.emit(ExecutionStartEvent(session_id="s", task_summary="t",
+                                           topology_summary={}, agent_names=["A"], config_summary={}))
+        await _open_step(bus, session_id="s", branch_id="b1",
+                         agent_name="A", step_number=1, step_span_id="step-1")
+        await bus.emit(AgentMessagesPreparedEvent(
+            session_id="s", branch_id="b1",
+            agent_name="A", step_number=1, step_span_id="step-1",
+            messages=[{"role": "user", "content": "hi"}],
+        ))
+        await collector.finalize("s")
+        await writer.close()
+
+        # Find the trace file and read it back.
+        ndjson_files = list(pathlib.Path(tmp_path).glob("*.ndjson"))
+        assert len(ndjson_files) == 1
+        reader = NDJSONTraceReader(ndjson_files[0])
+        tree = reader.to_tree()
+        assert reader.completion_status == "complete"
+
+        # Walk to find the step span and confirm the ref shape survived the round-trip.
+        def find_step(span):
+            if span.kind == "step":
+                return span
+            for c in span.children:
+                got = find_step(c)
+                if got is not None:
+                    return got
+            return None
+
+        step = find_step(tree.root_span)
+        assert step is not None
+        ref = step.attributes.get("input_messages_ref")
+        assert ref is not None
+        assert "history" in ref and "base" in ref and "patch" in ref

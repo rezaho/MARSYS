@@ -26,20 +26,26 @@ class StatusEvent:
 
 @dataclass
 class AgentStartEvent(StatusEvent):
-    """Agent starting execution.
-
-    ``messages`` is populated only when ``TracingConfig.capture_full_input``
-    is enabled. It carries the full conversation that went to the model
-    on this step in dict form (per ``Message.to_api_format``); the tracing
-    collector hashes each one and writes content-addressed blobs to the
-    configured ``MessageStore``. Other event consumers (StatusManager,
-    etc.) ignore the field.
-    """
+    """Agent starting execution."""
     agent_name: str
     request_summary: Optional[str] = None
     step_number: Optional[int] = None
     step_span_id: Optional[str] = None
-    messages: Optional[List[Dict[str, Any]]] = None
+
+
+@dataclass
+class AgentMessagesPreparedEvent(StatusEvent):
+    """Emitted by the agent immediately before each model dispatch.
+
+    Heavy payload: the trace collector mutates ``event.messages = None``
+    after hashing each message into the content-addressed MessageStore.
+    Only event class with this property — see
+    ``TraceCollector._handle_agent_messages_prepared`` for the rationale.
+    """
+    agent_name: str = ""
+    step_number: Optional[int] = None
+    step_span_id: Optional[str] = None
+    messages: List[Dict[str, Any]] = field(default_factory=list)
 
 
 @dataclass
@@ -237,3 +243,69 @@ class PlanClearedEvent(StatusEvent):
     """Event emitted when plan is cleared."""
     agent_name: str
     reason: Optional[str] = None  # "completed", "abandoned", "reset"
+
+
+# ──────────────────────────────────────────────────────────────────────
+# Helpers
+# ──────────────────────────────────────────────────────────────────────
+
+
+def build_error_event(
+    exception: BaseException,
+    *,
+    session_id: str,
+    branch_id: Optional[str] = None,
+    agent_name: str = "",
+    step_number: Optional[int] = None,
+    step_span_id: Optional[str] = None,
+    retry_count: int = 0,
+    traceback_max_length: int = 4096,
+) -> "ErrorEvent":
+    """Build a fully-populated ErrorEvent from a caught exception.
+
+    Single source of truth used by both ``StepExecutor._emit_error_event``
+    (for exceptions that propagate out of an agent step) and
+    ``Agent._emit_step_error_event`` (for exceptions caught inside the
+    agent before being converted to error Messages). Trace consumers see
+    identical event shape regardless of which layer emitted.
+    """
+    import traceback as _tb
+
+    # Function-local import: avoids a load-time dependency between
+    # status/events.py and agents/exceptions.py.
+    from ...agents.exceptions import ModelAPIError
+
+    classification: Optional[str] = None
+    recoverable = False
+    provider: Optional[str] = None
+    if isinstance(exception, ModelAPIError):
+        classification = exception.classification
+        recoverable = bool(getattr(exception, "is_retryable", False))
+        provider = getattr(exception, "provider", None)
+
+    try:
+        traceback_str = _tb.format_exc()
+    except Exception:  # noqa: BLE001
+        traceback_str = ""
+    # ``format_exc()`` returns the literal "NoneType: None\n" when called
+    # outside an active except block. That's not a useful traceback —
+    # treat it as absent so consumers don't show garbage.
+    if traceback_str.strip() == "NoneType: None":
+        traceback_str = ""
+    if traceback_str and len(traceback_str) > traceback_max_length:
+        traceback_str = traceback_str[-traceback_max_length:]
+
+    return ErrorEvent(
+        session_id=session_id,
+        branch_id=branch_id,
+        agent_name=agent_name,
+        step_number=step_number,
+        step_span_id=step_span_id,
+        error_class=type(exception).__name__,
+        error_message=str(exception),
+        traceback=traceback_str or None,
+        classification=classification,
+        recoverable=recoverable,
+        retry_count=retry_count,
+        provider=provider,
+    )
