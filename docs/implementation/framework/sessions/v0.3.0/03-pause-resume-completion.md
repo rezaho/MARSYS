@@ -70,11 +70,13 @@ This PR modifies TRUNK-CRITICAL public methods on `Orchestra` (`pause_session`, 
 The gate is unconditional for this brief:
 
 1. **Read end-to-end** before drafting the ADR:
-   - `packages/framework/src/marsys/coordination/orchestra.py` (whole file — note the current shape of `Orchestra.__init__`, the `_initialize_components` wiring of `StatusManager` + `TraceCollector`, the existing `pause_session` body at lines 999–1032, and the existing `resume_session` TODO stub at lines 1034–1079)
-   - `packages/framework/src/marsys/coordination/execution/orchestrator.py` (whole file — note `Orchestrator.__init__` field assignments at lines 102–121: `branches`, `barriers`, `convergence_barriers`, `runnable`, `_fire_queue`, `root_barrier_id`, `_workflow_error`, `_completed_emitted`, `_user_interactions`, `_user_interaction_inflight`, `_resume_user_responses`)
+   - `packages/framework/src/marsys/coordination/orchestra.py` (whole file — note the current shape of `Orchestra.__init__` at line 133, the `_initialize_components` wiring of `StatusManager` + `TraceCollector` at lines 163–248, the existing `pause_session` body at lines 1045–1078, and the existing `resume_session` TODO stub at lines 1080–1125. **Note: line refs are post-architect-update; the `pause_session(...) -> bool` return type is the legacy shape this PR replaces with `-> None`.**)
+   - `packages/framework/src/marsys/coordination/execution/orchestrator.py` (whole file — note `Orchestrator.__init__` field assignments at lines 102–121: `branches`, `barriers`, `convergence_barriers`, `runnable`, `_fire_queue`, `root_barrier_id`, `_workflow_error`, `_completed_emitted`, `_user_interactions`, `_user_interaction_inflight`, `_resume_user_responses`. The run-loop body at lines 162–228 is what `quiesce()`/`resume()` reuse via the new `_dispatch_loop()` helper.)
    - `packages/framework/src/marsys/coordination/execution/orchestrator_types.py` (whole file — note `Branch` at lines 95–112 and `Barrier` at lines 130–151, including `Barrier.arrived: dict[str, Any]` at line 146)
-   - `packages/framework/src/marsys/coordination/state/state_manager.py` (whole file — the reusable storage primitives plus the legacy `StateSnapshot` shape this PR replaces)
+   - `packages/framework/src/marsys/coordination/state/state_manager.py` (whole file — the legacy `StateSnapshot` shape this PR replaces, the legacy `StorageBackend` ABC at lines 76–102 also being replaced, and the legacy `FileStorageBackend` at lines 105–191 also being rewritten)
+   - `packages/framework/src/marsys/coordination/state/checkpoint.py` (whole file — `CheckpointManager` is being removed; verify it has no external callers other than the removed test file and the removed `Orchestra.create_checkpoint`/`restore_checkpoint` methods)
    - `packages/framework/src/marsys/coordination/event_bus.py` (whole file — listener model is `Dict[str, List[Callable]]`; not picklable)
+   - `packages/framework/src/marsys/coordination/execution/deterministic_runtime.py` (whole file — this is the runtime the integration tests use)
 
 2. **Draft the ADR** as `docs/architecture/framework/decisions/ADR-007-pause-resume-snapshot.md` (next free number; `ADR-001..006` already exist in `decisions/`; match their `ADR-NNN-slug.md` naming and "Context / Decision / Rationale" structure). Covers:
    - The minimum touch surface in TRUNK-CRITICAL files (a precise list of which methods you will add and which existing methods you will rewrite, line by line).
@@ -98,10 +100,12 @@ The marsys framework serves multiple consumers: Spren (this OSS umbrella's meta-
 
 ### Multi-consumer (mandatory)
 
-- **Spren** uses pause/resume for daemon-restart resilience (in-flight runs survive a Spren daemon crash + restart) and for user-facing pause/resume in v0.4-29. Spren's REST endpoints, run inspector UI, and meta-agent tools all call into `Orchestra.pause_session` / `resume_session`.
-- **MARSYS Cloud** uses pause/resume for managed long-running workflows that span node restarts or autoscaling events. Cloud will plug an `S3StorageBackend` into the same `StorageBackend` Protocol this PR ships; that backend ships in a Cloud-side PR, not here.
+> Scope clarification (Phase A): this PR ships **on-demand pause/resume only**. Auto-checkpoint (continuous snapshotting while a run is in-flight, so a crash mid-run can be resumed) is **out of scope**; it's a follow-up session that builds on the primitives shipped here. Multi-consumer wording below reflects that.
+
+- **Spren** uses on-demand pause/resume for user-initiated pause-for-inspection / cost-cap response in v0.4-29, and for **paused-run durability across daemon restarts** (a deliberately-paused run survives a daemon shutdown + restart because the snapshot is on disk; in-flight runs at crash time are **not** preserved — same as today's behavior). Spren's REST endpoints, run inspector UI, and meta-agent tools all call into `Orchestra.pause_session` / `resume_session`.
+- **MARSYS Cloud** uses pause/resume for operator-triggered pause before planned node restarts / autoscaling events, plus paused-run portability across nodes. Cloud will plug an `S3StorageBackend` into the same `StorageBackend` Protocol this PR ships; that backend ships in a Cloud-side PR, not here.
 - **CI integrations** that run long workflows across multiple jobs use pause/resume for state handoff: process A pauses to an artifact store, process B downloads and resumes.
-- **Framework users running locally** gain crash resilience for hours-long workflows via the file backend.
+- **Framework users running locally** gain explicit-pause durability via the file backend (e.g., overnight pause across a laptop reboot). In-flight crash recovery for these users is the same follow-up auto-checkpoint session as Spren's.
 
 ### What MARSYS Spren is (consumer context)
 
@@ -137,9 +141,9 @@ This session adds two methods to door (1): `Orchestra.pause_session()` and `Orch
 
 **Previous framework PRs from this dir:** Sessions 01 + 02 (NDJSON streaming tracing writer; TelemetrySink Protocol). Independent of this PR's surface — listener wiring touches `TelemetrySink`-style listeners but does not require them to land first.
 
-**State at start of this session:**
+**State at start of this session (verified by Phase A, post-architect-update):**
 
-- `Orchestra` (in `coordination/orchestra.py`) has a `pause_session(session_id)` method (lines 999–1032) that writes a snapshot in the legacy `ExecutionBranch` shape, and a `resume_session(session_id)` method (lines 1034–1079) that returns a placeholder `OrchestraResult` with `final_response="Session resumed (implementation pending)"` and a `# TODO: Implement proper state restoration and continuation` marker at line 1067.
+- `Orchestra` (in `coordination/orchestra.py`) has a `pause_session(session_id) -> bool` method (lines 1045–1078) that writes a snapshot in the legacy `ExecutionBranch` shape, and a `resume_session(session_id) -> OrchestraResult` method (lines 1080–1125) that returns a placeholder `OrchestraResult` with `final_response="Session resumed (implementation pending)"` and a `# TODO: Implement proper state restoration and continuation` marker.
 - `Orchestrator` (in `coordination/execution/orchestrator.py`, lines 79–121) is the live unified-barrier execution loop. Its mutable state — what a snapshot must capture — lives at lines 102–121: `branches: dict[str, Branch]`, `barriers: dict[str, Barrier]`, `convergence_barriers: dict[str, str]`, `runnable: collections.deque[str]`, `_fire_queue: list[str]`, `root_barrier_id: Optional[str]`, `_workflow_error: Optional[str]`, `_completed_emitted: set[str]`, `_user_interactions: collections.deque`, `_user_interaction_inflight: bool`, `_resume_user_responses: Optional[asyncio.Queue]`.
 - `Branch` and `Barrier` (in `coordination/execution/orchestrator_types.py`, lines 95–112 and 130–151) are the live data classes. `Barrier.arrived: dict[str, Any]` at line 146 carries arbitrary Python values delivered by branches — this is the load-bearing serialization complexity of this feature.
 - `coordination/state/state_manager.py` provides reusable storage primitives that this PR keeps and extends: the `StorageBackend` ABC (lines 76–102) and `FileStorageBackend` (lines 105–191). The legacy `StateSnapshot` dataclass (lines 41–73) and the `StateManager._serialize_branches` / `_deserialize_branches` helpers (lines 465–542) target the dead `ExecutionBranch` shape from `coordination/branches/types.py` and are replaced wholesale by this PR.
@@ -168,8 +172,9 @@ After merge:
 
 - A canonical `StateSnapshot` Pydantic model capturing every field of `Orchestrator.__init__` mutable state (per orchestrator.py:102–121), plus `framework_version`, `session_id`, `topology_digest`, `created_at`, `branches: dict[str, BranchState]`, `barriers: dict[str, BarrierState]`, `runnable: list[str]`, `fire_queue: list[str]`, `convergence_barriers`, `root_barrier_id`, `workflow_error`, `completed_emitted`, `user_interactions: list[UserInteractionState]`, `user_interaction_inflight: bool`.
 - A `StorageBackend` Protocol with methods `read(key) -> bytes`, `write(key, bytes)`, `delete(key)`, `list_with_metadata() -> list[StorageEntry]`, `expire_older_than(timedelta)`. The existing ABC is rewritten as a Protocol; the existing `FileStorageBackend` is rewritten against the new Protocol with atomic write semantics (write-temp + fsync(fd) + os.replace + fsync(parent_dir_fd)).
-- `Orchestrator.snapshot() -> OrchestratorState` and `Orchestrator.restore_from(state: OrchestratorState) -> None` — new TRUNK-CRITICAL public methods. ADR-gated.
-- `Orchestra.pause_session(session_id) -> None` rewritten: cleanly halts the run after the in-flight branch tick completes; serializes `Orchestrator.snapshot()` to a `StateSnapshot`; writes the snapshot atomically via the configured `StorageBackend`. Idempotent.
+- `Orchestrator.snapshot() -> OrchestratorState`, `Orchestrator.restore_from(state: OrchestratorState) -> None`, `Orchestrator.quiesce() -> None` (async; awaits the in-flight tick to drain), and `Orchestrator.resume() -> WorkflowResult` (async; the run-loop entry point that skips `init_workflow` because state was just restored). All four are new TRUNK-CRITICAL public methods. ADR-gated. **`snapshot/restore_from` are designed to be reentrant and callable repeatedly** — that is the design seam a future auto-checkpoint session uses (it calls `quiesce()` periodically, takes `snapshot()`, writes asynchronously, then lets the loop continue). v0.3 ships only the on-demand call sites; the seam is intentional.
+- `Orchestra._active_orchestrators: dict[str, Orchestrator]` — populated when `Orchestra.execute()` constructs an orchestrator (orchestra.py:856), popped in the `finally` block. Lookup mechanism for `pause_session(session_id)`.
+- `Orchestra.pause_session(session_id) -> None` rewritten: looks up the live `Orchestrator` via `self._active_orchestrators[session_id]`; calls `await orchestrator.quiesce()` to drain the in-flight tick at the next dispatch boundary; calls `orchestrator.snapshot()` (sync — orchestrator is no longer running); maps `OrchestratorState → StateSnapshot`; writes atomically via the configured `StorageBackend`. The pending `Orchestra.execute()` call returns an `OrchestraResult` flagged paused (`metadata["paused"]=True`, `success=False`, `error=None`) so callers awaiting it can distinguish pause from completion. Idempotent.
 - `Orchestra.resume_session(session_id) -> OrchestraResult` rewritten: reads the snapshot; verifies `framework_version`; reconstructs the `Orchestrator` afresh; replays state via `Orchestrator.restore_from`; rebuilds the standard listener set by calling the extracted `Orchestra._wire_event_bus()`; resumes dispatch and returns the final `OrchestraResult` (matching `Orchestra.run()`'s shape). In-flight events flow through the existing `EventBus` → SSE adapter on the consumer side per `docs/architecture/spren/03-api-design.md` line 182 — the resumed run reuses the same `/v1/runs/{id}/events` SSE stream subscribers were tail-following before pause; no separate event-stream return value.
 - `Orchestra.list_paused_sessions() -> list[PausedSessionMetadata]` and `Orchestra.discard_paused_session(session_id) -> None` — discovery and explicit-cleanup APIs.
 - The `Orchestra` constructor accepts `storage_backend: StorageBackend | None = None`. Default: `FileStorageBackend(<framework_data_dir>)` where the framework data directory follows the existing `state_manager` convention.
@@ -180,21 +185,23 @@ After merge:
 
 ### Acceptance criteria
 
-- [ ] ADR for TRUNK-CRITICAL touch points filed and approved (linked in the PR description)
-- [ ] `StateSnapshot` Pydantic model defined; round-trips via JSON Schema 2020-12
-- [ ] `Orchestrator.snapshot() -> OrchestratorState` returns a value sufficient to fully reconstruct `Orchestrator` mutable state
+- [ ] ADR-007 for TRUNK-CRITICAL touch points filed at `docs/architecture/framework/decisions/ADR-007-pause-resume-snapshot.md` and approved (linked in the PR description)
+- [ ] `StateSnapshot` Pydantic model defined; round-trips through `model_dump_json()` / `model_validate_json()`. The model's JSON Schema is exposed via `StateSnapshot.model_json_schema()` (Pydantic v2 default — JSON Schema draft 2020-12 compatible) and a single golden-schema test asserts the schema shape is stable.
+- [ ] `Orchestrator.snapshot() -> OrchestratorState` returns a deep-copy of mutable state sufficient to fully reconstruct `Orchestrator`. `Branch` and `Barrier` instances in the returned state are NOT shared with the live orchestrator — the next tick must not be able to mutate the snapshot.
 - [ ] `Orchestrator.restore_from(state)` reconstructs all of `branches`, `barriers`, `convergence_barriers`, `runnable`, `_fire_queue`, `root_barrier_id`, `_workflow_error`, `_completed_emitted`, `_user_interactions`, `_user_interaction_inflight`. (`_resume_user_responses: asyncio.Queue` is rebuilt fresh on resume; pending user interactions ride in `_user_interactions`.)
-- [ ] `Orchestra.pause_session(session_id) -> None` writes the snapshot atomically; idempotent (calling twice has no extra effect; second call is a no-op log line)
+- [ ] `Orchestrator.quiesce() -> None` (async): sets `_pause_requested: asyncio.Event`, awaits all in-flight branch ticks (`asyncio.create_task`s spawned by the run loop) to complete, then returns. After this, `snapshot()` is safe to call. Calling `quiesce()` again on an already-quiesced orchestrator is a no-op.
+- [ ] `Orchestrator.resume() -> WorkflowResult` (async): the run-loop entry point that skips `init_workflow` (workflow state was already restored). Re-uses the same loop body as `run()`. Returning a `WorkflowResult` mirrors `run()`.
+- [ ] `Orchestra.pause_session(session_id) -> None` writes the snapshot atomically; idempotent (calling twice has no extra effect; second call is a no-op log line); raises `SessionNotFoundError` if `session_id` is not in `self._active_orchestrators`.
 - [ ] `Orchestra.resume_session(session_id) -> OrchestraResult` reconstructs orchestrator state + listener wiring + continues dispatch through to terminal state; events flow via the existing `EventBus` → SSE pathway, NOT via the return value
 - [ ] `Orchestra.list_paused_sessions() -> list[PausedSessionMetadata]` returns metadata for all paused snapshots without loading the full snapshot bodies
 - [ ] `Orchestra.discard_paused_session(session_id) -> None` deletes one snapshot
 - [ ] Atomic-write failure tested: simulated crash mid-write leaves the prior snapshot intact (no torn writes); `os.replace` + `fsync(parent_dir)` are exercised
-- [ ] Pause-then-resume produces semantically-equivalent final state to a non-paused baseline (deterministic test workload via the simulator at `packages/framework/research/orchestration/simulator/`)
+- [ ] Pause-then-resume produces semantically-equivalent final state to a non-paused baseline. Test uses the live `DeterministicRuntime` at `packages/framework/src/marsys/coordination/execution/deterministic_runtime.py:19` driving the live `Orchestrator` (NOT the drifted simulator at `research/orchestration/simulator/`).
 - [ ] Pause + resume across two separate Python processes (subprocess fixture in tests)
-- [ ] Snapshot version mismatch (`framework_version` differs) raises `IncompatibleSnapshotError` with a clear message
+- [ ] Snapshot version mismatch (`framework_version` differs) raises `IncompatibleSnapshotError` with a clear message. The test writes a snapshot with `framework_version="0.0.0-mismatch-test"` and asserts the resume path raises (the test is portable across the actual `__version__` value, which is `0.2.1` at PR time and bumps to `0.3.0` in a separate release-prep PR).
 - [ ] Snapshot retention sweeper exists and is invoked from `Orchestra.__init__`
-- [ ] Framework regression suite green (same test counts as baseline; no new skips)
-- [ ] **Multi-consumer justification documented in PR description**: explicit list of consumers (Spren v0.4-29; MARSYS Cloud's future `S3StorageBackend`; CI integrations; framework local users)
+- [ ] Framework regression suite green at the new total. The deleted `tests/coordination/test_state_manager_integration.py` removes ~30 tests from the legacy `StateManager` integration coverage; the new `tests/coordination/state/test_snapshot.py` + `test_storage.py` + `tests/integration/test_pause_resume.py` add coverage for the new shape. The PR description documents both numbers (baseline before delete + after delete + after additions); the suite passes at the new total. **No new skips silently introduced**.
+- [ ] **Multi-consumer justification documented in PR description**: explicit list of consumers (Spren v0.4-29; MARSYS Cloud's future `S3StorageBackend`; CI integrations; framework local users) — wording matches the "paused-run durability across daemon restarts" framing, NOT "in-flight crash recovery".
 - [ ] **No Spren type imported into framework** — `grep -rn 'from spren\|import spren' packages/framework/` returns zero matches (SP-018)
 - [ ] Spren-side coordination: confirm [`../../../spren/v0.4-extensions.md`](../../../spren/v0.4-extensions.md) v0.4-29 row matches this PR's actual API surface (`list_paused_sessions`, `discard_paused_session`, the `framework_version` mismatch error path); amend the v0.4-29 row if any drift exists
 - [ ] Framework architecture docs updated where applicable (the new ADR is the primary doc; if a `coordination/state/` overview exists, update it; if not, do not create one)
@@ -243,16 +250,28 @@ Don't skim. Read these end-to-end.
 - `packages/framework/src/marsys/coordination/state/checkpoint.py` — **delete** the `CheckpointManager` class (`checkpoint.py:45`) and the `Checkpoint` dataclass it consumes. `CheckpointManager.create_checkpoint` / `restore_checkpoint` (`checkpoint.py:110, 148`) call `state_manager.load_session` / `save_session` / `storage.list_keys` / `storage.load` / `storage.delete` (`checkpoint.py:105-342`), all of which this PR removes. Document the removal in CHANGELOG. (Alternative considered + rejected: keep `CheckpointManager` as a thin adapter over the new `StorageBackend` — adds scope without consumer demand. If a future use case surfaces, restore via a separate session.)
 - `packages/framework/src/marsys/coordination/state/__init__.py` — update re-exports. Remove `StateManager`, `StateSnapshot`, the legacy `StorageBackend` ABC; add the new `StorageBackend` Protocol, `FileStorageBackend`, `StateSnapshot` (Pydantic model from `state/snapshot.py`), `IncompatibleSnapshotError`. Drop `CheckpointManager` per the line above.
 - `packages/framework/src/marsys/coordination/__init__.py` — update re-exports. Drop `StateManager`, `CheckpointManager` (gone in this PR); keep `StorageBackend`, `FileStorageBackend` (now under the Protocol). Document the removal in CHANGELOG.
-- `packages/framework/src/marsys/coordination/execution/orchestrator.py` — add `Orchestrator.snapshot() -> OrchestratorState` and `Orchestrator.restore_from(state: OrchestratorState) -> None`. ADR-gated. These are the only TRUNK-CRITICAL non-additive touches in this file. (`OrchestratorState` is a dataclass internal to the orchestrator — distinct from the on-disk `StateSnapshot` Pydantic model. The Orchestra layer maps between them.) `Orchestrator.snapshot()` MUST return a deep-copy of the live mutable state; `Branch` and `Barrier` instances are NOT shared with the live orchestrator — the next tick must not be able to mutate the snapshot.
+- `packages/framework/src/marsys/coordination/execution/orchestrator.py` — additive surface only:
+  - Add `_pause_requested: asyncio.Event` field on `Orchestrator.__init__` (lines 102–121 region; lazy-initialized inside `quiesce()` to avoid event-loop binding at construction time).
+  - Add `async def quiesce(self) -> None`: sets `_pause_requested`, awaits the loop's in-flight tasks (the run-loop body already tracks them in a local `in_flight: set[asyncio.Task]`; quiesce works by setting the event and the loop checks it after `_drain_fires` between iterations, exits the loop without setting `_workflow_error`). Idempotent.
+  - Add `def snapshot(self) -> OrchestratorState`: returns a deep-copy of mutable state. Branch and Barrier instances are NOT shared with the live orchestrator — the next tick must not be able to mutate the snapshot. Caller must have called `quiesce()` (or be operating outside an active run); calling `snapshot()` while branches are dispatching is undefined.
+  - Add `def restore_from(self, state: OrchestratorState) -> None`: replaces mutable state. Must be called on a freshly-constructed orchestrator that has not run yet (asserts `branches == {}` etc.).
+  - Add `async def resume(self) -> WorkflowResult`: the run-loop entry point used after `restore_from()`. Does NOT call `init_workflow` (state is already populated). Body is the same as `run()`'s loop body starting from line 179 (`in_flight: set = {}`), exits when no `runnable` and no `in_flight` and no pending user-interactions (existing exit conditions).
+  - Modify `run()`: extract the loop body (lines 179–227) into a private `_dispatch_loop()` helper that both `run()` (after `init_workflow`) and `resume()` (skipping init) call. The loop body itself adds a `if self._pause_requested.is_set(): return WorkflowResult(success=False, ..., paused=True)` check after `_drain_fires` between iterations (or equivalent — exact mechanism settled in ADR).
+  - These are the only TRUNK-CRITICAL non-additive touches in this file. The `run()` body extraction is an internal refactor (no public-API change).
+  - `OrchestratorState` is a dataclass internal to the orchestrator — distinct from the on-disk `StateSnapshot` Pydantic model. The Orchestra layer maps between them.
 - `packages/framework/src/marsys/coordination/orchestra.py`:
   - Extract listener-wiring from `_initialize_components` (line 163) into a new `_wire_event_bus()` method, callable from both `__init__` and `resume_session`. (Listener wiring spans `StatusManager` setup at lines ~174–203 and `TraceCollector` setup at lines ~206–217; the extraction is mechanical.)
   - Add `storage_backend: StorageBackend | None = None` and `snapshot_retention: timedelta = timedelta(days=30)` parameters to `Orchestra.__init__`. Defaults preserve existing behavior (no breaking change for callers that don't pass them).
+  - **Drop `state_manager: Optional[StateManager] = None` parameter from `Orchestra.__init__` (currently at orchestra.py:137).** The `StateManager` class is removed by this PR; the parameter goes with it. Callers passing `state_manager=...` get a `TypeError` (acceptable breaking change — the only existing caller, `Orchestra.run` classmethod, already manages its own state via `state_manager` keyword argument that's also being removed). CHANGELOG documents the removal.
+  - **Drop `state_manager: Optional[StateManager] = None` parameter from `Orchestra.run` classmethod (orchestra.py:553) and the line that forwards it on construction (orchestra.py:648).** Callers stop passing it.
+  - **Add `self._active_orchestrators: dict[str, Orchestrator] = {}` to `__init__` body (after `self._sessions = {}` at orchestra.py:152).** Lookup mechanism for `pause_session(session_id)`.
+  - **Modify `Orchestra.execute()` (line 726): after constructing `orchestrator` (orchestra.py:856), assign `self._active_orchestrators[session_id] = orchestrator`. In the `finally` block (orchestra.py:967), pop it: `self._active_orchestrators.pop(session_id, None)`. This ensures `pause_session(session_id)` can find the live orchestrator while `execute()` is awaiting and the entry is cleared on exit.**
   - Trigger `storage_backend.expire_older_than(snapshot_retention)` once during `__init__`.
-  - Rewrite `pause_session(session_id) -> None` (lines 999–1032) to call `Orchestrator.snapshot()`, build a `StateSnapshot`, write atomically via the configured `StorageBackend`. Idempotent.
-  - Rewrite `resume_session(session_id) -> OrchestraResult` (lines 1034–1079); replace the placeholder return at lines 1069–1079.
+  - Rewrite `pause_session(session_id) -> None` (lines 1045–1078, post-architect-update): look up `self._active_orchestrators[session_id]`; call `await orchestrator.quiesce()`; call `orchestrator.snapshot()`; map `OrchestratorState → StateSnapshot` (Pydantic model from `state/snapshot.py`); compute `topology_digest` from the canonical topology; write atomically via the configured `StorageBackend`. Idempotent — second call no-ops with a log line; raises `SessionNotFoundError` if `session_id` is not in `_active_orchestrators`.
+  - Rewrite `resume_session(session_id) -> OrchestraResult` (lines 1080–1125, post-architect-update): replace the placeholder return. Read snapshot via `StorageBackend`; verify `framework_version` (raise `IncompatibleSnapshotError` on mismatch); reconstruct a fresh `Orchestrator` + `RealRuntime` + `_wire_event_bus()`; call `orchestrator.restore_from(state)`; assign to `self._active_orchestrators[session_id]`; call `await orchestrator.resume()`; on completion translate `WorkflowResult → OrchestraResult` (same translation `Orchestra.execute` does at orchestra.py:926–953). Pop from `_active_orchestrators` in `finally`.
   - Add `list_paused_sessions()` and `discard_paused_session(session_id)` methods.
-  - **Delete `Orchestra.create_checkpoint(session_id, checkpoint_name) -> str` (lines 1081–1098) and `Orchestra.restore_checkpoint(session_id, checkpoint_id) -> bool` (lines 1100–1116)** — both delegate to `state_manager.create_checkpoint` / `restore_checkpoint`, which are removed in this PR. Document in CHANGELOG.
-  - **Update `Session.pause()` (lines 1185–1198) and `Session.resume()` (lines 1199–1213)**: `Session.pause` keeps its `bool` return (success / fail) but its body changes from `success = await self.orchestra.pause_session(self.id)` (which used to return `bool`) to `try: await self.orchestra.pause_session(self.id); return True except StateError: return False`. `Session.resume` (currently calls `result = await self.orchestra.resume_session(self.id); if result.success: ...`) keeps its body unchanged because `resume_session` now returns `OrchestraResult` per [C1] above — the existing `result.success` access still works.
+  - **Delete `Orchestra.create_checkpoint(session_id, checkpoint_name) -> str` and `Orchestra.restore_checkpoint(session_id, checkpoint_id) -> bool`** — both delegate to `state_manager.create_checkpoint` / `restore_checkpoint`, which are removed in this PR. Document in CHANGELOG.
+  - **Update `Session.pause()` and `Session.resume()`**: `Session.pause` keeps its `bool` return (success / fail) but its body changes from `success = await self.orchestra.pause_session(self.id)` (which used to return `bool`) to `try: await self.orchestra.pause_session(self.id); self.status = "paused"; return True except StateError: return False`. `Session.resume` keeps its current control flow: it calls `result = await self.orchestra.resume_session(self.id)` and checks `result.success` — that surface is preserved because `resume_session` returns `OrchestraResult`.
 - `packages/framework/tests/coordination/test_state_manager_integration.py` (562 lines) — **delete this file wholesale.** It exercises `StateManager.load_session` / `save_session` / `pause_execution` / `resume_execution` / `Orchestra.create_checkpoint` / `Orchestra.restore_checkpoint`, all removed in this PR. The new `tests/coordination/state/test_storage.py` + `tests/coordination/state/test_snapshot.py` + `tests/integration/test_pause_resume.py` provide replacement coverage of the new shape. Document the count delta in "What was actually built" — the regression suite count drops by ~30 tests (the integration file's test count) and gains the new tests. The acceptance criterion below reflects the explicit count delta, NOT a same-counts promise.
 - `packages/framework/CHANGELOG.md` — entry under the v0.3.x or v0.4.0 release this PR targets. Document: (1) `StateManager` class removed; (2) `CheckpointManager` removed; (3) `Orchestra.create_checkpoint` / `Orchestra.restore_checkpoint` public methods removed; (4) snapshot shape changed (legacy snapshots cannot be read by this version — `IncompatibleSnapshotError`); (5) new `StorageBackend` Protocol + `FileStorageBackend` + new pause/resume API surface.
 
@@ -260,7 +279,8 @@ Don't skim. Read these end-to-end.
 
 - TRUNK-CRITICAL beyond the additive surface: `coordination/execution/real_runtime.py`, `coordination/topology/graph.py`, `coordination/validation/response_validator.py` — must remain untouched. If you find that you cannot snapshot without reading something only `RealRuntime` exposes, **stop and escalate** — do not patch `RealRuntime`.
 - Spren-side code under `packages/spren/`. `grep -rn 'from spren\|import spren' packages/framework/` must return zero matches at PR time.
-- Anything outside `coordination/state/`, the additive surface on `coordination/orchestra.py` (only `__init__`, `pause_session`, `resume_session`, `list_paused_sessions`, `discard_paused_session`, the extracted `_wire_event_bus`), the additive surface on `coordination/execution/orchestrator.py` (only `snapshot` and `restore_from`), the test directories, the new `state/snapshot.py` / `state/storage.py` / `state/errors.py` files, and the new ADR.
+- Anything outside `coordination/state/`, the additive surface on `coordination/orchestra.py` (only `__init__`, `pause_session`, `resume_session`, `list_paused_sessions`, `discard_paused_session`, the extracted `_wire_event_bus`, the new `_active_orchestrators` dict, the `execute()` lifecycle wiring of that dict, and the deletion of `state_manager` parameter / `create_checkpoint` / `restore_checkpoint`), the additive surface on `coordination/execution/orchestrator.py` (only `snapshot`, `restore_from`, `quiesce`, `resume`, `_pause_requested`, and the internal extraction of `run`'s loop body into `_dispatch_loop`), the test directories, the new `state/snapshot.py` / `state/storage.py` / `state/errors.py` files, and the new ADR.
+- **`marsys/__init__.py` `__version__` field**: do NOT bump in this PR. The version bump from `"0.2.1"` to `"0.3.0"` belongs in a separate release-prep PR alongside CHANGELOG release-note items. The `framework_version` mismatch test in this PR is portable across actual `__version__` values — it writes a known-bad string (e.g., `"0.0.0-mismatch-test"`) and asserts the resume path raises `IncompatibleSnapshotError`.
 
 ### Load-bearing shapes
 
@@ -274,13 +294,29 @@ from pydantic import BaseModel, Field
 
 
 class BranchState(BaseModel):
-    """Mirror of orchestrator_types.Branch (lines 95-112), JSON-safe."""
+    """Mirror of orchestrator_types.Branch (lines 95-112), JSON-safe.
+
+    Memory serialization contract: Branch.memory is `list[dict[str, Any]]` on
+    the live orchestrator. Items are typically `Message` Pydantic models
+    (from marsys.agents.memory) but may be plain dicts. The mapping at the
+    Orchestra boundary handles both:
+
+      - For each item m in branch.memory:
+        - if hasattr(m, "model_dump"): serialized = m.model_dump(mode="json")
+        - elif isinstance(m, dict):     serialized = m
+        - else:                         raise SnapshotSerializationError
+
+    On restore, the inverse: items that the orchestrator/runtime expects as
+    Message objects are reconstructed via Message.model_validate. Plain
+    dicts pass through. The mapping logic lives at the Orchestra-Orchestrator
+    boundary, not inside this Pydantic model.
+    """
     id: str
     current_agent: str
     status: str  # one of "RUNNING" | "WAITING" | "TERMINATED" | "FAILED" | "ABANDONED"
     delivery_target: str
     input: Any = None
-    memory: list[dict[str, Any]] = Field(default_factory=list)
+    memory: list[dict[str, Any]] = Field(default_factory=list)  # see contract above
     waiting_on: str | None = None
     candidate_of: list[str] = Field(default_factory=list)  # set serializes as list
     parent_spawn: str | None = None
@@ -414,27 +450,40 @@ class Orchestra:
         self,
         agent_registry: AgentRegistry,
         rule_factory_config: RuleFactoryConfig | None = None,
-        state_manager: StateManager | None = None,
+        # state_manager parameter REMOVED in this PR (StateManager class deleted)
         communication_manager: "CommunicationManager | None" = None,
         execution_config: "ExecutionConfig | None" = None,
         storage_backend: StorageBackend | None = None,        # new
         snapshot_retention: timedelta = timedelta(days=30),    # new
-    ) -> None: ...
+    ) -> None:
+        ...
+        self._active_orchestrators: dict[str, Orchestrator] = {}   # new — populated in execute(), popped in finally
+        ...
 
     async def pause_session(self, session_id: str) -> None:
         """Cleanly halt the run; write a snapshot atomically. Idempotent on a
-        session that is already paused."""
+        session that is already paused.
+
+        Raises SessionNotFoundError if session_id is not in
+        self._active_orchestrators.
+        """
 
     async def resume_session(self, session_id: str) -> OrchestraResult:
         """Read the snapshot for `session_id`; verify framework_version;
-        rebuild Orchestrator + listener wiring; continue dispatch. Yields
-        events as the resumed run emits them.
+        rebuild Orchestrator + listener wiring; continue dispatch through
+        to terminal state and return an OrchestraResult.
+
+        Events flow via the existing EventBus → SSE pathway, NOT via the
+        return value. The resumed run reuses the same /v1/runs/{id}/events
+        SSE stream subscribers were tail-following before pause.
 
         NOTE: only the standard listener set is restored on resume
         (StatusManager, TraceCollector, registered TelemetrySink instances).
         Custom listeners attached via EventBus.subscribe by the caller are NOT
-        restored; the caller must re-attach them before iterating the yielded
-        events."""
+        restored; the caller must re-attach them BEFORE calling resume_session
+        (the snapshot read is fast; the actual resume dispatch happens after
+        the listeners are wired).
+        """
 
     async def list_paused_sessions(self) -> list[PausedSessionMetadata]: ...
 
@@ -466,14 +515,51 @@ class OrchestratorState:
 
 
 class Orchestrator:
+    # New field on __init__:
+    #   self._pause_requested: Optional[asyncio.Event] = None
+    # Lazy-initialized inside quiesce() (asyncio.Event must be created in a
+    # running loop on Python 3.12).
+
+    async def quiesce(self) -> None:
+        """Set the pause flag and await all in-flight branch ticks to
+        complete. After this returns, snapshot() is safe to call.
+
+        Idempotent: a second call on an already-quiesced orchestrator is a
+        no-op. Cooperative: the run-loop checks _pause_requested between
+        dispatch iterations and exits without setting _workflow_error.
+        """
+
     def snapshot(self) -> OrchestratorState:
-        """Return a deep copy of mutable state. Caller is responsible for
-        ensuring no in-flight tick is mutating state; Orchestra.pause_session
-        awaits the in-flight tick before calling this."""
+        """Return a deep copy of mutable state. Caller MUST have called
+        quiesce() (or be operating outside an active run); calling snapshot()
+        while branches are dispatching is undefined.
+
+        Branch and Barrier instances in the returned state are NOT shared
+        with the live orchestrator — the next tick must not be able to
+        mutate the snapshot. Implementation: copy.deepcopy() on the relevant
+        fields.
+        """
 
     def restore_from(self, state: OrchestratorState) -> None:
         """Replace mutable state with `state`. Must be called on a freshly
-        constructed Orchestrator that has not yet been started."""
+        constructed Orchestrator that has not yet been started (asserts
+        self.branches == {} and self.root_barrier_id is None).
+
+        After restore_from(), call resume() — NOT run() — to continue
+        dispatch. resume() skips init_workflow() since state is already
+        restored.
+        """
+
+    async def resume(self) -> WorkflowResult:
+        """Run-loop entry point used after restore_from(). Does NOT call
+        init_workflow (state is already populated). Body is the same as
+        run()'s loop body starting from `in_flight: set = {}`. Exits on the
+        same conditions as run() (no runnable, no in_flight, no pending
+        user-interactions).
+
+        Internally both run() and resume() call a shared _dispatch_loop()
+        helper for the loop body — the only difference is the init step.
+        """
 ```
 
 ### Snapshot path
@@ -528,7 +614,7 @@ The `Orchestra` constructor accepts `storage_backend: StorageBackend | None = No
 
 The standard listener set — `StatusManager`, `TraceCollector`, registered `TelemetrySink` instances (Session 02 surface) — is restored by extracting the existing listener wiring from `Orchestra._initialize_components` into a new `_wire_event_bus` method that runs from both `__init__` and `resume_session`. The extraction is mechanical: `StatusManager` setup at orchestra.py ~178–203 and `TraceCollector` setup at ~206–217 move into `_wire_event_bus`.
 
-**Custom listeners attached via `EventBus.subscribe` by the caller (third-party Python users; tests) are NOT restored.** The `resume_session` docstring states this explicitly. The contract is: callers that attach custom listeners must re-attach them after `resume_session` returns the AsyncIterator and before they begin iterating. This is the same contract third-party users live with after any process restart and is the only sane resolution given that listeners are arbitrary `Callable`s (typically bound methods of objects holding sockets or LLM clients) and cannot be serialized.
+**Custom listeners attached via `EventBus.subscribe` by the caller (third-party Python users; tests) are NOT restored.** The `resume_session` docstring states this explicitly. The contract is: callers that attach custom listeners must re-attach them BEFORE calling `resume_session()` — the snapshot read is fast, but the actual resume dispatch begins inside `resume_session()` and any events emitted by it would be missed by listeners attached after the fact. (For Spren v0.4-29's REST endpoint flow: the request handler calls `resume_session()`; the SSE stream is the same `EventBus` consumer that was attached during `Orchestra.__init__` and `_wire_event_bus()` re-attaches it on the fresh `EventBus` constructed for the resumed run, so this contract is automatic for Spren.) This is the only sane resolution given that listeners are arbitrary `Callable`s (typically bound methods of objects holding sockets or LLM clients) and cannot be serialized.
 
 ### Resume across framework versions
 
@@ -563,10 +649,13 @@ If this feature would force a violation of any of these, **escalate** before wri
 
 - `Orchestra.pause_session` (rewrite the body — non-additive)
 - `Orchestra.resume_session` (rewrite the body — non-additive)
-- `Orchestra.__init__` (additive: two new keyword-only parameters with safe defaults)
+- `Orchestra.__init__` (additive: two new keyword-only parameters with safe defaults; one new field `_active_orchestrators`; **non-additive**: `state_manager` parameter dropped — see CHANGELOG entry)
+- `Orchestra.execute` (additive: `_active_orchestrators` lifecycle wiring at orchestra.py:856 and the `finally` block; everything else preserved)
 - `Orchestra._wire_event_bus` (additive: refactor extracting existing wiring; existing call sites updated)
 - `Orchestra.list_paused_sessions`, `Orchestra.discard_paused_session` (additive)
-- `Orchestrator.snapshot`, `Orchestrator.restore_from` (additive: two new public methods)
+- `Orchestra.create_checkpoint`, `Orchestra.restore_checkpoint` (REMOVED — non-additive; CheckpointManager is removed)
+- `Orchestrator.snapshot`, `Orchestrator.restore_from`, `Orchestrator.quiesce`, `Orchestrator.resume` (additive: four new public methods + one new internal `_pause_requested` field)
+- `Orchestrator.run` (additive refactor: extract loop body into `_dispatch_loop()` helper shared with `resume()`. The public `run()` signature is preserved.)
 
 The ADR enumerates each of these, justifies why each is necessary, and is approved before any code lands. No "verify and proceed" — the gate is unconditional.
 
@@ -589,13 +678,15 @@ The ADR enumerates each of these, justifies why each is necessary, and is approv
 ### Integration tests (in `packages/framework/tests/integration/`)
 
 - `test_pause_resume.py`:
-  - **Semantic-equivalence**: scripted workload via the simulator at `packages/framework/research/orchestration/simulator/`; pause-then-resume produces same `final_response.success` + same per-barrier arrival counts as the non-paused baseline.
+  - **Semantic-equivalence**: scripted workload via the live `DeterministicRuntime` (`coordination/execution/deterministic_runtime.py:19`) driving the live `Orchestrator`; pause-then-resume produces same `final_response.success` + same per-barrier arrival counts as the non-paused baseline. Do NOT use `research/orchestration/simulator/` — that's a research-grade orchestrator copy that doesn't exercise the real snapshot/restore paths.
   - **Cross-process**: subprocess fixture — process A starts the run, pauses, exits; process B starts a fresh `Orchestra`, calls `resume_session`, the run completes successfully.
-  - **Version mismatch**: write a snapshot with `framework_version="0.0.0"`; `resume_session` raises `IncompatibleSnapshotError`.
+  - **Version mismatch**: write a snapshot with `framework_version="0.0.0-mismatch-test"`; `resume_session` raises `IncompatibleSnapshotError` with a clear message containing both versions.
   - **Listener restoration**: `StatusManager` and `TraceCollector` listeners are re-attached on resume (assert `event_bus.get_listener_count(...) > 0` for the standard event types after `resume_session`).
   - **Discovery**: pause two runs; `list_paused_sessions()` returns two entries with the right `session_id` values; the snapshot bodies are not loaded eagerly (assert by inspecting `FileStorageBackend` call counts via a spy).
   - **Discard**: `discard_paused_session(session_id)` removes the snapshot; subsequent `list_paused_sessions()` does not include it.
   - **Idempotent pause**: calling `pause_session` twice on the same session returns without error and writes the snapshot at most once (or writes identical content the second time).
+  - **SessionNotFoundError**: calling `pause_session("nonexistent")` raises `SessionNotFoundError` cleanly.
+  - **Quiesce primitive**: a unit-level test (in `tests/coordination/orchestrator/`) constructs an `Orchestrator`, starts it via `run()` with scripted ticks, calls `await orchestrator.quiesce()` mid-run, asserts in-flight tasks have all completed and the loop exited; subsequent `snapshot()` returns a deep-copy that reflects state at the quiesce point.
 
 ### Framework regression test
 
@@ -634,11 +725,23 @@ The ADR enumerates each of these, justifies why each is necessary, and is approv
 
 ### Items open for the ADR
 
-A. **In-tick atomicity vs. tick-boundary atomicity**: pause is at-tick-boundary, not at-instruction-granularity. The implementer must surface to the framework team whether the orchestrator currently exposes a clean "no in-flight tick" signal. If it does not, adding one is part of the ADR.
+> Phase A resolution (Phase A pre-coding sync with framework lead): items A, B, C all settled. ADR-007 records the decision and the rationale.
 
-B. **Where `snapshot()` / `restore_from()` live**: directly on `Orchestrator`, or on a sibling `OrchestratorStateAdapter` to keep the orchestrator class slim? Architectural preference of the framework team. The ADR must pick one.
+A. **~~In-tick atomicity vs. tick-boundary atomicity~~ — RESOLVED**: pause is at-tick-boundary. The orchestrator does NOT currently expose a "no in-flight tick" signal. Adding one IS in scope of this PR: `Orchestrator._pause_requested: asyncio.Event` + `async def quiesce()`. ADR-007 enumerates the touch points (additive only on `orchestrator.py`).
 
-C. **Idempotent-tool flag**: verified by grep — no `is_idempotent` field exists on the framework's tool registry today. This PR does NOT add one; tool idempotency is documented as the user's responsibility. (Adding `is_idempotent: bool` is a candidate for a separate, smaller framework PR — log it as a follow-up.) Spren's v0.4-29 brief references this fictional warning surface and needs reconciliation on the Spren side.
+B. **~~Where `snapshot()` / `restore_from()` live~~ — RESOLVED**: directly on `Orchestrator`. An adapter would just be a wrapper over fields the class already owns; no boundary value. The orchestrator file is already TRUNK-CRITICAL; adding ~120 LoC of snapshot/restore/quiesce/resume keeps it at the same criticality level. ADR-007 documents the rejected adapter alternative.
+
+C. **~~Idempotent-tool flag~~ — RESOLVED**: verified by grep — no `is_idempotent` field exists on the framework's tool registry today. This PR does NOT add one; tool idempotency is documented as the user's responsibility. (Adding `is_idempotent: bool` is a candidate for a separate, smaller framework PR — log it as a follow-up.) Spren's v0.4-29 brief references this fictional warning surface and needs reconciliation on the Spren side.
+
+### Items open for future framework sessions (out of v0.3 scope)
+
+These are intentionally NOT in this PR but are the natural next steps; the design above provides the seams.
+
+D. **Continuous auto-checkpoint while running** (Spren daemon-crash recovery for in-flight runs): a follow-up framework session adds a `SnapshotScheduler` Protocol or equivalent that consumes the `quiesce/snapshot/restore_from` primitives this PR ships. The scheduler fires at orchestrator natural quiesce points (e.g., after `_drain_fires()` between dispatch iterations). No further TRUNK-CRITICAL changes needed — that's why these primitives are public, idempotent, and reentrant by design. ADR-007 records this seam explicitly.
+
+E. **Snapshot migration tooling** for cross-version resume: out of scope for v0.3. Adding once the snapshot shape changes between releases.
+
+F. **`is_idempotent: bool` on the tool registry**: see C above. Separate small follow-up PR.
 
 ---
 
