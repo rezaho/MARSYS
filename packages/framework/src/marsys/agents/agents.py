@@ -182,6 +182,13 @@ class BaseAgent(ABC):
         self._planning_config = PlanningConfig.from_value(plan_config)
         self._planning_state: Optional[PlanningState] = None
 
+        # Per-step tracing-event plumbing. Set by ``run_step`` from the
+        # incoming context dict; consumed by ``_emit_step_error_event`` and
+        # the ``AgentMessagesPreparedEvent`` emit site in ``_run``. Reset
+        # every step (overwritten, not cleared) so the agent can be reused.
+        self._step_event_bus: Any = None  # Optional['EventBus'] — local import
+        self._step_context: Dict[str, Any] = {}
+
         # Tool version tracking for cache invalidation
         self._tools_version = 0
 
@@ -1496,6 +1503,17 @@ class BaseAgent(ABC):
                 if session_id:
                     self._planning_state.set_session_id(session_id)
 
+            # Tracing-event plumbing — same idiom as memory/planning above.
+            # Used by ``_emit_step_error_event`` and the
+            # ``AgentMessagesPreparedEvent`` emit site in ``_run``.
+            self._step_event_bus = event_bus
+            self._step_context = {
+                "session_id": session_id,
+                "branch_id": context.get("branch_id"),
+                "step_number": context.get("step_number"),
+                "step_span_id": context.get("step_span_id"),
+            }
+
         # Apply memory retention policy
         if self._memory_retention == "single_run" and not is_continuation:
             # Reset memory only if this is a new run (not a continuation)
@@ -1762,6 +1780,11 @@ class BaseAgent(ABC):
                         runtime=compaction_runtime,
                     )
                     if not compacted:
+                        # Compaction couldn't reduce payload — emit
+                        # structured ErrorEvent before falling through to
+                        # the converted Message. retry_count reflects how
+                        # many compaction passes were attempted.
+                        await self._emit_step_error_event(e, retry_count=_payload_retries)
                         raw_response = self._make_error_message_from_exception(e)
                         break
 
@@ -1778,7 +1801,10 @@ class BaseAgent(ABC):
                         prepared_messages.append({"role": "user", "content": steering_prompt})
                     continue  # Retry with compacted messages
 
-                # Non-recoverable or retries exhausted
+                # Non-recoverable or retries exhausted: emit structured
+                # ErrorEvent before converting to error Message (preserves
+                # traceback that would be lost after the conversion).
+                await self._emit_step_error_event(e, retry_count=_payload_retries)
                 raw_response = self._make_error_message_from_exception(e)
                 await self._log_progress(
                     request_context,
@@ -2977,6 +3003,39 @@ class Agent(BaseAgent):
                 error_content[attr] = val
         return Message(role="error", content=json.dumps(error_content), name=self.name)
 
+    async def _emit_step_error_event(
+        self,
+        exception: BaseException,
+        *,
+        retry_count: int = 0,
+    ) -> None:
+        """Emit a structured ErrorEvent for an exception caught inside the agent.
+
+        Observability counterpart to ``_make_error_message_from_exception``
+        (which produces the recovery-routable error Message). Trace
+        consumers see the structured event regardless of whether the
+        exception was caught here or propagated to the step_executor.
+
+        The bus and step context are plumbed in by ``run_step``; this
+        helper short-circuits silently when called outside that lifecycle
+        (e.g., from a unit test that exercises ``_run`` directly).
+        """
+        if self._step_event_bus is None or not self._step_context:
+            return
+        # Function-local import: matches the step_executor.py:321 convention
+        # for coordination types referenced from the agents layer.
+        from ..coordination.status.events import build_error_event
+
+        await self._step_event_bus.emit(build_error_event(
+            exception,
+            session_id=self._step_context.get("session_id", ""),
+            branch_id=self._step_context.get("branch_id"),
+            agent_name=self.name,
+            step_number=self._step_context.get("step_number"),
+            step_span_id=self._step_context.get("step_span_id"),
+            retry_count=retry_count,
+        ))
+
     async def _run(
         self,
         messages: List[Dict[str, Any]],
@@ -3045,6 +3104,20 @@ class Agent(BaseAgent):
             api_model_kwargs["json_mode"] = False
 
         try:
+            # Emit prepared messages event for trace capture (Phase 3).
+            # Function-local import matches the step_executor.py convention
+            # for coordination types referenced from the agents layer.
+            if self._step_event_bus is not None and self._step_context:
+                from ..coordination.status.events import AgentMessagesPreparedEvent
+                await self._step_event_bus.emit(AgentMessagesPreparedEvent(
+                    session_id=self._step_context.get("session_id", "") or "",
+                    branch_id=self._step_context.get("branch_id"),
+                    agent_name=self.name,
+                    step_number=self._step_context.get("step_number"),
+                    step_span_id=self._step_context.get("step_span_id"),
+                    messages=messages,
+                ))
+
             # Use async model call for true parallel execution
             # BaseAPIModel.arun() handles fallback to thread executor if needed
             raw_model_output: Any = await self.model.arun(
@@ -3066,8 +3139,13 @@ class Agent(BaseAgent):
             # Re-raise payload-too-large so run_step() can attempt compaction
             if e.classification == APIErrorClassification.REQUEST_TOO_LARGE.value:
                 raise
-            # Other API errors: convert to error Message (existing behavior)
+            # Emit structured ErrorEvent BEFORE converting to error Message —
+            # the conversion drops the original exception frame, so the
+            # traceback must be captured here. Counterpart to the existing
+            # error-to-Message conversion (recovery-routable surface).
+            await self._emit_step_error_event(e)
             return self._make_error_message_from_exception(e)
 
         except Exception as e:
+            await self._emit_step_error_event(e)
             return self._make_error_message_from_exception(e)

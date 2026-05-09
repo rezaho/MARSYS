@@ -310,7 +310,12 @@ web_config = CommunicationConfig(
 
 ### ErrorHandlingConfig
 
-Advanced error handling and recovery configuration.
+Retry, backoff, and error-handling configuration. Consumed by:
+
+- the model-adapter retry loop in [`models/adapters/base.py`](https://github.com/rezaho/MARS/blob/main/packages/framework/src/marsys/models/adapters/base.py) — wraps every API call with exponential-backoff-with-jitter and records per-attempt history on the response;
+- the framework-level retry loop in `StepExecutor` — retries `AgentFrameworkError` failures with the same backoff math.
+
+`ExecutionConfig` carries an `error_handling: ErrorHandlingConfig` field by default; override it to tune retry behaviour.
 
 **Import:**
 ```python
@@ -320,83 +325,121 @@ from marsys.coordination.config import ErrorHandlingConfig
 **Constructor:**
 ```python
 ErrorHandlingConfig(
+    # Retry / backoff (top-level)
+    max_retries: int = 3,
+    base_delay: float = 1.0,
+    jitter: float = 0.1,
+    max_delay: float = 60.0,
+
+    # Classification / routing flags
     use_error_classification: bool = True,
     notify_on_critical_errors: bool = True,
     enable_error_routing: bool = True,
     preserve_error_context: bool = True,
+
+    # Steering-related retry knobs (kept for back-compat)
     auto_retry_on_rate_limits: bool = True,
     max_rate_limit_retries: int = 3,
     pool_retry_attempts: int = 2,
     pool_retry_delay: float = 5.0,
-    timeout_seconds: float = 300.0,
+
+    # Timeouts
+    timeout_seconds: float = 600.0,
     timeout_retry_enabled: bool = False,
-    provider_settings: Dict[str, Dict[str, Any]] = field(default_factory=dict)
+
+    # Per-provider overrides
+    provider_settings: Dict[str, Dict[str, Any]] = ...,
 )
 ```
 
-**Parameters:**
+**Top-level retry parameters:**
+
+| Parameter | Type | Description | Default |
+|-----------|------|-------------|---------|
+| `max_retries` | `int` | Maximum retry attempts after the initial call | `3` |
+| `base_delay` | `float` | Starting delay (seconds) for exponential backoff | `1.0` |
+| `jitter` | `float` | Symmetric multiplicative jitter, range `[0, 1]` (e.g. `0.1` = ±10%) | `0.1` |
+| `max_delay` | `float` | Cap on per-attempt sleep (seconds) | `60.0` |
+
+**Backoff formula:**
+```
+delay = min(
+    base_delay * (2 ** attempt) * (1 + uniform(-jitter, jitter)),
+    max_delay,
+)
+```
+
+A server-supplied `retry-after` / `x-ratelimit-reset-after` header always wins over the computed delay (capped at `max_delay`).
+
+**Other parameters:**
+
 | Parameter | Type | Description | Default |
 |-----------|------|-------------|---------|
 | `use_error_classification` | `bool` | Enable intelligent error classification | `True` |
 | `notify_on_critical_errors` | `bool` | Send notifications for critical errors | `True` |
 | `enable_error_routing` | `bool` | Route errors to User node for intervention | `True` |
 | `preserve_error_context` | `bool` | Include full error context in responses | `True` |
-| `auto_retry_on_rate_limits` | `bool` | Automatically retry rate-limited requests | `True` |
-| `max_rate_limit_retries` | `int` | Maximum retries for rate limit errors | `3` |
-| `pool_retry_attempts` | `int` | Number of retries for pool exhaustion | `2` |
-| `pool_retry_delay` | `float` | Delay between pool retry attempts | `5.0` |
-| `timeout_seconds` | `float` | Default timeout for operations | `300.0` |
+| `auto_retry_on_rate_limits` | `bool` | (Steering) automatically retry rate-limited requests | `True` |
+| `max_rate_limit_retries` | `int` | (Steering) maximum retries for rate limit errors | `3` |
+| `pool_retry_attempts` | `int` | (Steering) retries for pool exhaustion | `2` |
+| `pool_retry_delay` | `float` | (Steering) delay between pool retry attempts | `5.0` |
+| `timeout_seconds` | `float` | Default timeout for operations | `600.0` |
 | `timeout_retry_enabled` | `bool` | Retry after timeout | `False` |
-| `provider_settings` | `Dict` | Provider-specific settings | `{}` |
+| `provider_settings` | `Dict[str, Dict[str, Any]]` | Per-provider overrides | populated for `openai`, `anthropic`, `google`, `openrouter`, `xai` |
 
 **Methods:**
 
 | Method | Description | Returns |
 |--------|-------------|---------|
-| `get_provider_setting(provider, setting, default)` | Get provider-specific setting | `Any` |
+| `resolve_max_retries(provider)` | `max_retries` for ``provider`` (override-aware) | `int` |
+| `resolve_base_delay(provider)` | `base_delay` for ``provider`` (override-aware) | `float` |
+| `compute_delay(provider, attempt)` | Compute delay for `attempt` (0-indexed); applies jitter, caps at `max_delay` | `float` |
+| `get_provider_setting(provider, setting, default)` | Raw provider-setting lookup | `Any` |
 
-**Provider Settings Structure:**
+**Provider settings structure:**
 ```python
 provider_settings = {
-    "openai": {
-        "max_retries": 3,
-        "base_retry_delay": 60,
-        "insufficient_quota_action": "raise"  # "raise", "notify", "fallback"
-    },
-    "anthropic": {
-        "max_retries": 3,
-        "base_retry_delay": 30,
-        "insufficient_quota_action": "raise"
-    }
+    "openai":     {"max_retries": 3, "base_delay": 1.0, "insufficient_quota_action": "raise"},
+    "anthropic":  {"max_retries": 3, "base_delay": 1.0, "insufficient_quota_action": "raise"},
+    "google":     {"max_retries": 3, "base_delay": 1.0, "insufficient_quota_action": "notify"},
+    "openrouter": {"max_retries": 2, "base_delay": 1.0, "insufficient_quota_action": "raise"},
+    "xai":        {"max_retries": 2, "base_delay": 2.0, "insufficient_quota_action": "notify"},
 }
 ```
 
-**Example:**
+The provider key is derived from the adapter class name (e.g. `OpenAIAdapter` → `"openai"`, `AsyncAnthropicAdapter` → `"anthropic"`). When a provider isn't in the dict, the top-level fields apply.
+
+**Examples:**
+
 ```python
-# Aggressive retry strategy
+# Default behaviour: 3 retries, 1s base, ±10% jitter, 60s cap.
+default = ErrorHandlingConfig()
+
+# Aggressive retries for flaky free tiers.
 aggressive = ErrorHandlingConfig(
-    auto_retry_on_rate_limits=True,
-    max_rate_limit_retries=10,
-    timeout_retry_enabled=True,
-    pool_retry_attempts=5
+    max_retries=8,
+    base_delay=2.0,
+    jitter=0.2,
+    max_delay=120.0,
 )
 
-# Conservative strategy
+# Conservative — fail fast.
 conservative = ErrorHandlingConfig(
-    auto_retry_on_rate_limits=False,
-    max_rate_limit_retries=0,
-    timeout_retry_enabled=False,
-    enable_error_routing=True  # Route to user
+    max_retries=1,
+    base_delay=0.5,
+    enable_error_routing=True,  # Route to user instead of retrying further
 )
 
-# Custom provider settings
-custom = ErrorHandlingConfig(
-    provider_settings={
-        "openai": {"max_retries": 5, "base_retry_delay": 30},
-        "anthropic": {"max_retries": 3, "base_retry_delay": 60}
-    }
-)
+# Per-provider override: very long backoff on xai free tier.
+custom = ErrorHandlingConfig()
+custom.provider_settings["xai"]["base_delay"] = 10.0
+custom.provider_settings["xai"]["max_retries"] = 1
+
+# Wired into ExecutionConfig.
+ec = ExecutionConfig(error_handling=aggressive)
 ```
+
+**Per-attempt retry history:** when more than one attempt is made, the harmonized response carries a `retry_attempts` list on `ResponseMetadata` (extra-allowed Pydantic field). Each entry records `attempt`, `success`, `status_code`, `delay_used`, `retry_after_used`, `error_class`, `error_message`, `response_time_ms`. Used today by tracing for fine-grained replay and reserved for future per-attempt span emission.
 
 ---
 

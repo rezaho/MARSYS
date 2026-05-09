@@ -111,9 +111,7 @@ async def main():
                 tracing=TracingConfig(
                     enabled=True,
                     output_dir=TRACE_DIR,
-                    detail_level="verbose",
                     include_message_content=True,
-                    max_content_length=2000,
                 ),
             ),
             max_steps=20,

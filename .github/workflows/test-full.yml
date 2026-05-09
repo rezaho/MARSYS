@@ -1,0 +1,71 @@
+name: Test (full)
+
+# Full framework regression suite — runs on push to main and weekly.
+# Catches breakage that the smoke job's narrow ``-m cheap`` filter
+# would miss. Two phases:
+#   1. Offline unit + integration tests (no external API needed).
+#      Always runs; this is the deterministic regression floor.
+#   2. Cheap-tier integration if ANTHROPIC_API_KEY is configured.
+#      Skipped (success) when the secret isn't available.
+#
+# Like ``test-smoke.yml``, live-tests under
+# ``packages/framework/live_tests/`` are NOT pytest-collected and
+# require OAuth (subscription credentials), not API keys; they never
+# run from CI.
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'packages/framework/**'
+      - '.github/workflows/test-full.yml'
+      - 'Justfile'
+  schedule:
+    - cron: '0 6 * * 1'  # 06:00 UTC every Monday
+  workflow_dispatch:  # allow manual runs from the Actions tab
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: false  # don't cancel scheduled runs by manual dispatch
+
+jobs:
+  unit:
+    name: offline framework tests
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - uses: astral-sh/setup-uv@v3
+      - name: Install framework deps
+        run: uv sync --extra test --package marsys
+      - name: Run offline tests
+        # Excludes ``cheap`` — those land in the next job behind a key gate.
+        run: |
+          uv run --package marsys pytest packages/framework/tests \
+            -m "not cheap" --tb=short
+
+  cheap:
+    name: cheap-tier framework tests
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    needs: unit  # don't burn paid calls if the offline regression is already broken
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - uses: astral-sh/setup-uv@v3
+      - uses: extractions/setup-just@v2
+      - name: Install framework deps
+        run: uv sync --extra test --package marsys
+      - name: Run cheap-tier tests
+        env:
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+        run: |
+          if [ -z "${ANTHROPIC_API_KEY:-}" ]; then
+            echo "::notice::ANTHROPIC_API_KEY not configured; skipping cheap-tier tests."
+            exit 0
+          fi
+          just test-cheap

@@ -148,6 +148,71 @@ class StepExecutor:
             "tool_executions": 0
         })
     
+    async def _emit_error_event(
+        self,
+        *,
+        agent_name: str,
+        step_number: Optional[int],
+        step_span_id: Optional[str],
+        exception: BaseException,
+        retry_count: int,
+        context: Dict[str, Any],
+    ) -> None:
+        """Emit a structured ``ErrorEvent`` for an exception propagating into the executor.
+
+        Used for framework errors (``AgentFrameworkError``,
+        ``PoolExhaustedError``, ``FrameworkTimeoutError``) and
+        ``REQUEST_TOO_LARGE`` retries that exceed compaction. Most agent-
+        internal exceptions are caught inside ``Agent._run`` and emit via
+        ``Agent._emit_step_error_event`` before being converted to error
+        Messages — this executor-level path is the fallback when something
+        actually crosses the boundary. Both sites share ``build_error_event``
+        so trace consumers see identical event shape.
+        """
+        if not self.event_bus:
+            return
+        from ..status.events import build_error_event
+
+        await self.event_bus.emit(build_error_event(
+            exception,
+            session_id=context.get("session_id", "unknown"),
+            branch_id=context.get("branch_id"),
+            agent_name=agent_name,
+            step_number=step_number,
+            step_span_id=step_span_id,
+            retry_count=retry_count,
+        ))
+
+    def _apply_runtime_context(
+        self,
+        agent: Any,
+        execution_config: Any,
+    ) -> None:
+        """Push orchestration-level retry/event config onto the agent's model adapter.
+
+        The adapter retry loop (``models/adapters/base.py``) reads
+        ``self.error_config`` at call time. Agents are constructed before
+        Orchestra runs, so we inject the active ``ExecutionConfig.error_handling``
+        and ``event_bus`` here, just before each ``run_step`` invocation. No-op
+        when the agent has no model (e.g., deterministic agents) or the model
+        has no adapter (e.g., custom in-process implementations).
+        """
+        model = getattr(agent, "model", None)
+        if model is None:
+            return
+        error_config = getattr(execution_config, "error_handling", None)
+        for attr in ("adapter", "async_adapter"):
+            adapter = getattr(model, attr, None)
+            if adapter is None:
+                continue
+            # ``error_config`` and ``event_bus`` are declared on
+            # ``APIProviderAdapter.__init__`` — set them as plain attributes so
+            # adapters that don't extend the base class (rare, custom users)
+            # are unaffected.
+            if hasattr(adapter, "error_config") or hasattr(adapter, "__dict__"):
+                adapter.error_config = error_config
+                adapter.event_bus = self.event_bus
+
     async def execute_step(
         self,
         agent: Union['BaseAgent', str],
@@ -183,11 +248,13 @@ class StepExecutor:
         step_span_id = str(uuid.uuid4())
         step_number = context.get("step_number", 0)
 
-        # Emit start event if event_bus is available
+        # Emit start event if event_bus is available. Full-input capture
+        # (Phase 3) is now driven by ``Agent._run`` emitting a separate
+        # ``AgentMessagesPreparedEvent`` at the model-dispatch site —
+        # see agents.py:_run.
         if self.event_bus:
             from ..status.events import AgentStartEvent
 
-            # Create request summary
             request_summary = str(request)[:100] if request else None
 
             await self.event_bus.emit(AgentStartEvent(
@@ -243,6 +310,7 @@ class StepExecutor:
                     "step_number": step_context.step_number,  # Pass step_number for planning triggers
                     "session_id": step_context.session_id,  # Required for planning events emission
                     "branch_id": step_context.branch_id,  # For consistent event tracking
+                    "step_span_id": step_span_id,  # Required so the agent can stamp tracing events with the correct span (Part A — full-input capture)
                 }
 
                 # Mark as continuation if this is a tool continuation
@@ -333,6 +401,10 @@ class StepExecutor:
                             f"retry: {agent_retry_count})"
                         )
                 
+                # Apply orchestration-level retry/event config to the model adapter
+                # so adapter-level retries (5xx / 429 backoff) honour ExecutionConfig.
+                self._apply_runtime_context(agent, execution_config)
+
                 agent_response = await agent.run_step(
                     request,
                     run_context
@@ -630,6 +702,14 @@ class StepExecutor:
                 # Model API errors will be caught by Agent._run() and converted to error Messages
                 # which will then be handled by ValidationProcessor
                 logger.error(f"Model API error in {agent_name}: {str(e)}")
+                await self._emit_error_event(
+                    agent_name=agent_name,
+                    step_number=step_number,
+                    step_span_id=step_span_id,
+                    exception=e,
+                    retry_count=retry_count,
+                    context=context,
+                )
                 raise
 
             except PoolExhaustedError as e:
@@ -708,7 +788,10 @@ class StepExecutor:
                 if retry_count < self.max_retries:
                     retry_count += 1
                     last_error = str(e)
-                    await asyncio.sleep(2 ** retry_count)  # Exponential backoff
+                    delay = execution_config.error_handling.compute_delay(
+                        provider=None, attempt=retry_count - 1
+                    )
+                    await asyncio.sleep(delay)
                 else:
                     raise
 
@@ -735,9 +818,22 @@ class StepExecutor:
             requires_retry=False  # Don't retry further
         )
 
-        # Emit failure completion event
+        # Emit structured error event before the legacy completion event so
+        # the tracing collector sees both on the same step span.
         if self.event_bus:
-            from ..status.events import AgentCompleteEvent
+            from ..status.events import AgentCompleteEvent, ErrorEvent
+
+            # Synthesize a generic exception for the structured event when we
+            # only have a string description from the retry loop.
+            synthetic_error = RuntimeError(last_error or "Max retries exceeded")
+            await self._emit_error_event(
+                agent_name=agent_name,
+                step_number=step_number,
+                step_span_id=step_span_id,
+                exception=synthetic_error,
+                retry_count=retry_count,
+                context=context,
+            )
 
             await self.event_bus.emit(AgentCompleteEvent(
                 session_id=context.get("session_id", "unknown"),
@@ -857,6 +953,35 @@ class StepExecutor:
                 f"Agent {context.agent_name} must return Message object, "
                 f"got {type(raw_response).__name__}"
             )
+
+        # Item 5: a role=error response means Agent._run caught an exception
+        # and converted it to an error Message. The agent already emitted a
+        # structured ErrorEvent before the conversion (see
+        # Agent._emit_step_error_event). Mark the step failed so the span
+        # gets status="error" and RealRuntime._translate returns kind="FAIL"
+        # immediately — no point letting the content-only-loop heuristic
+        # halt the branch ten retries later.
+        if raw_response.role == "error":
+            error_text = (
+                raw_response.content
+                if isinstance(raw_response.content, str)
+                else "agent error"
+            )
+            failed = StepResult(
+                agent_name=context.agent_name,
+                success=False,
+                error=error_text,
+                response=raw_response,
+            )
+            # Still write to memory so prior error stays in the conversation
+            # (steering / validation may consult it on a follow-up step).
+            failed.memory_updates = [{
+                "role": raw_response.role,
+                "content": raw_response.content,
+                "name": raw_response.name or context.agent_name,
+                "timestamp": time.time(),
+            }]
+            return failed
 
         result = StepResult(
             agent_name=context.agent_name,

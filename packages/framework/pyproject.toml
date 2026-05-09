@@ -60,6 +60,7 @@ dependencies = [
     "structlog>=25.4.0",
     "python-json-logger>=2.0.7",
     "jsonschema>=4.23.0",
+    "python-ulid>=3.1.0,<4",
 ]
 
 [project.optional-dependencies]
@@ -147,6 +148,8 @@ markers = [
     "slow: marks tests as slow (deselect with '-m \"not slow\"')",
     "integration: marks tests as integration tests",
     "asyncio: mark test as an asyncio test",
+    "cheap: marks tests that hit a cheap paid model (Claude Haiku 4.5 by default); requires ANTHROPIC_API_KEY. Runs in the CI smoke job.",
+    "network: marks tests that require network access",
 ]
 
 [tool.black]

@@ -260,6 +260,13 @@ class ExecutionConfig:
     # Tracing configuration
     tracing: 'TracingConfig' = field(default_factory=lambda: TracingConfig())
 
+    # Retry/backoff and error-handling configuration. Consumed by the
+    # model-adapter retry loop (``models/adapters/base.py``) and the
+    # framework-level retry loop in ``StepExecutor``.
+    error_handling: 'ErrorHandlingConfig' = field(
+        default_factory=lambda: ErrorHandlingConfig()
+    )
+
     # NEW: User interaction control fields (Orchestra only)
     user_first: bool = False  # Enable user-first execution mode
     initial_user_msg: Optional[str] = None  # Message shown to user in user-first mode
@@ -311,72 +318,119 @@ class ExecutionConfig:
 
 @dataclass
 class ErrorHandlingConfig:
-    """
-    Configuration for enhanced error handling system.
+    """Configuration for retry, backoff, and error-handling behaviour.
 
-    Attributes:
-        use_error_classification: Enable intelligent error classification
-        notify_on_critical_errors: Send notifications for critical errors
-        auto_retry_on_rate_limits: Automatically retry rate-limited requests
-        max_rate_limit_retries: Maximum retries for rate limit errors
-        pool_retry_attempts: Number of retries for pool exhaustion
-        pool_retry_delay: Delay between pool retry attempts (seconds)
-        timeout_seconds: Default timeout for operations
-        enable_error_routing: Route errors to User node for intervention
-        preserve_error_context: Include full error context in responses
+    The retry loop in model adapters (``models/adapters/base.py``) and the
+    framework-level retry loop in ``StepExecutor`` both consume these
+    settings. Per-provider overrides in ``provider_settings`` take precedence
+    over the top-level defaults.
+
+    Backoff formula::
+
+        delay = min(
+            base_delay * (2 ** attempt) * (1 + uniform(-jitter, jitter)),
+            max_delay,
+        )
+
+    The ``retry-after`` / ``x-ratelimit-reset-after`` headers always win over
+    the computed delay when the server signals a specific retry time.
     """
 
-    # Core features
+    # ── Top-level retry/backoff defaults (Phase 1) ──────────────────────
+    max_retries: int = 3
+    base_delay: float = 1.0
+    jitter: float = 0.1  # multiplicative ±10% to break thundering-herd
+    max_delay: float = 60.0  # cap on per-attempt sleep
+
+    # ── Existing core features (kept for back-compat) ───────────────────
     use_error_classification: bool = True
     notify_on_critical_errors: bool = True
     enable_error_routing: bool = True
     preserve_error_context: bool = True
 
-    # Retry configuration
+    # ── Existing retry knobs (kept for back-compat with steering) ───────
     auto_retry_on_rate_limits: bool = True
     max_rate_limit_retries: int = 3
     pool_retry_attempts: int = 2
     pool_retry_delay: float = 5.0
 
-    # Timeout configuration
-    timeout_seconds: float = 600.0  # 10 minutes default
+    # ── Existing timeout knobs ──────────────────────────────────────────
+    timeout_seconds: float = 600.0
     timeout_retry_enabled: bool = False
 
-    # Provider-specific settings
+    # ── Per-provider overrides (override top-level defaults when set) ───
     provider_settings: Dict[str, Dict[str, Any]] = field(default_factory=lambda: {
         "openai": {
             "max_retries": 3,
-            "base_retry_delay": 60,
-            "insufficient_quota_action": "raise"  # "raise", "notify", "fallback"
+            "base_delay": 1.0,
+            "insufficient_quota_action": "raise",  # "raise", "notify", "fallback"
         },
         "anthropic": {
             "max_retries": 3,
-            "base_retry_delay": 30,
-            "insufficient_quota_action": "raise"
+            "base_delay": 1.0,
+            "insufficient_quota_action": "raise",
         },
         "google": {
             "max_retries": 3,
-            "base_retry_delay": 60,
-            "insufficient_quota_action": "notify"
+            "base_delay": 1.0,
+            "insufficient_quota_action": "notify",
         },
         "openrouter": {
             "max_retries": 2,
-            "base_retry_delay": 120,
-            "insufficient_quota_action": "raise"
+            "base_delay": 1.0,
+            "insufficient_quota_action": "raise",
         },
         "xai": {
             "max_retries": 2,
-            "base_retry_delay": 120,  # xAI has strict rate limits
-            "insufficient_quota_action": "notify"
-        }
+            "base_delay": 2.0,  # xAI has strict free-tier rate limits
+            "insufficient_quota_action": "notify",
+        },
     })
+
+    def __post_init__(self) -> None:
+        if self.max_retries < 0:
+            raise ValueError(f"max_retries must be >= 0, got {self.max_retries}")
+        if self.base_delay <= 0:
+            raise ValueError(f"base_delay must be > 0, got {self.base_delay}")
+        if not 0.0 <= self.jitter <= 1.0:
+            raise ValueError(f"jitter must be in [0, 1], got {self.jitter}")
+        if self.max_delay < self.base_delay:
+            raise ValueError(
+                f"max_delay ({self.max_delay}) must be >= base_delay ({self.base_delay})"
+            )
+
+    # ── Resolved-setting helpers (provider-override-aware) ──────────────
+
+    def resolve_max_retries(self, provider: Optional[str]) -> int:
+        """Return ``max_retries`` for ``provider``, falling back to the global default."""
+        return int(self.get_provider_setting(provider, "max_retries", self.max_retries))
+
+    def resolve_base_delay(self, provider: Optional[str]) -> float:
+        """Return ``base_delay`` for ``provider``, falling back to the global default."""
+        return float(self.get_provider_setting(provider, "base_delay", self.base_delay))
+
+    def compute_delay(self, provider: Optional[str], attempt: int) -> float:
+        """Return the backoff delay for ``attempt`` (0-indexed) on ``provider``.
+
+        Applies symmetric multiplicative jitter and caps at ``max_delay``.
+        Callers should still prefer a server-supplied ``retry-after`` value
+        over this computed delay.
+        """
+        import random
+        base = self.resolve_base_delay(provider)
+        delay = base * (2 ** attempt)
+        if self.jitter > 0:
+            delay = delay * (1 + random.uniform(-self.jitter, self.jitter))
+        return min(max(delay, 0.0), self.max_delay)
 
     def get_provider_setting(
         self,
-        provider: str,
+        provider: Optional[str],
         setting: str,
-        default: Any = None
+        default: Any = None,
     ) -> Any:
-        """Get a specific setting for a provider."""
+        """Get a specific setting for a provider, or ``default`` if unset."""
+        if not provider:
+            return default
         provider_config = self.provider_settings.get(provider, {})
         return provider_config.get(setting, default)
