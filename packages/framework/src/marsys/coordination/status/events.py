@@ -26,11 +26,20 @@ class StatusEvent:
 
 @dataclass
 class AgentStartEvent(StatusEvent):
-    """Agent starting execution."""
+    """Agent starting execution.
+
+    ``messages`` is populated only when ``TracingConfig.capture_full_input``
+    is enabled. It carries the full conversation that went to the model
+    on this step in dict form (per ``Message.to_api_format``); the tracing
+    collector hashes each one and writes content-addressed blobs to the
+    configured ``MessageStore``. Other event consumers (StatusManager,
+    etc.) ignore the field.
+    """
     agent_name: str
     request_summary: Optional[str] = None
     step_number: Optional[int] = None
     step_span_id: Optional[str] = None
+    messages: Optional[List[Dict[str, Any]]] = None
 
 
 @dataclass
