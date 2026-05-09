@@ -43,7 +43,7 @@ def event_bus():
 @pytest.fixture
 def collector(event_bus):
     config = TracingConfig(enabled=True, output_dir="/tmp/test_traces", include_tool_results=True)
-    return TraceCollector(event_bus, config, writers=[])
+    return TraceCollector(event_bus, config, sinks=[])
 
 
 # ── Helpers ──────────────────────────────────────────────────────

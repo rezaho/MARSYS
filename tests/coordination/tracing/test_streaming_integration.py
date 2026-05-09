@@ -243,7 +243,7 @@ async def test_writer_used_directly_outside_orchestra(tmp_path):
     writer = NDJSONTraceWriter(cfg)
     span = create_span("standalone", "Custom", "step")
     span.close(end_time=span.start_time + 0.1)
-    await writer.write_span(span)
+    await writer.publish_span(span)
     await writer.close()
     files = list(tmp_path.glob("*.ndjson"))
     assert len(files) == 1
@@ -260,7 +260,7 @@ async def test_writer_used_directly_outside_orchestra(tmp_path):
 class _SlowDrainNDJSONWriter(NDJSONTraceWriter):
     """Test-only subclass: injects an artificial per-write delay in the drain
     task to simulate a slow disk. Used to prove the queue absorbs back-pressure
-    so write_span (called from EventBus listeners) stays fast.
+    so publish_span (called from EventBus listeners) stays fast.
     """
 
     DRAIN_DELAY_SECONDS = 0.1
@@ -282,10 +282,10 @@ class _SlowDrainNDJSONWriter(NDJSONTraceWriter):
 
 
 @pytest.mark.asyncio
-async def test_slow_disk_does_not_back_pressure_write_span(tmp_path):
+async def test_slow_disk_does_not_back_pressure_publish_span(tmp_path):
     """Brief edge-case matrix: slow-disk back-pressure.
 
-    With a 100ms per-write delay in the drain task, write_span (the path
+    With a 100ms per-write delay in the drain task, publish_span (the path
     called from EventBus listeners via TraceCollector) must stay near-zero
     latency — the bounded queue absorbs back-pressure so bus.emit doesn't
     inherit the slow disk.
@@ -296,22 +296,22 @@ async def test_slow_disk_does_not_back_pressure_write_span(tmp_path):
     # Open the file via a first span (lazy open + drain task start).
     seed = create_span("TR_SLOW", "seed", "step")
     seed.close()
-    await writer.write_span(seed)
+    await writer.publish_span(seed)
 
-    # Time 10 write_span calls. With 100ms drain delay, total wall time is
+    # Time 10 publish_span calls. With 100ms drain delay, total wall time is
     # ~1s on the drain side — but the calling path should observe ~0ms each.
     latencies: list = []
     for i in range(10):
         span = create_span("TR_SLOW", f"S{i}", "step")
         span.close()
         t0 = time.perf_counter()
-        await writer.write_span(span)
+        await writer.publish_span(span)
         latencies.append(time.perf_counter() - t0)
 
     p99 = max(latencies)
     avg = sum(latencies) / len(latencies)
     assert p99 < 0.05, (
-        f"write_span p99 latency {p99 * 1000:.1f}ms — back-pressure leaked "
+        f"publish_span p99 latency {p99 * 1000:.1f}ms — back-pressure leaked "
         f"from the slow drain (100ms/write) to the emit path. "
         f"avg={avg * 1000:.2f}ms latencies={[round(l*1000, 2) for l in latencies]}"
     )
@@ -344,7 +344,7 @@ async def test_concurrent_branches_no_interleaved_corruption(tmp_path):
         for i in range(spans_per_branch):
             span = create_span("TR_CONC", f"{branch}-S{i}", "step")
             span.close(end_time=span.start_time + 0.001)
-            await writer.write_span(span)
+            await writer.publish_span(span)
 
     await asyncio.gather(*[emit_burst(f"B{b}") for b in range(5)])
     await writer.close()

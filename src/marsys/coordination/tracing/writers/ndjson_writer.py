@@ -2,9 +2,9 @@
 Streaming NDJSON trace writer.
 
 One JSON object per closed span, written line-by-line as spans close, plus a
-``stream_completed`` marker on close. Hooked into ``TraceCollector`` via the
-``write_span`` method on the ``TraceWriter`` ABC; the collector remains the
-single ``EventBus`` subscriber and sole tree builder.
+``stream_completed`` marker on close. Implements ``TelemetrySink``; hooked into
+``TraceCollector`` via ``publish_span``. The collector remains the single
+``EventBus`` subscriber and sole tree builder.
 
 Wire format per line::
 
@@ -37,11 +37,11 @@ import os
 import time
 from typing import Any, Dict, Optional, TYPE_CHECKING
 
-from .base import TraceWriter
+from ..sink import TelemetrySink
 
 if TYPE_CHECKING:
     from ..config import TracingConfig
-    from ..types import Span, TraceTree
+    from ..types import Span
 
 logger = logging.getLogger(__name__)
 
@@ -53,11 +53,11 @@ class _DrainSentinel:
 _SENTINEL = _DrainSentinel()
 
 
-class NDJSONTraceWriter(TraceWriter):
-    """Streaming NDJSON trace writer.
+class NDJSONTraceWriter(TelemetrySink):
+    """Streaming NDJSON trace sink.
 
     Each closed span is enqueued from ``TraceCollector`` and serialized to disk
-    by a single dedicated drain task. ``write_span`` is non-blocking on the
+    by a single dedicated drain task. ``publish_span`` is non-blocking on the
     disk path. Drop-oldest on queue overflow.
 
     On disk errors the writer self-disables after
@@ -66,10 +66,8 @@ class NDJSONTraceWriter(TraceWriter):
 
     Lifecycle:
 
-    * ``write_span(span)`` — enqueue (lazy file open on first call; the
+    * ``publish_span(span)`` — enqueue (lazy file open on first call; the
       filename is derived from ``span.trace_id``).
-    * ``write(trace)`` — no-op (kept only for ABC compatibility; the
-      ``stream_completed`` marker is emitted by ``close()``).
     * ``close()`` — drain queue, write ``stream_completed`` marker, fsync,
       close file. Idempotent.
     """
@@ -128,7 +126,7 @@ class NDJSONTraceWriter(TraceWriter):
         return self._disabled
 
     # ── Lifecycle ───────────────────────────────────────────────────────
-    async def write_span(self, span: 'Span') -> None:
+    async def publish_span(self, span: 'Span') -> None:
         """Enqueue a closed span for serialization. Non-blocking on disk."""
         if self._closed:
             return
@@ -144,15 +142,6 @@ class NDJSONTraceWriter(TraceWriter):
             )
 
         self._enqueue_or_drop_oldest(span)
-
-    async def write(self, trace: 'TraceTree') -> None:
-        """No-op. The terminal ``stream_completed`` marker is written by ``close()``.
-
-        Kept for compatibility with the ``TraceWriter`` ABC; finalize-only
-        writers use this hook, but streaming writers have nothing to write
-        here that wasn't already written per span.
-        """
-        return None
 
     async def close(self) -> None:
         """Drain queue, write ``stream_completed`` marker, fsync, close file.

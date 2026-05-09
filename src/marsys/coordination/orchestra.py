@@ -208,11 +208,12 @@ class Orchestra:
             from .tracing.collector import TraceCollector
             from .tracing.writers.ndjson_writer import NDJSONTraceWriter
 
-            ndjson_writer = NDJSONTraceWriter(execution_config.tracing)
+            sinks: list = [NDJSONTraceWriter(execution_config.tracing)]
+            sinks.extend(execution_config.tracing.sinks)
             self.trace_collector = TraceCollector(
                 event_bus=self.event_bus,
                 config=execution_config.tracing,
-                writers=[ndjson_writer],
+                sinks=sinks,
             )
             logger.info("Tracing enabled, output dir: %s", execution_config.tracing.output_dir)
 
@@ -997,22 +998,22 @@ class Orchestra:
         return result
 
     def _collect_tracing_metadata(self) -> Dict[str, Any]:
-        """Read writer counters into a metadata dict for ``OrchestraResult``.
+        """Read sink counters into a metadata dict for ``OrchestraResult``.
 
-        Returns an empty dict if no streaming writer is registered. Programmatic
+        Returns an empty dict if no streaming sink is registered. Programmatic
         consumers (Cloud worker, CI) inspect this to detect partial / disabled
-        traces without having to instantiate the writer themselves.
+        traces without having to instantiate the sink themselves.
         """
         if self.trace_collector is None:
             return {}
-        for writer in self.trace_collector.writers:
-            if hasattr(writer, "total_spans") and hasattr(writer, "disabled"):
+        for sink in self.trace_collector.sinks:
+            if hasattr(sink, "total_spans") and hasattr(sink, "disabled"):
                 return {
-                    "total_spans": writer.total_spans,
-                    "disk_error_count": writer.disk_error_count,
-                    "dropped_span_count": writer.dropped_span_count,
-                    "disabled_dropped_count": writer.disabled_dropped_count,
-                    "disabled": writer.disabled,
+                    "total_spans": sink.total_spans,
+                    "disk_error_count": sink.disk_error_count,
+                    "dropped_span_count": sink.dropped_span_count,
+                    "disabled_dropped_count": sink.disabled_dropped_count,
+                    "disabled": sink.disabled,
                 }
         return {}
     
