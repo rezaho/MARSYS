@@ -120,7 +120,7 @@ The translation layer lives in `src/spren/events.py`. It subscribes to MARSYS `E
 
 FastAPI emits `/openapi.json` automatically. The same Pydantic models are reused across every client (SP-019):
 
-1. `apps/web` build script fetches `/openapi.json` from a running dev server (or static-build snapshot) and runs `openapi-typescript` to generate `apps/web/src/lib/api-types.generated.ts`. Pydantic-only models (not in OpenAPI request/response) are emitted via `datamodel-code-generator` into `apps/web/src/lib/types.generated.ts`.
+1. `apps/web` build script fetches `/openapi.json` from a running dev server (or static-build snapshot) and runs `openapi-typescript` to generate `apps/web/src/lib/api-types.generated.ts`. Pydantic-only models (not in OpenAPI request/response) are emitted to JSON Schema via Pydantic's `model_json_schema()` and then to TypeScript via `json-schema-to-typescript` into `apps/web/src/lib/types.generated.ts`. (`datamodel-code-generator` is Python-only; it does not emit TypeScript.)
 2. The Spren API client (`apps/web/src/lib/api.ts`) imports those types.
 3. The TUI (`apps/tui/`) imports the same Pydantic models directly from `packages/spren/src/spren/models/`. No code generation needed — same Python.
 4. The framework adapter (`spren.telemetry`, in `packages/spren/src/spren/telemetry/`) imports the same Pydantic models for its API client.
@@ -143,7 +143,7 @@ All non-2xx responses follow:
 }
 ```
 
-Codes are string enums defined in Pydantic; documented in `04-frontend-architecture.md` as TS enums consumed in error UI.
+Codes are string enums defined in Pydantic (`spren.models.errors.ErrorCode`); the generated TypeScript types in `apps/web/src/lib/api-types.generated.ts` mirror them. Clients render error UI against the generated string union.
 
 ## Pagination
 
@@ -168,18 +168,28 @@ Mutating endpoints accept an optional `Idempotency-Key` header. If the same key 
 `POST /v1/runs/{id}/cancel`:
 - If `queued`: marks `cancelled` immediately
 - If `running`: signals the marsys orchestra to abort; orchestra runs cleanup; status moves to `cancelled` once cleanup completes
-- If `paused`: marks `cancelled` immediately; the snapshot file is retained for inspection until run-retention sweep removes it
+- If `paused`: calls `Orchestra.discard_paused_session(run_id)` immediately, deleting the snapshot from the storage backend; status moves to `cancelled`. The `runs` row stays as run-history for inspection
 - If terminal: returns 409
 
 ## Pause / resume semantics (v0.4)
 
 `POST /v1/runs/{id}/pause`:
-- If `running`: signals `Orchestra.pause_session(run_id)`; orchestra cleanly halts after in-flight tool calls complete (with timeout); state snapshot written to `<data-dir>/data/runs/{run_id}/snapshot.json` atomically; status moves to `paused`
+- If `running`: signals `Orchestra.pause_session(run_id)`; orchestra cleanly halts after in-flight tool calls complete (with timeout); the framework writes the state snapshot atomically (write-temp + fsync + rename + parent-dir fsync) to `<data-dir>/data/runs/{run_id}/snapshot.json` via the configured `FileStorageBackend(root=<data-dir>/data/runs)`; status moves to `paused`
 - If `queued`: marks `paused` without spawning the run; resumes at the front of the queue when resumed
 - If `paused` or terminal: returns 409
 
 `POST /v1/runs/{id}/resume`:
-- If `paused`: reads the snapshot; calls `Orchestra.resume_session(run_id)`; status moves to `running`; events resume on the existing `/v1/runs/{id}/events` SSE stream from where they left off (subscribers re-fetch + tail-follow per the standard reconnection pattern)
+- If `paused`: reads the snapshot via `Orchestra.resume_session(run_id)`; status moves to `running`; events resume on the existing `/v1/runs/{id}/events` SSE stream from where they left off (subscribers re-fetch + tail-follow per the standard reconnection pattern)
+- If `paused` AND the snapshot's `framework_version` does not match the running framework: the framework raises `IncompatibleSnapshotError`; the endpoint catches it and returns 409 with `{"error": {"code": "INCOMPATIBLE_SNAPSHOT", "message": "snapshot was created on framework v{X}; running v{Y}", "details": {"snapshot_version": "X", "running_version": "Y"}}}`. The inspector renders the explicit error and offers the discard affordance
 - If any other state: returns 409
 
-Paused runs survive daemon restart. On daemon startup, runs in `paused` status remain paused until the user or meta-agent explicitly calls `resume`. The framework primitive (`Orchestra.pause_session()` / `resume_session()`) lands in framework v0.4 support — see [`docs/implementation/framework/sessions/v0.3.0/03-pause-resume-completion.md`](../../implementation/framework/sessions/v0.3.0/03-pause-resume-completion.md).
+`GET /v1/runs?status=paused`:
+- Hydrated at daemon startup from `Orchestra.list_paused_sessions() -> list[PausedSessionMetadata]` so paused runs survive across `spren launch` cycles. Metadata-only enumeration; full snapshots are not loaded eagerly. The list endpoint stays the canonical surface — no separate `GET /v1/runs/paused`.
+
+**At-least-once tool-call contract on resume**: pause awaits the in-flight branch tick, but a tool call that was about to start when pause arrived re-runs on resume. Spren's user-visible help documents this; the workflow editor surfaces a warning at definition time when a workflow uses tools whose framework registry entry is non-idempotent.
+
+**Missed schedules during pause**: barrier timeouts and other scheduled events whose `fire_at` was crossed during the paused interval are skip-and-logged by the framework on resume; the run inspector renders these as "missed during pause" entries in the trace view. The run continues without spurious timeout-fail cascades.
+
+**Snapshot retention**: the framework's periodic sweeper (invoked in `Orchestra.__init__`) deletes snapshots older than 30 days; Spren's `runs` row stays as run-history for inspection. Users can discard a paused run early via `POST /v1/runs/{id}/cancel` (which calls `discard_paused_session` immediately).
+
+Paused runs survive daemon restart. On daemon startup, runs in `paused` status remain paused until the user or meta-agent explicitly calls `resume`. The framework primitive (`Orchestra.pause_session()`, `Orchestra.resume_session()`, `Orchestra.list_paused_sessions()`, `Orchestra.discard_paused_session()`) lands in framework v0.4 support — see [`docs/implementation/framework/sessions/v0.3.0/03-pause-resume-completion.md`](../../implementation/framework/sessions/v0.3.0/03-pause-resume-completion.md).

@@ -91,7 +91,7 @@ The merged PR exposes:
   - `class NonSerializableTopologyError(ValueError)` — raised on serialization paths that cannot be represented (e.g., a custom subclass with extra runtime state the spec cannot capture)
 - `ModelConfig` is exported from `coordination.topology.serialize` as a re-export of `marsys.models.models.ModelConfig` (it is already Pydantic; no mirror)
 - A 1-line addition to `coordination/topology/converters/pattern_converter.py` (the `PatternConfigConverter.convert` method) writes the source `PatternConfig` into `topology.metadata["original_pattern"]` as a `PatternConfigSpec.model_dump()` payload before returning the constructed `Topology`. This is a non-TRUNK-CRITICAL change.
-- A standalone Python API for the JSON Schema: `from marsys.coordination.topology.serialize import WorkflowDefinition; WorkflowDefinition.model_json_schema()`. The schema declares JSON Schema 2020-12 (Pydantic v2's default) explicitly via `$schema`.
+- A standalone Python API for the JSON Schema: `from marsys.coordination.topology.serialize import workflow_definition_schema`. The helper emits Pydantic v2's default schema (which is JSON Schema 2020-12) with an explicit `$schema` dialect URL injected on top (Pydantic does not add `$schema` itself).
 - Framework `CHANGELOG.md` entry under `## [Unreleased]`.
 
 ### Acceptance criteria
@@ -103,7 +103,7 @@ The merged PR exposes:
 - [ ] `AgentSpec.tools: list[str]` carries tool names; `pydantic_to_agents` resolves each name against the supplied `tool_registry`. Unknown name raises `UnknownToolError` with the missing name and a hint pointing at the `tool_registry` parameter. The error is a hard failure, not silent
 - [ ] `ModelConfig` flows through `AgentSpec.agent_model: ModelConfig` directly (re-exported, not mirrored)
 - [ ] Enums (`NodeType`, `EdgeType`, `EdgePattern`, `PatternType`) serialize via `Literal[...]` declarations or `model_config = ConfigDict(use_enum_values=True)`; the wire values match the framework's StrEnum values exactly (`"agent"`, `"user"`, `"system"`, `"tool"`, `"invoke"`, `"notify"`, `"query"`, `"stream"`, `"alternating"`, `"symmetric"`, `"hub_and_spoke"`, `"hierarchical"`, `"pipeline"`, `"mesh"`, `"star"`, `"ring"`, `"broadcast"`)
-- [ ] `WorkflowDefinition.model_json_schema()` returns a non-empty schema declaring JSON Schema 2020-12 in the `$schema` field. The schema is documented in module docstring + framework docs as the source of truth for non-Python consumers
+- [ ] `workflow_definition_schema()` returns a non-empty schema with `$schema == "https://json-schema.org/draft/2020-12/schema"`. The schema is documented in module docstring + framework docs as the source of truth for non-Python consumers
 - [ ] Property-based round-trip tests via `hypothesis`: a constrained strategy generates valid topologies (concrete strategies for node count, valid edge connectivity over node-pairs, RESERVED_NODE_NAMES exclusion, valid pattern-arg shapes); each generated topology round-trips losslessly. Strategies are reviewed code, not hand-waved comments
 - [ ] Test matrix covers (a) every `NodeType` × `EdgeType` × `EdgePattern` cell as an example-based test; (b) every `PatternType` preset round-trip end-to-end; (c) Hypothesis property tests for randomized topologies (≥100 examples per shape)
 - [ ] Constructor path on rehydration: `pydantic_to_topology` constructs the `Topology` via `Topology(nodes=[...], edges=[...])`, never `model_construct` shortcuts, so `__post_init__` builds indices and runs validation
@@ -170,7 +170,7 @@ Do the same for execution-side specs in `coordination/serialize.py`:
 
 `AgentSpec` lives in `agents/serialize.py`:
 
-9. `class AgentSpec(BaseModel)`: `name: str`, `goal: str`, `instruction: str`, `agent_model: ModelConfig` (re-exported from `marsys.models.models`), `tools: list[str] = []`, `max_tokens: int | None = 10000`, `allowed_peers: list[str] = []`, `bidirectional_peers: bool = False`, `is_convergence_point: bool | None = None`, `memory_retention: Literal["single_run", "session", "persistent"] = "session"`, `memory_storage_path: str | None = None`, `plan_config: dict[str, Any] | None = None`, `input_schema: dict[str, Any] | None = None`, `output_schema: dict[str, Any] | None = None`. The `agent_model` field name is deliberately not `model` (Pydantic v2 reserves the `model_*` namespace).
+9. `class AgentSpec(BaseModel)`: `name: str`, `goal: str`, `instruction: str`, `agent_class: str = "Agent"` (concrete class name to instantiate; resolved through `agent_class_registry` at hydration time so subclasses like `BrowserAgent` / `WebSearchAgent` round-trip without silent downcast), `agent_model: ModelConfig` (re-exported from `marsys.models.models`), `tools: list[str] = []`, `max_tokens: int | None = 10000`, `allowed_peers: list[str] = []`, `bidirectional_peers: bool = False`, `is_convergence_point: bool | None = None`, `memory_retention: Literal["single_run", "session", "persistent"] = "session"`, `memory_storage_path: str | None = None`, `plan_config: dict[str, Any] | None = None`, `input_schema: dict[str, Any] | None = None`, `output_schema: dict[str, Any] | None = None`. The `agent_model` field name is deliberately not `model` (Pydantic v2 reserves the `model_*` namespace).
 
 All Pydantic models declare `model_config = ConfigDict(extra="forbid")` to fail loudly when a producer sends an unknown field, except where existing framework dataclasses use `extra="allow"`-like flexibility (`Topology.metadata`, `Node.metadata`, `Edge.metadata` are unconstrained dicts already; `ConfigDict(extra="forbid")` applies to the spec models, not their nested `metadata` dicts).
 
@@ -179,19 +179,32 @@ All Pydantic models declare `model_config = ConfigDict(extra="forbid")` to fail 
 `agents/serialize.py`:
 
 ```python
-def agent_to_pydantic(agent: BaseAgent) -> AgentSpec:
+import dataclasses
+
+def agent_to_pydantic(agent: Agent) -> AgentSpec:
+    """
+    Capture an Agent (or subclass) as a Pydantic spec.
+
+    Note: typed against the concrete `Agent` class (not `BaseAgent`) because the
+    originating `ModelConfig` is stored on `Agent._model_config` (set at
+    `agents.py:2816`); `BaseAgent` only carries the bound `self.model` adapter,
+    not the Pydantic ModelConfig instance the user passed in. If a workflow uses
+    pure-`BaseAgent` subclasses that don't store the originating config, raise a
+    clear error pointing the user at the `model_config=` constructor kwarg.
+    """
     return AgentSpec(
         name=agent.name,
         goal=agent.goal,
         instruction=agent.instruction,
-        agent_model=agent.model.config,        # ModelConfig is on the model adapter
-        tools=list(agent.tools.keys()),
+        agent_class=type(agent).__name__,                  # "Agent" / "BrowserAgent" / "WebSearchAgent" / ...
+        agent_model=agent._model_config,                   # the Pydantic ModelConfig stored on Agent
+        tools=list(agent.tools.keys()),                    # tools is ObservableToolsDict (dict subclass); .keys() works
         max_tokens=agent.max_tokens,
         allowed_peers=sorted(agent._allowed_peers_init),
         bidirectional_peers=agent._bidirectional_peers,
         is_convergence_point=agent._is_convergence_point,
         memory_retention=agent._memory_retention,
-        plan_config=agent._planning_config.to_dict() if agent._planning_config else None,
+        plan_config=dataclasses.asdict(agent._planning_config) if agent._planning_config else None,
         input_schema=agent.input_schema,
         output_schema=agent.output_schema,
     )
@@ -199,9 +212,27 @@ def agent_to_pydantic(agent: BaseAgent) -> AgentSpec:
 def pydantic_to_agents(
     spec: WorkflowDefinition,
     tool_registry: Dict[str, Callable],
-) -> list[BaseAgent]:
-    agents: list[BaseAgent] = []
+    agent_class_registry: Dict[str, Type[Agent]] | None = None,
+) -> list[Agent]:
+    """
+    Hydrate Agent (and subclass) instances from a spec.
+
+    `agent_class_registry` maps `agent_class` strings → concrete `Agent` subclass.
+    Defaults to `{"Agent": Agent, "BrowserAgent": BrowserAgent, "WebSearchAgent": WebSearchAgent,
+    "FileOperationAgent": FileOperationAgent}` when not supplied. Unknown class
+    raises `UnknownAgentClassError` so subclass-using workflows do NOT silently
+    downcast to plain `Agent`.
+    """
+    registry = agent_class_registry or _default_agent_class_registry()
+    agents: list[Agent] = []
     for agent_name, agent_spec in spec.agents.items():
+        cls = registry.get(agent_spec.agent_class)
+        if cls is None:
+            raise UnknownAgentClassError(
+                f"Agent class '{agent_spec.agent_class}' (for agent '{agent_name}') "
+                f"is not registered. Pass an agent_class_registry mapping name → "
+                f"Agent subclass, or rewrite the workflow to use a registered class."
+            )
         tools_dict: Dict[str, Callable] = {}
         for tool_name in agent_spec.tools:
             if tool_name not in tool_registry:
@@ -211,16 +242,20 @@ def pydantic_to_agents(
                     f"to pydantic_to_agents."
                 )
             tools_dict[tool_name] = tool_registry[tool_name]
-        agents.append(Agent(
+        agents.append(cls(
             name=agent_spec.name,
             goal=agent_spec.goal,
             instruction=agent_spec.instruction,
-            model=ModelConfigToModel(agent_spec.agent_model),    # whichever adapter the framework already exposes
+            model_config=agent_spec.agent_model,           # marsys constructor kwarg is `model_config`
             tools=tools_dict,
             ...
         ))
     return agents
 ```
+
+Subclass-specific extra constructor parameters (e.g., `BrowserAgent`'s browser-pool config) are out of scope for the v0.3 serializer. The brief's contract is "round-trip the parameters carried on `AgentSpec`"; subclasses that need additional state should either:
+- accept defaults at re-hydration (the subclass's `__init__` defaults fill in), OR
+- carry their extra fields in `AgentSpec.metadata: dict[str, Any]` and read them back via a subclass-specific override (out of scope for this PR — flag as a follow-up).
 
 `coordination/topology/serialize.py`:
 
@@ -272,17 +307,19 @@ The forward dispatch (`_hub_and_spoke`, `_hierarchical`, …) is untouched. The 
 
 ### Step 4 — JSON Schema export
 
-Confirm Pydantic v2's default schema dialect is JSON Schema 2020-12. Document this in the module docstring of `coordination/topology/serialize.py` and in the framework docs entry that this PR adds. Provide a small helper:
+Pydantic v2 emits JSON Schema 2020-12 by default but does NOT include a `$schema` declaration in the output of `model_json_schema()`. Add it manually so non-Python consumers can validate against the canonical dialect URL. Document this in the module docstring of `coordination/topology/serialize.py` and in the framework docs entry that this PR adds. Provide a small helper:
 
 ```python
+JSON_SCHEMA_DIALECT = "https://json-schema.org/draft/2020-12/schema"
+
 def workflow_definition_schema() -> dict:
-    """Return the JSON Schema for WorkflowDefinition. Dialect: JSON Schema 2020-12."""
+    """Return the JSON Schema for WorkflowDefinition with a $schema dialect declaration."""
     schema = WorkflowDefinition.model_json_schema()
-    assert schema.get("$schema") == "https://json-schema.org/draft/2020-12/schema"
+    schema["$schema"] = JSON_SCHEMA_DIALECT
     return schema
 ```
 
-This is the reachable Python API path the `openapi-typescript` + `datamodel-code-generator` Spren-side pipeline reads from.
+This is the reachable Python API path Spren-side type generation reads from. Spren's pipeline calls `workflow_definition_schema()` (or the equivalent helper for any standalone Pydantic model the framework exposes), writes the result to `apps/web/types-source.json`, and runs `json-schema-to-typescript` to produce TypeScript types.
 
 ### Step 5 — Tests
 
@@ -460,7 +497,7 @@ This PR adds one new sibling module per affected package and edits one non-TRUNK
 ## Open questions for the framework team
 
 1. **Module placement of execution-side specs.** Brief proposes `coordination/serialize.py` for `ExecutionConfigSpec`, `ConvergencePolicyConfigSpec`, `TracingConfigSpec`, `StatusConfigSpec`. Alternative is colocating each spec next to its dataclass (e.g., a `tracing/serialize.py`). Confirm placement.
-2. **`AgentSpec.agent_model` access path on the runtime side.** The brief reads `agent.model.config` on `agent_to_pydantic`; verify which attribute on the live model adapter exposes the originating `ModelConfig`. If the adapter does not retain the `ModelConfig` instance, escalate — the model rehydration path needs an additional design step.
+2. **`AgentSpec.agent_model` access path on the runtime side.** The brief reads `agent._model_config` (set on `Agent` concrete at `agents.py:2816`). `BaseAgent` does not store the originating `ModelConfig` — only the bound `self.model` adapter. If a workflow uses a pure-`BaseAgent` subclass that doesn't store the originating config, `agent_to_pydantic` raises a clear error pointing the user at the `model_config=` constructor kwarg.
 3. **Plan-config and schema-field round-trips.** `plan_config: dict[str, Any] | None` and `input_schema` / `output_schema: dict[str, Any] | None` are passed through opaquely. Confirm this is sufficient for v0.4 consumers; if the framework wants typed schemas for these, they belong in a follow-up PR.
 
 ---
