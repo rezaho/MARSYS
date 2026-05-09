@@ -33,7 +33,7 @@ Explanation: `_run()` must not mutate memory or parse actions; both are handled 
 
 **Violations cause**: Double-counted memory, inconsistent tool ordering, and conflicting routing decisions.
 
-**Exceptions**: None. Tests may stub `_run()` but must still return a `Message` and avoid side effects.
+**Exceptions**: Observation events (status / tracing emissions to the `EventBus`) do not violate this principle — they record what happened without mutating routing-relevant state. The agent already emits `MemoryResetEvent` / `CompactionEvent` from `memory.set_event_context` and planning events from `_planning_state`; the same pattern applies to `AgentMessagesPreparedEvent` (emitted in `_run` immediately before model dispatch) and `ErrorEvent` (emitted in `_run` exception handlers before converting to error `Message`). Tests may stub `_run()` but must still return a `Message` and avoid actual mutations.
 
 ---
 
