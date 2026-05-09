@@ -7,11 +7,18 @@ via registered TraceWriters.
 """
 
 import asyncio
+import copy
 import logging
+import pathlib
 import time
 from typing import Any, Dict, List, Optional, TYPE_CHECKING
 
 from ._ids import new_id
+from .messages import (
+    FilesystemMessageStore,
+    MessageStore,
+    build_input_messages_ref,
+)
 from .redactor import SecretRedactor
 from .types import Span, TraceTree, create_span
 from .config import TracingConfig
@@ -47,6 +54,7 @@ class TraceCollector:
         self.config = config
         self.sinks = sinks or []
         self._redactor = config.redactor if config.redactor is not None else SecretRedactor()
+        self._message_store: Optional[MessageStore] = self._build_message_store(config)
 
         # Trace state (protected by _lock)
         self._lock = asyncio.Lock()
@@ -55,8 +63,27 @@ class TraceCollector:
         self.branch_spans: Dict[str, Span] = {}  # branch_id -> Span (survives closure)
         self.step_spans: Dict[str, Span] = {}  # step_span_id -> Span (survives closure)
         self._pending_convergence: Dict[str, List[Dict]] = {}  # branch_id -> convergence info for next step
+        # branch_id -> last resolved history (list of message hashes). Used by
+        # _handle_agent_start to compute the patch + base anchor for each step,
+        # and inherited by child branches at fork for free prefix-dedup.
+        self._last_history: Dict[str, List[str]] = {}
 
         self._subscribe_to_events()
+
+    @staticmethod
+    def _build_message_store(config: TracingConfig) -> Optional[MessageStore]:
+        """Materialize the message store iff full-input capture is enabled.
+
+        Honors a user-supplied override (``config.message_store``) when set;
+        otherwise builds a default ``FilesystemMessageStore`` rooted at
+        ``config.output_dir``. Returns ``None`` when capture is off — the
+        ``_handle_agent_start`` path then runs the legacy summary-only flow.
+        """
+        if not getattr(config, "capture_full_input", False):
+            return None
+        if config.message_store is not None:
+            return config.message_store
+        return FilesystemMessageStore(base_dir=pathlib.Path(config.output_dir))
 
     def _subscribe_to_events(self) -> None:
         """Subscribe to all trace-relevant event types."""
@@ -145,6 +172,17 @@ class TraceCollector:
             branch_id = getattr(event, 'branch_id', None)
             if branch_id:
                 self.branch_spans[branch_id] = branch_span
+                # Phase 3: child branch inherits parent's history at fork point so
+                # its first step's diff anchors against shared prefix → free
+                # cross-branch dedup of identical message hashes.
+                parent_branch_id = getattr(event, 'parent_branch_id', None)
+                if (
+                    self._message_store is not None
+                    and parent_branch_id
+                    and parent_branch_id in self._last_history
+                    and branch_id not in self._last_history
+                ):
+                    self._last_history[branch_id] = list(self._last_history[parent_branch_id])
             logger.debug(f"Branch span created: {event.branch_name}")
 
     async def _handle_branch_event(self, event: Any) -> None:
@@ -209,6 +247,30 @@ class TraceCollector:
             self.open_spans[step_span.span_id] = step_span
             self.step_spans[step_span_id] = step_span
 
+            # Phase 3: full-input capture. When the step executor populated
+            # ``event.messages`` (driven by ``TracingConfig.capture_full_input``),
+            # redact each message, write content-addressed blobs to the store,
+            # and attach the ref dict to span attributes. Same idiom as the
+            # redactor — runs once here so all downstream consumers see the
+            # ref uniformly. ``branch_id`` keys the per-branch history so each
+            # step's diff anchors against its predecessor on the same branch.
+            messages = getattr(event, "messages", None)
+            if self._message_store is not None and messages:
+                try:
+                    redacted_messages = self._redact_messages_for_store(messages)
+                    prev_history = self._last_history.get(branch_id) if branch_id else None
+                    ref = build_input_messages_ref(
+                        redacted_messages,
+                        store=self._message_store,
+                        prev_history=prev_history,
+                    )
+                    step_span.attributes["input_messages_ref"] = ref
+                    if branch_id:
+                        self._last_history[branch_id] = list(ref["history"])
+                except Exception as e:  # noqa: BLE001
+                    # Tracing must never break the run.
+                    logger.warning("Full-input capture skipped for step %s: %s", step_span_id, e)
+
             # Attach pending convergence info to this step (it's the convergence step)
             pending = getattr(self, '_pending_convergence', {})
             if branch_id in pending:
@@ -217,6 +279,24 @@ class TraceCollector:
                         step_span.add_link(child_span_id, "convergence", conv["convergence_data"])
                     step_span.add_event("convergence", conv["convergence_data"])
                 del pending[branch_id]
+
+    def _redact_messages_for_store(
+        self,
+        messages: List[Dict[str, Any]],
+    ) -> List[Dict[str, Any]]:
+        """Deep-copy each message and run the configured redactor.
+
+        Two reasons to deep-copy: (1) the agent's working memory must not
+        be mutated by tracing, and (2) the redactor mutates in place, so a
+        shared reference would leak redacted dicts back into runtime state.
+        """
+        redacted: List[Dict[str, Any]] = []
+        for msg in messages:
+            clone = copy.deepcopy(msg)
+            if isinstance(clone, dict):
+                self._redactor.redact(clone)
+            redacted.append(clone)
+        return redacted
 
     async def _handle_generation(self, event: Any) -> None:
         """Create generation child span on the step span."""

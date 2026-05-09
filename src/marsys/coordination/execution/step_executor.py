@@ -148,6 +148,58 @@ class StepExecutor:
             "tool_executions": 0
         })
     
+    def _serialize_input_messages(
+        self,
+        agent: Any,
+        request: Any,
+    ) -> Optional[List[Dict[str, Any]]]:
+        """Serialize the agent's effective input messages for trace capture.
+
+        Combines the agent's existing memory (the conversation so far) with
+        the current ``request`` so the trace records exactly what would be
+        sent on this step's API call. Returns ``None`` when the agent
+        exposes no memory or serialization fails — the collector then
+        falls back to the legacy ``request_summary``-only path.
+
+        Phase 3 captures dicts (per ``Message.to_api_format``) rather than
+        the live ``Message`` objects to avoid coupling the trace event to
+        the agent memory class lifecycle.
+        """
+        try:
+            messages: List[Dict[str, Any]] = []
+
+            # Agent's own memory: prior turns + system message.
+            memory = getattr(agent, "memory", None)
+            if memory is not None and hasattr(memory, "get_messages"):
+                for msg in memory.get_messages():
+                    api_form = (
+                        msg.to_api_format() if hasattr(msg, "to_api_format")
+                        else (dict(msg) if isinstance(msg, dict) else None)
+                    )
+                    if api_form is not None:
+                        messages.append(api_form)
+
+            # Current request — the new turn this step is about to deliver.
+            if request is not None:
+                if hasattr(request, "to_api_format"):
+                    messages.append(request.to_api_format())
+                elif isinstance(request, dict):
+                    messages.append(dict(request))
+                elif isinstance(request, list):
+                    for item in request:
+                        if hasattr(item, "to_api_format"):
+                            messages.append(item.to_api_format())
+                        elif isinstance(item, dict):
+                            messages.append(dict(item))
+                else:
+                    messages.append({"role": "user", "content": str(request)})
+
+            return messages if messages else None
+        except Exception as e:  # noqa: BLE001
+            # Tracing must never break the run.
+            logger.debug("Trace input-capture serialization skipped: %s", e)
+            return None
+
     async def _emit_error_event(
         self,
         *,
@@ -271,6 +323,17 @@ class StepExecutor:
             # Create request summary
             request_summary = str(request)[:100] if request else None
 
+            # Full-input capture (Phase 3). When TracingConfig.capture_full_input
+            # is on, serialize the agent's input messages to dicts so the
+            # tracing collector can hash them into the content-addressed
+            # MessageStore. Skipped silently when disabled or when the agent
+            # has no memory yet (deterministic fallback).
+            messages_for_trace: Optional[List[Dict[str, Any]]] = None
+            execution_config_obj = context.get("execution_config")
+            tracing_cfg = getattr(execution_config_obj, "tracing", None) if execution_config_obj else None
+            if tracing_cfg is not None and getattr(tracing_cfg, "capture_full_input", False):
+                messages_for_trace = self._serialize_input_messages(agent, request)
+
             await self.event_bus.emit(AgentStartEvent(
                 session_id=context.get("session_id", "unknown"),
                 branch_id=context.get("branch_id"),
@@ -278,6 +341,7 @@ class StepExecutor:
                 request_summary=request_summary,
                 step_number=step_number,
                 step_span_id=step_span_id,
+                messages=messages_for_trace,
             ))
 
         # Store span ID in context for downstream use (tool executor, generation event)

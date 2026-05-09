@@ -8,6 +8,7 @@ from typing import TYPE_CHECKING, List, Optional
 if TYPE_CHECKING:
     from .sink import TelemetrySink
     from .redactor import SecretRedactor
+    from .messages import MessageStore
 
 
 @dataclass
@@ -19,6 +20,13 @@ class TracingConfig:
     plus per-event-kind toggles for content capture, plus the list of
     user-supplied TelemetrySinks and the SecretRedactor that runs once
     at the fan-out boundary in TraceCollector._stream_span.
+
+    Full-input capture (``capture_full_input``) is opt-in: when enabled,
+    each agent step records its full input message list as content-addressed
+    hashes via the :class:`~marsys.coordination.tracing.messages.MessageStore`.
+    Identical messages dedup automatically across all traces sharing the
+    same ``output_dir``. Default is off until disk-overhead numbers from
+    real workflows are validated.
     """
 
     enabled: bool = False
@@ -28,3 +36,10 @@ class TracingConfig:
     include_tool_results: bool = True
     sinks: List['TelemetrySink'] = field(default_factory=list)
     redactor: Optional['SecretRedactor'] = None
+
+    # Full-input capture (Phase 3). Off by default — opt-in until benchmark
+    # numbers validate the disk overhead in real workflows.
+    capture_full_input: bool = False
+    # Optional override of the default ``FilesystemMessageStore``.
+    # Plug in S3/Redis/etc. backends by subclassing ``MessageStore``.
+    message_store: Optional['MessageStore'] = None
