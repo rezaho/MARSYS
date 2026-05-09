@@ -1,0 +1,63 @@
+name: AgentInput
+criticality: LOAD-BEARING
+
+purpose: |
+  Canonical wrapper for input to an agent's step. Sits at the boundary
+  between coordination state (Branch, Barrier) and ConversationMemory.
+  Normalizes multi-source barrier arrivals into typed-text-block content
+  lists so Anthropic accepts them and OpenAI doesn't conflate multimodal
+  payloads.
+
+responsibilities:
+  - Wrap List[Message] for input handoff to an agent step
+  - Coerce legacy input shapes (str / dict / Message / List[Message] / List[Any]) via AgentInput.coerce
+  - Aggregate multi-source barrier arrivals into typed-text-blocks via AgentInput.aggregate
+  - Provide read helpers (primary_content, __str__) for logging and inspection
+  - Append wrapped messages to ConversationMemory via add_to_memory
+
+not_responsible_for:
+  - Memory retention policy — owned by ManagedConversationMemory
+  - Tool execution or response parsing — owned by ToolExecutor / ValidationProcessor
+  - Model invocation — owned by BaseAPIModel / BaseLocalModel adapters
+  - Branch / Barrier state — owned by Orchestrator
+
+design_principles:
+  - DP-001 (agent _run consumes AgentInput; no parsing of coordination semantics)
+
+relationships:
+  called_by:
+    - Orchestrator._aggregate (constructs AgentInput.aggregate for non-ROOT barrier arrivals)
+    - Agent.run_step (calls AgentInput.coerce on incoming requests for back-compat)
+    - DetNodeContext implementations (when packaging det-node deliveries)
+  calls:
+    - Message / ConversationMemory primitives (add_to_memory)
+  never_calls:
+    - Provider APIs
+    - Orchestrator state
+    - Tool execution layers
+
+public_api:
+  factories:
+    - AgentInput.from_text(text, role, name)
+    - AgentInput.from_message(msg)
+    - AgentInput.from_messages(msgs)
+    - AgentInput.coerce(value)
+    - AgentInput.aggregate(arrived)
+  members:
+    - add_to_memory(memory)
+    - primary_content (property, str for logging)
+    - __str__ (human-readable summary, truncated)
+
+boundaries:
+  add_here:
+    - New factory for a new input shape (e.g., AgentInput.from_tool_result if tool-result aggregation needs special handling)
+    - Aggregate output normalization (typed-text-blocks for new content types)
+  not_here:
+    - Memory retention rules
+    - Coordination tool parsing
+    - Prompt building
+
+invariants:
+  - aggregate(arrived) produces a single user Message with content = List[Dict] where each dict is a typed-text-block: {"type": "text", "text": "[from {source}]\n{payload}"}.
+  - coerce accepts str, dict (with magic keys), Message, List[Message], AgentInput, List[Any]; returns an AgentInput.
+  - Multimodal arrivals (typed-text + image blocks) survive aggregation as inline blocks rather than being stringified.
