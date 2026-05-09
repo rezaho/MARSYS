@@ -94,6 +94,12 @@ test:
     pnpm --filter '@marsys/spren-web' test --run
     cargo test --manifest-path apps/desktop/Cargo.toml
 
+# Run cheap-tier framework tests (paid model, ~$0.05/run). Used by the CI
+# smoke job. Requires ANTHROPIC_API_KEY (Claude Haiku 4.5 by default; set
+# MARSYS_CHEAP_MODEL / MARSYS_CHEAP_PROVIDER to swap).
+test-cheap:
+    uv run --package marsys pytest packages/framework/tests -m cheap --tb=short
+
 # Build: Vite production bundle copied into spren/_webui/
 [unix]
 build:
