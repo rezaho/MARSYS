@@ -71,7 +71,6 @@ tmp/
 output/
 new_docs/
 simplifying/
-implementations/
 examples/**/output/**
 examples/**/sessions/
 *.log
