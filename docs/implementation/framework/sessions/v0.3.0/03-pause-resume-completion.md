@@ -76,7 +76,7 @@ The gate is unconditional for this brief:
    - `packages/framework/src/marsys/coordination/state/state_manager.py` (whole file — the reusable storage primitives plus the legacy `StateSnapshot` shape this PR replaces)
    - `packages/framework/src/marsys/coordination/event_bus.py` (whole file — listener model is `Dict[str, List[Callable]]`; not picklable)
 
-2. **Draft the ADR** (file under `docs/architecture/framework/adr/NNN-pause-resume-snapshot.md`, numbered against the next free ADR number) covering:
+2. **Draft the ADR** as `docs/architecture/framework/decisions/ADR-007-pause-resume-snapshot.md` (next free number; `ADR-001..006` already exist in `decisions/`; match their `ADR-NNN-slug.md` naming and "Context / Decision / Rationale" structure). Covers:
    - The minimum touch surface in TRUNK-CRITICAL files (a precise list of which methods you will add and which existing methods you will rewrite, line by line).
    - Why each change is necessary — i.e., what couldn't be done from outside the class.
    - The snapshot shape (the Pydantic models in this brief's "Load-bearing shapes" section), and the contract for `Orchestrator.snapshot()` / `Orchestrator.restore_from(snapshot)`.
@@ -158,7 +158,7 @@ grep -n 'class StateSnapshot\|class StateManager\|class StorageBackend\|class Fi
 grep -rn 'from .branches\|from \.\.branches\|coordination.branches' src/marsys/  # current legacy footprint
 ```
 
-The legacy `coordination/branches/types.py` is **still imported** by `coordination/routing/router.py`, `coordination/validation/response_validator.py`, `coordination/execution/step_executor.py`, `coordination/execution/real_runtime.py`, `coordination/rules/rules_engine.py`, `coordination/communication/user_node_handler.py`, and `coordination/__init__.py`. Removing it is **out of scope for this PR**. Scope here is to drop the legacy `StateSnapshot` shape from `coordination/state/state_manager.py` and replace it with the new shape; the legacy types module is left in place for the modules that still import it.
+The legacy `coordination/branches/types.py` is **still imported** by 9 modules: `coordination/routing/router.py`, `coordination/validation/response_validator.py`, `coordination/execution/step_executor.py`, `coordination/execution/real_runtime.py`, `coordination/rules/rules_engine.py`, `coordination/communication/user_node_handler.py`, `coordination/__init__.py`, plus `coordination/orchestra.py:24` (imports `BranchResult`) and `coordination/state/state_manager.py:28` (which IS in scope of this PR for deletion). Removing the file itself is **out of scope for this PR**. Scope here is to drop the legacy `StateSnapshot` shape from `state_manager.py` and replace it with the new shape; the legacy types module is left in place for the seven other modules that still import it. The `state_manager.py` import goes away when `state_manager.py` is rewritten; the `orchestra.py` import is left untouched (it's a separate `BranchResult` consumer, not the snapshot path).
 
 ---
 
@@ -170,12 +170,12 @@ After merge:
 - A `StorageBackend` Protocol with methods `read(key) -> bytes`, `write(key, bytes)`, `delete(key)`, `list_with_metadata() -> list[StorageEntry]`, `expire_older_than(timedelta)`. The existing ABC is rewritten as a Protocol; the existing `FileStorageBackend` is rewritten against the new Protocol with atomic write semantics (write-temp + fsync(fd) + os.replace + fsync(parent_dir_fd)).
 - `Orchestrator.snapshot() -> OrchestratorState` and `Orchestrator.restore_from(state: OrchestratorState) -> None` — new TRUNK-CRITICAL public methods. ADR-gated.
 - `Orchestra.pause_session(session_id) -> None` rewritten: cleanly halts the run after the in-flight branch tick completes; serializes `Orchestrator.snapshot()` to a `StateSnapshot`; writes the snapshot atomically via the configured `StorageBackend`. Idempotent.
-- `Orchestra.resume_session(session_id) -> AsyncIterator[Event]` rewritten: reads the snapshot; verifies `framework_version`; reconstructs the `Orchestrator` afresh; replays state via `Orchestrator.restore_from`; rebuilds the standard listener set by calling the extracted `Orchestra._wire_event_bus()`; resumes dispatch.
+- `Orchestra.resume_session(session_id) -> OrchestraResult` rewritten: reads the snapshot; verifies `framework_version`; reconstructs the `Orchestrator` afresh; replays state via `Orchestrator.restore_from`; rebuilds the standard listener set by calling the extracted `Orchestra._wire_event_bus()`; resumes dispatch and returns the final `OrchestraResult` (matching `Orchestra.run()`'s shape). In-flight events flow through the existing `EventBus` → SSE adapter on the consumer side per `docs/architecture/spren/03-api-design.md` line 182 — the resumed run reuses the same `/v1/runs/{id}/events` SSE stream subscribers were tail-following before pause; no separate event-stream return value.
 - `Orchestra.list_paused_sessions() -> list[PausedSessionMetadata]` and `Orchestra.discard_paused_session(session_id) -> None` — discovery and explicit-cleanup APIs.
 - The `Orchestra` constructor accepts `storage_backend: StorageBackend | None = None`. Default: `FileStorageBackend(<framework_data_dir>)` where the framework data directory follows the existing `state_manager` convention.
 - A periodic snapshot sweeper runs once on `Orchestra.__init__` and calls `storage_backend.expire_older_than(timedelta(days=30))`. The 30-day default is configurable via `Orchestra(snapshot_retention=...)` parameter.
-- The legacy `StateSnapshot` dataclass + `_serialize_branches` / `_deserialize_branches` helpers in `state_manager.py` are deleted.
-- Framework regression suite green at the same counts as baseline.
+- The legacy `StateSnapshot` dataclass + `_serialize_branches` / `_deserialize_branches` helpers in `state_manager.py` are deleted. `StateManager` itself is removed; `CheckpointManager` is removed; `Orchestra.create_checkpoint` / `restore_checkpoint` public methods are removed; `tests/coordination/test_state_manager_integration.py` is deleted. CHANGELOG entry documents the public-API removals.
+- Framework regression suite green; test counts shift by an explicit delta (the deleted `test_state_manager_integration.py` removes ~30 tests from the legacy `StateManager` integration coverage; the new `tests/coordination/state/test_snapshot.py` + `test_storage.py` + `tests/integration/test_pause_resume.py` add coverage for the new shape). The PR description documents both numbers; the suite passes at the new total.
 - Tests cover: round-trip JSON schema, atomic-write under simulated mid-write crash, semantic-equivalence pause-then-resume vs baseline, cross-process pause/resume via subprocess fixture, framework-version mismatch error.
 
 ### Acceptance criteria
@@ -185,7 +185,7 @@ After merge:
 - [ ] `Orchestrator.snapshot() -> OrchestratorState` returns a value sufficient to fully reconstruct `Orchestrator` mutable state
 - [ ] `Orchestrator.restore_from(state)` reconstructs all of `branches`, `barriers`, `convergence_barriers`, `runnable`, `_fire_queue`, `root_barrier_id`, `_workflow_error`, `_completed_emitted`, `_user_interactions`, `_user_interaction_inflight`. (`_resume_user_responses: asyncio.Queue` is rebuilt fresh on resume; pending user interactions ride in `_user_interactions`.)
 - [ ] `Orchestra.pause_session(session_id) -> None` writes the snapshot atomically; idempotent (calling twice has no extra effect; second call is a no-op log line)
-- [ ] `Orchestra.resume_session(session_id) -> AsyncIterator[Event]` reconstructs orchestrator state + listener wiring + continues dispatch
+- [ ] `Orchestra.resume_session(session_id) -> OrchestraResult` reconstructs orchestrator state + listener wiring + continues dispatch through to terminal state; events flow via the existing `EventBus` → SSE pathway, NOT via the return value
 - [ ] `Orchestra.list_paused_sessions() -> list[PausedSessionMetadata]` returns metadata for all paused snapshots without loading the full snapshot bodies
 - [ ] `Orchestra.discard_paused_session(session_id) -> None` deletes one snapshot
 - [ ] Atomic-write failure tested: simulated crash mid-write leaves the prior snapshot intact (no torn writes); `os.replace` + `fsync(parent_dir)` are exercised
@@ -232,23 +232,29 @@ Don't skim. Read these end-to-end.
 - `packages/framework/src/marsys/coordination/state/snapshot.py` — `StateSnapshot`, `BranchState`, `BarrierState`, `UserInteractionState`, `PausedSessionMetadata` Pydantic models. The single source of truth for the on-disk shape.
 - `packages/framework/src/marsys/coordination/state/storage.py` — the new `StorageBackend` Protocol, `FileStorageBackend` concrete implementation, `StorageEntry` dataclass for `list_with_metadata`. Atomic-write helper lives here.
 - `packages/framework/src/marsys/coordination/state/errors.py` — `IncompatibleSnapshotError`, `SnapshotCorruptionError`, `SnapshotNotFoundError`. (May be folded into `agents/exceptions.py` if the framework prefers a single exceptions file — flag in the ADR.)
-- `docs/architecture/framework/adr/NNN-pause-resume-snapshot.md` — the ADR. Filed before code.
+- `docs/architecture/framework/decisions/ADR-007-pause-resume-snapshot.md` — the ADR. Filed before code; matches the existing `ADR-NNN-slug.md` naming used by `ADR-001..006`.
 - `packages/framework/tests/coordination/state/test_snapshot.py` — round-trip + version-mismatch unit tests
 - `packages/framework/tests/coordination/state/test_storage.py` — atomic-write + retention-sweeper unit tests
-- `packages/framework/tests/integration/test_pause_resume.py` — semantic-equivalence + cross-process pause/resume (subprocess fixture). Uses the simulator at `packages/framework/research/orchestration/simulator/`.
+- `packages/framework/tests/integration/test_pause_resume.py` — semantic-equivalence + cross-process pause/resume (subprocess fixture). Drives the live `Orchestrator` directly using the live `DeterministicRuntime` at `coordination/execution/deterministic_runtime.py:19` (NOT the simulator's `MockRuntime` — that lives at `research/orchestration/simulator/runtime.py:17` against a drifted parallel `Orchestrator` copy and would not exercise the live snapshot/restore paths).
 
 ### Files to modify
 
-- `packages/framework/src/marsys/coordination/state/state_manager.py` — delete the legacy `StateSnapshot` dataclass (lines 41–73), `_serialize_branches` / `_deserialize_branches` (lines 465–542), `_serialize_results` / `_deserialize_results` (lines 568–622), and the `StateManager.save_session` / `load_session` / `pause_execution` / `resume_execution` methods that target the legacy shape. Keep the file as the home of `CheckpointManager` (if used elsewhere) and any other still-live utilities — verify with grep before deletion. The new snapshot path bypasses `StateManager` entirely; `Orchestra` calls the `StorageBackend` directly.
-- `packages/framework/src/marsys/coordination/execution/orchestrator.py` — add `Orchestrator.snapshot() -> OrchestratorState` and `Orchestrator.restore_from(state: OrchestratorState) -> None`. ADR-gated. These are the only TRUNK-CRITICAL non-additive touches in this file. (`OrchestratorState` is a dataclass internal to the orchestrator — distinct from the on-disk `StateSnapshot` Pydantic model. The Orchestra layer maps between them.)
+- `packages/framework/src/marsys/coordination/state/state_manager.py` — delete the legacy `StateSnapshot` dataclass (lines 41–73), `_serialize_branches` / `_deserialize_branches` (lines 465–500 / 502–542), `_serialize_results` / `_deserialize_results` (lines 568–591 / 593–621), and the `StateManager.save_session` / `load_session` / `pause_execution` / `resume_execution` methods that target the legacy shape. The new snapshot path bypasses `StateManager` entirely; `Orchestra` calls the `StorageBackend` directly. (See **Public-API removals** below — `CheckpointManager` and the `Orchestra.create_checkpoint` / `restore_checkpoint` public methods depend on these and are also removed in this PR.)
+- `packages/framework/src/marsys/coordination/state/checkpoint.py` — **delete** the `CheckpointManager` class (`checkpoint.py:45`) and the `Checkpoint` dataclass it consumes. `CheckpointManager.create_checkpoint` / `restore_checkpoint` (`checkpoint.py:110, 148`) call `state_manager.load_session` / `save_session` / `storage.list_keys` / `storage.load` / `storage.delete` (`checkpoint.py:105-342`), all of which this PR removes. Document the removal in CHANGELOG. (Alternative considered + rejected: keep `CheckpointManager` as a thin adapter over the new `StorageBackend` — adds scope without consumer demand. If a future use case surfaces, restore via a separate session.)
+- `packages/framework/src/marsys/coordination/state/__init__.py` — update re-exports. Remove `StateManager`, `StateSnapshot`, the legacy `StorageBackend` ABC; add the new `StorageBackend` Protocol, `FileStorageBackend`, `StateSnapshot` (Pydantic model from `state/snapshot.py`), `IncompatibleSnapshotError`. Drop `CheckpointManager` per the line above.
+- `packages/framework/src/marsys/coordination/__init__.py` — update re-exports. Drop `StateManager`, `CheckpointManager` (gone in this PR); keep `StorageBackend`, `FileStorageBackend` (now under the Protocol). Document the removal in CHANGELOG.
+- `packages/framework/src/marsys/coordination/execution/orchestrator.py` — add `Orchestrator.snapshot() -> OrchestratorState` and `Orchestrator.restore_from(state: OrchestratorState) -> None`. ADR-gated. These are the only TRUNK-CRITICAL non-additive touches in this file. (`OrchestratorState` is a dataclass internal to the orchestrator — distinct from the on-disk `StateSnapshot` Pydantic model. The Orchestra layer maps between them.) `Orchestrator.snapshot()` MUST return a deep-copy of the live mutable state; `Branch` and `Barrier` instances are NOT shared with the live orchestrator — the next tick must not be able to mutate the snapshot.
 - `packages/framework/src/marsys/coordination/orchestra.py`:
-  - Extract listener-wiring from `_initialize_components` into a new `_wire_event_bus()` method, callable from both `__init__` and `resume_session`. (Listener wiring spans `StatusManager` setup at lines ~178–203 and `TraceCollector` setup at lines ~206–217; the extraction is mechanical.)
+  - Extract listener-wiring from `_initialize_components` (line 163) into a new `_wire_event_bus()` method, callable from both `__init__` and `resume_session`. (Listener wiring spans `StatusManager` setup at lines ~174–203 and `TraceCollector` setup at lines ~206–217; the extraction is mechanical.)
   - Add `storage_backend: StorageBackend | None = None` and `snapshot_retention: timedelta = timedelta(days=30)` parameters to `Orchestra.__init__`. Defaults preserve existing behavior (no breaking change for callers that don't pass them).
   - Trigger `storage_backend.expire_older_than(snapshot_retention)` once during `__init__`.
-  - Rewrite `pause_session(session_id)` (lines 999–1032) to call `Orchestrator.snapshot()`, build a `StateSnapshot`, write atomically via the configured `StorageBackend`. Idempotent.
-  - Rewrite `resume_session(session_id)` (lines 1034–1079) per the AsyncIterator contract above. Replace the placeholder `OrchestraResult` at lines 1069–1079.
+  - Rewrite `pause_session(session_id) -> None` (lines 999–1032) to call `Orchestrator.snapshot()`, build a `StateSnapshot`, write atomically via the configured `StorageBackend`. Idempotent.
+  - Rewrite `resume_session(session_id) -> OrchestraResult` (lines 1034–1079); replace the placeholder return at lines 1069–1079.
   - Add `list_paused_sessions()` and `discard_paused_session(session_id)` methods.
-- `packages/framework/CHANGELOG.md` — entry under the v0.3.x or v0.4.0 release this PR targets.
+  - **Delete `Orchestra.create_checkpoint(session_id, checkpoint_name) -> str` (lines 1081–1098) and `Orchestra.restore_checkpoint(session_id, checkpoint_id) -> bool` (lines 1100–1116)** — both delegate to `state_manager.create_checkpoint` / `restore_checkpoint`, which are removed in this PR. Document in CHANGELOG.
+  - **Update `Session.pause()` (lines 1185–1198) and `Session.resume()` (lines 1199–1213)**: `Session.pause` keeps its `bool` return (success / fail) but its body changes from `success = await self.orchestra.pause_session(self.id)` (which used to return `bool`) to `try: await self.orchestra.pause_session(self.id); return True except StateError: return False`. `Session.resume` (currently calls `result = await self.orchestra.resume_session(self.id); if result.success: ...`) keeps its body unchanged because `resume_session` now returns `OrchestraResult` per [C1] above — the existing `result.success` access still works.
+- `packages/framework/tests/coordination/test_state_manager_integration.py` (562 lines) — **delete this file wholesale.** It exercises `StateManager.load_session` / `save_session` / `pause_execution` / `resume_execution` / `Orchestra.create_checkpoint` / `Orchestra.restore_checkpoint`, all removed in this PR. The new `tests/coordination/state/test_storage.py` + `tests/coordination/state/test_snapshot.py` + `tests/integration/test_pause_resume.py` provide replacement coverage of the new shape. Document the count delta in "What was actually built" — the regression suite count drops by ~30 tests (the integration file's test count) and gains the new tests. The acceptance criterion below reflects the explicit count delta, NOT a same-counts promise.
+- `packages/framework/CHANGELOG.md` — entry under the v0.3.x or v0.4.0 release this PR targets. Document: (1) `StateManager` class removed; (2) `CheckpointManager` removed; (3) `Orchestra.create_checkpoint` / `Orchestra.restore_checkpoint` public methods removed; (4) snapshot shape changed (legacy snapshots cannot be read by this version — `IncompatibleSnapshotError`); (5) new `StorageBackend` Protocol + `FileStorageBackend` + new pause/resume API surface.
 
 ### Files NOT to touch
 
@@ -293,18 +299,27 @@ class ConvergencePolicyState(BaseModel):
 
 
 class BarrierState(BaseModel):
-    """Mirror of orchestrator_types.Barrier (lines 130-151), JSON-safe."""
+    """Mirror of orchestrator_types.Barrier (lines 130-151), JSON-safe.
+
+    Note on set fields: Barrier.candidates / upstream / downstream are set[str]
+    on the live orchestrator (orchestrator_types.py:145, 148, 149). Snapshots
+    serialize them as JSON arrays of strings. `Orchestrator.snapshot()` casts
+    set → list (sorted for determinism). `Orchestrator.restore_from()` casts
+    list → set on hydration. The Pydantic mirror's list type is the wire shape;
+    the round-trip cast happens at the orchestrator boundary, not in the
+    Pydantic model itself.
+    """
     id: str
     policy: ConvergencePolicyState
     status: str  # "OPEN" | "FIRED" | "CANCELLED"
     resolver_branch: str | None = None
     resolver_agent: str | None = None
     rendezvous_node: str | None = None
-    candidates: list[str] = Field(default_factory=list)
+    candidates: list[str] = Field(default_factory=list)   # set[str] on live orchestrator
     arrived: dict[str, Any] = Field(default_factory=dict)  # see "Barrier value contract" below
     failed: dict[str, str] = Field(default_factory=dict)
-    upstream: list[str] = Field(default_factory=list)
-    downstream: list[str] = Field(default_factory=list)
+    upstream: list[str] = Field(default_factory=list)     # set[str] on live orchestrator
+    downstream: list[str] = Field(default_factory=list)   # set[str] on live orchestrator
     created_at: float
     metadata: dict[str, Any] = Field(default_factory=dict)
 
@@ -410,7 +425,7 @@ class Orchestra:
         """Cleanly halt the run; write a snapshot atomically. Idempotent on a
         session that is already paused."""
 
-    async def resume_session(self, session_id: str) -> AsyncIterator[Event]:
+    async def resume_session(self, session_id: str) -> OrchestraResult:
         """Read the snapshot for `session_id`; verify framework_version;
         rebuild Orchestrator + listener wiring; continue dispatch. Yields
         events as the resumed run emits them.
@@ -469,7 +484,7 @@ The framework's `FileStorageBackend` writes to `<storage_backend_root>/<session_
 
 Resume correctness is **semantic-equivalence**, not byte-equivalence. LLM calls are not byte-deterministic in production (provider-side nondeterminism even at temperature 0; retry semantics; tokenizer quirks). The brief states this explicitly so reviewers don't expect byte-equivalence on traces or memory.
 
-The resume-correctness test uses the **deterministic simulator** at `packages/framework/research/orchestration/simulator/`. The simulator replays scripted `StepResult` sequences via `DeterministicRuntime`; LLM nondeterminism is taken out of the picture. The test:
+The resume-correctness test uses the **live framework's `DeterministicRuntime`** at `packages/framework/src/marsys/coordination/execution/deterministic_runtime.py:19`. This runtime replays scripted `StepResult` sequences against the live `Orchestrator` (the same one this PR adds `snapshot()` / `restore_from()` to). LLM nondeterminism is taken out of the picture. **Do NOT use the simulator at `packages/framework/research/orchestration/simulator/`** — that directory carries its own parallel `Orchestrator` + `types` that have drifted from the live ones, and its runtime class is `MockRuntime`, not `DeterministicRuntime`; tests built there would not exercise the live snapshot/restore paths. The test:
 
 1. Run scripted workload W to completion → record `OrchestraResult.final_response` shape and per-barrier arrival counts.
 2. Run scripted workload W with a pause-resume midway → record same.
@@ -481,7 +496,7 @@ The test does **not** assert byte-equivalence on intermediate spans, trace event
 
 **Contract: at-least-once.** Resuming a workflow may re-execute tool calls that were in-flight at pause time. Mid-tick state is not captured: pause awaits the in-flight branch tick before snapshotting, but if the workflow's next tick (post-resume) is the same agent re-issuing the same tool call (because the snapshot reflects the pre-tick state), the tool will run again.
 
-Tools that are not idempotent surface a warning at workflow definition time (the framework's tool registry already has a `is_idempotent: bool` field — verify; if not, this is an additive change worth flagging in the ADR). The warning text references this brief.
+No `is_idempotent` field exists on the framework's tool registry today (`grep -rn 'is_idempotent' packages/framework/src/` returns zero matches). This PR does NOT add one; tool idempotency is documented as the user's responsibility, surfaced in user-visible Spren help and in the framework's own pause/resume documentation. (Adding `is_idempotent: bool` to the tool registry is a candidate for a separate, smaller framework PR — flag it as a follow-up; it's out of scope here because it would expand the touch surface beyond what the ADR can credibly defend.) Spren's v0.4-29 row in `docs/implementation/spren/v0.4-extensions.md` should be reconciled to drop its reference to this fictional warning surface — log a Spren-side follow-up.
 
 Rejected alternative — cancel-and-rollback to the last barrier on pause: loses work the user paid for (LLM tokens already spent), complicates barrier semantics (would require synthetic "cancelled at pause" branch states), and produces worse user experience for the dominant case (user pauses to inspect, doesn't expect rollback). Documented in the ADR.
 
@@ -603,7 +618,7 @@ The ADR enumerates each of these, justifies why each is necessary, and is approv
 
 2. **Snapshot path**: filesystem default = `<storage_backend_root>/<session_id>/snapshot.json`. Spren maps its `run_id` to the framework's `session_id` and configures `FileStorageBackend(root=<data-dir>/data/runs)`, matching `02-data-model.md` line 20. Other consumers configure their own roots.
 
-3. **In-flight tool-call handling at pause**: at-least-once. Pause awaits the in-flight branch tick; resume re-issues any tool call that was about to start when pause arrived. Tools whose `is_idempotent` flag is False surface a warning at workflow definition time. The alternative — cancel-and-rollback to the last barrier — was rejected because it loses paid-for LLM work and complicates barrier semantics.
+3. **In-flight tool-call handling at pause**: at-least-once. Pause awaits the in-flight branch tick; resume re-issues any tool call that was about to start when pause arrived. Tool idempotency is the user's responsibility — no `is_idempotent` flag exists on the framework's tool registry today, and this PR does not add one (out of scope; the touch surface is already CRITICAL-tier). The contract is documented in user-visible help. The alternative — cancel-and-rollback to the last barrier — was rejected because it loses paid-for LLM work and complicates barrier semantics.
 
 4. **Scheduled events crossed by the paused interval**: skip-and-log. Re-anchoring to resume time is semantically dishonest (a "5-minute timeout" then meant something different); firing a cascade of timeout-failures on resume is surprising. Skip-and-log keeps semantics honest and lets users re-set deadlines explicitly.
 
@@ -623,7 +638,7 @@ A. **In-tick atomicity vs. tick-boundary atomicity**: pause is at-tick-boundary,
 
 B. **Where `snapshot()` / `restore_from()` live**: directly on `Orchestrator`, or on a sibling `OrchestratorStateAdapter` to keep the orchestrator class slim? Architectural preference of the framework team. The ADR must pick one.
 
-C. **Idempotent-tool flag**: does the framework's tool registry already carry an `is_idempotent: bool` field? If not, adding it here is an additive change worth flagging in the ADR. Verify with grep before drafting.
+C. **Idempotent-tool flag**: verified by grep — no `is_idempotent` field exists on the framework's tool registry today. This PR does NOT add one; tool idempotency is documented as the user's responsibility. (Adding `is_idempotent: bool` is a candidate for a separate, smaller framework PR — log it as a follow-up.) Spren's v0.4-29 brief references this fictional warning surface and needs reconciliation on the Spren side.
 
 ---
 

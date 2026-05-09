@@ -120,7 +120,7 @@ The translation layer lives in `src/spren/events.py`. It subscribes to MARSYS `E
 
 FastAPI emits `/openapi.json` automatically. The same Pydantic models are reused across every client (SP-019):
 
-1. `apps/web` build script fetches `/openapi.json` from a running dev server (or static-build snapshot) and runs `openapi-typescript` to generate `apps/web/src/lib/api-types.generated.ts`. Pydantic-only models (not in OpenAPI request/response) are emitted via `datamodel-code-generator` into `apps/web/src/lib/types.generated.ts`.
+1. `apps/web` build script fetches `/openapi.json` from a running dev server (or static-build snapshot) and runs `openapi-typescript` to generate `apps/web/src/lib/api-types.generated.ts`. Pydantic-only models (not in OpenAPI request/response) are emitted to JSON Schema via Pydantic's `model_json_schema()` and then to TypeScript via `json-schema-to-typescript` into `apps/web/src/lib/types.generated.ts`. (`datamodel-code-generator` is Python-only; it does not emit TypeScript.)
 2. The Spren API client (`apps/web/src/lib/api.ts`) imports those types.
 3. The TUI (`apps/tui/`) imports the same Pydantic models directly from `packages/spren/src/spren/models/`. No code generation needed — same Python.
 4. The framework adapter (`spren.telemetry`, in `packages/spren/src/spren/telemetry/`) imports the same Pydantic models for its API client.
