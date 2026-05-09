@@ -5,14 +5,15 @@ Status event definitions for the coordination system.
 from dataclasses import dataclass, field
 from typing import Any, Dict, List, Literal, Optional
 import time
-import uuid
+
+from ..tracing._ids import new_id
 
 
 @dataclass
 class StatusEvent:
     """Base class for all status events."""
     session_id: str  # Required field
-    event_id: str = field(default_factory=lambda: str(uuid.uuid4()), kw_only=True)
+    event_id: str = field(default_factory=new_id, kw_only=True)
     timestamp: float = field(default_factory=time.time, kw_only=True)
     branch_id: Optional[str] = field(default=None, kw_only=True)
     metadata: Dict[str, Any] = field(default_factory=dict, kw_only=True)
@@ -30,6 +31,21 @@ class AgentStartEvent(StatusEvent):
     request_summary: Optional[str] = None
     step_number: Optional[int] = None
     step_span_id: Optional[str] = None
+
+
+@dataclass
+class AgentMessagesPreparedEvent(StatusEvent):
+    """Emitted by the agent immediately before each model dispatch.
+
+    Heavy payload: the trace collector mutates ``event.messages = None``
+    after hashing each message into the content-addressed MessageStore.
+    Only event class with this property — see
+    ``TraceCollector._handle_agent_messages_prepared`` for the rationale.
+    """
+    agent_name: str = ""
+    step_number: Optional[int] = None
+    step_span_id: Optional[str] = None
+    messages: List[Dict[str, Any]] = field(default_factory=list)
 
 
 @dataclass
@@ -128,6 +144,33 @@ class CriticalErrorEvent(StatusEvent):
 
 
 @dataclass
+class ErrorEvent(StatusEvent):
+    """Structured error event capturing exceptions from agent steps.
+
+    Emitted by ``StepExecutor`` when an exception propagates out of an agent
+    step. The tracing collector attaches this to the relevant step span as
+    a structured event (``span.events`` entry named ``"error"``) and copies
+    key fields onto ``span.attributes`` for fast filtering by readers
+    (``error_class``, ``error_classification``, ``recoverable``, ``retry_count``).
+
+    Coexists with ``CriticalErrorEvent`` (which is reserved for
+    user-must-intervene scenarios). ``ErrorEvent`` is for general exception
+    capture in the trace; both can fire for the same incident.
+    """
+
+    agent_name: str = ""
+    step_number: Optional[int] = None
+    step_span_id: Optional[str] = None
+    error_class: str = ""
+    error_message: str = ""
+    traceback: Optional[str] = None
+    classification: Optional[str] = None  # ``APIErrorClassification`` value when known
+    recoverable: bool = False
+    retry_count: int = 0
+    provider: Optional[str] = None
+
+
+@dataclass
 class ResourceLimitEvent(StatusEvent):
     """Event for resource limit notifications."""
     resource_type: str = ""  # "agent_pool", "memory", "cpu", etc.
@@ -200,3 +243,69 @@ class PlanClearedEvent(StatusEvent):
     """Event emitted when plan is cleared."""
     agent_name: str
     reason: Optional[str] = None  # "completed", "abandoned", "reset"
+
+
+# ──────────────────────────────────────────────────────────────────────
+# Helpers
+# ──────────────────────────────────────────────────────────────────────
+
+
+def build_error_event(
+    exception: BaseException,
+    *,
+    session_id: str,
+    branch_id: Optional[str] = None,
+    agent_name: str = "",
+    step_number: Optional[int] = None,
+    step_span_id: Optional[str] = None,
+    retry_count: int = 0,
+    traceback_max_length: int = 4096,
+) -> "ErrorEvent":
+    """Build a fully-populated ErrorEvent from a caught exception.
+
+    Single source of truth used by both ``StepExecutor._emit_error_event``
+    (for exceptions that propagate out of an agent step) and
+    ``Agent._emit_step_error_event`` (for exceptions caught inside the
+    agent before being converted to error Messages). Trace consumers see
+    identical event shape regardless of which layer emitted.
+    """
+    import traceback as _tb
+
+    # Function-local import: avoids a load-time dependency between
+    # status/events.py and agents/exceptions.py.
+    from ...agents.exceptions import ModelAPIError
+
+    classification: Optional[str] = None
+    recoverable = False
+    provider: Optional[str] = None
+    if isinstance(exception, ModelAPIError):
+        classification = exception.classification
+        recoverable = bool(getattr(exception, "is_retryable", False))
+        provider = getattr(exception, "provider", None)
+
+    try:
+        traceback_str = _tb.format_exc()
+    except Exception:  # noqa: BLE001
+        traceback_str = ""
+    # ``format_exc()`` returns the literal "NoneType: None\n" when called
+    # outside an active except block. That's not a useful traceback —
+    # treat it as absent so consumers don't show garbage.
+    if traceback_str.strip() == "NoneType: None":
+        traceback_str = ""
+    if traceback_str and len(traceback_str) > traceback_max_length:
+        traceback_str = traceback_str[-traceback_max_length:]
+
+    return ErrorEvent(
+        session_id=session_id,
+        branch_id=branch_id,
+        agent_name=agent_name,
+        step_number=step_number,
+        step_span_id=step_span_id,
+        error_class=type(exception).__name__,
+        error_message=str(exception),
+        traceback=traceback_str or None,
+        classification=classification,
+        recoverable=recoverable,
+        retry_count=retry_count,
+        provider=provider,
+    )

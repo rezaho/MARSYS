@@ -7,17 +7,25 @@ via registered TraceWriters.
 """
 
 import asyncio
+import copy
 import logging
+import pathlib
 import time
-import uuid
-from typing import Any, Dict, List, Optional, TYPE_CHECKING
+from typing import Any, Dict, List, Optional, Tuple, TYPE_CHECKING
 
+from ._ids import new_id
+from .messages import (
+    FilesystemMessageStore,
+    MessageStore,
+    build_input_messages_ref,
+)
+from .redactor import SecretRedactor
 from .types import Span, TraceTree, create_span
 from .config import TracingConfig
 
 if TYPE_CHECKING:
     from ..event_bus import EventBus
-    from .writers.base import TraceWriter
+    from .sink import TelemetrySink
 
 logger = logging.getLogger(__name__)
 
@@ -40,11 +48,13 @@ class TraceCollector:
         self,
         event_bus: 'EventBus',
         config: TracingConfig,
-        writers: Optional[List['TraceWriter']] = None,
+        sinks: Optional[List['TelemetrySink']] = None,
     ):
         self.event_bus = event_bus
         self.config = config
-        self.writers = writers or []
+        self.sinks = sinks or []
+        self._redactor = config.redactor if config.redactor is not None else SecretRedactor()
+        self._message_store: Optional[MessageStore] = self._build_message_store(config)
 
         # Trace state (protected by _lock)
         self._lock = asyncio.Lock()
@@ -53,8 +63,33 @@ class TraceCollector:
         self.branch_spans: Dict[str, Span] = {}  # branch_id -> Span (survives closure)
         self.step_spans: Dict[str, Span] = {}  # step_span_id -> Span (survives closure)
         self._pending_convergence: Dict[str, List[Dict]] = {}  # branch_id -> convergence info for next step
+        # (branch_id, agent_name) -> last resolved history (list of message hashes).
+        # Diff chains are per-agent because each agent maintains its own
+        # ``memory.get_messages()`` and prepares its own messages list at
+        # dispatch. A sequential A→B→A invoke chain on a single branch_id
+        # would otherwise let B's history overwrite A's anchor, producing
+        # ``replace`` patches instead of ``add`` patches when A returns.
+        # Inherited per-agent at fork: each ``(parent, agent)`` entry copies
+        # to ``(child, agent)`` so an agent rerunning on a child branch
+        # anchors on its own parent-branch tail.
+        self._last_history: Dict[Tuple[str, str], List[str]] = {}
 
         self._subscribe_to_events()
+
+    @staticmethod
+    def _build_message_store(config: TracingConfig) -> Optional[MessageStore]:
+        """Materialize the message store iff full-input capture is enabled.
+
+        Honors a user-supplied override (``config.message_store``) when set;
+        otherwise builds a default ``FilesystemMessageStore`` rooted at
+        ``config.output_dir``. Returns ``None`` when capture is off — the
+        ``_handle_agent_start`` path then runs the legacy summary-only flow.
+        """
+        if not getattr(config, "capture_full_input", False):
+            return None
+        if config.message_store is not None:
+            return config.message_store
+        return FilesystemMessageStore(base_dir=pathlib.Path(config.output_dir))
 
     def _subscribe_to_events(self) -> None:
         """Subscribe to all trace-relevant event types."""
@@ -66,12 +101,15 @@ class TraceCollector:
             'ConvergenceEvent': self._handle_convergence,
             # Existing events (enriched)
             'AgentStartEvent': self._handle_agent_start,
+            'AgentMessagesPreparedEvent': self._handle_agent_messages_prepared,
             'AgentCompleteEvent': self._handle_agent_complete,
             'ToolCallEvent': self._handle_tool_call,
             # Branch lifecycle events
             'BranchCreatedEvent': self._handle_branch_created,
             'BranchCompletedEvent': self._handle_branch_completed,
             'BranchEvent': self._handle_branch_event,
+            # Structured error events (Phase 1)
+            'ErrorEvent': self._handle_error,
             # Final response
             'FinalResponseEvent': self._handle_final_response,
         }
@@ -84,7 +122,7 @@ class TraceCollector:
     async def _handle_execution_start(self, event: Any) -> None:
         """Create root execution span."""
         async with self._lock:
-            trace_id = str(uuid.uuid4())
+            trace_id = new_id()
             root_span = create_span(
                 trace_id=trace_id,
                 name="Orchestra.run",
@@ -141,6 +179,20 @@ class TraceCollector:
             branch_id = getattr(event, 'branch_id', None)
             if branch_id:
                 self.branch_spans[branch_id] = branch_span
+                # Phase 3 fork inheritance: each ``(parent_branch_id, agent_name)``
+                # entry copies to ``(branch_id, agent_name)`` so an agent that
+                # reruns on the child branch anchors on its own parent-branch
+                # tail. Cross-agent forks (parent runs A, child runs B) leave
+                # B's child slot empty — B's first step gets ``base=None``,
+                # which is correct because B has no prior conversation.
+                # Today's orchestrator never sets ``parent_branch_id`` so this
+                # block is exercised only by unit tests; left in place for the
+                # eventual orchestrator change that will populate the field.
+                parent_branch_id = getattr(event, 'parent_branch_id', None)
+                if self._message_store is not None and parent_branch_id:
+                    for (br, ag), hist in list(self._last_history.items()):
+                        if br == parent_branch_id and (branch_id, ag) not in self._last_history:
+                            self._last_history[(branch_id, ag)] = list(hist)
             logger.debug(f"Branch span created: {event.branch_name}")
 
     async def _handle_branch_event(self, event: Any) -> None:
@@ -169,6 +221,7 @@ class TraceCollector:
             span.attributes["total_steps"] = event.total_steps
             span.attributes["success"] = event.success
             self.open_spans.pop(span.span_id, None)
+            await self._stream_span(span)
 
     async def _handle_agent_start(self, event: Any) -> None:
         """Create step span as child of branch span."""
@@ -204,6 +257,10 @@ class TraceCollector:
             self.open_spans[step_span.span_id] = step_span
             self.step_spans[step_span_id] = step_span
 
+            # Phase 3 full-input capture lives in
+            # ``_handle_agent_messages_prepared`` — fired by the agent at
+            # the model-dispatch site, separately from ``AgentStartEvent``.
+
             # Attach pending convergence info to this step (it's the convergence step)
             pending = getattr(self, '_pending_convergence', {})
             if branch_id in pending:
@@ -212,6 +269,82 @@ class TraceCollector:
                         step_span.add_link(child_span_id, "convergence", conv["convergence_data"])
                     step_span.add_event("convergence", conv["convergence_data"])
                 del pending[branch_id]
+
+    async def _handle_agent_messages_prepared(self, event: Any) -> None:
+        """Hash the prepared messages into the store, attach the ref to the step span.
+
+        Why this handler is special: ``AgentMessagesPreparedEvent.messages``
+        is the only event payload in the framework that scales with
+        conversation length (potentially MB per step). The ``EventBus.events``
+        list retains every emitted event for the run's lifetime, so without
+        explicit cleanup the bus would accumulate duplicated message bytes
+        N steps deep. We mutate ``event.messages = None`` after hashing to
+        release the dicts/strings — the bus retains the event shell for
+        debuggability.
+
+        Same in-place-mutation idiom as ``SecretRedactor.redact_span`` —
+        consume the payload at the right boundary so all later observers
+        see the reduced form. No other event class needs this treatment
+        because their payloads are bounded.
+        """
+        if self._message_store is None:
+            return
+        async with self._lock:
+            step_span_id = getattr(event, "step_span_id", None) or ""
+            step_span = self.step_spans.get(step_span_id)
+            if step_span is None:
+                return
+            messages = event.messages
+            if not messages:
+                # Even with no messages, fall through to the cleanup below
+                # so the event shell stays consistent.
+                event.messages = None
+                return
+            try:
+                redacted_messages = self._redact_messages_for_store(messages)
+                branch_id = getattr(event, "branch_id", None)
+                agent_name = getattr(event, "agent_name", "") or ""
+                # Per-(branch_id, agent_name) keying — see _last_history
+                # docstring. Without it, a sequential A→B→A invoke chain
+                # on the same branch_id lets B's history overwrite A's
+                # anchor, producing a non-prefix replace op when A returns.
+                history_key = (branch_id, agent_name) if branch_id else None
+                prev_history = self._last_history.get(history_key) if history_key else None
+                ref = build_input_messages_ref(
+                    redacted_messages,
+                    store=self._message_store,
+                    prev_history=prev_history,
+                )
+                step_span.attributes["input_messages_ref"] = ref
+                if history_key:
+                    self._last_history[history_key] = list(ref["history"])
+            except Exception as e:  # noqa: BLE001
+                # Tracing must never break the run; collector failures are
+                # warnings only — same convention as the legacy block this
+                # handler replaced.
+                logger.warning(
+                    "Full-input capture skipped for step %s: %s", step_span_id, e
+                )
+            # Release the heavy payload — see this handler's docstring.
+            event.messages = None
+
+    def _redact_messages_for_store(
+        self,
+        messages: List[Dict[str, Any]],
+    ) -> List[Dict[str, Any]]:
+        """Deep-copy each message and run the configured redactor.
+
+        Two reasons to deep-copy: (1) the agent's working memory must not
+        be mutated by tracing, and (2) the redactor mutates in place, so a
+        shared reference would leak redacted dicts back into runtime state.
+        """
+        redacted: List[Dict[str, Any]] = []
+        for msg in messages:
+            clone = copy.deepcopy(msg)
+            if isinstance(clone, dict):
+                self._redactor.redact(clone)
+            redacted.append(clone)
+        return redacted
 
     async def _handle_generation(self, event: Any) -> None:
         """Create generation child span on the step span."""
@@ -257,6 +390,7 @@ class TraceCollector:
             gen_span.close(end_time=event.timestamp)
 
             step_span.children.append(gen_span)
+            await self._stream_span(gen_span)
 
     async def _handle_tool_call(self, event: Any) -> None:
         """Create/close tool span based on status."""
@@ -298,6 +432,7 @@ class TraceCollector:
                     result_summary = getattr(event, 'result_summary', None)
                     if result_summary and self.config.include_tool_results:
                         tool_span.attributes["result_summary"] = result_summary
+                    await self._stream_span(tool_span)
 
     async def _handle_validation_decision(self, event: Any) -> None:
         """Add validation decision as event on the step span."""
@@ -335,11 +470,54 @@ class TraceCollector:
             span.close(end_time=event.timestamp, status=status)
             span.attributes["success"] = event.success
             span.attributes["duration"] = event.duration
-            if event.error:
+            # Prefer the structured ErrorEvent (already added to span.events
+            # and span.attributes by ``_handle_error``) over the legacy
+            # bare-string ``event.error`` field. Only fall back to the string
+            # when no structured error landed on this span.
+            if event.error and "error_class" not in span.attributes:
                 span.attributes["error"] = event.error
             # Remove from open_spans (timing done) but keep in step_spans
             # so ValidationDecisionEvent can still attach data.
             self.open_spans.pop(span.span_id, None)
+            await self._stream_span(span)
+
+    async def _handle_error(self, event: Any) -> None:
+        """Attach a structured error to the relevant step span.
+
+        Adds an ``error`` event to ``span.events`` (full payload including
+        truncated traceback) and copies key fields onto ``span.attributes``
+        for fast filtering by readers (``error_class``,
+        ``error_classification``, ``recoverable``, ``retry_count``).
+        Span ``status`` is left to ``_handle_agent_complete`` so the closure
+        path stays single-source.
+        """
+        async with self._lock:
+            step_span_id = getattr(event, 'step_span_id', None)
+            if not step_span_id:
+                return
+            span = self.step_spans.get(step_span_id)
+            if not span:
+                return
+
+            span.add_event("error", {
+                "error_class": event.error_class,
+                "error_message": event.error_message,
+                "traceback": event.traceback,
+                "classification": event.classification,
+                "recoverable": event.recoverable,
+                "retry_count": event.retry_count,
+                "provider": event.provider,
+            })
+            # Attribute mirror for filterability — readers shouldn't have to
+            # walk events to know "this step errored on rate limit".
+            span.attributes["error_class"] = event.error_class
+            span.attributes["error_message"] = event.error_message
+            if event.classification is not None:
+                span.attributes["error_classification"] = event.classification
+            span.attributes["recoverable"] = event.recoverable
+            span.attributes["retry_count"] = event.retry_count
+            if event.provider is not None:
+                span.attributes["provider"] = event.provider
 
     async def _handle_convergence(self, event: Any) -> None:
         """Add convergence links to parent branch span and record for next step."""
@@ -386,15 +564,33 @@ class TraceCollector:
             trace.root_span.attributes["total_duration"] = event.total_duration
 
             if self.config.include_message_content:
-                summary = str(event.final_response)
-                if len(summary) > self.config.max_content_length:
-                    summary = summary[:self.config.max_content_length] + "..."
-                trace.root_span.attributes["final_response_summary"] = summary
+                trace.root_span.attributes["final_response_summary"] = str(event.final_response)
 
             # Close the root span with the correct status
             status = "ok" if event.success else "error"
             trace.root_span.close(end_time=event.timestamp, status=status)
             self.open_spans.pop(trace.root_span.span_id, None)
+            await self._stream_span(trace.root_span)
+
+    # ── Streaming hook ──────────────────────────────────────────────
+
+    async def _stream_span(self, span: Span) -> None:
+        """Redact then forward a closed span to every sink's ``publish_span``.
+
+        Redaction runs once here, mutating span.attributes / span.events /
+        span.links in place so all downstream consumers see the same view.
+        Sink errors are logged and swallowed so a misbehaving sink cannot
+        break the collector's event-handling path.
+        """
+        self._redactor.redact_span(span)
+        for sink in self.sinks:
+            try:
+                await sink.publish_span(span)
+            except Exception as e:
+                logger.error(
+                    "Telemetry sink %s.publish_span failed: %s",
+                    type(sink).__name__, e, exc_info=True,
+                )
 
     # ── Finalization ────────────────────────────────────────────────
 
@@ -413,18 +609,21 @@ class TraceCollector:
                 return None
 
             # Close any remaining open spans (marks as error — they weren't closed normally)
-            orphaned_span_ids = []
+            orphaned_spans: List[Span] = []
             for span_id, span in self.open_spans.items():
                 if span.trace_id == trace.trace_id and span.end_time is None:
                     span.close(status="error")
-                    orphaned_span_ids.append(span_id)
+                    orphaned_spans.append(span)
 
-            for span_id in orphaned_span_ids:
-                self.open_spans.pop(span_id, None)
+            for span in orphaned_spans:
+                self.open_spans.pop(span.span_id, None)
+                await self._stream_span(span)
 
-            # Close root span if still open
+            # Close root span if still open (crash before final_response).
+            # Stream it here because _handle_final_response never ran.
             if trace.root_span.end_time is None:
                 trace.root_span.close()
+                await self._stream_span(trace.root_span)
 
             # Clean up lookup maps for this trace
             trace_id = trace.trace_id
@@ -437,23 +636,16 @@ class TraceCollector:
                 if v.trace_id != trace_id
             }
 
-        # Write trace (outside lock)
-        for writer in self.writers:
-            try:
-                await writer.write(trace)
-            except Exception as e:
-                logger.error(f"Trace writer {type(writer).__name__} failed: {e}")
-
         logger.info(f"Trace finalized for session {session_id} ({trace.trace_id})")
         return trace
 
     async def close(self) -> None:
-        """Shut down all writers."""
-        for writer in self.writers:
+        """Shut down all sinks."""
+        for sink in self.sinks:
             try:
-                await writer.close()
+                await sink.close()
             except Exception as e:
-                logger.error(f"Error closing trace writer: {e}")
+                logger.error(f"Error closing telemetry sink: {e}")
 
     # ── Helpers ─────────────────────────────────────────────────────
 

@@ -144,9 +144,7 @@ async def test_convergence_step_has_links_to_source_branches(tmp_path):
         tracing=TracingConfig(
             enabled=True,
             output_dir=str(tmp_path),
-            detail_level="verbose",
             include_message_content=True,
-            max_content_length=1000,
         ),
     )
     result = await Orchestra.run(
@@ -158,10 +156,15 @@ async def test_convergence_step_has_links_to_source_branches(tmp_path):
 
     assert result.success, f"orchestration failed: {result.error}"
 
-    trace_files = sorted(tmp_path.glob("*.json"))
-    assert trace_files, "expected trace JSON output"
-    with open(trace_files[-1]) as f:
-        trace = json.load(f)
+    from marsys.coordination.tracing import NDJSONTraceReader, TraceTree
+
+    trace_files = sorted(tmp_path.glob("*.ndjson"))
+    assert trace_files, "expected trace NDJSON output"
+    reader = NDJSONTraceReader(trace_files[-1])
+    list(reader.stream())  # consume so completion_status updates
+    assert reader.completion_status == "complete", \
+        f"unexpected completion_status: {reader.completion_status}"
+    trace = TraceTree.from_ndjson(trace_files[-1]).to_dict()
 
     # Walk the tree and find the resume step on ConvCoordinator's branch
     # (the second step on that branch, with links).
