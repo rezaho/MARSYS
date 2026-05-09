@@ -74,6 +74,8 @@ class TraceCollector:
             'BranchCreatedEvent': self._handle_branch_created,
             'BranchCompletedEvent': self._handle_branch_completed,
             'BranchEvent': self._handle_branch_event,
+            # Structured error events (Phase 1)
+            'ErrorEvent': self._handle_error,
             # Final response
             'FinalResponseEvent': self._handle_final_response,
         }
@@ -340,12 +342,54 @@ class TraceCollector:
             span.close(end_time=event.timestamp, status=status)
             span.attributes["success"] = event.success
             span.attributes["duration"] = event.duration
-            if event.error:
+            # Prefer the structured ErrorEvent (already added to span.events
+            # and span.attributes by ``_handle_error``) over the legacy
+            # bare-string ``event.error`` field. Only fall back to the string
+            # when no structured error landed on this span.
+            if event.error and "error_class" not in span.attributes:
                 span.attributes["error"] = event.error
             # Remove from open_spans (timing done) but keep in step_spans
             # so ValidationDecisionEvent can still attach data.
             self.open_spans.pop(span.span_id, None)
             await self._stream_span(span)
+
+    async def _handle_error(self, event: Any) -> None:
+        """Attach a structured error to the relevant step span.
+
+        Adds an ``error`` event to ``span.events`` (full payload including
+        truncated traceback) and copies key fields onto ``span.attributes``
+        for fast filtering by readers (``error_class``,
+        ``error_classification``, ``recoverable``, ``retry_count``).
+        Span ``status`` is left to ``_handle_agent_complete`` so the closure
+        path stays single-source.
+        """
+        async with self._lock:
+            step_span_id = getattr(event, 'step_span_id', None)
+            if not step_span_id:
+                return
+            span = self.step_spans.get(step_span_id)
+            if not span:
+                return
+
+            span.add_event("error", {
+                "error_class": event.error_class,
+                "error_message": event.error_message,
+                "traceback": event.traceback,
+                "classification": event.classification,
+                "recoverable": event.recoverable,
+                "retry_count": event.retry_count,
+                "provider": event.provider,
+            })
+            # Attribute mirror for filterability — readers shouldn't have to
+            # walk events to know "this step errored on rate limit".
+            span.attributes["error_class"] = event.error_class
+            span.attributes["error_message"] = event.error_message
+            if event.classification is not None:
+                span.attributes["error_classification"] = event.classification
+            span.attributes["recoverable"] = event.recoverable
+            span.attributes["retry_count"] = event.retry_count
+            if event.provider is not None:
+                span.attributes["provider"] = event.provider
 
     async def _handle_convergence(self, event: Any) -> None:
         """Add convergence links to parent branch span and record for next step."""

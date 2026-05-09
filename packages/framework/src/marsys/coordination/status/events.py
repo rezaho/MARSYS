@@ -129,6 +129,33 @@ class CriticalErrorEvent(StatusEvent):
 
 
 @dataclass
+class ErrorEvent(StatusEvent):
+    """Structured error event capturing exceptions from agent steps.
+
+    Emitted by ``StepExecutor`` when an exception propagates out of an agent
+    step. The tracing collector attaches this to the relevant step span as
+    a structured event (``span.events`` entry named ``"error"``) and copies
+    key fields onto ``span.attributes`` for fast filtering by readers
+    (``error_class``, ``error_classification``, ``recoverable``, ``retry_count``).
+
+    Coexists with ``CriticalErrorEvent`` (which is reserved for
+    user-must-intervene scenarios). ``ErrorEvent`` is for general exception
+    capture in the trace; both can fire for the same incident.
+    """
+
+    agent_name: str = ""
+    step_number: Optional[int] = None
+    step_span_id: Optional[str] = None
+    error_class: str = ""
+    error_message: str = ""
+    traceback: Optional[str] = None
+    classification: Optional[str] = None  # ``APIErrorClassification`` value when known
+    recoverable: bool = False
+    retry_count: int = 0
+    provider: Optional[str] = None
+
+
+@dataclass
 class ResourceLimitEvent(StatusEvent):
     """Event for resource limit notifications."""
     resource_type: str = ""  # "agent_pool", "memory", "cpu", etc.
