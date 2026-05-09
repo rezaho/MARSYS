@@ -2,13 +2,13 @@
 
 ## What observability covers in Spren
 
-Three first-class signals, all derived from the marsys framework's existing `EventBus` + tracing:
+Three first-class signals, all derived from the marsys framework's tracing module (`coordination/tracing/`):
 
 1. **Traces** — full hierarchical span tree per run. Primary user-facing artifact for "why did this happen."
-2. **Cost** — tokens × provider rate, aggregated per run + per day + per workflow.
+2. **Cost** — tokens × provider rate, aggregated per run + per day + per workflow. First-class from v0.3 (SP-010); not a later retrofit.
 3. **Latency / status counters** — basic metrics surfaced as charts on the run history page.
 
-There is NO separate Prometheus/OTel exporter at this stage. Everything is local; metrics are derived from the same trace files. A later release may add OTel emit for users who want to ship to Langfuse / Phoenix / etc. via the framework's `TelemetrySink` protocol.
+The framework ships one seam: the `TelemetrySink` ABC. Sinks register with `TraceCollector`; the collector calls `publish_span(span)` once per closed span after running it through the configured `SecretRedactor`. The shipped default sink is `NDJSONTraceWriter` (one closed span per line on disk — Spren reads this for SSE replay and run inspection). Spren's own `SprenTelemetrySink` (in-tree at `packages/spren/src/spren/telemetry/`) is a `TelemetrySink` for the `python my_workflow.py → Spren UI` flow, posting the redacted span stream to Spren's REST surface. Vendor adapters (LangSmith, Phoenix, Langfuse, OpenInference) fit the same ABC and are contributor-welcome, but no in-tree shipped adapter beyond `NDJSONTraceWriter` and Spren's own.
 
 ## Trace pipeline
 
@@ -16,19 +16,45 @@ There is NO separate Prometheus/OTel exporter at this stage. Everything is local
 marsys execution
        │
        ▼
-  EventBus (in-process pub/sub, packages/framework/src/marsys/coordination/event_bus.py)
-       │ ┌────────────────────────────────────────────┐
-       ├─►│ NDJSON writer                              │  (replaces existing json_writer; see below)
-       │ │ <data-dir>/data/runs/{id}/trace.ndjson     │
-       │ └────────────────────────────────────────────┘
+  EventBus (packages/framework/src/marsys/coordination/event_bus.py)
        │
-       │ ┌────────────────────────────────────────────┐
-       └─►│ AG-UI translator → SSE channel             │
-         │ /v1/runs/{id}/events                        │
-         └────────────────────────────────────────────┘
+       ├──────────────────────────────────────────────┐
+       │                                              ▼
+       │                              ┌────────────────────────────────┐
+       │                              │ TraceCollector                 │
+       │                              │ (single EventBus subscriber;   │
+       │                              │  builds hierarchical Span tree)│
+       │                              └──────────┬─────────────────────┘
+       │                                         │ closed span
+       │                                         │
+       │                                         ├─► SecretRedactor.redact(span.attributes)
+       │                                         │     │
+       │                                         │     ├─► NDJSON writer
+       │                                         │     │   <data-dir>/data/runs/{id}/trace.ndjson
+       │                                         │     │   (one closed span per line, flushed per span)
+       │                                         │     │
+       │                                         │     └─► TelemetrySink fan-out (Framework v0.4)
+       │                                         │           ├─► SprenTelemetrySink
+       │                                         │           ├─► (LangSmith / Phoenix / Langfuse adapters
+       │                                         │           │    fit same protocol — contributor-welcome)
+       │                                         │           └─► ...
+       │
+       │  ┌────────────────────────────────────────────┐
+       └─►│ AG-UI translator (Spren-side)              │
+          │ packages/spren/src/spren/events.py         │
+          │ subscribes to BranchCreatedEvent /         │
+          │ BranchCompletedEvent / generation +        │
+          │ tool-call lifecycle; emits AG-UI events    │
+          │ on per-run SSE channel                     │
+          │ /v1/runs/{id}/events                       │
+          └────────────────────────────────────────────┘
 ```
 
-Both subscribers are append-only. Crash mid-run loses neither — the file is durable and the SSE channel is reconnect-tolerant (clients re-fetch the file then resume from latest event id).
+The NDJSON writer and the `TelemetrySink` fan-out are framework-side, hooked into `TraceCollector` at every `span.close(...)` site (`_handle_branch_completed`, `_handle_agent_complete`, `_handle_tool_call`, `_handle_generation`, `_handle_final_response`, plus the orphan-close loop in `finalize`). They consume closed spans, never raw events.
+
+The AG-UI translator is Spren-side, subscribing to `EventBus` directly for in-flight lifecycle events (the events Spren cares about are `BranchCreatedEvent` / `BranchCompletedEvent` from `coordination/events.py` plus generation + tool-call lifecycle events from `coordination/status/events.py`). It emits AG-UI events on the per-run SSE channel. Different layer, different consumer surface, different cadence — a closed span vs. a live event.
+
+Both surfaces are append-only. Crash mid-run loses neither — the NDJSON file is durable through any crash up to the moment of the crash, and the SSE channel is reconnect-tolerant (clients tail-read the file from start to current EOF, then resume from latest `Last-Event-ID`).
 
 ### Why NDJSON (replaces the legacy JSON-at-end writer)
 
@@ -46,7 +72,7 @@ The NDJSON writer (`packages/framework/src/marsys/coordination/tracing/writers/n
 - A terminal `stream_completed` marker is written on `close()`; missing marker means the run crashed and the reader surfaces `completion_status == "crashed"`
 - `event_id` and `span_id` are ULIDs (monotonic-orderable per process), so SSE `Last-Event-ID` resume works without server-side ordering tables
 
-The legacy `JSONFileTraceWriter` is removed; only the NDJSON writer ships in v0.4.
+The legacy `JSONFileTraceWriter` is removed; only the NDJSON writer ships from Framework v0.3 onward.
 
 This change is in scope for the framework, not Spren-only — see [`01-system-context.md`](./01-system-context.md) "What Spren provides to the framework."
 
@@ -93,6 +119,51 @@ Two non-span line types appear in the file. Consumers reading individual spans M
 
 - `kind == "stream_event"` — diagnostic emitted on queue overflow or writer self-disable. `attributes` describes the event (e.g. `{"event": "dropped_span", "dropped_span_count": N}`).
 - `kind == "stream_completed"` — terminal marker, exactly once on close. `attributes` summarizes counts: `{total_spans, disk_error_count, dropped_span_count, disabled_dropped_count, disabled}`. Missing marker on EOF means the writer crashed; readers can surface this via `NDJSONTraceReader.completion_status == "crashed"`.
+
+## TelemetrySink ABC (Framework v0.3)
+
+The `TelemetrySink` ABC at `packages/framework/src/marsys/coordination/tracing/sink.py` is the seam an external observability backend uses to receive workflow execution. The ABC is span-shaped (matches what every modern observability vendor consumes), hierarchical via `parent_span_id`, and async (sinks may do network I/O):
+
+```python
+class TelemetrySink(ABC):
+    @abstractmethod
+    async def publish_span(self, span: 'Span') -> None: ...
+    @abstractmethod
+    async def close(self) -> None: ...
+```
+
+Sinks register with `TraceCollector` (NOT `EventBus` directly — the collector already does the span-tree-building work; subscribing raw events would duplicate it). At every `span.close(...)` site, `TraceCollector` runs the closed span through the configured `SecretRedactor` (mutates in place) and fans it out to all registered sinks via `publish_span`. Sink-side exceptions are caught and logged at the framework boundary; a misbehaving sink does not stop the run.
+
+**Orchestra wiring** (sinks are passed via `TracingConfig.sinks`; `Orchestra` builds the final list as `[NDJSONTraceWriter(execution_config.tracing)] + execution_config.tracing.sinks`):
+
+```python
+tracing_config = TracingConfig(
+    output_dir="./traces",
+    sinks=[SprenTelemetrySink(...)],
+    redactor=SecretRedactor(extra_deny=["my_custom_key"]),
+)
+execution_config = ExecutionConfig(tracing=tracing_config)
+result = await Orchestra.run(topology, task, execution_config=execution_config)
+```
+
+The default `NDJSONTraceWriter` is always added; user-supplied `sinks` are appended. `redactor` defaults to `SecretRedactor()` (the default deny-list); pass `NoRedactionRedactor()` to opt out.
+
+**Spren's adapter** lives in-tree at `packages/spren/src/spren/telemetry/`. It posts the redacted span stream to Spren's REST surface so a `python my_workflow.py` invocation surfaces in the Spren UI alongside runs Spren itself dispatched. **Vendor adapters** (LangSmith, Phoenix / OpenInference, Langfuse) fit the same ABC — span-shaped, hierarchical, async-batched at the sink — so a third-party `marsys-langsmith` / `marsys-phoenix` / `marsys-langfuse` package is a thin translation layer rather than a parallel `TraceCollector`. None ship in-tree.
+
+## SecretRedactor
+
+`ToolCallEvent.arguments: Dict[str, Any]` and other span attribute payloads may carry API keys, OAuth tokens, bearer credentials. The `SecretRedactor` at `packages/framework/src/marsys/coordination/tracing/redactor.py` scrubs them at the fan-out boundary inside `TraceCollector._stream_span`:
+
+- Default deny-list (case-insensitive, **word-boundary match against dict keys**, recursive on nested dicts + `event['attributes']` dicts in `span.events` + `link['attributes']` dicts in `span.links`): `api_key`, `apikey`, `token`, `authorization`, `auth`, `secret`, `password`, `bearer`, `cookie`, `session`, `credential`. Matches replace the value with `[REDACTED]`; structure is preserved.
+- Word boundaries treat `_` and `-` (and any non-alphanumeric character) as separators. So `auth_token` and `x_api_key` redact, but `prompt_tokens` (an LLM token-count metric) and `authority` do NOT.
+- Composable: `SecretRedactor(extra_deny=["my_custom_key"])` extends the deny-list per-project.
+- Explicit opt-in to raw passthrough: `NoRedactionRedactor()` — caller accepts the leak risk.
+
+The redactor mutates spans in place once per fan-out, so **all consumers see the same redacted view** — `NDJSONTraceWriter` writes the redacted span to disk, vendor sinks receive the redacted span over the network, in-memory `TraceTree` viewers read the redacted span. There is no "redacted-for-sinks-but-original-on-disk" mode by design.
+
+## Schema versioning
+
+Every cross-boundary payload (`Span` lines on disk, `Workflow` / `WorkflowRef` / `RunStarted` / `RunCompleted` to sinks, `StateSnapshot` for pause/resume in v0.4) carries `schema_version: int = 1`. Framework bumps on breaking shape changes. Consumers compare on receive — mismatch surfaces a clear warning; the consumer chooses graceful-degrade or hard-error. The framework does NOT enforce; the sink / reader / writer does. v0.4 ships no migration tooling — `IncompatibleSnapshotError` (for snapshots) and a sink-side warning log (for spans) are the expected mismatch paths.
 
 ## Cost calculation
 
@@ -141,9 +212,10 @@ SQLite FTS5 index on `runs.task_input` and `runs.final_response` for "find runs 
 - Archival runs daily on app start
 - User-configurable in settings: `retention.runs.max_count`, `retention.runs.max_age_days`, `retention.runs.archive_format`
 
-## What's NOT here in v0.3
+## Out of scope
 
-- Distributed tracing across processes (we're single-process)
-- OpenTelemetry export (v0.3; will use OTel GenAI semantic conventions when stable)
-- Alerting on errors / cost thresholds (v0.3)
-- Long-term metrics warehouse (v0.3; for now, SQL queries on the runs table are enough)
+- Distributed tracing across processes (single-process by design — Spren is a local daemon).
+- In-tree vendor adapter packages (LangSmith / Phoenix / Langfuse). The protocol is shaped to fit them; the actual adapters ship as third-party packages.
+- OTLP-over-HTTP export. The `TelemetrySink` ABC is the framework's seam for any wire-format export; an OTLP adapter would be a `TelemetrySink` implementation written against the OTel SDK. Out of scope for this repo.
+- Alerting on errors / cost thresholds beyond the per-day budget cap and per-run budget cap (SP-013). Notifications via channels are a v0.4 concern.
+- Long-term metrics warehouse. SQL queries on the `runs` table cover v0.3 needs; if a project outgrows them, a `TelemetrySink` to a warehouse is the path.

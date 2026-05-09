@@ -16,10 +16,11 @@ spren/
 │   ├── spren.db                  # SQLite — workflows, runs, schedules, channels, settings, secrets
 │   ├── files/
 │   │   └── {file_id}/...             # uploaded user files (raw bytes)
-│   └── runs/
-│       └── {run_id}/
+│   └── runs/                         # framework's FileStorageBackend root for pause/resume snapshots
+│       └── {run_id}/                 # Spren's run_id maps 1:1 to the framework's session_id
 │           ├── trace.ndjson          # append-only trace events (one JSON per line)
 │           ├── workflow.json         # frozen snapshot of workflow at run start
+│           ├── snapshot.json         # (v0.4) pause/resume StateSnapshot; only present for paused runs
 │           └── artifacts/            # files produced by the run (screenshots, agent outputs)
 ├── sandbox/
 │   ├── shared/memory/                # markdown KB
@@ -55,14 +56,14 @@ All tables include `created_at` and `updated_at` (UTC, microsecond precision). A
 ```json
 {
   "topology": {
-    "nodes": [{"name": "Researcher", "node_type": "AGENT", "agent_ref": "agent_id"}, ...],
-    "edges": [{"source": "Researcher", "target": "Writer", "edge_type": "INVOKE"}, ...],
+    "nodes": [{"name": "Researcher", "node_type": "agent", "agent_ref": "agent_id"}, ...],
+    "edges": [{"source": "Researcher", "target": "Writer", "edge_type": "invoke"}, ...],
     "rules": [...]
   },
   "agents": {
     "agent_id_1": {
       "name": "Researcher",
-      "model": {...ModelConfig fields...},
+      "agent_model": {...ModelConfig fields...},
       "goal": "...",
       "instruction": "...",
       "tools": ["search_web", "browse_url"],
@@ -79,6 +80,8 @@ All tables include `created_at` and `updated_at` (UTC, microsecond precision). A
   }
 }
 ```
+
+`node_type`, `edge_type`, and `edge.pattern` values are lowercase strings matching `marsys.coordination.topology.core.NodeType` / `EdgeType` / `EdgePattern`: `node_type ∈ {user, agent, system, tool}`, `edge_type ∈ {invoke, notify, query, stream}`, `pattern ∈ {alternating, symmetric}` (or null). The agent's model-config field is named `agent_model` rather than `model` because Pydantic v2 reserves the attribute name `model_config`; storage JSON shape mirrors the Pydantic mirror.
 
 ### `runs`
 
@@ -168,13 +171,21 @@ See [`07-security.md`](./07-security.md) for the storage policy.
 
 ## Trace event format (NDJSON)
 
-Each line is a single JSON object conforming to a Spren-internal schema that mirrors AG-UI events. Example shape:
+The framework's NDJSON streaming writer (Framework v0.3 Session 01) writes one JSON object per line, append-only, flushed per closed span. The wire format is the framework's contract — Spren reads it as-is. Schema-versioned, lowercase `kind`, float epoch-second timestamps, ULIDs for span/trace IDs.
+
+Example shape (one closed `generation` span):
 
 ```json
-{"ts":"2026-04-27T12:30:45.123Z","trace_id":"01J...","span_id":"01J...","parent_span_id":"01J...","kind":"GENERATION","name":"opus-4.7 call","attrs":{"model":"claude-opus-4.7","provider":"anthropic","prompt_tokens":1234,"completion_tokens":567,"reasoning_tokens":120,"response_time_ms":4321,"finish_reason":"stop","has_thinking":true,"has_tool_calls":false}}
+{"schema_version":1,"ts":1714220645.123,"kind":"generation","span_id":"01J9X4ABCDEFGHJKMP","parent_span_id":"01J9X4ABCDEFGHJKMR","trace_id":"01J9X4ABCDEFGHJKMN","name":"Generation: claude-opus-4.7","start_time":1714220641.000,"end_time":1714220645.123,"duration_ms":4123.0,"status":"ok","attributes":{"model_name":"claude-opus-4.7","provider":"anthropic","prompt_tokens":1234,"completion_tokens":567,"reasoning_tokens":120,"response_time_ms":4321,"finish_reason":"stop","has_thinking":true,"has_tool_calls":false}}
 ```
 
-Append-only writer flushes per event. Reader streams via SSE for live UI; can also tail-read for late subscribers.
+`kind` ∈ `{execution, branch, step, generation, tool}` (the five `Span.kind` values; validation, user-interaction, and final-response are recorded as events on the surrounding step / execution span, not as separate kinds). `ts` is the writer's emission timestamp as a float epoch-second (not the span's `start_time`). `start_time` / `end_time` mirror `Span.start_time` / `Span.end_time` (`float`, epoch seconds via `time.time()`); clients format for display. `span_id` / `parent_span_id` / `trace_id` are ULIDs (uppercase Crockford-base32, monotonic-within-process).
+
+Two non-span line types are emitted by the writer and must be filtered by readers consuming individual spans:
+- `kind == "stream_event"` — diagnostic (e.g. `{"event": "dropped_span", "dropped_span_count": N}`).
+- `kind == "stream_completed"` — terminal marker, exactly once on close. Missing marker on EOF means the writer crashed.
+
+The Spren-side AG-UI translator (`packages/spren/src/spren/events.py`, Spren v0.3 Session 04) is a separate `EventBus` consumer that translates framework lifecycle events into AG-UI events on the SSE channel; it does not consume `trace.ndjson`. The trace file is for the run inspector + cold reads.
 
 ## Migrations
 

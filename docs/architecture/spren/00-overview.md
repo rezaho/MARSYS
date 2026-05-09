@@ -2,7 +2,7 @@
 
 ## What Spren is
 
-A local-first, open-source product on top of the [marsys Python framework](../framework/overview.md). It is one product with two faces:
+A local-first, open-source product on top of the marsys Python framework (`packages/framework/`). It is one product with two faces:
 
 1. **A continuously-active personal AI assistant** — the "meta-agent." A daemon with persistent memory, a multi-channel inbox (web / Slack / Telegram / Discord / etc.), the ability to spawn sub-agents and team managers, and the authority to act on the user's behalf with appropriate confirmation flows. It is the agent that runs your other agents. See [09-meta-agent.md](./09-meta-agent.md).
 2. **A visual builder + run inspector** — a Vite + React + TanStack Router single-page app for designing marsys workflows and inspecting traces. Workflows authored visually, by the meta-agent, by Python code (imported), or from a template all land in the same workflow store with a `provenance` annotation.
@@ -17,7 +17,7 @@ Spren ships three product surfaces, all consuming one FastAPI API (SP-019):
 
 - **Desktop GUI** (Tauri webview) — the default experience. Native installer per platform; tray, autostart, OS integration grow over releases.
 - **Browser GUI** — same Vite bundle, served by the Python sidecar at `http://127.0.0.1:<port>/`. For users who prefer their existing browser. Available in every channel.
-- **TUI** (Textual, Python) — `spren tui` opens a four-pane terminal interface (Now / Inbox / Activity / Chat). Same domain, different rendering. For users who live in the terminal.
+- **TUI** (Textual, Python) — `spren tui` opens a four-pane terminal interface (Now / Since you were away / Activity / Chat). Same domain, different rendering. For users who live in the terminal.
 
 ## Who it's for
 

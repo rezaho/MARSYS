@@ -1,21 +1,23 @@
 # 05 — Packaging & Distribution
 
-Spren is an end-user product. The framework is a Python library. They ship like what they are.
+Spren is an end-user product. The framework is a Python library. They ship like what they are, under licenses that match: the framework is **Apache-2.0** (permissive, developer adoption), Spren — daemon, web frontend, desktop shell, and TUI — is **FSL-1.1-ALv2** (Functional Source License, source-available with a 2-year non-compete window before it converts to Apache-2.0).
 
 ## Distribution channels
 
 | Channel | Audience | What the user does |
 |---------|----------|---------------------|
-| **Native installer (front door)** | Default — every user we want | `curl spren.dev/install.sh \| sh` (macOS / Linux) or download `.msi` (Windows). Single binary per platform. Auto-updater built in. |
+| **Native installer (front door)** | Default — every user we want | `curl spren.dev/install.sh \| sh` (macOS / Linux) or download `.msi` (Windows) / `.dmg` (macOS) / `.deb` / `.AppImage` (Linux). Single binary per platform. Auto-updater built in. |
 | **Tauri-packaged desktop app** | Users who want a native window | `.dmg` / `.msi` / `.deb` / `.AppImage`. Same artifact the install script downloads. Tray, autostart, OS notifications (in later releases). |
-| **Homebrew tap / winget / apt PPA** | Power users on each OS | `brew install spren` etc. Wraps the same Tauri binary. |
-| **npm CLI** | Node-comfortable users (Cursor / Claude Code crowd) | `npm install -g @marsys/spren`. Downloads the platform-native binary on `postinstall`, exposes `spren` in PATH. |
-| **pipx** | Python power users who want Spren as a managed Python service | `pipx install spren`. Headless mode (no Tauri shell); Python sidecar binds to localhost; user opens a browser tab. Capabilities reduced (no native tray, no auto-update inside the app — `pipx upgrade` is the path). |
-| **Docker** | VPS / home server / NAS | `docker compose up` from a published `marsys/spren` image. Server mode (no GUI shell); access via browser. |
+| **Homebrew tap / winget / apt** | Power users on each OS | `brew install spren` (macOS, Linux), `winget install spren` (Windows), `apt install spren` (Debian/Ubuntu via PPA). Wraps the same Tauri binary. |
+| **npm CLI** | Node-comfortable users (Cursor / Claude Code crowd) | `npm install -g @marsys/spren`. Downloads the platform-native binary on `postinstall`, exposes `spren` in PATH. NOT a JS package. |
+| **pipx** | Python power users who want Spren as a managed Python service | `pipx install spren`. Server-only mode (no Tauri shell); Python sidecar binds to localhost; user opens a browser tab. Capabilities reduced (no native tray, no auto-update inside the app — `pipx upgrade` is the path). Required for pipx because Python wheels can't ship a Node/Rust runtime cleanly. |
+| **Docker** | VPS / home server / NAS | `docker compose up` from a published `marsys/spren` image. Server-only mode (no Tauri shell); access via browser. |
 
-The Tauri-packaged binary is the canonical artifact. The other channels are different ways of getting it (or, for pipx and Docker, a reduced server-only mode that runs the same Python sidecar without the Tauri shell).
+The Tauri-packaged binary is the canonical artifact. The native installer is the front door for every user we want; the secondary channels either wrap the same artifact (brew / winget / apt / npm) or run a reduced server-only mode that uses the same Python sidecar without the Tauri shell (pipx / Docker).
 
-The marsys framework, by contrast, is shipped only as `pip install marsys` from PyPI. It is a Python library with a developer audience; native installers do not apply.
+`pip install spren` is deliberately not a channel. Spren's audience treats tools the way they treat Cursor or Claude Code — they install apps, not Python packages — and forcing pip would lock the frontend into "static export served by FastAPI" because Python wheels can't ship a Node runtime cleanly. It would also lock out the Rust Tauri shell.
+
+The marsys framework, by contrast, is shipped only as `pip install marsys` from PyPI. It is an Apache-2.0 Python library with a developer audience; native installers do not apply.
 
 ## Architecture inside the Tauri-packaged binary
 
@@ -33,7 +35,7 @@ spren (Tauri binary, per platform)
 └── (later) bundled TUI binary                   # Textual app, separately invokable as `spren tui`
 ```
 
-The Tauri shell ships the static web bundle as app resources; it loads them through the system webview and routes API calls to the Python sidecar. The Python sidecar additionally serves the same static bundle on `/` for browser-tab mode (so a user can `spren open --browser` and use their preferred browser instead of the Tauri window).
+The Tauri shell ships the static web bundle as app resources; it loads them through the system webview and routes API calls to the Python sidecar. The Python sidecar additionally serves the same static bundle on `/` for browser-tab mode (so a user can `spren launch --browser` and use their preferred browser instead of the Tauri window). The bundle lands inside the Spren wheel via setuptools' `package-data` (`spren = ["_webui/**/*"]`); FastAPI conditionally mounts `StaticFiles` only when `_webui/index.html` exists, so dev mode with an empty `_webui/` doesn't shadow Vite.
 
 ## CLI surface
 
@@ -45,51 +47,49 @@ $ spren launch                       # start daemon + open Tauri window
 $ spren launch --browser             # start daemon + open default system browser
 $ spren launch --headless            # start daemon only; no UI surface
 $ spren tui                          # start daemon if not running + open TUI
-$ spren up                           # alias of `spren launch`, kept for muscle-memory parity
-$ spren memory <subcommand>          # markdown KB CLI (show / edit / remember / forget / why / verify-index)
-$ spren expose                       # cloudflared tunnel for webhook channels (later releases)
+$ spren memory <subcommand>          # markdown KB CLI (show / edit / remember / forget / why / verify-index) — v0.4+
+$ spren expose                       # cloudflared tunnel for webhook channels — v0.5
 $ spren --version
 ```
 
-Every subcommand operates on the same daemon. If the daemon is not running, the CLI starts it and waits for the ready signal. If it's running, the CLI attaches.
+There is no separate `marsys studio` command. Spren is the single product; manual visual building works alongside the meta-agent, with the meta-agent "armed" or not at runtime.
+
+Every subcommand operates on the same daemon. If the daemon is not running, the CLI starts it and waits for the ready signal (a single stdout line of the form `spren-ready: port=<N> token=<T> data-dir=<P>` that anything spawning the sidecar parses). If it's running, the CLI attaches.
 
 The pipx / Docker channels expose the same `spren` command but skip the Tauri shell: `spren launch` in pipx mode opens a browser tab; in Docker mode the user accesses the published port from outside the container.
 
 ## Build pipeline
 
 ```
-apps/web (pnpm)                packages/spren (uv)              apps/desktop (cargo)
-     │                                  │                                │
-     │ pnpm build → dist/               │ uv build → wheel               │ cargo build → binary
-     │                                  │                                │
-     ▼                                  │                                │
-copy dist/ → packages/spren/_webui/     │                                │
-                                        ▼                                │
-                              PyInstaller --onefile → spren-sidecar      │
-                              (per platform: macos arm64/x86_64,         │
-                               linux x86_64/arm64, windows x86_64)       │
-                                        │                                │
-                                        └────────────────┬───────────────┘
-                                                         ▼
-                                          Tauri bundles shell + sidecar +
-                                          static webui → installer per platform
-                                                         │
-                                          ┌──────────────┼──────────────────────┐
-                                          ▼              ▼                      ▼
-                                     install.sh      OS package           PyPI / Docker /
-                                     CDN drop        managers (brew,      npm (different
-                                                     winget, apt, AUR)    packaging paths
-                                                                          for the same artifact
-                                                                          where applicable)
+apps/web (pnpm)                       packages/spren (uv)              apps/desktop (cargo)
+     │                                          │                              │
+     │ pnpm --filter @marsys/spren-web build    │ uv build → wheel             │ cargo build → binary
+     │   → apps/web/dist/                       │                              │
+     ▼                                          │                              │
+copy dist/ → packages/spren/src/spren/_webui/   │                              │
+(setuptools package-data ships it in the wheel) │                              │
+                                                ▼                              │
+                                  PyInstaller --onefile → spren-sidecar        │
+                                  (per platform: macos arm64/x86_64,           │
+                                   linux x86_64/arm64, windows x86_64)         │
+                                                │                              │
+                                                └──────────────┬───────────────┘
+                                                               ▼
+                                                Tauri bundles shell + sidecar +
+                                                static webui → installer per platform
+                                                               │
+                                                ┌──────────────┼──────────────────────┐
+                                                ▼              ▼                      ▼
+                                           install.sh      OS package           PyPI / Docker /
+                                           CDN drop        managers (brew,      npm (different
+                                                           winget, apt, AUR)    packaging paths
+                                                                                for the same artifact
+                                                                                where applicable)
 ```
 
-Coordinated by `Justfile` recipes:
-- `just build-frontend` — pnpm build + copy to `packages/spren/_webui/`
-- `just build-sidecar` — PyInstaller for the host platform (CI matrix runs all targets)
-- `just build-desktop` — Tauri build using the prepared sidecar + webui
-- `just build-pipx` — uv build of the Spren wheel without the Tauri shell (sidecar mode only)
-- `just build-docker` — Docker image FROM `python:3.13-slim` plus the wheel
-- `just publish-<channel>` — sign and publish to the named channel
+Coordinated by `Justfile` recipes. Today: `just build` runs the Vite production build and copies the output into `packages/spren/src/spren/_webui/`; `just install` provisions Python (uv workspace `sync`), JS (pnpm), Rust (cargo fetch), and the Tauri CLI (`cargo install tauri-cli --version "^2"`); `just dev` runs the FastAPI sidecar plus Vite dev server; `just dev-desktop` runs Vite plus the Tauri shell (`cd apps/desktop && cargo tauri dev`); `just test` runs all suites (`uv run --package marsys pytest …`, `uv run --package spren pytest …`, `uv run --package spren-tui pytest …`, `pnpm --filter '@marsys/spren-web' test --run`, `cargo test`).
+
+The release pipeline (Session 10) extends this with PyInstaller + Tauri bundling + signing + per-channel publish recipes (`build-sidecar`, `build-desktop`, `build-pipx`, `build-docker`, `publish-<channel>`).
 
 ## Auto-update
 
@@ -187,6 +187,6 @@ volumes:
   spren_data:
 ```
 
-The image is built FROM `python:3.13-slim` and installs the Spren wheel. One uvicorn process per container; no multi-process supervisor. The Tauri shell does not run in Docker (no display); the user accesses the bundled web UI via browser to `http://127.0.0.1:8765`.
+The image is built FROM `python:3.12-slim` and installs the Spren wheel. One uvicorn process per container; no multi-process supervisor. The Tauri shell does not run in Docker (no display); the user accesses the bundled web UI via browser to `http://127.0.0.1:8765`.
 
 **Image registry:** `marsys/spren` on Docker Hub / GHCR. Tags follow Spren's version (`marsys/spren:0.3.0`, `marsys/spren:latest`).
