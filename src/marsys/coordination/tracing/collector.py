@@ -11,7 +11,7 @@ import copy
 import logging
 import pathlib
 import time
-from typing import Any, Dict, List, Optional, TYPE_CHECKING
+from typing import Any, Dict, List, Optional, Tuple, TYPE_CHECKING
 
 from ._ids import new_id
 from .messages import (
@@ -63,10 +63,16 @@ class TraceCollector:
         self.branch_spans: Dict[str, Span] = {}  # branch_id -> Span (survives closure)
         self.step_spans: Dict[str, Span] = {}  # step_span_id -> Span (survives closure)
         self._pending_convergence: Dict[str, List[Dict]] = {}  # branch_id -> convergence info for next step
-        # branch_id -> last resolved history (list of message hashes). Used by
-        # _handle_agent_start to compute the patch + base anchor for each step,
-        # and inherited by child branches at fork for free prefix-dedup.
-        self._last_history: Dict[str, List[str]] = {}
+        # (branch_id, agent_name) -> last resolved history (list of message hashes).
+        # Diff chains are per-agent because each agent maintains its own
+        # ``memory.get_messages()`` and prepares its own messages list at
+        # dispatch. A sequential A→B→A invoke chain on a single branch_id
+        # would otherwise let B's history overwrite A's anchor, producing
+        # ``replace`` patches instead of ``add`` patches when A returns.
+        # Inherited per-agent at fork: each ``(parent, agent)`` entry copies
+        # to ``(child, agent)`` so an agent rerunning on a child branch
+        # anchors on its own parent-branch tail.
+        self._last_history: Dict[Tuple[str, str], List[str]] = {}
 
         self._subscribe_to_events()
 
@@ -173,17 +179,20 @@ class TraceCollector:
             branch_id = getattr(event, 'branch_id', None)
             if branch_id:
                 self.branch_spans[branch_id] = branch_span
-                # Phase 3: child branch inherits parent's history at fork point so
-                # its first step's diff anchors against shared prefix → free
-                # cross-branch dedup of identical message hashes.
+                # Phase 3 fork inheritance: each ``(parent_branch_id, agent_name)``
+                # entry copies to ``(branch_id, agent_name)`` so an agent that
+                # reruns on the child branch anchors on its own parent-branch
+                # tail. Cross-agent forks (parent runs A, child runs B) leave
+                # B's child slot empty — B's first step gets ``base=None``,
+                # which is correct because B has no prior conversation.
+                # Today's orchestrator never sets ``parent_branch_id`` so this
+                # block is exercised only by unit tests; left in place for the
+                # eventual orchestrator change that will populate the field.
                 parent_branch_id = getattr(event, 'parent_branch_id', None)
-                if (
-                    self._message_store is not None
-                    and parent_branch_id
-                    and parent_branch_id in self._last_history
-                    and branch_id not in self._last_history
-                ):
-                    self._last_history[branch_id] = list(self._last_history[parent_branch_id])
+                if self._message_store is not None and parent_branch_id:
+                    for (br, ag), hist in list(self._last_history.items()):
+                        if br == parent_branch_id and (branch_id, ag) not in self._last_history:
+                            self._last_history[(branch_id, ag)] = list(hist)
             logger.debug(f"Branch span created: {event.branch_name}")
 
     async def _handle_branch_event(self, event: Any) -> None:
@@ -294,15 +303,21 @@ class TraceCollector:
             try:
                 redacted_messages = self._redact_messages_for_store(messages)
                 branch_id = getattr(event, "branch_id", None)
-                prev_history = self._last_history.get(branch_id) if branch_id else None
+                agent_name = getattr(event, "agent_name", "") or ""
+                # Per-(branch_id, agent_name) keying — see _last_history
+                # docstring. Without it, a sequential A→B→A invoke chain
+                # on the same branch_id lets B's history overwrite A's
+                # anchor, producing a non-prefix replace op when A returns.
+                history_key = (branch_id, agent_name) if branch_id else None
+                prev_history = self._last_history.get(history_key) if history_key else None
                 ref = build_input_messages_ref(
                     redacted_messages,
                     store=self._message_store,
                     prev_history=prev_history,
                 )
                 step_span.attributes["input_messages_ref"] = ref
-                if branch_id:
-                    self._last_history[branch_id] = list(ref["history"])
+                if history_key:
+                    self._last_history[history_key] = list(ref["history"])
             except Exception as e:  # noqa: BLE001
                 # Tracing must never break the run; collector failures are
                 # warnings only — same convention as the legacy block this

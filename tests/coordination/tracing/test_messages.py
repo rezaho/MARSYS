@@ -365,8 +365,11 @@ class TestCollectorFullInputCapture:
         assert ref2["history"][:2] == ref1["history"]
 
     @pytest.mark.asyncio
-    async def test_branch_fork_inherits_parent_history(self, tmp_path):
-        """Child branch's first step diffs against parent's last history."""
+    async def test_fork_inherits_parent_history_for_same_agent_only(self, tmp_path):
+        """Per-(branch, agent) inheritance: only the SAME agent reruning on the
+        child branch inherits its parent-branch tail. Cross-agent forks start
+        fresh because each agent has its own conversation memory.
+        """
         bus = EventBus()
         cfg = TracingConfig(
             enabled=True, output_dir=str(tmp_path), capture_full_input=True,
@@ -377,57 +380,139 @@ class TestCollectorFullInputCapture:
         user_msg = {"role": "user", "content": "ask"}
 
         await bus.emit(ExecutionStartEvent(session_id="s", task_summary="t",
-                                           topology_summary={}, agent_names=["P", "C"], config_summary={}))
+                                           topology_summary={}, agent_names=["A", "B"], config_summary={}))
 
+        # Parent branch runs agent A.
         from marsys.coordination.events import BranchCreatedEvent
-        parent_branch = BranchCreatedEvent(
-            session_id="s",
-            branch_id="parent-branch",
-            branch_name="parent",
-            source_agent="root",
-            target_agents=["P"],
-            trigger_type="root",
-        )
-        await bus.emit(parent_branch)
+        await bus.emit(BranchCreatedEvent(
+            session_id="s", branch_id="parent-branch", branch_name="parent",
+            source_agent="root", target_agents=["A"], trigger_type="root",
+        ))
         await _open_step(bus, session_id="s", branch_id="parent-branch",
-                         agent_name="P", step_number=1, step_span_id="parent-step-1")
+                         agent_name="A", step_number=1, step_span_id="parent-step-1")
         await bus.emit(AgentMessagesPreparedEvent(
             session_id="s", branch_id="parent-branch",
-            agent_name="P", step_number=1, step_span_id="parent-step-1",
+            agent_name="A", step_number=1, step_span_id="parent-step-1",
             messages=[sys_msg, user_msg],
         ))
         await asyncio.sleep(0.05)
 
-        # Child branch — fork from parent.
-        child_branch = BranchCreatedEvent(
-            session_id="s",
-            branch_id="child-branch",
-            branch_name="child",
-            source_agent="P",
-            target_agents=["C"],
-            trigger_type="invoke",
+        # Child branch (fork). Both agents A (continues) and B (cross-agent)
+        # will run on it. Inheritance only applies to A.
+        await bus.emit(BranchCreatedEvent(
+            session_id="s", branch_id="child-branch", branch_name="child",
+            source_agent="A", target_agents=["A", "B"], trigger_type="invoke",
             parent_branch_id="parent-branch",
-        )
-        await bus.emit(child_branch)
+        ))
+
+        # Child step 1 — agent A continues. Should inherit parent A's history
+        # and produce an append-only patch with the new turn.
         await _open_step(bus, session_id="s", branch_id="child-branch",
-                         agent_name="C", step_number=1, step_span_id="child-step-1")
+                         agent_name="A", step_number=1, step_span_id="child-A1")
         await bus.emit(AgentMessagesPreparedEvent(
             session_id="s", branch_id="child-branch",
-            agent_name="C", step_number=1, step_span_id="child-step-1",
-            messages=[sys_msg, user_msg, {"role": "user", "content": "delegate"}],
+            agent_name="A", step_number=1, step_span_id="child-A1",
+            messages=[sys_msg, user_msg, {"role": "user", "content": "continued"}],
+        ))
+
+        # Child step 2 — agent B runs for the first time. Should NOT inherit
+        # A's history (different agents have different conversations).
+        await _open_step(bus, session_id="s", branch_id="child-branch",
+                         agent_name="B", step_number=2, step_span_id="child-B1")
+        await bus.emit(AgentMessagesPreparedEvent(
+            session_id="s", branch_id="child-branch",
+            agent_name="B", step_number=2, step_span_id="child-B1",
+            messages=[{"role": "system", "content": "B's system"},
+                      {"role": "user", "content": "B's first turn"}],
         ))
         await asyncio.sleep(0.05)
 
         parent_ref = collector.step_spans["parent-step-1"].attributes["input_messages_ref"]
-        child_ref = collector.step_spans["child-step-1"].attributes["input_messages_ref"]
+        child_a_ref = collector.step_spans["child-A1"].attributes["input_messages_ref"]
+        child_b_ref = collector.step_spans["child-B1"].attributes["input_messages_ref"]
 
-        # Parent's history is the prefix for child's first step.
-        assert child_ref["history"][:2] == parent_ref["history"]
-        # Child's patch is just the new turn (one add op), not a full re-add.
-        assert all(op["op"] == "add" for op in child_ref["patch"])
-        assert len(child_ref["patch"]) == 1
-        # Child base anchors on parent's history.
-        assert child_ref["base"] is not None
+        # Same-agent fork: A inherits parent's history; first 2 hashes match.
+        assert child_a_ref["history"][:2] == parent_ref["history"]
+        assert all(op["op"] == "add" for op in child_a_ref["patch"])
+        assert len(child_a_ref["patch"]) == 1  # just the new turn
+        assert child_a_ref["base"] is not None
+
+        # Cross-agent fork: B starts fresh; no inheritance from A.
+        assert child_b_ref["base"] is None
+        # All ops are 'add' because there's no prior history (full populate).
+        assert all(op["op"] == "add" for op in child_b_ref["patch"])
+        assert len(child_b_ref["patch"]) == 2
+
+    @pytest.mark.asyncio
+    async def test_different_agent_in_same_branch_chains_per_agent(self, tmp_path):
+        """Sequential A→B→A on a single branch_id keeps per-agent diff chains.
+
+        Without per-(branch, agent) keying, B's history overwrites A's anchor
+        and A's second step produces a non-prefix replace patch instead of
+        the correct append-only adds. Regression test for the live test's
+        ``same_branch_diff_chain`` failure.
+        """
+        bus = EventBus()
+        cfg = TracingConfig(
+            enabled=True, output_dir=str(tmp_path), capture_full_input=True,
+        )
+        collector = TraceCollector(event_bus=bus, config=cfg, sinks=[])
+
+        sys_msg = {"role": "system", "content": "system"}
+        await bus.emit(ExecutionStartEvent(session_id="s", task_summary="t",
+                                           topology_summary={}, agent_names=["A", "B"], config_summary={}))
+
+        # Step 1 — agent A on branch BR.
+        await _open_step(bus, session_id="s", branch_id="BR",
+                         agent_name="A", step_number=1, step_span_id="step-A1")
+        await bus.emit(AgentMessagesPreparedEvent(
+            session_id="s", branch_id="BR",
+            agent_name="A", step_number=1, step_span_id="step-A1",
+            messages=[sys_msg, {"role": "user", "content": "ask A"}],
+        ))
+
+        # Step 2 — agent B on the same branch BR (sequential invoke).
+        await _open_step(bus, session_id="s", branch_id="BR",
+                         agent_name="B", step_number=2, step_span_id="step-B1")
+        await bus.emit(AgentMessagesPreparedEvent(
+            session_id="s", branch_id="BR",
+            agent_name="B", step_number=2, step_span_id="step-B1",
+            messages=[{"role": "system", "content": "B's system"},
+                      {"role": "user", "content": "ask B"}],
+        ))
+
+        # Step 3 — agent A returns on the same branch. Its history extends
+        # step 1 (NOT step 2 — A's memory is per-A, doesn't see B's turns).
+        await _open_step(bus, session_id="s", branch_id="BR",
+                         agent_name="A", step_number=3, step_span_id="step-A2")
+        await bus.emit(AgentMessagesPreparedEvent(
+            session_id="s", branch_id="BR",
+            agent_name="A", step_number=3, step_span_id="step-A2",
+            messages=[
+                sys_msg,
+                {"role": "user", "content": "ask A"},
+                {"role": "assistant", "content": "A's first reply"},
+                {"role": "user", "content": "B's answer relayed back"},
+            ],
+        ))
+        await asyncio.sleep(0.05)
+
+        ref_a1 = collector.step_spans["step-A1"].attributes["input_messages_ref"]
+        ref_b1 = collector.step_spans["step-B1"].attributes["input_messages_ref"]
+        ref_a2 = collector.step_spans["step-A2"].attributes["input_messages_ref"]
+
+        # A's first step: no prior history, base=None.
+        assert ref_a1["base"] is None
+        # B's first step on BR: still no prior B-history (different agent).
+        assert ref_b1["base"] is None
+        # A's second step: anchors on A's first step (NOT on B's). Append-only.
+        assert ref_a2["base"] is not None
+        assert all(op["op"] == "add" for op in ref_a2["patch"]), (
+            f"Expected append-only patch (proves diff anchors against A's own "
+            f"history, not B's). Got: {ref_a2['patch']}"
+        )
+        # The first two history hashes match A's step 1.
+        assert ref_a2["history"][:2] == ref_a1["history"]
 
     @pytest.mark.asyncio
     async def test_event_count_equals_dispatch_count(self, tmp_path):
