@@ -1,0 +1,67 @@
+name: Test (smoke)
+
+# Cheap-tier framework smoke check on every PR. Runs only the
+# pytest tests marked `@pytest.mark.cheap` (one canonical end-to-end
+# test today; opt in more by adding the marker). Default model is
+# Claude Haiku 4.5 via Anthropic direct (~$0.05 per PR).
+#
+# OPTIONAL by design:
+# - When the repo has ``ANTHROPIC_API_KEY`` configured as a secret, the
+#   real test runs and gates the PR.
+# - When the secret isn't configured (community forks, fresh clones,
+#   local-only repos) the job emits a notice and exits success without
+#   running pytest. No false-red on PRs that legitimately can't run
+#   paid tests.
+#
+# Note: live-tests under ``packages/framework/live_tests/`` use OAuth
+# (subscription credentials in ``~/.marsys/credentials.json``), NOT API
+# keys, and are NOT pytest-collected — they never run here.
+on:
+  pull_request:
+    paths:
+      - 'packages/framework/**'
+      - '.github/workflows/test-smoke.yml'
+      - 'Justfile'
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  smoke:
+    name: cheap-tier framework tests
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v3
+
+      - name: Install just
+        uses: extractions/setup-just@v2
+
+      - name: Install framework deps
+        run: uv sync --extra test --package marsys
+
+      - name: Run cheap-tier framework tests
+        env:
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+        # The shell-level guard handles two cases the GitHub Actions
+        # ``if: secrets.* != ''`` block can't (fork PRs lose secret
+        # visibility entirely): no secret in the repo, and no secret
+        # accessible to this run. Either way, we exit 0 so the check
+        # appears green/skipped instead of red/failed.
+        run: |
+          if [ -z "${ANTHROPIC_API_KEY:-}" ]; then
+            echo "::notice::ANTHROPIC_API_KEY not configured; skipping cheap-tier tests."
+            echo "         Add the secret in repo Settings → Secrets and variables → Actions"
+            echo "         to enable this gate."
+            exit 0
+          fi
+          just test-cheap
