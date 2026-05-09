@@ -12,12 +12,13 @@ import time
 from typing import Any, Dict, List, Optional, TYPE_CHECKING
 
 from ._ids import new_id
+from .redactor import SecretRedactor
 from .types import Span, TraceTree, create_span
 from .config import TracingConfig
 
 if TYPE_CHECKING:
     from ..event_bus import EventBus
-    from .writers.base import TraceWriter
+    from .sink import TelemetrySink
 
 logger = logging.getLogger(__name__)
 
@@ -40,11 +41,12 @@ class TraceCollector:
         self,
         event_bus: 'EventBus',
         config: TracingConfig,
-        writers: Optional[List['TraceWriter']] = None,
+        sinks: Optional[List['TelemetrySink']] = None,
     ):
         self.event_bus = event_bus
         self.config = config
-        self.writers = writers or []
+        self.sinks = sinks or []
+        self._redactor = config.redactor if config.redactor is not None else SecretRedactor()
 
         # Trace state (protected by _lock)
         self._lock = asyncio.Lock()
@@ -401,19 +403,21 @@ class TraceCollector:
     # ── Streaming hook ──────────────────────────────────────────────
 
     async def _stream_span(self, span: Span) -> None:
-        """Forward a closed span to every writer's ``write_span`` hook.
+        """Redact then forward a closed span to every sink's ``publish_span``.
 
-        Errors are logged and swallowed so a misbehaving writer cannot break
-        the collector's event-handling path. Default ABC ``write_span`` is a
-        no-op, so non-streaming writers cost nothing.
+        Redaction runs once here, mutating span.attributes / span.events /
+        span.links in place so all downstream consumers see the same view.
+        Sink errors are logged and swallowed so a misbehaving sink cannot
+        break the collector's event-handling path.
         """
-        for writer in self.writers:
+        self._redactor.redact_span(span)
+        for sink in self.sinks:
             try:
-                await writer.write_span(span)
+                await sink.publish_span(span)
             except Exception as e:
                 logger.error(
-                    "Trace writer %s.write_span failed: %s",
-                    type(writer).__name__, e, exc_info=True,
+                    "Telemetry sink %s.publish_span failed: %s",
+                    type(sink).__name__, e, exc_info=True,
                 )
 
     # ── Finalization ────────────────────────────────────────────────
@@ -460,23 +464,16 @@ class TraceCollector:
                 if v.trace_id != trace_id
             }
 
-        # Write trace (outside lock)
-        for writer in self.writers:
-            try:
-                await writer.write(trace)
-            except Exception as e:
-                logger.error(f"Trace writer {type(writer).__name__} failed: {e}")
-
         logger.info(f"Trace finalized for session {session_id} ({trace.trace_id})")
         return trace
 
     async def close(self) -> None:
-        """Shut down all writers."""
-        for writer in self.writers:
+        """Shut down all sinks."""
+        for sink in self.sinks:
             try:
-                await writer.close()
+                await sink.close()
             except Exception as e:
-                logger.error(f"Error closing trace writer: {e}")
+                logger.error(f"Error closing telemetry sink: {e}")
 
     # ── Helpers ─────────────────────────────────────────────────────
 

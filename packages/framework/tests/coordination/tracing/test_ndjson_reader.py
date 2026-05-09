@@ -47,7 +47,7 @@ async def test_stream_yields_in_file_order(config, tmp_path):
     writer = NDJSONTraceWriter(config)
     spans = [_make_span(name=f"S{i}") for i in range(5)]
     for s in spans:
-        await writer.write_span(s)
+        await writer.publish_span(s)
     await writer.close()
     reader = NDJSONTraceReader(tmp_path / "TR1.ndjson")
     yielded = list(reader.stream())
@@ -58,7 +58,7 @@ async def test_stream_yields_in_file_order(config, tmp_path):
 @pytest.mark.asyncio
 async def test_completion_status_complete_after_marker(config, tmp_path):
     writer = NDJSONTraceWriter(config)
-    await writer.write_span(_make_span())
+    await writer.publish_span(_make_span())
     await writer.close()
     reader = NDJSONTraceReader(tmp_path / "TR1.ndjson")
     list(reader.stream())
@@ -108,7 +108,7 @@ def test_truncated_trailing_line(tmp_path):
 async def test_follow_mode_reads_late_appends(config, tmp_path):
     """Open reader in follow=True; another task appends spans; reader yields them."""
     writer = NDJSONTraceWriter(config)
-    await writer.write_span(_make_span(name="early"))
+    await writer.publish_span(_make_span(name="early"))
     # Give drain time to flush.
     await asyncio.sleep(0.05)
     path = tmp_path / "TR1.ndjson"
@@ -122,7 +122,7 @@ async def test_follow_mode_reads_late_appends(config, tmp_path):
     consumer = threading.Thread(target=consume, daemon=True)
     consumer.start()
     await asyncio.sleep(0.15)  # let reader catch the early span
-    await writer.write_span(_make_span(name="late"))
+    await writer.publish_span(_make_span(name="late"))
     await asyncio.sleep(0.15)
     await writer.close()
     consumer.join(timeout=2.0)
@@ -144,7 +144,7 @@ async def test_to_tree_reconstructs_parent_child(config, tmp_path):
     tool = _make_span(kind="tool", name="tool", parent=step.span_id)
     # Stream children-first (typical real-world close-order).
     for s in (tool, step, root):
-        await writer.write_span(s)
+        await writer.publish_span(s)
     await writer.close()
 
     tree = TraceTree.from_ndjson(tmp_path / "TR1.ndjson")
@@ -163,7 +163,7 @@ async def test_to_tree_arrival_order_invariance(config, tmp_path):
     b = _make_span(kind="step", name="B", parent=root.span_id)
     # Parent-first order
     for s in (root, a, b):
-        await writer.write_span(s)
+        await writer.publish_span(s)
     await writer.close()
     tree = TraceTree.from_ndjson(tmp_path / "TR1.ndjson")
     assert {c.name for c in tree.root_span.children} == {"A", "B"}
@@ -280,7 +280,7 @@ async def test_synthetic_crash_writer_partial_file_no_marker(config, tmp_path):
     writer = NDJSONTraceWriter(config)
     spans = [_make_span(name=f"S{i}") for i in range(5)]
     for s in spans:
-        await writer.write_span(s)
+        await writer.publish_span(s)
     # Let the drain task flush all spans to disk.
     await asyncio.sleep(0.1)
     # Simulate process death: do NOT call close(). Cancel the drain task and
@@ -326,7 +326,7 @@ def test_reader_opens_under_writer_lock_windows(config, tmp_path):
 
     async def _setup():
         writer = NDJSONTraceWriter(config)
-        await writer.write_span(_make_span(name="locked-write"))
+        await writer.publish_span(_make_span(name="locked-write"))
         await _asyncio.sleep(0.05)
         return writer
 
