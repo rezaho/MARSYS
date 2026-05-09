@@ -113,12 +113,23 @@ class Orchestrator:
         self._completed_emitted: set[str] = set()
 
         # User-node interaction queue (FIFO single-pending). Each item:
-        # (suspended_branch_id, prompt, resume_agent). The orchestrator
-        # dispatches one at a time; siblings wait. Resumed via the
-        # _resume_user_responses async-queue.
+        # (suspended_branch_id, prompt, resume_agent, delivery_target). The
+        # orchestrator dispatches one at a time; siblings wait. Resumed via
+        # the _resume_user_responses async-queue.
         self._user_interactions: collections.deque = collections.deque()
         self._user_interaction_inflight: bool = False
         self._resume_user_responses: Optional[Any] = None  # asyncio.Queue lazily created
+
+        # Pause/resume primitive (ADR-007). Both events are lazy-init'd
+        # in _dispatch_loop so they bind to the loop that's actually
+        # running, not whichever loop happened to be active at __init__.
+        self._pause_requested: Optional[Any] = None  # asyncio.Event
+        self._paused: bool = False
+        # True while _dispatch_loop is actively dispatching; False before
+        # run() and after it returns. quiesce() awaits the event below
+        # rather than polling this flag.
+        self._loop_running: bool = False
+        self._loop_exited_event: Optional[Any] = None  # asyncio.Event
 
     # ══════════════════════════════════════════════════════════════════
     # Public API
@@ -172,13 +183,79 @@ class Orchestrator:
         while keeping the orchestrator's algorithm body single-threaded
         (asyncio cooperative scheduling — between awaits, sync sections
         run atomically)."""
+        self.init_workflow(task, entry_agent=entry_agent)
+        return await self._dispatch_loop()
+
+    async def resume(self) -> WorkflowResult:
+        """Run-loop entry point used after `restore_from()`.
+
+        Skips `init_workflow` because state was just restored; runs the
+        same dispatch loop body as `run()`. Returns a `WorkflowResult`
+        matching the shape of `run()`.
+        """
+        if self.root_barrier_id is None:
+            raise RuntimeError(
+                "resume() called on an orchestrator that has no restored state; "
+                "call restore_from(state) first or use run() for a fresh workflow"
+            )
+        # Reset transient flags that don't survive a resume. _workflow_error
+        # is restored from the snapshot but the documented contract is that
+        # a paused snapshot has no error (the pause check fires before the
+        # error check); clearing here defends the resume against a
+        # hand-crafted "paused-but-errored" snapshot rather than failing
+        # immediately at the next dispatch iteration.
+        self._paused = False
+        if self._pause_requested is not None:
+            self._pause_requested.clear()
+        if self._workflow_error == "paused":
+            # Defensive — a pause that fell through to _build_paused_result
+            # may have set workflow_error to the sentinel string.
+            self._workflow_error = None
+        return await self._dispatch_loop()
+
+    async def _dispatch_loop(self) -> WorkflowResult:
+        """The shared dispatch loop body for `run()` and `resume()`.
+
+        Honors `_pause_requested`: if the event is set between dispatch
+        iterations, the loop awaits in-flight ticks to drain (preserves
+        the at-tick-boundary contract) and exits without setting
+        `_workflow_error`. The caller (Orchestra.pause_session) can then
+        snapshot mutable state safely.
+        """
         import asyncio
 
-        self.init_workflow(task, entry_agent=entry_agent)
+        if self._pause_requested is None:
+            self._pause_requested = asyncio.Event()
+        if self._loop_exited_event is None:
+            self._loop_exited_event = asyncio.Event()
+        self._loop_exited_event.clear()
+
+        self._loop_running = True
+        try:
+            return await self._dispatch_loop_inner()
+        finally:
+            self._loop_running = False
+            self._loop_exited_event.set()
+
+    async def _dispatch_loop_inner(self) -> WorkflowResult:
+        import asyncio
 
         in_flight: set[asyncio.Task] = set()
 
         while True:
+            # Pause checkpoint at the TOP of the loop: if a pause was
+            # requested, stop pulling new branches off `runnable` and
+            # await the existing in-flight ticks to drain. This is the
+            # at-tick-boundary contract — runnable items stay queued for
+            # resume; they're part of the snapshot.
+            if self._pause_requested.is_set():
+                if in_flight:
+                    await asyncio.wait(in_flight)
+                    in_flight.clear()
+                    self._drain_fires()
+                self._paused = True
+                return self._build_paused_result()
+
             # Dispatch every RUNNING branch in the queue as a task.
             while self.runnable:
                 bid = self.runnable.popleft()
@@ -226,6 +303,35 @@ class Orchestrator:
             self._drain_fires()
 
         return self._build_result()
+
+    async def quiesce(self) -> None:
+        """Set the pause flag and await the dispatch loop to drain its
+        in-flight ticks at the next tick boundary.
+
+        Must be called from outside the dispatch loop (typically from
+        `Orchestra.pause_session`, on the same event loop as the awaiting
+        `Orchestra.execute()` call). Idempotent: a no-op on an already-
+        quiesced or already-completed orchestrator.
+
+        After `await quiesce()` returns, `snapshot()` is safe to call.
+        """
+        import asyncio
+
+        if not self._loop_running:
+            # No active dispatch loop — either run() hasn't started yet
+            # or it has already returned. Either way, snapshot() is safe
+            # right now without further synchronization.
+            self._paused = True
+            if self._pause_requested is None:
+                self._pause_requested = asyncio.Event()
+            return
+        self._pause_requested.set()
+        # The dispatch loop will exit at the next tick boundary and set
+        # _loop_exited_event in its finally block. Await that instead of
+        # polling — both correctness-equivalent, but cleaner.
+        assert self._loop_exited_event is not None
+        await self._loop_exited_event.wait()
+        self._paused = True
 
     async def tick(self) -> bool:
         """Advance one branch step. For external drivers."""
@@ -1170,5 +1276,115 @@ class Orchestrator:
             barriers=self.barriers,
         )
 
+    def _build_paused_result(self) -> WorkflowResult:
+        """Result returned by the dispatch loop when paused at a tick
+        boundary. Distinct from `_build_result()` — there is no terminal
+        state and no workflow error; the run is suspended.
 
-__all__ = ["Orchestrator", "MAX_STEPS_DEFAULT"]
+        `Orchestra` recognizes this via `WorkflowResult.error == "paused"`
+        (a sentinel string that pause_session translates into the public
+        OrchestraResult.metadata["paused"] = True flag).
+        """
+        return WorkflowResult(
+            success=False,
+            final_response=None,
+            error="paused",
+            branches=self.branches,
+            barriers=self.barriers,
+        )
+
+    # ══════════════════════════════════════════════════════════════════
+    # Snapshot / restore (ADR-007)
+    # ══════════════════════════════════════════════════════════════════
+
+    def snapshot(self) -> "OrchestratorState":
+        """Return a deep-copy of mutable orchestrator state.
+
+        Caller MUST have called `quiesce()` (or be operating outside an
+        active run); calling `snapshot()` while branches are dispatching
+        is undefined.
+
+        The returned `Branch` and `Barrier` instances are NOT shared with
+        the live orchestrator — the next tick must not be able to mutate
+        the snapshot.
+        """
+        import copy
+
+        return OrchestratorState(
+            branches={bid: copy.deepcopy(b) for bid, b in self.branches.items()},
+            barriers={barid: copy.deepcopy(b) for barid, b in self.barriers.items()},
+            convergence_barriers=dict(self.convergence_barriers),
+            runnable=list(self.runnable),
+            fire_queue=list(self._fire_queue),
+            root_barrier_id=self.root_barrier_id,
+            workflow_error=self._workflow_error,
+            completed_emitted=set(self._completed_emitted),
+            user_interactions=[copy.deepcopy(item) for item in self._user_interactions],
+            user_interaction_inflight=self._user_interaction_inflight,
+            max_steps=self.max_steps,
+        )
+
+    def restore_from(self, state: "OrchestratorState") -> None:
+        """Replace mutable state with `state`. Must be called on a
+        freshly-constructed `Orchestrator` that has not run yet (asserts
+        `branches == {}` and `root_barrier_id is None`).
+
+        Deep-copies the state into the orchestrator so subsequent ticks
+        cannot mutate the caller's `OrchestratorState` instance.
+        """
+        import copy
+
+        if self.branches or self.root_barrier_id is not None:
+            raise RuntimeError(
+                "restore_from() called on an orchestrator that already has "
+                "state; construct a fresh Orchestrator and call restore_from "
+                "on that instance."
+            )
+        self.branches = {bid: copy.deepcopy(b) for bid, b in state.branches.items()}
+        self.barriers = {barid: copy.deepcopy(b) for barid, b in state.barriers.items()}
+        self.convergence_barriers = dict(state.convergence_barriers)
+        self.runnable = collections.deque(state.runnable)
+        self._fire_queue = list(state.fire_queue)
+        self.root_barrier_id = state.root_barrier_id
+        self._workflow_error = state.workflow_error
+        self._completed_emitted = set(state.completed_emitted)
+        self._user_interactions = collections.deque(
+            copy.deepcopy(item) for item in state.user_interactions
+        )
+        self._user_interaction_inflight = state.user_interaction_inflight
+        self.max_steps = state.max_steps
+        # _resume_user_responses (asyncio.Queue) is intentionally rebuilt
+        # fresh on resume — it lives only inside an active loop. Pending
+        # user interactions ride in self._user_interactions.
+        self._resume_user_responses = None
+        # _pause_requested (asyncio.Event) is also rebuilt fresh inside
+        # _dispatch_loop on the new event loop.
+        self._pause_requested = None
+        self._paused = False
+
+
+from dataclasses import dataclass, field
+
+
+@dataclass
+class OrchestratorState:
+    """In-memory shape of `Orchestrator` mutable state. Distinct from the
+    on-disk `StateSnapshot` Pydantic model — `Orchestra` maps between them.
+
+    Used by `Orchestrator.snapshot()` / `Orchestrator.restore_from()`.
+    """
+
+    branches: dict[str, Branch]
+    barriers: dict[str, Barrier]
+    convergence_barriers: dict[str, str]
+    runnable: list[str]
+    fire_queue: list[str]
+    root_barrier_id: Optional[str]
+    workflow_error: Optional[str]
+    completed_emitted: set[str]
+    user_interactions: list  # deque content; tuples of (bid, prompt, agent, target)
+    user_interaction_inflight: bool
+    max_steps: int = MAX_STEPS_DEFAULT
+
+
+__all__ = ["Orchestrator", "OrchestratorState", "MAX_STEPS_DEFAULT"]
