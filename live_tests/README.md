@@ -44,7 +44,7 @@ live_tests/
 
 Current areas:
 
-- **tracing/** — the execution-trace pipeline (collector → sink → file/network). Includes `parallel.py` (parallel-fan-out + convergence + redaction).
+- **tracing/** — the execution-trace pipeline (collector → sink → file/network). Includes `parallel.py` (parallel-fan-out + convergence + redaction) and `secret_word_pipeline.py` (Phase-1 full-payload capture + Phase-2 OTel/LangSmith export).
 
 Planned future areas (not yet implemented; placeholders for direction):
 
