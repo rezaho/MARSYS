@@ -513,6 +513,7 @@ class Orchestrator:
         branch: Branch,
         source_agent: str,
         trigger_type: str,
+        parent_step_span_id: Optional[str] = None,
     ) -> None:
         if self.event_bus is None:
             return
@@ -524,6 +525,7 @@ class Orchestrator:
             source_agent=source_agent,
             target_agents=[branch.current_agent],
             trigger_type=trigger_type,
+            parent_step_span_id=parent_step_span_id,
         ))
 
     def _emit_branch_completed(self, branch: Branch, success: bool) -> None:
@@ -602,9 +604,14 @@ class Orchestrator:
         status: str = "RUNNING",
         source_agent: str = "entry",
         trigger_type: str = "initial",
+        parent_step_span_id: Optional[str] = None,
     ) -> Optional[Branch]:
         """Create a branch at `agent`. RUNNING by default; pass status="WAITING"
-        for rendezvous resolvers (they wake when the barrier fires)."""
+        for rendezvous resolvers (they wake when the barrier fires).
+
+        ``parent_step_span_id`` is propagated to ``BranchCreatedEvent``
+        for trace-tree parenting under the dispatching step span.
+        """
         br = Branch(
             id=new_branch_id(),
             current_agent=agent,
@@ -620,7 +627,12 @@ class Orchestrator:
             self.runnable.append(br.id)
             # Only emit BranchCreatedEvent for runnable branches; WAITING
             # rendezvous resolvers are an internal mechanism.
-            self._emit_branch_created(br, source_agent=source_agent, trigger_type=trigger_type)
+            self._emit_branch_created(
+                br,
+                source_agent=source_agent,
+                trigger_type=trigger_type,
+                parent_step_span_id=parent_step_span_id,
+            )
         return br
 
     async def _tick(self, br: Branch) -> None:
@@ -643,6 +655,11 @@ class Orchestrator:
         self._interpret(br, step)
 
     def _interpret(self, br: Branch, step: StepResult) -> None:
+        # Stash the step's span id so child branches spawned from this
+        # tick can be parented under it in the trace tree.
+        if step.step_span_id:
+            br.last_step_span_id = step.step_span_id
+
         if step.kind == "NOOP":
             self.runnable.append(br.id)
             return
@@ -731,6 +748,7 @@ class Orchestrator:
                     parent_spawn=fork.id,
                     source_agent=br.current_agent,
                     trigger_type="parallel",
+                    parent_step_span_id=br.last_step_span_id,
                 )
                 if child is not None:
                     fork.candidates.add(child.id)

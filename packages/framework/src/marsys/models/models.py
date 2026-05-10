@@ -449,14 +449,35 @@ class BaseLocalModel:
 
         Returns HarmonizedResponse for compatibility with the Agent framework.
         """
-        result = await self.adapter.arun(
-            messages=messages,
-            json_mode=json_mode,
-            max_tokens=max_tokens,
-            tools=tools,
-            images=images,
-            **kwargs,
+        # Lazy import — keeps marsys.models importable without the
+        # tracing package.
+        from marsys.coordination.tracing.capture import (
+            capture_llm_call, extract_sampling_params,
         )
+        trace_ctx = kwargs.pop("trace_ctx", None)
+        sampling = extract_sampling_params({
+            "json_mode": json_mode, "max_tokens": max_tokens, **kwargs,
+        })
+
+        async with capture_llm_call(
+            trace_ctx,
+            model_name=getattr(self, "model_name", "unknown"),
+            provider=getattr(self, "provider", "local"),
+            messages=messages,
+            tools=tools,
+            sampling_params=sampling,
+            images=images,
+        ) as cap:
+            # Terminal adapter call — don't forward trace_ctx.
+            result = await self.adapter.arun(
+                messages=messages,
+                json_mode=json_mode,
+                max_tokens=max_tokens,
+                tools=tools,
+                images=images,
+                **kwargs,
+            )
+            cap.set_response(result)
 
         # Apply response processor if provided
         if self._response_processor:
@@ -519,6 +540,10 @@ class BaseAPIModel:
         self._response_processor = response_processor
         self.thinking_budget = thinking_budget  # Store thinking_budget as instance attribute
         self.reasoning_effort = reasoning_effort  # Store reasoning_effort as instance attribute
+        # Identity attributes — used by the tracing capture helper. Owned
+        # at the model layer because adapters don't carry ``provider``.
+        self.model_name = model_name
+        self.provider = provider
 
         # Resolve OAuth profile to credentials_path for OAuth providers
         if provider in ("openai-oauth", "anthropic-oauth"):
@@ -573,11 +598,6 @@ class BaseAPIModel:
     # REMOVED: _robust_json_loads method - moved to src/utils/parsing.py
     # REMOVED: _close_json_braces method - moved to src/utils/parsing.py
     # REMOVED: parse_model_response method - action parsing handled in coordination validation
-
-    @property
-    def provider(self) -> str:
-        """Get the provider name from the adapter."""
-        return self.adapter.__class__.__name__.replace("Adapter", "").lower()
 
     def run(
         self,
@@ -741,65 +761,27 @@ class BaseAPIModel:
         ):
             kwargs["reasoning_effort"] = self.reasoning_effort
 
-        if self.async_adapter:
-            # Use native async adapter for best performance
-            adapter_response = await self.async_adapter.arun(
-                messages=messages,
-                json_mode=json_mode,
-                response_schema=response_schema,
-                max_tokens=max_tokens,
-                temperature=temperature,
-                top_p=top_p,
-                tools=tools,
-                **kwargs
-            )
+        from marsys.coordination.tracing.capture import (
+            capture_llm_call, extract_sampling_params,
+        )
+        trace_ctx = kwargs.pop("trace_ctx", None)
+        sampling = extract_sampling_params({
+            "json_mode": json_mode, "response_schema": response_schema,
+            "max_tokens": max_tokens, "temperature": temperature, "top_p": top_p,
+            **kwargs,
+        })
 
-            # Log model output for debugging/analysis
-            logger.debug(f"Model {self.async_adapter.model_name} response: {adapter_response}")
-
-            # Check if response is an ErrorResponse
-            if isinstance(adapter_response, ErrorResponse):
-                # Use ModelAPIError with classification instead of generic ModelError
-                from marsys.agents.exceptions import ModelAPIError
-
-                # Extract classification data if available
-                classification = None
-                is_retryable = False
-                retry_after = None
-                suggested_action = None
-
-                if hasattr(adapter_response, "classification") and isinstance(adapter_response.classification, dict):
-                    classification = adapter_response.classification.get("category")
-                    is_retryable = adapter_response.classification.get("is_retryable", False)
-                    retry_after = adapter_response.classification.get("retry_after")
-                    suggested_action = adapter_response.classification.get("suggested_action")
-
-                raise ModelAPIError(
-                    message=f"API Error: {adapter_response.error}",
-                    provider=adapter_response.provider,
-                    api_error_code=adapter_response.error_code,
-                    api_error_type=adapter_response.error_type,
-                    classification=classification,
-                    is_retryable=is_retryable,
-                    retry_after=retry_after,
-                    suggested_action=suggested_action,
-                    status_code=getattr(adapter_response, "status_code", None),
-                    raw_response={"error": adapter_response.error},
-                )
-
-            # Apply post-processing if configured
-            if self._response_processor and adapter_response.content:
-                adapter_response.content = self._response_processor(adapter_response.content)
-
-            return adapter_response
-        else:
-            # Fallback: run sync adapter in thread executor
-            import asyncio
-            loop = asyncio.get_event_loop()
-
-            # Create a wrapper function that calls the sync method
-            def sync_run():
-                return self.run(
+        async with capture_llm_call(
+            trace_ctx,
+            model_name=getattr(self, "model_name", "unknown"),
+            provider=getattr(self, "provider", "unknown"),
+            messages=messages,
+            tools=tools,
+            sampling_params=sampling,
+        ) as cap:
+            if self.async_adapter:
+                # Use native async adapter for best performance
+                adapter_response = await self.async_adapter.arun(
                     messages=messages,
                     json_mode=json_mode,
                     response_schema=response_schema,
@@ -810,8 +792,67 @@ class BaseAPIModel:
                     **kwargs
                 )
 
-            # Execute in thread pool to avoid blocking
-            return await loop.run_in_executor(None, sync_run)
+                # Log model output for debugging/analysis
+                logger.debug(f"Model {self.async_adapter.model_name} response: {adapter_response}")
+
+                # Check if response is an ErrorResponse
+                if isinstance(adapter_response, ErrorResponse):
+                    # Use ModelAPIError with classification instead of generic ModelError
+                    from marsys.agents.exceptions import ModelAPIError
+
+                    # Extract classification data if available
+                    classification = None
+                    is_retryable = False
+                    retry_after = None
+                    suggested_action = None
+
+                    if hasattr(adapter_response, "classification") and isinstance(adapter_response.classification, dict):
+                        classification = adapter_response.classification.get("category")
+                        is_retryable = adapter_response.classification.get("is_retryable", False)
+                        retry_after = adapter_response.classification.get("retry_after")
+                        suggested_action = adapter_response.classification.get("suggested_action")
+
+                    raise ModelAPIError(
+                        message=f"API Error: {adapter_response.error}",
+                        provider=adapter_response.provider,
+                        api_error_code=adapter_response.error_code,
+                        api_error_type=adapter_response.error_type,
+                        classification=classification,
+                        is_retryable=is_retryable,
+                        retry_after=retry_after,
+                        suggested_action=suggested_action,
+                        status_code=getattr(adapter_response, "status_code", None),
+                        raw_response={"error": adapter_response.error},
+                    )
+
+                # Apply post-processing if configured
+                if self._response_processor and adapter_response.content:
+                    adapter_response.content = self._response_processor(adapter_response.content)
+
+                cap.set_response(adapter_response)
+                return adapter_response
+            else:
+                # Fallback: run sync adapter in thread executor
+                import asyncio
+                loop = asyncio.get_event_loop()
+
+                # Create a wrapper function that calls the sync method
+                def sync_run():
+                    return self.run(
+                        messages=messages,
+                        json_mode=json_mode,
+                        response_schema=response_schema,
+                        max_tokens=max_tokens,
+                        temperature=temperature,
+                        top_p=top_p,
+                        tools=tools,
+                        **kwargs
+                    )
+
+                # Execute in thread pool to avoid blocking
+                fallback_response = await loop.run_in_executor(None, sync_run)
+                cap.set_response(fallback_response)
+                return fallback_response
 
     async def cleanup(self):
         """Clean up async resources."""
@@ -999,29 +1040,52 @@ class PeftHead:
         Returns:
             HarmonizedResponse for compatibility with the Agent framework.
         """
-        if self.peft_head is not None:
-            # Temporarily swap in PEFT model for inference
-            original_model = self.model.model
-            self.model.model = self.peft_head
-            try:
-                return await self.model.arun(
+        from marsys.coordination.tracing.capture import (
+            capture_llm_call, extract_sampling_params,
+        )
+        trace_ctx = kwargs.pop("trace_ctx", None)
+        sampling = extract_sampling_params({
+            "json_mode": json_mode, "max_tokens": max_tokens, **kwargs,
+        })
+
+        async with capture_llm_call(
+            trace_ctx,
+            model_name=getattr(self.model, "model_name", "unknown"),
+            provider=getattr(self.model, "provider", "local"),
+            messages=messages,
+            tools=tools,
+            sampling_params=sampling,
+            images=images,
+        ) as cap:
+            # Forward inner_ctx — the inner wrapper is another model.arun
+            # whose capture helper must bypass to avoid double-emission.
+            inner_kwargs = dict(kwargs)
+            inner_kwargs["trace_ctx"] = cap.inner_ctx
+            if self.peft_head is not None:
+                # Temporarily swap in PEFT model for inference
+                original_model = self.model.model
+                self.model.model = self.peft_head
+                try:
+                    response = await self.model.arun(
+                        messages=messages,
+                        json_mode=json_mode,
+                        max_tokens=max_tokens,
+                        tools=tools,
+                        images=images,
+                        **inner_kwargs,
+                    )
+                finally:
+                    # Restore original model reference
+                    self.model.model = original_model
+            else:
+                # No PEFT applied, use base model directly
+                response = await self.model.arun(
                     messages=messages,
                     json_mode=json_mode,
                     max_tokens=max_tokens,
                     tools=tools,
                     images=images,
-                    **kwargs,
+                    **inner_kwargs,
                 )
-            finally:
-                # Restore original model reference
-                self.model.model = original_model
-        else:
-            # No PEFT applied, use base model directly
-            return await self.model.arun(
-                messages=messages,
-                json_mode=json_mode,
-                max_tokens=max_tokens,
-                tools=tools,
-                images=images,
-                **kwargs,
-            )
+            cap.set_response(response)
+        return response
