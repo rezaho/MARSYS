@@ -62,3 +62,48 @@ class ConvergenceEvent(StatusEvent):
     group_id: str = ""
     successful_count: int = 0
     total_count: int = 0
+
+
+@dataclass
+class LLMRequestEvent(StatusEvent):
+    """Emitted by the model-wrapper capture helper just before an LLM call.
+
+    Carries the full request payload — message list, advertised tool schemas,
+    sampling parameters — so the trace records exactly what the model saw,
+    not a reconstruction. Pairs with ``LLMResponseEvent`` via ``request_id``.
+    """
+    step_span_id: str = ""
+    request_id: str = ""
+    agent_name: str = ""
+    model_name: str = ""
+    provider: str = ""
+    kind: str = "generation"             # "generation" | "compaction"
+    messages: List[Dict[str, Any]] = field(default_factory=list)
+    tools: Optional[List[Dict[str, Any]]] = None
+    sampling_params: Dict[str, Any] = field(default_factory=dict)
+    images: Optional[List[Any]] = None
+
+
+@dataclass
+class LLMResponseEvent(StatusEvent):
+    """Emitted by the model-wrapper capture helper after an LLM call returns.
+
+    Carries the full response payload — content, thinking, reasoning,
+    structured tool calls, provider metadata — keyed back to the matching
+    ``LLMRequestEvent`` by ``request_id``. ``status="error"`` is used when
+    the underlying call raised; in that case the error fields are populated
+    and ``content``/``tool_calls`` are left empty.
+    """
+    step_span_id: str = ""
+    request_id: str = ""
+    status: str = "ok"                   # "ok" | "error"
+    role: Optional[str] = None
+    content: Optional[str] = None
+    thinking: Optional[str] = None
+    reasoning: Optional[str] = None
+    reasoning_details: Optional[Dict[str, Any]] = None
+    tool_calls: List[Dict[str, Any]] = field(default_factory=list)
+    response_metadata: Dict[str, Any] = field(default_factory=dict)
+    duration_ms: Optional[float] = None
+    error_type: Optional[str] = None
+    error_message: Optional[str] = None

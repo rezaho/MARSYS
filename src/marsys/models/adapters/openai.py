@@ -346,8 +346,11 @@ class OpenAIAdapter(APIProviderAdapter):
         }
         """
 
-        # Initialize default values
-        content = ""
+        # ``content`` defaults to None (not "") so tool-only responses
+        # match the OpenAI ``content: null`` convention. An empty string
+        # flips LangSmith's renderer from the assistant-bubble to a
+        # JSON-fields panel.
+        content = None
         role = "assistant"
         finish_reason = None
         reasoning_data = None
@@ -411,15 +414,27 @@ class OpenAIAdapter(APIProviderAdapter):
                     )
                 )
 
-        # Build usage info (format remains the same)
+        # Responses API uses input_tokens/output_tokens (not prompt/
+        # completion_tokens) and nests reasoning in output_tokens_details.
+        # Fall back to chat-completions names for endpoint compat.
         usage_data = raw_response.get("usage", {})
         usage = None
         if usage_data:
+            output_details = usage_data.get("output_tokens_details") or {}
             usage = UsageInfo(
-                prompt_tokens=usage_data.get("prompt_tokens"),
-                completion_tokens=usage_data.get("completion_tokens"),
+                prompt_tokens=(
+                    usage_data.get("input_tokens")
+                    or usage_data.get("prompt_tokens")
+                ),
+                completion_tokens=(
+                    usage_data.get("output_tokens")
+                    or usage_data.get("completion_tokens")
+                ),
                 total_tokens=usage_data.get("total_tokens"),
-                reasoning_tokens=usage_data.get("reasoning_tokens"),
+                reasoning_tokens=(
+                    output_details.get("reasoning_tokens")
+                    or usage_data.get("reasoning_tokens")
+                ),
             )
 
         # Build metadata
