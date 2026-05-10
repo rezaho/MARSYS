@@ -150,7 +150,13 @@ class RealRuntime:
             logger.debug("could not snapshot agent memory for branch %s", branch.id)
 
         # 5. Translate the MARSYS StepResult into an orchestrator StepResult.
-        return await self._translate(marsys_result, branch)
+        result = await self._translate(marsys_result, branch)
+        # Stamp step_span_id so the orchestrator can forward it as
+        # ``parent_step_span_id`` for child branches spawned this tick.
+        step_span_id = context.get("step_span_id")
+        if step_span_id and result.step_span_id is None:
+            result.step_span_id = step_span_id
+        return result
 
     async def _translate(
         self, marsys_result: Any, branch: OrchestratorBranch

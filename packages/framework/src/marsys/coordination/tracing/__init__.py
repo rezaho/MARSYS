@@ -20,7 +20,12 @@ from .messages import (
 from .readers import NDJSONTraceReader, NDJSONVersionError
 from .redactor import NoRedactionRedactor, SecretRedactor
 from .sink import TelemetrySink
-from .writers import NDJSONTraceWriter
+from .writers import NDJSONTraceWriter, OtelTraceWriter
+
+# NOTE: ``trace_context``, ``capture``, and the LLM event classes in
+# ``events`` are intentionally NOT re-exported here — eager re-export
+# triggers a circular import via ``coordination.status.events``.
+# Import them directly from their submodules.
 
 __all__ = [
     "TracingConfig",
@@ -36,6 +41,7 @@ __all__ = [
     "compute_message_hash",
     "build_input_messages_ref",
     "NDJSONTraceWriter",
+    "OtelTraceWriter",
     "NDJSONTraceReader",
     "NDJSONVersionError",
 ]
