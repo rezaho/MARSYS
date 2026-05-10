@@ -170,7 +170,7 @@ The legacy `coordination/branches/types.py` is **still imported** by 9 modules: 
 
 After merge:
 
-- A canonical `StateSnapshot` Pydantic model capturing every field of `Orchestrator.__init__` mutable state (per orchestrator.py:102–121), plus `framework_version`, `session_id`, `topology_digest`, `created_at`, `branches: dict[str, BranchState]`, `barriers: dict[str, BarrierState]`, `runnable: list[str]`, `fire_queue: list[str]`, `convergence_barriers`, `root_barrier_id`, `workflow_error`, `completed_emitted`, `user_interactions: list[UserInteractionState]`, `user_interaction_inflight: bool`.
+- A canonical `StateSnapshot` Pydantic model capturing every field of `Orchestrator.__init__` mutable state (per orchestrator.py:102–121), plus `framework_version`, `session_id`, `topology_digest`, `created_at`, `paused_at`, `branches: dict[str, BranchState]`, `barriers: dict[str, BarrierState]`, `runnable: list[str]`, `fire_queue: list[str]`, `convergence_barriers`, `root_barrier_id`, `workflow_error`, `completed_emitted`, `user_interactions: list[UserInteractionState]`, `user_interaction_inflight: bool`, `max_steps: int` (preserves the original `Orchestrator.max_steps` limit across resume — without it, a workflow that ran with `max_steps=500` and was paused at branch step 300 would crash on resume past step 201 of its post-resume count).
 - A `StorageBackend` Protocol with methods `read(key) -> bytes`, `write(key, bytes)`, `delete(key)`, `list_with_metadata() -> list[StorageEntry]`, `expire_older_than(timedelta)`. The existing ABC is rewritten as a Protocol; the existing `FileStorageBackend` is rewritten against the new Protocol with atomic write semantics (write-temp + fsync(fd) + os.replace + fsync(parent_dir_fd)).
 - `Orchestrator.snapshot() -> OrchestratorState`, `Orchestrator.restore_from(state: OrchestratorState) -> None`, `Orchestrator.quiesce() -> None` (async; awaits the in-flight tick to drain), and `Orchestrator.resume() -> WorkflowResult` (async; the run-loop entry point that skips `init_workflow` because state was just restored). All four are new TRUNK-CRITICAL public methods. ADR-gated. **`snapshot/restore_from` are designed to be reentrant and callable repeatedly** — that is the design seam a future auto-checkpoint session uses (it calls `quiesce()` periodically, takes `snapshot()`, writes asynchronously, then lets the loop continue). v0.3 ships only the on-demand call sites; the seam is intentional.
 - `Orchestra._active_orchestrators: dict[str, Orchestrator]` — populated when `Orchestra.execute()` constructs an orchestrator (orchestra.py:856), popped in the `finally` block. Lookup mechanism for `pause_session(session_id)`.
@@ -251,24 +251,31 @@ Don't skim. Read these end-to-end.
 - `packages/framework/src/marsys/coordination/state/__init__.py` — update re-exports. Remove `StateManager`, `StateSnapshot`, the legacy `StorageBackend` ABC; add the new `StorageBackend` Protocol, `FileStorageBackend`, `StateSnapshot` (Pydantic model from `state/snapshot.py`), `IncompatibleSnapshotError`. Drop `CheckpointManager` per the line above.
 - `packages/framework/src/marsys/coordination/__init__.py` — update re-exports. Drop `StateManager`, `CheckpointManager` (gone in this PR); keep `StorageBackend`, `FileStorageBackend` (now under the Protocol). Document the removal in CHANGELOG.
 - `packages/framework/src/marsys/coordination/execution/orchestrator.py` — additive surface only:
-  - Add `_pause_requested: asyncio.Event` field on `Orchestrator.__init__` (lines 102–121 region; lazy-initialized inside `quiesce()` to avoid event-loop binding at construction time).
-  - Add `async def quiesce(self) -> None`: sets `_pause_requested`, awaits the loop's in-flight tasks (the run-loop body already tracks them in a local `in_flight: set[asyncio.Task]`; quiesce works by setting the event and the loop checks it after `_drain_fires` between iterations, exits the loop without setting `_workflow_error`). Idempotent.
-  - Add `def snapshot(self) -> OrchestratorState`: returns a deep-copy of mutable state. Branch and Barrier instances are NOT shared with the live orchestrator — the next tick must not be able to mutate the snapshot. Caller must have called `quiesce()` (or be operating outside an active run); calling `snapshot()` while branches are dispatching is undefined.
-  - Add `def restore_from(self, state: OrchestratorState) -> None`: replaces mutable state. Must be called on a freshly-constructed orchestrator that has not run yet (asserts `branches == {}` etc.).
-  - Add `async def resume(self) -> WorkflowResult`: the run-loop entry point used after `restore_from()`. Does NOT call `init_workflow` (state is already populated). Body is the same as `run()`'s loop body starting from line 179 (`in_flight: set = {}`), exits when no `runnable` and no `in_flight` and no pending user-interactions (existing exit conditions).
-  - Modify `run()`: extract the loop body (lines 179–227) into a private `_dispatch_loop()` helper that both `run()` (after `init_workflow`) and `resume()` (skipping init) call. The loop body itself adds a `if self._pause_requested.is_set(): return WorkflowResult(success=False, ..., paused=True)` check after `_drain_fires` between iterations (or equivalent — exact mechanism settled in ADR).
+  - Add four new fields to `Orchestrator.__init__` (lines 102–121 region):
+    - `self._pause_requested: Optional[asyncio.Event] = None` — lazy-initialized inside `_dispatch_loop` so the Event binds to whichever event loop is actually running (not whichever loop happened to be active at construction time).
+    - `self._paused: bool = False` — set to True after `_dispatch_loop` exits via the pause checkpoint.
+    - `self._loop_running: bool = False` — True while `_dispatch_loop` is actively dispatching; False before `run()` starts and after it returns. `quiesce()` reads this to know whether the run loop is even active.
+    - `self._loop_exited_event: Optional[asyncio.Event] = None` — set in `_dispatch_loop`'s `finally` block when the loop exits. `quiesce()` awaits this event rather than busy-polling `_loop_running`.
+  - Add `async def quiesce(self) -> None`: sets `_pause_requested`, awaits `_loop_exited_event.wait()` so the in-flight ticks drain at the next tick boundary, then returns. Idempotent: a no-op on already-quiesced or already-completed orchestrators (the `not _loop_running` short-circuit covers both).
+  - Add `def snapshot(self) -> OrchestratorState`: returns a deep-copy of mutable state. Branch and Barrier instances are NOT shared with the live orchestrator. Caller must have called `quiesce()` (or be operating outside an active run).
+  - Add `def restore_from(self, state: OrchestratorState) -> None`: replaces mutable state. Must be called on a freshly-constructed orchestrator that has not run yet (asserts `branches == {}` and `root_barrier_id is None`). Restores `max_steps` from the snapshot too. `_resume_user_responses` (asyncio.Queue) and `_pause_requested` are intentionally rebuilt fresh — they live only inside an active loop.
+  - Add `async def resume(self) -> WorkflowResult`: the run-loop entry point used after `restore_from()`. Does NOT call `init_workflow` (state is already populated). Resets `_paused`/`_pause_requested` so a resumed run can be paused again. Defensively clears `_workflow_error == "paused"` (the sentinel from a prior pause should never make it onto a snapshot, but the cleanup defends against hand-crafted snapshots).
+  - Modify `run()`: extract the loop body into private `_dispatch_loop()` + `_dispatch_loop_inner()` helpers. `_dispatch_loop()` manages the `_loop_running` / `_loop_exited_event` lifecycle in a try/finally; `_dispatch_loop_inner()` is the actual body. Both `run()` (after `init_workflow`) and `resume()` (skipping init) call `_dispatch_loop()`. **Pause check runs at the TOP of the inner loop**, before draining `runnable` — this is the correct semantic: when pause is requested, runnable items stay queued for resume rather than being dispatched. (Earlier drafts placed the check after `_drain_user_responses`; that allowed newly-runnable branches from a just-completed tick to dispatch before pause was honored. Implementation testing surfaced this and the check moved to the top.)
+  - Add `def _build_paused_result(self) -> WorkflowResult`: distinct from `_build_result()`. Returns a result with `error="paused"` (sentinel string) so Orchestra can distinguish pause from completion via `workflow.error == "paused"`.
   - These are the only TRUNK-CRITICAL non-additive touches in this file. The `run()` body extraction is an internal refactor (no public-API change).
-  - `OrchestratorState` is a dataclass internal to the orchestrator — distinct from the on-disk `StateSnapshot` Pydantic model. The Orchestra layer maps between them.
+  - `OrchestratorState` is a dataclass internal to the orchestrator — distinct from the on-disk `StateSnapshot` Pydantic model. The Orchestra layer maps between them. Includes `max_steps` so resume preserves the original limit.
 - `packages/framework/src/marsys/coordination/orchestra.py`:
-  - Extract listener-wiring from `_initialize_components` (line 163) into a new `_wire_event_bus()` method, callable from both `__init__` and `resume_session`. (Listener wiring spans `StatusManager` setup at lines ~174–203 and `TraceCollector` setup at lines ~206–217; the extraction is mechanical.)
+  - Extract listener-wiring from `_initialize_components` into a new `_wire_event_bus()` method, callable from both `__init__` and `resume_session`. (Listener wiring spans `StatusManager` setup at lines ~174–203 and `TraceCollector` setup at lines ~206–217; the extraction is mechanical.)
+  - **Extract per-topology component setup into a new `_initialize_per_topology(topology_graph, execution_config)` helper.** This wires `self.rules_engine`, `self.validation_processor`, `self.router`, and the `set_topology_reference` loop on registered agents — all the per-topology state that `execute()` previously built inline. **Without this helper, `resume_session` constructs `RealRuntime` with `validator=None` and crashes on the first tick.** Both `execute()` and `resume_session()` call it.
   - Add `storage_backend: StorageBackend | None = None` and `snapshot_retention: timedelta = timedelta(days=30)` parameters to `Orchestra.__init__`. Defaults preserve existing behavior (no breaking change for callers that don't pass them).
-  - **Drop `state_manager: Optional[StateManager] = None` parameter from `Orchestra.__init__` (currently at orchestra.py:137).** The `StateManager` class is removed by this PR; the parameter goes with it. Callers passing `state_manager=...` get a `TypeError` (acceptable breaking change — the only existing caller, `Orchestra.run` classmethod, already manages its own state via `state_manager` keyword argument that's also being removed). CHANGELOG documents the removal.
-  - **Drop `state_manager: Optional[StateManager] = None` parameter from `Orchestra.run` classmethod (orchestra.py:553) and the line that forwards it on construction (orchestra.py:648).** Callers stop passing it.
-  - **Add `self._active_orchestrators: dict[str, Orchestrator] = {}` to `__init__` body (after `self._sessions = {}` at orchestra.py:152).** Lookup mechanism for `pause_session(session_id)`.
-  - **Modify `Orchestra.execute()` (line 726): after constructing `orchestrator` (orchestra.py:856), assign `self._active_orchestrators[session_id] = orchestrator`. In the `finally` block (orchestra.py:967), pop it: `self._active_orchestrators.pop(session_id, None)`. This ensures `pause_session(session_id)` can find the live orchestrator while `execute()` is awaiting and the entry is cleared on exit.**
-  - Trigger `storage_backend.expire_older_than(snapshot_retention)` once during `__init__`.
-  - Rewrite `pause_session(session_id) -> None` (lines 1045–1078, post-architect-update): look up `self._active_orchestrators[session_id]`; call `await orchestrator.quiesce()`; call `orchestrator.snapshot()`; map `OrchestratorState → StateSnapshot` (Pydantic model from `state/snapshot.py`); compute `topology_digest` from the canonical topology; write atomically via the configured `StorageBackend`. Idempotent — second call no-ops with a log line; raises `SessionNotFoundError` if `session_id` is not in `_active_orchestrators`.
-  - Rewrite `resume_session(session_id) -> OrchestraResult` (lines 1080–1125, post-architect-update): replace the placeholder return. Read snapshot via `StorageBackend`; verify `framework_version` (raise `IncompatibleSnapshotError` on mismatch); reconstruct a fresh `Orchestrator` + `RealRuntime` + `_wire_event_bus()`; call `orchestrator.restore_from(state)`; assign to `self._active_orchestrators[session_id]`; call `await orchestrator.resume()`; on completion translate `WorkflowResult → OrchestraResult` (same translation `Orchestra.execute` does at orchestra.py:926–953). Pop from `_active_orchestrators` in `finally`.
+  - **Drop `state_manager: Optional[StateManager] = None` parameter from `Orchestra.__init__`.** The `StateManager` class is removed by this PR; the parameter goes with it. Callers passing `state_manager=...` get a `TypeError`. CHANGELOG documents the removal.
+  - **Drop `state_manager: Optional[StateManager] = None` parameter from `Orchestra.run` classmethod and the line that forwards it on construction.** Callers stop passing it.
+  - **Add `self._active_orchestrators: dict[str, Orchestrator] = {}` to `__init__` body** (alongside `self._sessions = {}`). Lookup mechanism for `pause_session(session_id)`.
+  - **Modify `Orchestra.execute()`: after constructing `orchestrator`, assign `self._active_orchestrators[session_id] = orchestrator`. In the `finally` block, pop it: `self._active_orchestrators.pop(session_id, None)`.** This ensures `pause_session(session_id)` can find the live orchestrator while `execute()` is awaiting, and the entry is cleared on exit.
+  - **Modify `Orchestra.execute()` to translate the `workflow.error == "paused"` sentinel** into `metadata["paused"] = True` on the returned `OrchestraResult` (with `success=False`, `error=None`). The `FinalResponseEvent` is suppressed when paused — the run is suspended, not finished.
+  - Schedule `storage_backend.expire_older_than(snapshot_retention)` as a fire-and-forget task during `__init__` (only if an event loop is running; otherwise log + skip).
+  - Rewrite `pause_session(session_id) -> None`: look up `self._active_orchestrators[session_id]`; call `await orchestrator.quiesce()`; **race-guard: if the run already exited naturally (root barrier FIRED or `_workflow_error` set) between the pause request and quiesce returning, log + skip the snapshot write — the pause was a no-op against an already-terminal run, the execute() caller is already returning the terminal result.** Otherwise call `orchestrator.snapshot()`, map `OrchestratorState → StateSnapshot`, write atomically via the configured `StorageBackend`. Idempotent — second call against an already-paused session re-writes the snapshot with identical structural content (only `paused_at` differs). Raises `SessionNotFoundError` if neither an active orchestrator nor an existing snapshot exist for `session_id`.
+  - Rewrite `resume_session(session_id) -> OrchestraResult`: replace the placeholder return. Read snapshot via `StorageBackend`; verify `framework_version` (raise `IncompatibleSnapshotError` on mismatch); verify `topology_digest` matches the live topology (same error); construct a fresh `EventBus` + `_wire_event_bus()`; call `_initialize_per_topology()` to wire validator/rules/router/agent-topology-refs; reconstruct `Orchestrator` with `max_steps=snapshot.max_steps` (preserving the original limit); call `orchestrator.restore_from(state)`; assign to `self._active_orchestrators[session_id]`; call `await orchestrator.resume()`; on completion translate `WorkflowResult → OrchestraResult`. **Snapshot retention policy: delete the snapshot only on successful terminal state. Failed terminal resumes log a WARNING and leave the snapshot for inspection — the operator can call `discard_paused_session()` explicitly. Re-paused resumes leave the snapshot in place too.** Pop from `_active_orchestrators` in `finally`.
   - Add `list_paused_sessions()` and `discard_paused_session(session_id)` methods.
   - **Delete `Orchestra.create_checkpoint(session_id, checkpoint_name) -> str` and `Orchestra.restore_checkpoint(session_id, checkpoint_id) -> bool`** — both delegate to `state_manager.create_checkpoint` / `restore_checkpoint`, which are removed in this PR. Document in CHANGELOG.
   - **Update `Session.pause()` and `Session.resume()`**: `Session.pause` keeps its `bool` return (success / fail) but its body changes from `success = await self.orchestra.pause_session(self.id)` (which used to return `bool`) to `try: await self.orchestra.pause_session(self.id); self.status = "paused"; return True except StateError: return False`. `Session.resume` keeps its current control flow: it calls `result = await self.orchestra.resume_session(self.id)` and checks `result.success` — that surface is preserved because `resume_session` returns `OrchestraResult`.
@@ -393,6 +400,7 @@ class StateSnapshot(BaseModel):
     completed_emitted: list[str]
     user_interactions: list[UserInteractionState]
     user_interaction_inflight: bool
+    max_steps: int = 200  # mirrors Orchestrator.max_steps; preserved across resume
 
 
 class PausedSessionMetadata(BaseModel):
@@ -510,23 +518,28 @@ class OrchestratorState:
     root_barrier_id: str | None
     workflow_error: str | None
     completed_emitted: set[str]
-    user_interactions: list[tuple[str, Any, str]]   # deque content
+    user_interactions: list[tuple[str, Any, str, str]]  # (bid, prompt, agent, target) tuples from the deque
     user_interaction_inflight: bool
+    max_steps: int = 200   # mirrors Orchestrator.max_steps
 
 
 class Orchestrator:
-    # New field on __init__:
+    # New fields on __init__ (lazy-initialized inside _dispatch_loop so the
+    # asyncio.Event objects bind to whichever loop is actually running):
     #   self._pause_requested: Optional[asyncio.Event] = None
-    # Lazy-initialized inside quiesce() (asyncio.Event must be created in a
-    # running loop on Python 3.12).
+    #   self._loop_exited_event: Optional[asyncio.Event] = None
+    # Plus two simple flags:
+    #   self._paused: bool = False         # True after the loop exits via pause
+    #   self._loop_running: bool = False   # True while _dispatch_loop is active
 
     async def quiesce(self) -> None:
         """Set the pause flag and await all in-flight branch ticks to
         complete. After this returns, snapshot() is safe to call.
 
-        Idempotent: a second call on an already-quiesced orchestrator is a
-        no-op. Cooperative: the run-loop checks _pause_requested between
-        dispatch iterations and exits without setting _workflow_error.
+        Idempotent: a no-op on already-quiesced or already-completed
+        orchestrators. Awaits self._loop_exited_event.wait() (set by
+        _dispatch_loop's finally block) instead of polling — cooperative
+        scheduling makes both correct, but the event is cleaner.
         """
 
     def snapshot(self) -> OrchestratorState:
@@ -757,10 +770,38 @@ On completion:
 
 ### What was actually built (filled by implementer)
 
-> _Implementer fills this in._
->
-> Include: baseline test counts (before change), post-change test counts (must match for regression suite + new tests added), framework PR number + URL, framework release version that includes this feature, anything done differently from the plan with reasons, ADR number + link.
+**Implemented:** 2026-05-09 → 2026-05-10. ADR-007 ([`../../../../architecture/framework/decisions/ADR-007-pause-resume-snapshot.md`](../../../../architecture/framework/decisions/ADR-007-pause-resume-snapshot.md)) drafted, approved, and recorded with framework-lead sign-off in the file.
+
+**Test counts (regression suite, framework only):**
+- Baseline (pre-change): 1390 passed / 2 failed (env: live-API + missing fixture file) / 56 skipped
+- Post-change: 1436 passed / 2 failed (same env failures, unchanged) / 51 skipped
+- Delta: +46 passed, –5 skipped, +41 net.
+  - +50 new tests (22 unit in `tests/coordination/state/`, 28 integration in `tests/integration/test_pause_resume.py`)
+  - –9 net from deleting `tests/coordination/test_state_manager_integration.py` (had ~30 tests of which 5 were `pytest.skip()` markers — those skip lines explain the –5 skipped delta)
+
+**Framework PR:** opened post-merge to this branch's commits a6178b2..210f3d2.
+
+**Framework release:** ships in v0.3.0. The `__version__` field in `marsys/__init__.py` is left at `"0.2.1"` in this PR per Phase A scope decision; a separate release-prep PR bumps it to `"0.3.0"` with CHANGELOG release-note items.
+
+**Done differently from the plan:**
+
+1. **Pause checkpoint moved to the TOP of the dispatch loop.** Plan said "after `_drain_fires` between iterations". Implementation testing surfaced a race: when an in-flight tick completed and produced a new `runnable` entry, the loop dispatched the new tick before checking pause. Moved the check to the top of the loop body so pause is honored before any new dispatch — runnable items stay queued for resume.
+2. **Quiesce uses `asyncio.Event` await, not busy-poll on `_loop_running`.** Plan said "polls _loop_running"; review flagged the busy-poll. Final implementation adds `_loop_exited_event: asyncio.Event` set by `_dispatch_loop`'s finally block; `quiesce()` awaits it.
+3. **`_initialize_per_topology()` helper added on Orchestra.** Plan only mentioned extracting `_wire_event_bus`. Reviewer surfaced that `resume_session` was constructing `RealRuntime(validator=None)` because the per-topology setup (validator, rules, router, `set_topology_reference` loop) lived inline in `execute()`. Extraction made resume actually work — without it, the cross-process resume use case (the cornerstone) silently broke on the first tick.
+4. **`max_steps` added to StateSnapshot + OrchestratorState.** Plan didn't preserve `max_steps` across resume; reviewer flagged that `resume_session` hardcoded `max_steps=200`, which would crash workflows that ran with higher original limits. Now serialized end-to-end.
+5. **Race-guard in `pause_session` for terminal-state writes.** Plan didn't address the case where the run finished naturally between the pause request and `quiesce()` returning. Implementation added: post-quiesce, check root barrier status; if FIRED or `_workflow_error` set, log + skip the snapshot write. The `execute()` caller is already returning the terminal result; pause is a no-op against an already-finished run.
+6. **Snapshot retention on FAILED resume.** Plan said "On terminal state (not paused), discard the snapshot." Reviewer flagged that this auto-deletes failed snapshots, wiping the operator's diagnostic surface. Final: only delete on `workflow.success`. Failed terminal resumes log a WARNING and leave the snapshot for inspection; operator calls `discard_paused_session()` explicitly.
+7. **`Orchestrator.run()` body extracted into `_dispatch_loop()` + `_dispatch_loop_inner()`.** Plan said one helper. Implementation split into two: `_dispatch_loop()` manages the `_loop_running` / `_loop_exited_event` lifecycle; `_dispatch_loop_inner()` is the actual algorithm body. Cleaner separation of concerns.
+8. **`Branch.memory` Pydantic round-trip via `hasattr(item, "model_dump")` check.** Plan documented the contract; implementation: if the item exposes `model_dump`, dump it via `model_dump(mode="json")`; if it's a plain dict, pass through; otherwise let Pydantic's serializer fail at write time and re-raise as `SnapshotSerializationError`.
+9. **Two example files deleted** (`example_pausable_workflow.py`, `example_checkpoint_workflow.py`) — they imported the removed `StateManager` and exercised the previous TODO-stub `resume_session`. Examples directory `__init__.py` and READMEs updated to reference the new pause/resume API. (These files were not git-tracked, so the deletion doesn't show up in `git log`.)
+
+**Test approach delta:** the cornerstone semantic-equivalence test (`test_orchestrator_snapshot_restore_round_trip_completes`) drives the lower-level `Orchestrator` directly via `DeterministicRuntime` rather than going through `Orchestra.execute()` (which requires `RealRuntime` + actual agents — out of reach for a unit-style test without live LLM calls). The `_initialize_per_topology` and `max_steps` fixes are verified by `inspect.getsource` checks plus the structural deep-copy assertions; the end-to-end `Orchestra.resume_session` path is covered by the `Orchestra.list_paused_sessions` and `IncompatibleSnapshotError` tests rather than a single happy-path Orchestra-level test.
 
 ### Lessons / Surprises (filled by implementer)
 
-> _Implementer fills this in._
+- **The plan's "open question A" — quiesce primitive — was load-bearing, not optional.** The brief left it for the ADR to decide. In practice you cannot define pause without it; the work to add `_pause_requested` + `quiesce()` ended up being ~30 LoC and is the foundation everything else rests on. Future architects: if a pause/resume plan parks "exists a quiesce signal?" as an open question, push back — it's not optional.
+- **`_initialize_per_topology` was the largest gap the implementation reviewer caught.** The plan focused on listener wiring (`_wire_event_bus`) but the per-topology component setup — validator, rules engine, router, `set_topology_reference` loop on agents — was equally critical. Without it, `resume_session` runs `RealRuntime` with `validator=None` and crashes on the first tick. **Test gap that hid it:** the in-process resume tests bypassed `Orchestra.resume_session` and drove `Orchestrator` directly with `DeterministicRuntime`; cross-process resume relied on writing snapshots and reading them back via `list_paused_sessions` — neither path actually exercised the resumed dispatch loop with a real validator. Lesson: a feature whose load-bearing test is "drive the lower-level primitive directly" is not actually covering the public API surface.
+- **The "auto-checkpoint design seam" decision turned out to be free.** Once `quiesce()`, `snapshot()`, `restore_from()`, `resume()` were public, idempotent, and reentrant for the on-demand pause path, they were already the seam a follow-up auto-checkpoint session needs. No special "design hooks" code was added — the seam is the API surface itself. The Phase A discussion about "ship hooks for future auto-checkpoint" produced ~0 LoC of plumbing while keeping the future path open. Validates the decision to defer auto-checkpoint to its own session.
+- **Pause check at the TOP of the dispatch loop, not after dispatch.** Counter-intuitive at first because the original loop body had drain-runnable as the first step. But "honor pause at the next tick boundary" means BEFORE pulling new branches off `runnable`, not after. Subtle but important: pause-after-dispatch causes runnable items from a just-completed tick to dispatch one more time before pause is honored.
+- **Pre-existing modifications in the working tree (4 unrelated test files) tripped the implementation-reviewer.** The reviewer flagged them as scope drift. They weren't mine — they sat in the working tree from before the session started. Lesson: at session start, capture not just the session-start sha but explicitly verify what's already modified vs. clean. The reviewer can't tell pre-existing modifications from session-introduced ones without that context.
+- **The race-guard in `pause_session` for terminal-state writes.** Easy to miss: after `await quiesce()`, the orchestrator might already be terminal (root FIRED) because the in-flight tick that completed during quiesce was the last one. Without the guard, pause writes a stale "paused" snapshot of a workflow that's actually done. The pause caller can then "resume" a snapshot that's a no-op, which is confusing for operators inspecting paused sessions. Lesson: any pause primitive that drains in-flight ticks needs a post-drain check on whether the run actually paused or just finished.
