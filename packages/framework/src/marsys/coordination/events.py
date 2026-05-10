@@ -19,18 +19,23 @@ from .status.events import StatusEvent
 class BranchCreatedEvent(StatusEvent):
     """Emitted when a new branch is spawned.
 
-    ``parent_branch_id`` (when set) names the branch this one forked from.
-    Consumed by the tracing collector for cross-branch input-capture
-    dedup (Phase 3): the child inherits the parent's last reconstructed
-    history so its first step's diff anchors against shared prefix.
-    Optional and additive — orchestrators that don't populate it still
-    produce valid traces; only fork-prefix dedup is degraded.
+    Consumed by the tracing collector. Both ``parent_*`` fields are
+    optional and additive — orchestrators that don't populate them
+    still produce valid traces, just without the corresponding niceties:
+
+    * ``parent_branch_id`` — child inherits parent's last history so its
+      first step's diff anchors on the shared prefix (cross-branch
+      input-capture dedup).
+    * ``parent_step_span_id`` — span id of the dispatching step, so the
+      new branch span nests under it instead of flat under the
+      execution root.
     """
     branch_name: str = ""
     source_agent: str = ""
     target_agents: List[str] = field(default_factory=list)
     trigger_type: str = ""  # "divergence", "parallel", "conversation"
     parent_branch_id: Optional[str] = None
+    parent_step_span_id: Optional[str] = None
 
 
 @dataclass

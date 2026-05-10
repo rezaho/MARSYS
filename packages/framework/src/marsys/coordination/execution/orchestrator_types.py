@@ -71,6 +71,9 @@ class StepResult:
     value: Any = None
     error: Optional[str] = None
     request: Any = None
+    # Span id of the producing step; forwarded onto child branches via
+    # ``Branch.last_step_span_id`` for trace-tree parenting.
+    step_span_id: Optional[str] = None
 
 
 _branch_id_counter = itertools.count()
@@ -107,6 +110,9 @@ class Branch:
     created_at: float = field(default_factory=time.time)
     last_invoked_agent: Optional[str] = None
     consecutive_content_only: int = 0
+    # Span id of this branch's most recently completed step. Read by
+    # ``_handle_parallel_invoke`` to parent dispatched children in the trace.
+    last_step_span_id: Optional[str] = None
 
     def is_settled(self) -> bool:
         return self.status in ("TERMINATED", "FAILED", "ABANDONED")

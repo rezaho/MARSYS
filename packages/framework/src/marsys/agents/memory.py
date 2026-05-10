@@ -2156,7 +2156,10 @@ class ManagedConversationMemory(BaseMemory):
 
             processor = SummarizationProcessor()
             summary_json = await processor._run_compaction_model(
-                compaction_messages, compaction_model, compact_cfg
+                compaction_messages,
+                compaction_model,
+                compact_cfg,
+                trace_ctx=runtime.get("trace_ctx") if runtime else None,
             )
 
             if summary_json:

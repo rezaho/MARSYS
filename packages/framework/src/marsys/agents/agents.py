@@ -1603,6 +1603,9 @@ class BaseAgent(ABC):
                         else (_mc.name if _mc else "unknown")
                     ),
                     "provider": getattr(_mc, "provider", "unknown") if _mc else "unknown",
+                    # Forwarded so threshold-triggered compaction lands
+                    # as a compaction-kind span (mirrors payload-error path).
+                    "trace_ctx": context.get("trace_ctx"),
                 }
             )
 
@@ -1669,6 +1672,15 @@ class BaseAgent(ABC):
 
         # Extract model kwargs for logging
         model_kwargs = context.get("model_kwargs", {})
+
+        # Forward TraceContext into the model call so capture_llm_call
+        # at the wrapper layer emits full-payload LLM events. ``None``
+        # outside Orchestra — the helper bypasses cleanly.
+        trace_ctx = context.get("trace_ctx")
+        if trace_ctx is not None:
+            model_kwargs = dict(model_kwargs)
+            model_kwargs["trace_ctx"] = trace_ctx
+
         has_tools = bool(self.tools_schema)
 
         # Log before calling the model
@@ -1757,6 +1769,9 @@ class BaseAgent(ABC):
                             else (_mc.name if _mc else "unknown")
                         ),
                         "provider": getattr(_mc, "provider", "unknown") if _mc else "unknown",
+                        # Forwarded so the compaction LLM call lands as
+                        # a compaction-kind span on the active step.
+                        "trace_ctx": context.get("trace_ctx"),
                     }
                     compacted = await self.memory.compact_for_payload_error(
                         runtime=compaction_runtime,

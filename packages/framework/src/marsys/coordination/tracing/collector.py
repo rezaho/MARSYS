@@ -62,6 +62,9 @@ class TraceCollector:
         self.open_spans: Dict[str, Span] = {}  # span_id -> Span (unclosed only, for finalization)
         self.branch_spans: Dict[str, Span] = {}  # branch_id -> Span (survives closure)
         self.step_spans: Dict[str, Span] = {}  # step_span_id -> Span (survives closure)
+        # request_id -> open generation/compaction span. Indexed by the LLM
+        # request_id so the matching LLMResponseEvent can locate and close it.
+        self.llm_spans: Dict[str, Span] = {}
         self._pending_convergence: Dict[str, List[Dict]] = {}  # branch_id -> convergence info for next step
         # branch_id -> last resolved history (list of message hashes). Used by
         # _handle_agent_start to compute the patch + base anchor for each step,
@@ -93,6 +96,9 @@ class TraceCollector:
             'GenerationEvent': self._handle_generation,
             'ValidationDecisionEvent': self._handle_validation_decision,
             'ConvergenceEvent': self._handle_convergence,
+            # Full-payload LLM capture (model-wrapper layer)
+            'LLMRequestEvent': self._handle_llm_request,
+            'LLMResponseEvent': self._handle_llm_response,
             # Existing events (enriched)
             'AgentStartEvent': self._handle_agent_start,
             'AgentCompleteEvent': self._handle_agent_complete,
@@ -144,14 +150,28 @@ class TraceCollector:
             logger.debug(f"Trace started for session {event.session_id}")
 
     async def _handle_branch_created(self, event: Any) -> None:
-        """Create branch span as child of execution span."""
+        """Create branch span, parented to its spawning step when known.
+
+        ``event.parent_step_span_id`` (when set) names the step that
+        fired the dispatch, so dispatched children nest under it rather
+        than flat under the execution root. Entry branches fall back to
+        the root.
+        """
         async with self._lock:
             session_id = getattr(event, 'session_id', None)
             trace = self._get_trace(session_id)
             if not trace:
                 return
 
-            parent_span = trace.root_span
+            parent_step_span_id = getattr(event, 'parent_step_span_id', None)
+            parent_span: Optional[Span] = None
+            if parent_step_span_id:
+                parent_span = self.step_spans.get(parent_step_span_id)
+            if parent_span is None:
+                # Entry branch, or the spawning step has been GC'd; fall
+                # back to the execution root.
+                parent_span = trace.root_span
+
             branch_span = create_span(
                 trace_id=trace.trace_id,
                 name=f"Branch: {event.branch_name}",
@@ -163,6 +183,7 @@ class TraceCollector:
                     "source_agent": event.source_agent,
                     "target_agents": event.target_agents,
                     "trigger_type": event.trigger_type,
+                    "parent_step_span_id": parent_step_span_id,
                 },
                 start_time=event.timestamp,
             )
@@ -343,6 +364,133 @@ class TraceCollector:
 
             step_span.children.append(gen_span)
             await self._stream_span(gen_span)
+
+    async def _handle_llm_request(self, event: Any) -> None:
+        """Open a generation/compaction span for a captured LLM call.
+
+        Routes input messages through the ``MessageStore`` for
+        content-addressed dedup (same idiom as ``_handle_agent_start``).
+        Indexed by ``request_id`` so the matching ``LLMResponseEvent``
+        can find and close it.
+        """
+        async with self._lock:
+            session_id = getattr(event, 'session_id', None)
+            trace = self._get_trace(session_id)
+            if not trace:
+                return
+
+            step_span = self.step_spans.get(event.step_span_id)
+            if step_span is None:
+                # Compaction calls fired between steps may briefly have no
+                # parent step yet; drop silently rather than orphan the span.
+                return
+
+            attributes: Dict[str, Any] = {
+                "agent_name": event.agent_name,
+                "model_name": event.model_name,
+                "provider": event.provider,
+                "kind": event.kind,
+                "request_id": event.request_id,
+                "sampling_params": event.sampling_params,
+            }
+
+            # Input messages + tool schemas live inline on the span (so
+            # OTel-bound consumers see full content) AND, when the message
+            # store is configured, get a content-addressed ref so
+            # dedup-aware readers can follow it. Sinks pick whichever fits.
+            messages = list(event.messages or [])
+            if messages:
+                attributes["input_messages"] = messages
+            if event.tools is not None:
+                attributes["tools"] = event.tools
+
+            if self._message_store is not None:
+                if event.tools is not None:
+                    try:
+                        tools_ref_messages = [
+                            {"role": "tool_schema", "content": event.tools}
+                        ]
+                        # ``prev_history=None`` because tool schemas don't
+                        # diff against a prior step the way input messages
+                        # do — each request has its own current schema.
+                        attributes["tools_ref"] = build_input_messages_ref(
+                            tools_ref_messages,
+                            store=self._message_store,
+                            prev_history=None,
+                        )
+                    except Exception as e:  # noqa: BLE001
+                        logger.warning(
+                            "Tool-schema dedup skipped for request %s: %s",
+                            event.request_id, e,
+                        )
+                if messages:
+                    try:
+                        redacted_messages = self._redact_messages_for_store(messages)
+                        # No prev_history — this is the wire-payload, not
+                        # an extension of the branch's history list (that
+                        # was already anchored at AgentStartEvent).
+                        attributes["input_messages_ref"] = build_input_messages_ref(
+                            redacted_messages,
+                            store=self._message_store,
+                            prev_history=None,
+                        )
+                    except Exception as e:  # noqa: BLE001
+                        logger.warning(
+                            "Input-message dedup skipped for request %s: %s",
+                            event.request_id, e,
+                        )
+
+            kind = event.kind if event.kind in ("generation", "compaction") else "generation"
+            llm_span = create_span(
+                trace_id=trace.trace_id,
+                name=f"{kind.capitalize()}: {event.model_name}",
+                kind=kind,
+                parent_span_id=step_span.span_id,
+                attributes=attributes,
+                start_time=event.timestamp,
+            )
+
+            step_span.children.append(llm_span)
+            self.open_spans[llm_span.span_id] = llm_span
+            self.llm_spans[event.request_id] = llm_span
+
+    async def _handle_llm_response(self, event: Any) -> None:
+        """Close the generation/compaction span opened by the matching request.
+
+        Response content/thinking/reasoning/tool_calls land inline on
+        span attributes (responses are typically modest; not routed
+        through the message store). On error, mirrors error_type /
+        error_message for fast filtering. Streamed via ``_stream_span``
+        so all sinks see the closed span.
+        """
+        async with self._lock:
+            llm_span = self.llm_spans.pop(event.request_id, None)
+            if llm_span is None:
+                return
+
+            status = "ok" if event.status == "ok" else "error"
+            llm_span.close(end_time=event.timestamp, status=status)
+            if event.duration_ms is not None:
+                llm_span.duration_ms = event.duration_ms
+
+            response_attrs: Dict[str, Any] = {
+                "response_content": event.content,
+                "response_thinking": event.thinking,
+                "response_reasoning": event.reasoning,
+                "response_tool_calls": event.tool_calls,
+                "response_metadata": event.response_metadata,
+            }
+            if event.role is not None:
+                response_attrs["response_role"] = event.role
+            if event.reasoning_details is not None:
+                response_attrs["response_reasoning_details"] = event.reasoning_details
+            if status == "error":
+                response_attrs["error_type"] = event.error_type
+                response_attrs["error_message"] = event.error_message
+
+            llm_span.attributes.update(response_attrs)
+            self.open_spans.pop(llm_span.span_id, None)
+            await self._stream_span(llm_span)
 
     async def _handle_tool_call(self, event: Any) -> None:
         """Create/close tool span based on status."""
@@ -585,6 +733,10 @@ class TraceCollector:
             }
             self.step_spans = {
                 k: v for k, v in self.step_spans.items()
+                if v.trace_id != trace_id
+            }
+            self.llm_spans = {
+                k: v for k, v in self.llm_spans.items()
                 if v.trace_id != trace_id
             }
 
