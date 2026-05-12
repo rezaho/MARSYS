@@ -27,12 +27,15 @@ Spren ships three product surfaces, all consuming one FastAPI API (SP-019):
 
 ## Primary user surfaces
 
-1. **Meta-agent home** — the main page. NOT a chat box. A four-surface command center:
+1. **Meta-agent home** — the main page. NOT a chat box. The eventual shape is a four-surface command center:
    - **Now** — what the agent is currently working on; active sub-instances and their focus
    - **Since you were away** — items awaiting your decision (suggestions, alerts, completed actions you should know about)
    - **Activity** — chronological log of agent actions; drill into any for the full thought trail
    - **Chat input** — talk to the agent directly; one of four surfaces, not the page
+
    See [09-meta-agent.md](./09-meta-agent.md) for the full design.
+
+   **v0.3 ships only the Spren orb + greeting + stub input bar** as the home, with explicit "coming soon" framing for the four surfaces. The four-surface command center lands in Sessions 07–09 when the meta-agent runtime is wired live — shipping dead placeholders earlier would violate SP-007 (no mocked features in product code).
 2. **Workflow canvas** — `@xyflow/react`-based visual builder for marsys topologies (nodes = agents/users/system/tools, edges = invoke/notify/query/stream); workflow provenance shown inline.
 3. **Run inspector** — nested span timeline (Langfuse idiom) with token, latency, and cost chips per span.
 4. **Run history** — searchable list of past runs with filtering and re-run.
