@@ -276,6 +276,8 @@ These were the questions I considered before writing this draft. Each is resolve
    - `cancelled` → `--rule` chip background, `--ink-soft` text
    These reuse the brand palette without adding new colors. The `--peach` for running ties the canvas orb's `speaking` color to the list's running indicator.
 
+11. **Bundle 02 structure.** Sessions 04 + 05 form one demo-able feature slice — run a workflow live then inspect what happened. Layout on disk: `docs/implementation/spren/v0.3.0/02-run-execution-and-inspection/sessions/{04,05}-*.md` with sibling `testing/test-scenarios.md` (user-facing scenario list) + `testing/test-session.md` (Claude Code testing-agent brief), matching Bundle 01's pattern at `docs/implementation/spren/v0.3.0/01-visual-builder/`. Session 04's contribution to `test-scenarios.md` lands when Session 04 ships; Session 05's contribution lands when Session 05 ships; the bundle-end test runs only after both sessions ship + are individually green. Bundle 02's `test-scenarios.md` is fleshed out alongside this brief (Session 04 covered now; Session 05 placeholders that get expanded when Session 05 ships) so Session 04's implementer has a target structure to write the per-session manual-verify checklist against.
+
 ## 9. Design system additions
 
 Session 04 adds NO new design-system tokens, fonts, or layout primitives. It reuses Session 03's complete system. New components shipped (`RunButton`, `CompletionToast`, `StatusBadge`, `RunCard`) all instantiate the existing tokens.
@@ -327,35 +329,17 @@ If any of these surface a conflict with the locked decisions in §8, the impleme
 
 ## 13. Status
 
-- [ ] Tier confirmed (HIGH).
-- [ ] Scope boundaries confirmed (sections 3 + 4).
-- [ ] Files-to-CREATE list approved (section 5).
-- [ ] Three user journeys approved (section 6).
-- [ ] Skeleton wireframes approved (section 7).
-- [ ] Decisions locked (section 8). User reviews any §14 questions before lock.
+- [x] Tier confirmed (HIGH).
+- [x] Scope boundaries confirmed (sections 3 + 4).
+- [x] Files-to-CREATE list approved (section 5).
+- [x] Three user journeys approved (section 6).
+- [x] Skeleton wireframes approved (section 7).
+- [x] Decisions locked (section 8).
 - [x] Architecture doc updates landed (02-data-model.md, 03-api-design.md, 06-observability.md — AG-UI translator relocated from Spren-side to framework-side per Framework Session 06).
-- [ ] Polish items captured for in-session work (section 10).
-- [ ] Success criteria affirmed (section 11).
+- [x] Polish items captured for in-session work (section 10).
+- [x] Success criteria affirmed (section 11).
 - [ ] Acceptance criteria frozen at [`./04-run-execution/acceptance.md`](./04-run-execution/acceptance.md) — extracted by the `acceptance-criteria-extractor` agent on the first implementation turn, before any code is written.
 - [ ] Framework Session 06 (AG-UI translator) merged and released before Spren Session 04 implementation begins. Brief in [`../../../../framework/sessions/v0.3.0/06-aggui-translator.md`](../../../../framework/sessions/v0.3.0/06-aggui-translator.md).
 - [ ] Session implementation complete (all acceptance criteria pass; polish items addressed; tests green; manual verify done).
 
-**Next step:** user reviews §14 (open questions), then signs off. Acceptance-criteria-extractor freezes acceptance.md. Implementer begins after framework Session 06 lands. Polish items in §10 are explicit acceptance criteria — they're scoped into the session, not nice-to-haves.
-
-## 14. Open questions for user input
-
-Three questions remaining after the user's initial sign-off pass. Listed in rough priority order.
-
-1. **Bundle B naming and scope.** Bundles are coherent feature groupings used for end-to-end testing — see [`../../01-visual-builder/testing/test-scenarios.md`](../../01-visual-builder/testing/test-scenarios.md) for the Bundle A pattern. Each bundle has a `test-scenarios.md` covering golden-path, edge cases, exploratory, visual regression, and manual smoke. Bundle A = Sessions 01+02+03. Working assumption: Bundle B = Sessions 04+05 (run execution + run inspection), slug `B-run-execution-and-inspection` (or similar). Confirm:
-   - Bundle B = 04+05? Or split into Bundle B = 04 alone, Bundle C = 05?
-   - Bundle name slug?
-   - Draft `bundles/B-…/test-scenarios.md` skeleton now (so Session 04's tests can write directly into the right structure), or defer until Session 05 is also drafted?
-
-2. **Default task input on Run** (decision §8.6). Session 04 sends `task_input: {text: "", attachments: []}` by default. Workflows that need a task message see an empty user message. Richer task input (a "What should the workflow work on?" dialog) lands in Session 06 with the meta-agent. Two alternatives if you don't like this:
-   - (a) Ship a small text-input dialog in Session 04 too, before the meta-agent arrives (small scope creep but better UX in the gap between 04 and 06).
-   - (b) Block the Run button if the workflow's `User` node expects a task message; force the user to use the canvas's User node config UI to set it first. (Architectural; more complex.)
-   - My pick: ship the simple empty-text default in Session 04; document the gap; let Session 06 fix it. But this is a UX call you might want different.
-
-3. **Cancel cleanup — resolved.** 5-second user-visible countdown with internal force-abort at t=4s. UI shows `Cancelling… <n>` countdown rather than a "takes up to 10s" warning. Two-phase semantics: graceful 0-4s, forced 4-5s. Locked into §8.7 + W-A wireframe + §12 research item (verify framework force-abort API exists).
-
-Let me know on these three and I lock §8 + move toward acceptance-criteria extraction. If you want to redirect on anything in §3-§7 (scope, journeys, wireframes), now's the moment.
+**Next step:** acceptance-criteria-extractor freezes `./04-run-execution/acceptance.md` on the first implementation turn. Implementer begins after framework Session 06 lands. Polish items in §10 are explicit acceptance criteria — scoped into the session, not nice-to-haves.
