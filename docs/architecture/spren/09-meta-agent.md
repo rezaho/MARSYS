@@ -414,7 +414,7 @@ Cost: zero when nothing is due; one event-fire = one inbox event.
 
 A small, **curated catalog** of background tasks that monitor one condition each and emit typed events when their condition trips. Watchers run as Python coroutines in the daemon. They are **mechanical** — no LLM calls — and emit events only when something is worth waking the agent for.
 
-**v0.3 watcher catalog** (ships in Session 07):
+**v0.3 watcher catalog**:
 
 | Watcher | Cadence | Emits | Trigger |
 |---|---|---|---|

@@ -171,7 +171,7 @@ See [`07-security.md`](./07-security.md) for the storage policy.
 
 ## Trace event format (NDJSON)
 
-The framework's NDJSON streaming writer (Framework v0.3 Session 01) writes one JSON object per line, append-only, flushed per closed span. The wire format is the framework's contract — Spren reads it as-is. Schema-versioned, lowercase `kind`, float epoch-second timestamps, ULIDs for span/trace IDs.
+The framework's NDJSON streaming writer writes one JSON object per line, append-only, flushed per closed span. The wire format is the framework's contract — Spren reads it as-is. Schema-versioned, lowercase `kind`, float epoch-second timestamps, ULIDs for span/trace IDs.
 
 Example shape (one closed `generation` span):
 
@@ -185,7 +185,7 @@ Two non-span line types are emitted by the writer and must be filtered by reader
 - `kind == "stream_event"` — diagnostic (e.g. `{"event": "dropped_span", "dropped_span_count": N}`).
 - `kind == "stream_completed"` — terminal marker, exactly once on close. Missing marker on EOF means the writer crashed.
 
-The framework-side AG-UI translator (`marsys.transport.aggui`, Framework v0.3 Session 06) is a separate `EventBus` consumer that translates framework lifecycle events into AG-UI events. Spren v0.3 Session 04 wraps the framework's `AGUIEventStream(orchestra, run_id) -> AsyncIterator[AGUIEvent]` adapter in an SSE HTTP endpoint at `GET /v1/runs/{id}/events`; it does not consume `trace.ndjson` for live streaming. The trace file is for the run inspector + cold reads (reconnect replay).
+The framework-side AG-UI translator (`marsys.transport.aggui`) is a separate `EventBus` consumer that translates framework lifecycle events into AG-UI events. Spren wraps the framework's `AGUIEventStream(orchestra, run_id) -> AsyncIterator[AGUIEvent]` adapter in an SSE HTTP endpoint at `GET /v1/runs/{id}/events`; it does not consume `trace.ndjson` for live streaming. The trace file is for the run inspector + cold reads (reconnect replay).
 
 ## Migrations
 
