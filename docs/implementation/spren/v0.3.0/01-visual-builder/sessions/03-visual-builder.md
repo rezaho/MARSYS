@@ -782,7 +782,74 @@ If any of these surface a conflict with the locked design system in §9, the imp
 - [x] Design system locked (section 9). Anchored on [`../assets/spren-inspiration.png`](../assets/spren-inspiration.png).
 - [x] Polish items captured for in-session work (section 10).
 - [x] Success criteria affirmed (section 11).
-- [ ] Acceptance criteria frozen at [`./03-visual-builder/acceptance.md`](./03-visual-builder/acceptance.md) — extracted by the `acceptance-criteria-extractor` agent on the first implementation turn, before any code is written.
-- [ ] Session implementation complete (all acceptance criteria pass; polish items addressed; tests green; manual verify done).
+- [x] Acceptance criteria frozen at [`./03-visual-builder/acceptance.md`](./03-visual-builder/acceptance.md) — extracted by the `acceptance-criteria-extractor` agent on the first implementation turn, before any code is written.
+- [x] Session implementation complete (all acceptance criteria pass; polish items addressed; tests green; manual verify done).
+- [x] Post-implementation additions in §14 below.
 
-**Next step:** the implementer reads this file end-to-end, runs the `acceptance-criteria-extractor` to freeze `./03-visual-builder/acceptance.md`, then implements. The polish items in §10 are explicit acceptance criteria — they're scoped into the session, not nice-to-haves.
+## 14. Post-implementation additions (2026-05-12)
+
+These ship in the same `feature/spren-umbrella` branch as the original Session 03 work, layered on top after user feedback during the visual review. They are NOT a separate session; they are corrections to the v0.3.1 ship.
+
+### 14.1 Sidebar menu (alongside ⌘K)
+
+The original brief mounted cmdk as the sole navigation surface. The user feedback: cmdk is great for power users but new users don't know it exists. Adding a sidebar exposes navigation without forcing the keyboard.
+
+- Hamburger button (36px square) at the **far-left of the top bar**, before the wordmark.
+- Click opens a 280px slide-in panel from the left with a dimmed backdrop.
+- Panel sections: **Surfaces** (Home, Workflows — both live) + **Coming soon** (Runs, Memory, Settings — disabled with a one-line "what this will be" hint).
+- Active route highlighted via TanStack Router's `activeProps`.
+- Closes on Esc / click-outside / link-click. First link auto-focused for keyboard users.
+- Footer shows ⌘K reminder so users discover the palette by seeing the alternative.
+- Lives at `apps/web/src/components/Sidebar/`. Open state at `apps/web/src/stores/ui.ts` so any component can trigger.
+
+### 14.2 Orb micro-interactions (v0.3.1 catalog — Tier 1)
+
+The original brief defined the four-state machine (idle / typing / thinking / speaking) but didn't address what happens between state changes or how the orb reacts to ambient interaction. User feedback: the 56 px corner indicator on non-home routes reads as a notification dot, not a presence. Strategy doc at [`./03-visual-builder/orb-micro-interactions.md`](./03-visual-builder/orb-micro-interactions.md) (synthesized from research across Apple Intelligence, Gemini, Pi, Stardew Valley junimos, and Stormlight Archive spren behavior).
+
+**Locked Tier-1 catalog (ships in this revision):**
+
+1. **80 px loosely-anchored presence orb** — replaces the 56 px top-right notification-dot pattern. Lower-right, 24 px gutter, mobile shrinks to 56 px. Same SVG content as the stage orb.
+2. **Idle drift** — 18 s loop on the wrapper for non-stage sizes (`translate ±8 px`, `rotate ±1.4°`), offset from the 8 s SVG breath cycle so they beat against each other rather than syncing.
+3. **Hover wake** — `scale(1.04)` + saturation +15% on hover (presence/tiny sizes only — the stage orb doesn't need it). Back-out easing (`cubic-bezier(0.34, 1.56, 0.64, 1)`).
+4. **Click squash + bounce** — `:active` cascade. 80 ms squash to 0.92, 200 ms back-out to 1.0.
+5. **Focus-pulse** — global `focusin` listener at the document level fires a 700 ms saturation pulse (1.0 → 1.18 → 1.0) on the orb wrapper any time an input / textarea / contenteditable field anywhere in the app receives focus. Debounced 200 ms so rapid focus changes don't strobe.
+6. **`mood` prop** — orthogonal to `state`. Three values: `attentive` (default, no shading), `curious` (saturate +5%, hue −2°), `unsettled` (saturate +8%, hue +4°, brightness 0.97, drift rate doubled to 9 s). Modulated via `data-mood` CSS attribute selectors — no JS animation loop.
+
+**Layering rule** — behaviors compose via CSS `data-*` attribute selectors that *replace* values rather than *stack* keyframes. Higher-priority behaviors win without breaking lower-priority ones. Priority stack (highest → lowest): state-transition crossfade, event one-shots (sparkle, shudder, click bounce), mood-driven continuous, focus-pulse, hover wake, region-lean (v0.3.2), idle drift, breath cycle.
+
+**Performance kill switch** — `apps/web/src/lib/perf-monitor.ts` samples `requestAnimationFrame` deltas over a rolling 60-frame window. Median > 20 ms for two consecutive windows → `document.documentElement.dataset.sprenDegraded = "true"`. CSS reads the attribute and progressively drops behaviors (first: freeze wrapper drift). Pauses on `document.hidden`.
+
+**Reduced-motion** — keeps state-transition crossfades (shortened to 200 ms because they carry information), keeps a 12 s opacity ripple as the "still present" signal, drops drift / shake / bounce, drops the hover scale (keeps the saturation pulse).
+
+**Tier-2 placeholders** — `saveTick` and `lintShudderTick` incrementing-counter props are defined on the component but not wired anywhere yet. They are the v0.3.2 hooks for sparkle-on-save and lint-shudder behaviors.
+
+**Deferred to v0.3.2 or v0.4** — sparkle on save, lint shudder, region-lean, long-idle reverie, cursor-zone follow, speaking-state pupil scan, storm-prelude tremor, cost-ceiling unease wiring (needs the cost surface from Session 04).
+
+### 14.3 `/workflows/new` reliability + diagnostics
+
+Original brief: route mounts → POST creates workflow → redirect. Issue: when the POST hung (auth not loaded yet, server stuck, network error not raising rejection), the page sat on "Setting up a new canvas…" forever with no signal.
+
+Fix at `apps/web/src/routes/workflows/new.tsx`:
+
+- **Five visible states** instead of one: capabilities-loading, capabilities-error (no token / bootstrap failed), mutation-pending (with elapsed-time counter), mutation-error (with retry + cancel), mutation-success-redirecting.
+- **5 s slow-state escape** — when pending exceeds 5 s, surface the elapsed time + a Retry button + a Cancel-to-`/workflows` link. The previous version had no escape.
+- **Error logging** — failed mutations console.error so dev-tools shows the cause; the visible error message displays the underlying exception.
+
+This is a UX fix not a behavior change — the create-on-mount + redirect pattern stays the same.
+
+### 14.4 Files added in this revision
+
+- `apps/web/src/components/Sidebar/{Sidebar.tsx,Sidebar.css,index.ts}`
+- `apps/web/src/stores/ui.ts`
+- `apps/web/src/lib/perf-monitor.ts`
+- `apps/web/tests/sidebar.test.tsx` (5 tests)
+
+**Modified:**
+- `apps/web/src/components/Spren/{Spren.tsx,Spren.css,types.ts,index.ts}` — mood prop, focus-pulse listener, hover wake, click bounce, idle drift on non-stage sizes
+- `apps/web/src/components/TopBar/{TopBar.tsx,TopBar.css,PresenceOrb.tsx,PresenceOrb.css}` — sidebar trigger integration, 80px loosely-anchored placement
+- `apps/web/src/routes/__root.tsx` — Sidebar mounted at root
+- `apps/web/src/routes/workflows/{new.tsx,new.css}` — full state diagnostics
+- `apps/web/src/main.tsx` — `startPerfMonitor()` on app start
+- `apps/web/tests/spren-orb.test.tsx` — 7 additional tests for mood + focus-pulse + size
+
+**Reference:** [`./03-visual-builder/orb-micro-interactions.md`](./03-visual-builder/orb-micro-interactions.md) is the load-bearing strategy doc the v0.3.2 implementer (Tier-2 catalog) will read.
