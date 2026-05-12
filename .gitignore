@@ -124,3 +124,8 @@ packages/spren/src/spren/_webui/
 playwright-report/
 test-results/
 **/*.tsbuildinfo
+
+# Spren type-gen pipeline (Session 02): the snapshot is regenerated on every
+# `pnpm --filter @marsys/spren-web build` from a transient sidecar. The
+# generated *.ts file IS tracked.
+apps/web/openapi-snapshot.json
