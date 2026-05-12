@@ -1,15 +1,99 @@
-:root {
-  color-scheme: dark;
-  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
-  background: #0c0a08;
-  color: #f6f1e8;
+@import "@fontsource/geist-sans/300.css";
+@import "@fontsource/geist-sans/400.css";
+@import "@fontsource/geist-sans/500.css";
+@import "@fontsource/geist-sans/600.css";
+@import "@fontsource/geist-mono/400.css";
+@import "@fontsource/geist-mono/500.css";
+@import "tailwindcss";
+@import "@xyflow/react/dist/style.css";
+@import "./tokens.css";
+
+/* Tailwind v4 — map the design tokens into Tailwind's theme so utility
+ * classes (`bg-surface`, `text-ink`, `border-rule`, etc.) reference the
+ * same CSS variables that hand-written styles consume. The `@theme inline`
+ * directive embeds the variable name in the emitted utility, so changes
+ * to tokens.css propagate without rebuild churn.
+ */
+@theme inline {
+  --color-ground: var(--ground);
+  --color-surface: var(--surface);
+  --color-peach: var(--peach);
+  --color-coral: var(--coral);
+  --color-magenta: var(--magenta);
+  --color-magenta-deep: var(--magenta-deep);
+  --color-ink: var(--ink);
+  --color-ink-soft: var(--ink-soft);
+  --color-ink-faint: var(--ink-faint);
+  --color-rule: var(--rule);
+  --color-rule-soft: var(--rule-soft);
+
+  --font-sans: "Geist Sans", ui-sans-serif, system-ui, -apple-system, sans-serif;
+  --font-mono: "Geist Mono", ui-monospace, SFMono-Regular, "SF Mono", monospace;
+
+  --radius-card: 14px;
+  --radius-pill: 24px;
+  --radius-control: 10px;
 }
 
-* {
+*,
+*::before,
+*::after {
   box-sizing: border-box;
 }
 
+html,
 body {
   margin: 0;
   min-height: 100vh;
+}
+
+html {
+  color-scheme: light;
+  font-family: var(--font-sans);
+  background: var(--ground);
+  color: var(--ink);
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+  text-rendering: optimizeLegibility;
+}
+
+body {
+  min-height: 100vh;
+  font-feature-settings: "ss01", "ss02"; /* Geist's alternate forms */
+}
+
+#app {
+  min-height: 100vh;
+}
+
+button {
+  font-family: inherit;
+  font-size: inherit;
+}
+
+:focus {
+  outline: none;
+}
+
+:focus-visible {
+  outline: 2px solid var(--magenta);
+  outline-offset: 2px;
+  border-radius: 4px;
+}
+
+/* Canvas + xyflow visual reset — drop the library's default theme so our
+ * tokens land cleanly. Node + edge styling is component-local. */
+.react-flow {
+  background: var(--ground);
+}
+.react-flow__edge-path {
+  stroke: var(--ink-soft);
+  stroke-width: 1.5;
+}
+.react-flow__handle {
+  background: var(--ink);
+  border: 2px solid var(--surface);
+}
+.react-flow__attribution {
+  display: none;
 }

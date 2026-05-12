@@ -1,53 +1,38 @@
-import { spawn, type ChildProcess } from "node:child_process";
 import { test, expect } from "@playwright/test";
 
-let sidecar: ChildProcess | null = null;
-let sidecarPort = 8765;
-let sidecarToken = "";
+import { startSidecar, stopSidecar, injectAuth } from "./helpers/sidecar";
+
+let port = 8765;
+let token = "";
 
 test.beforeAll(async () => {
-  // Start the FastAPI sidecar on a random free port; capture port + token from stdout.
-  sidecar = spawn("uv", ["run", "--package", "spren", "python", "-m", "spren", "--port", "0"], {
-    cwd: process.cwd().replace(/\/apps\/web$/, ""),
-    stdio: ["ignore", "pipe", "pipe"],
-  });
-
-  const ready = new Promise<void>((resolve, reject) => {
-    let buf = "";
-    sidecar!.stdout!.on("data", (chunk) => {
-      buf += chunk.toString();
-      const match = buf.match(/spren-ready: port=(\d+) token=(\S+)/);
-      if (match) {
-        sidecarPort = parseInt(match[1], 10);
-        sidecarToken = match[2];
-        resolve();
-      }
-    });
-    setTimeout(() => reject(new Error("sidecar ready timeout")), 15000);
-  });
-  await ready;
+  ({ port, token } = await startSidecar());
 });
 
 test.afterAll(async () => {
-  if (sidecar) sidecar.kill();
+  await stopSidecar();
 });
 
-test("placeholder home renders bootstrap when token is present", async ({ page }) => {
-  // Inject port + token before scripts run, simulating the Tauri shell's init_script.
-  await page.addInitScript(
-    ({ port, token }) => {
-      window.__SPREN_AUTH__ = token;
-      window.__SPREN_PORT__ = port;
-    },
-    { port: sidecarPort, token: sidecarToken },
-  );
+test("home renders the Spren orb and the coming-soon framing", async ({ page }) => {
+  await injectAuth(page, { port, token });
   await page.goto("/");
-  await expect(page.getByRole("heading", { name: /MARSYS Spren — Foundation Session/i })).toBeVisible();
-  await expect(page.locator("pre")).toContainText("framework");
-  await expect(page.locator("pre")).toContainText("0.3.0");
+  await expect(page.getByTestId("home-orb-stage")).toBeVisible();
+  await expect(page.getByTestId("home-greeting")).toBeVisible();
+  await expect(page.getByTestId("home-coming-soon")).toBeVisible();
 });
 
-test("home renders auth-required when no token is present", async ({ page }) => {
+test("wordmark from a non-home route returns to the orb home", async ({ page }) => {
+  await injectAuth(page, { port, token });
+  await page.goto("/workflows");
+  await expect(page.getByTestId("workflows-shell")).toBeVisible();
+  await page.getByRole("link", { name: /Home — Spren/i }).click();
+  await expect(page.getByTestId("home-orb-stage")).toBeVisible();
+});
+
+test("cmdk opens with ⌘K and renders the global commands", async ({ page }) => {
+  await injectAuth(page, { port, token });
   await page.goto("/");
-  await expect(page.getByText(/auth required/i)).toBeVisible();
+  await page.keyboard.press("Meta+K");
+  await expect(page.getByTestId("cmdk-overlay")).toBeVisible();
+  await expect(page.getByTestId("cmdk-item-create-workflow")).toBeVisible();
 });
