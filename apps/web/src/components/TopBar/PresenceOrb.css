@@ -1,14 +1,37 @@
+/* Loosely-anchored ambient presence orb.
+ *
+ * Lower-right corner with a 24 px gutter. The orb inside drifts via
+ * the wrapper's `spren-idle-drift` animation; this outer .presence-orb
+ * frame is the stable anchor.
+ *
+ * On mobile the size scales down to 56 px and the gutter tightens. On
+ * the canvas page where the bottom-right is the xyflow zoom-control
+ * cluster, callers can pass an alternative position via a wrapping
+ * style override — for v0.3.1 we ship lower-right only and revisit if
+ * collisions become a problem.
+ */
+
 .presence-orb {
   position: fixed;
-  top: 24px;
-  right: 24px;
+  bottom: 32px;
+  right: 32px;
   z-index: 30;
   pointer-events: auto;
+  /* Pad the bounding box so the drift envelope has clearance from the
+   * window edge. The drift moves ±8px; 12px of padding leaves room. */
+  padding: 12px;
 }
 
 @media (max-width: 640px) {
   .presence-orb {
-    top: 16px;
-    right: 16px;
+    bottom: 20px;
+    right: 20px;
+    padding: 8px;
   }
 }
+
+/* Don't let the orb sit on top of fixed-bottom UI like xyflow's zoom
+ * controls. Canvas page already shifts those to bottom-right at z=10;
+ * the orb at z=30 sits over them. The padding makes the click target
+ * generous but not collide. A v0.3.2 enhancement is a per-route corner
+ * override (e.g., bottom-left on the canvas) — strategy doc §1 (a). */
