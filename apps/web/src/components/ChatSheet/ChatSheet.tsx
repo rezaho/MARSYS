@@ -9,8 +9,9 @@
  * thinking on send, thinking → speaking on response) so the live
  * meta-agent in 07–09 can subscribe to the same surface.
  */
-import { useEffect, useRef, useState, type ReactElement } from "react";
+import { useState, type ReactElement } from "react";
 
+import { Dialog } from "../ui";
 import { InputBar } from "../InputBar";
 import { Spren } from "../Spren";
 
@@ -22,38 +23,17 @@ interface ChatSheetProps {
 }
 
 export function ChatSheet({ open, onClose }: ChatSheetProps): ReactElement | null {
-  const sheetRef = useRef<HTMLDivElement>(null);
-
-  useEffect(() => {
-    if (!open) return;
-    function onKey(e: KeyboardEvent) {
-      if (e.key === "Escape") onClose();
-    }
-    window.addEventListener("keydown", onKey);
-    return () => window.removeEventListener("keydown", onKey);
-  }, [open, onClose]);
-
-  useEffect(() => {
-    if (!open) return;
-    const previouslyFocused = document.activeElement as HTMLElement | null;
-    sheetRef.current?.querySelector<HTMLInputElement>("input")?.focus();
-    return () => previouslyFocused?.focus?.();
-  }, [open]);
-
-  if (!open) return null;
-
   return (
-    <div
-      className="chat-sheet-backdrop"
-      onMouseDown={(e) => {
-        if (e.target === e.currentTarget) onClose();
-      }}
-      data-testid="chat-sheet"
+    <Dialog
+      open={open}
+      onClose={onClose}
+      ariaLabel="Talk to Spren"
+      position="bottom"
+      className="chat-sheet"
+      testId="chat-sheet"
     >
-      <div className="chat-sheet" ref={sheetRef} role="dialog" aria-modal="true" aria-label="Talk to Spren">
-        <ChatSheetBody />
-      </div>
-    </div>
+      <ChatSheetBody />
+    </Dialog>
   );
 }
 

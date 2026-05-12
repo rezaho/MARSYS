@@ -1,26 +1,9 @@
-.pattern-modal-backdrop {
-  position: fixed;
-  inset: 0;
-  background: rgba(26, 20, 16, 0.22);
-  backdrop-filter: blur(6px);
-  -webkit-backdrop-filter: blur(6px);
-  z-index: 60;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-}
-
-.pattern-modal {
+/* Pattern modal — overrides the Dialog md width (560px) to the original
+ * 520px so the migration is a pixel-for-pixel match. Specificity bump
+ * (two class selectors) so the Dialog primitive's per-size width rule
+ * doesn't win. */
+.ui-dialog.pattern-modal {
   width: min(520px, calc(100% - 32px));
-  max-height: 80vh;
-  background: var(--surface);
-  border: 1px solid var(--rule);
-  border-radius: 14px;
-  display: flex;
-  flex-direction: column;
-  overflow: hidden;
-  box-shadow: 0 24px 64px -24px rgba(232, 33, 130, 0.18),
-              0 8px 24px -12px rgba(26, 20, 16, 0.18);
 }
 
 .pattern-modal-header {

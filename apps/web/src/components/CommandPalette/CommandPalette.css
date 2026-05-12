@@ -1,29 +1,3 @@
-.cmdk-backdrop {
-  position: fixed;
-  inset: 0;
-  background: rgba(26, 20, 16, 0.22);
-  backdrop-filter: blur(8px);
-  -webkit-backdrop-filter: blur(8px);
-  z-index: 100;
-  display: flex;
-  justify-content: center;
-  align-items: flex-start;
-  padding-top: 18vh;
-  animation: cmdk-fade-in 200ms var(--ease-out);
-}
-
-.cmdk-root {
-  width: min(560px, calc(100% - 32px));
-  background: var(--surface);
-  border: 1px solid var(--rule);
-  border-radius: 14px;
-  overflow: hidden;
-  box-shadow:
-    0 24px 64px -24px rgba(232, 33, 130, 0.18),
-    0 8px 24px -12px rgba(26, 20, 16, 0.18);
-  animation: cmdk-slide-down 220ms var(--ease-out);
-}
-
 .cmdk-input {
   width: 100%;
   padding: 18px 24px;
@@ -81,12 +55,3 @@
   background: var(--rule-soft);
 }
 
-@keyframes cmdk-fade-in {
-  from { opacity: 0; }
-  to   { opacity: 1; }
-}
-
-@keyframes cmdk-slide-down {
-  from { transform: translateY(-12px); opacity: 0; }
-  to   { transform: translateY(0);     opacity: 1; }
-}

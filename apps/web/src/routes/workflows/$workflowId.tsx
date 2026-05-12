@@ -25,6 +25,7 @@ import {
 } from "react";
 
 import { PresenceOrb, TopBar } from "../../components/TopBar";
+import { Button } from "../../components/ui";
 import {
   getWorkflow,
   lintWorkflowById,
@@ -465,23 +466,23 @@ function CanvasInner(): ReactElement {
       <CanvasEdgeArrow />
       <div className="canvas-toolbar" data-testid="canvas-toolbar">
         <LintChip onGoToNode={focusNodeByName} />
-        <button
-          type="button"
-          className="canvas-toolbar-button"
+        <Button
+          variant="secondary"
+          size="sm"
           onClick={() => setPatternModalOpen(true)}
           data-testid="canvas-toolbar-pattern"
         >
           + Pattern
-        </button>
-        <button
-          type="button"
-          className="canvas-toolbar-button canvas-toolbar-button--primary"
+        </Button>
+        <Button
+          variant="primary"
+          size="sm"
           onClick={() => saveMutation.mutate()}
           disabled={saveMutation.isPending}
           data-testid="canvas-toolbar-save"
         >
           {saveMutation.isPending ? "Saving…" : "Save"}
-        </button>
+        </Button>
         {saveMutation.isSuccess ? (
           <span className="canvas-toolbar-toast" data-testid="canvas-save-toast">
             saved

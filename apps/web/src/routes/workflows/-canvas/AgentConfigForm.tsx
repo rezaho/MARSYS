@@ -18,6 +18,7 @@ import { Controller, useForm } from "react-hook-form";
 import { z } from "zod";
 
 import { listTools, type AgentSpec } from "../../../lib/api";
+import { Button } from "../../../components/ui";
 import { useCapabilities } from "../../../providers/capabilities";
 
 import "./AgentConfigForm.css";
@@ -260,14 +261,15 @@ export function AgentConfigForm({
       </section>
 
       <footer className="agent-form-actions">
-        <button
-          type="button"
-          className="agent-form-delete"
+        <Button
+          variant="secondary"
+          size="sm"
+          tone="danger"
           onClick={onDelete}
           data-testid="agent-form-delete"
         >
           Delete node
-        </button>
+        </Button>
         <button
           type="submit"
           className="agent-form-apply"

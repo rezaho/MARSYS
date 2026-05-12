@@ -101,8 +101,13 @@
   color: var(--surface);
 }
 
-/* — Tone: danger flips hover to magenta-deep. Composes with secondary
- *    today; could extend to other variants if a use case arrives. */
+/* — Tone: danger. Composes with secondary today: muted ink-soft text
+ *    at rest, magenta-deep ink + border on hover. Other variants get
+ *    their own danger expression if a use case arrives. */
+.ui-button--danger.ui-button--secondary {
+  color: var(--ink-soft);
+}
+
 .ui-button--danger.ui-button--secondary:hover:not(:disabled) {
   color: var(--magenta-deep);
   border-color: var(--magenta-deep);

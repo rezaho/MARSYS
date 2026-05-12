@@ -40,38 +40,6 @@
   background: var(--rule-soft);
 }
 
-.canvas-toolbar-button {
-  background: var(--surface);
-  border: 1px solid var(--rule);
-  color: var(--ink);
-  padding: 6px 12px;
-  border-radius: 6px;
-  font-family: var(--font-sans);
-  font-size: 12px;
-  cursor: pointer;
-  transition: background 200ms var(--ease-out), border-color 200ms var(--ease-out);
-}
-
-.canvas-toolbar-button:hover {
-  border-color: var(--ink-faint);
-}
-
-.canvas-toolbar-button--primary {
-  background: var(--ink);
-  color: var(--surface);
-  border-color: var(--ink);
-}
-
-.canvas-toolbar-button--primary:hover {
-  background: var(--magenta);
-  border-color: var(--magenta);
-}
-
-.canvas-toolbar-button:disabled {
-  opacity: 0.4;
-  cursor: not-allowed;
-}
-
 .canvas-toolbar-toast {
   margin-left: auto;
   font-family: var(--font-mono);

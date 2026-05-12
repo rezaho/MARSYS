@@ -8,6 +8,7 @@
 import { Command } from "cmdk";
 import { useEffect, type ReactElement } from "react";
 
+import { Dialog } from "../ui";
 import { useCommandStore, type CommandSection } from "../../stores/commands";
 
 import "./CommandPalette.css";
@@ -34,21 +35,19 @@ export function CommandPalette(): ReactElement | null {
   const toggle = useCommandStore((s) => s.toggle);
   const registrations = useCommandStore((s) => s.registrations);
 
+  // ⌘K / Ctrl+K opens/toggles the palette. Esc dismissal is handled by
+  // Dialog's useEscapeKey while open; we keep the global hotkey here so
+  // the palette can be opened from anywhere in the app.
   useEffect(() => {
     function onKey(e: KeyboardEvent) {
       if ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === "k") {
         e.preventDefault();
         toggle();
       }
-      if (e.key === "Escape" && open) {
-        setOpen(false);
-      }
     }
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
-  }, [open, setOpen, toggle]);
-
-  if (!open) return null;
+  }, [toggle]);
 
   const commands = Array.from(registrations.values()).flat();
   const bySection = new Map<CommandSection, typeof commands>();
@@ -59,19 +58,15 @@ export function CommandPalette(): ReactElement | null {
   }
 
   return (
-    <div
-      className="cmdk-backdrop"
-      onMouseDown={(e) => {
-        if (e.target === e.currentTarget) setOpen(false);
-      }}
-      data-testid="cmdk-overlay"
+    <Dialog
+      open={open}
+      onClose={() => setOpen(false)}
+      ariaLabel="Spren commands"
+      position="top"
+      className="cmdk-root"
+      testId="cmdk-overlay"
     >
-      <Command
-        className="cmdk-root"
-        label="Spren commands"
-        loop
-        data-testid="cmdk-root"
-      >
+      <Command label="Spren commands" loop data-testid="cmdk-root">
         <Command.Input
           placeholder="Type a command or search…"
           className="cmdk-input"
@@ -110,6 +105,6 @@ export function CommandPalette(): ReactElement | null {
           })}
         </Command.List>
       </Command>
-    </div>
+    </Dialog>
   );
 }
