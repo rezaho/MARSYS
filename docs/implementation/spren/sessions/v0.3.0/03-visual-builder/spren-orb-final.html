@@ -1,0 +1,467 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Spren orb — final (session 03)</title>
+  <style>
+    /* Final orb implementation, mirrors apps/web/src/components/Spren/.
+     * The TSX component diverges only in `data-active`-driven crossfade
+     * being React-managed instead of class-toggled. Visual output is
+     * identical.
+     *
+     * Coral-dominant gradient (matches the inspiration image — peach
+     * highlight at top, coral as load-bearing middle, magenta lower,
+     * deep magenta at the base; NO soft-pink intermediate).
+     */
+    :root {
+      --ground: #fcfaf6;
+    }
+    body {
+      background-color: var(--ground);
+      margin: 0;
+      overflow: hidden;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      height: 100vh;
+      font-family: ui-sans-serif, system-ui, -apple-system, sans-serif;
+    }
+
+    .spren-wrap {
+      position: relative;
+      width: 600px;
+      height: 600px;
+    }
+
+    .spren-layer {
+      position: absolute;
+      inset: 0;
+      opacity: 0;
+      pointer-events: none;
+      transform: scale(0.92);
+      transition:
+        opacity 700ms cubic-bezier(0.4, 0, 0.2, 1),
+        transform 700ms cubic-bezier(0.4, 0, 0.2, 1);
+    }
+    .spren-layer.is-active {
+      opacity: 1;
+      transform: scale(1);
+    }
+
+    .spren-svg {
+      width: 100%;
+      height: 100%;
+      transform-origin: 50% 50%;
+      overflow: visible;
+    }
+
+    /* IDLE — 8s slow breath */
+    .spren-layer[data-state="idle"] .spren-svg {
+      animation: float-idle 8s ease-in-out infinite;
+    }
+    @keyframes float-idle {
+      0%, 100% { transform: scale(1) translate(0,0) rotate(0deg); }
+      33% { transform: scale(1.02) translate(8px,-6px) rotate(2deg); }
+      66% { transform: scale(0.98) translate(-6px,8px) rotate(-1.5deg); }
+    }
+
+    /* SPEAKING */
+    .spren-layer[data-state="speaking"].is-active .spren-svg {
+      animation:
+        speak-amplitude 1.8s cubic-bezier(0.34, 1.56, 0.64, 1) infinite,
+        float-idle 8s ease-in-out infinite;
+    }
+    @keyframes speak-amplitude {
+      0% { transform: scale(1); }
+      12% { transform: scale(1.15); }
+      25% { transform: scale(0.96); }
+      40% { transform: scale(1.22); }
+      55%, 65% { transform: scale(1); }
+      75% { transform: scale(1.12); }
+      85% { transform: scale(0.98); }
+      95%, 100% { transform: scale(1); }
+    }
+
+    /* THINKING */
+    .spren-layer[data-state="thinking"].is-active .spren-svg {
+      animation: think-pulse 2s ease-in-out infinite;
+    }
+    @keyframes think-pulse {
+      0%, 100% { transform: scale(0.92); }
+      50% { transform: scale(0.98); }
+    }
+
+    /* TYPING */
+    .spren-layer[data-state="typing"].is-active .spren-svg {
+      animation: float-idle 8s ease-in-out infinite;
+    }
+
+    .type-vortex-wrapper {
+      width: 100%;
+      height: 100%;
+      transform-origin: 50% 50%;
+      animation: type-vortex-spin 12s infinite;
+    }
+    @keyframes type-vortex-spin {
+      0%, 5% { transform: rotate(0deg); }
+      20%, 75% {
+        transform: rotate(-360deg);
+        animation-timing-function: cubic-bezier(0.8, 0, 0.2, 1);
+      }
+      85%, 100% { transform: rotate(-1080deg); }
+    }
+
+    .type-dot { transform-origin: 250px 250px; }
+    .type-dot-1 { animation: dot1-anim 12s infinite; }
+    .type-dot-2 { animation: dot2-anim 12s infinite; }
+    .type-dot-3 { animation: dot3-anim 12s infinite; }
+
+    @keyframes dot1-anim {
+      0%, 5% { transform: translate(0px,0px) scale(1); animation-timing-function: cubic-bezier(0.5,0,0.2,1); }
+      20% { transform: translate(-120px,0px) scale(0.25); }
+      35% { transform: translate(-120px,-12px) scale(0.25); }
+      45% { transform: translate(-120px,0px) scale(0.25); }
+      55% { transform: translate(-120px,-12px) scale(0.25); }
+      65%, 75% { transform: translate(-120px,0px) scale(0.25); animation-timing-function: cubic-bezier(0.8,0,0.2,1); }
+      85%, 100% { transform: translate(0px,0px) scale(1); }
+    }
+    @keyframes dot2-anim {
+      0%, 19% { transform: translate(-120px,0px) scale(0.01); opacity: 0; }
+      20% { transform: translate(-120px,0px) scale(0.25); opacity: 1; animation-timing-function: cubic-bezier(0.5,0,0.2,1); }
+      30% { transform: translate(0px,0px) scale(0.25); opacity: 1; }
+      40% { transform: translate(0px,-12px) scale(0.25); opacity: 1; }
+      50% { transform: translate(0px,0px) scale(0.25); opacity: 1; }
+      60% { transform: translate(0px,-12px) scale(0.25); opacity: 1; }
+      70%, 75% { transform: translate(0px,0px) scale(0.25); opacity: 1; animation-timing-function: cubic-bezier(0.8,0,0.2,1); }
+      85% { transform: translate(0px,0px) scale(0.01); opacity: 0; }
+      86%, 100% { transform: translate(0px,0px) scale(0.01); opacity: 0; }
+    }
+    @keyframes dot3-anim {
+      0%, 29% { transform: translate(0px,0px) scale(0.01); opacity: 0; }
+      30% { transform: translate(0px,0px) scale(0.25); opacity: 1; animation-timing-function: cubic-bezier(0.5,0,0.2,1); }
+      40% { transform: translate(120px,0px) scale(0.25); opacity: 1; }
+      45% { transform: translate(120px,-12px) scale(0.25); opacity: 1; }
+      55% { transform: translate(120px,0px) scale(0.25); opacity: 1; }
+      65% { transform: translate(120px,-12px) scale(0.25); opacity: 1; }
+      75% { transform: translate(120px,0px) scale(0.25); opacity: 1; animation-timing-function: cubic-bezier(0.8,0,0.2,1); }
+      85% { transform: translate(0px,0px) scale(0.01); opacity: 0; }
+      86%, 100% { transform: translate(0px,0px) scale(0.01); opacity: 0; }
+    }
+
+    @media (prefers-reduced-motion: reduce) {
+      .spren-svg, .spren-svg *, .type-vortex-wrapper { animation: none !important; }
+      .spren-wrap { filter: drop-shadow(0 12px 48px rgba(232, 33, 130, 0.25)); }
+    }
+
+    .controls {
+      position: fixed;
+      bottom: 32px;
+      left: 50%;
+      transform: translateX(-50%);
+      display: flex;
+      gap: 6px;
+      background: rgba(255,255,255,0.7);
+      backdrop-filter: blur(8px);
+      padding: 6px;
+      border-radius: 999px;
+      box-shadow: 0 4px 16px rgba(26, 20, 16, 0.08);
+      border: 1px solid #ede6da;
+    }
+    .controls button {
+      padding: 8px 18px;
+      border-radius: 999px;
+      border: 0;
+      background: transparent;
+      color: #6b5f58;
+      font-size: 13px;
+      font-weight: 500;
+      cursor: pointer;
+      transition: background 200ms, color 200ms;
+    }
+    .controls button:hover {
+      background: #f4efe5;
+    }
+    .controls button.is-active {
+      background: #1a1410;
+      color: white;
+    }
+
+    .typing-restart-marker {
+      position: fixed;
+      top: 16px;
+      left: 16px;
+      font-family: ui-monospace, SFMono-Regular, monospace;
+      font-size: 11px;
+      color: #9b8f88;
+      letter-spacing: 0.04em;
+    }
+  </style>
+</head>
+<body>
+  <div class="spren-wrap" id="spren">
+    <!-- IDLE -->
+    <div class="spren-layer is-active" data-state="idle">
+      <svg class="spren-svg" viewBox="-50 -50 600 600" xmlns="http://www.w3.org/2000/svg">
+        <defs>
+          <path id="idle-base">
+            <animate attributeName="d" dur="8s" repeatCount="indefinite" calcMode="spline"
+              keySplines="0.45 0 0.25 1; 0.45 0 0.25 1; 0.45 0 0.25 1; 0.45 0 0.25 1"
+              keyTimes="0; 0.25; 0.5; 0.75; 1"
+              values="M 250,80 C 340,70 420,140 420,250 C 420,360 360,420 250,420 C 140,420 80,340 80,250 C 80,160 160,90 250,80 Z;
+                      M 250,60 C 300,60 360,150 400,300 C 420,380 340,440 250,440 C 150,440 80,360 100,260 C 120,160 200,60 250,60 Z;
+                      M 200,50 C 280,30 400,160 420,280 C 430,380 320,440 220,430 C 120,420 60,340 80,220 C 100,120 120,70 200,50 Z;
+                      M 280,90 C 380,80 440,180 410,280 C 380,380 280,420 180,400 C 80,380 60,280 110,180 C 140,100 200,100 280,90 Z;
+                      M 250,80 C 340,70 420,140 420,250 C 420,360 360,420 250,420 C 140,420 80,340 80,250 C 80,160 160,90 250,80 Z" />
+          </path>
+          <radialGradient id="idle-grad" cx="50%" cy="50%" r="75%">
+            <animate attributeName="fx" calcMode="spline" keySplines="0.4 0 0.6 1; 0.4 0 0.6 1; 0.4 0 0.6 1; 0.4 0 0.6 1" values="35%; 45%; 30%; 40%; 35%" dur="8s" repeatCount="indefinite" />
+            <animate attributeName="fy" calcMode="spline" keySplines="0.4 0 0.6 1; 0.4 0 0.6 1; 0.4 0 0.6 1; 0.4 0 0.6 1" values="30%; 45%; 45%; 30%; 30%" dur="8s" repeatCount="indefinite" />
+            <stop offset="0%" stop-color="#ffceaa"/>
+            <stop offset="42%" stop-color="#ff876c"/>
+            <stop offset="82%" stop-color="#e82182"/>
+            <stop offset="100%" stop-color="#c9146c"/>
+          </radialGradient>
+          <filter id="idle-deep" x="-50%" y="-50%" width="200%" height="200%"><feGaussianBlur stdDeviation="55"/></filter>
+          <filter id="idle-mid" x="-50%" y="-50%" width="200%" height="200%"><feGaussianBlur stdDeviation="25"/></filter>
+          <filter id="idle-core" x="-50%" y="-50%" width="200%" height="200%"><feGaussianBlur stdDeviation="3"/></filter>
+          <radialGradient id="idle-mask" cx="250" cy="250" r="280" gradientUnits="userSpaceOnUse">
+            <animate attributeName="cx" calcMode="spline" keySplines="0.4 0 0.6 1; 0.4 0 0.6 1; 0.4 0 0.6 1; 0.4 0 0.6 1" values="400; 250; 100; 250; 400" dur="8s" repeatCount="indefinite" />
+            <animate attributeName="cy" calcMode="spline" keySplines="0.4 0 0.6 1; 0.4 0 0.6 1; 0.4 0 0.6 1; 0.4 0 0.6 1" values="250; 400; 250; 100; 250" dur="8s" repeatCount="indefinite" />
+            <stop offset="0%" stop-color="white"/>
+            <stop offset="35%" stop-color="white"/>
+            <stop offset="100%" stop-color="black"/>
+          </radialGradient>
+          <mask id="idle-edge"><rect x="-100" y="-100" width="700" height="700" fill="url(#idle-mask)"/></mask>
+        </defs>
+        <use href="#idle-base" fill="url(#idle-grad)" filter="url(#idle-deep)" opacity="0.65"/>
+        <use href="#idle-base" fill="url(#idle-grad)" filter="url(#idle-mid)" opacity="0.85"/>
+        <use href="#idle-base" fill="url(#idle-grad)" filter="url(#idle-core)" mask="url(#idle-edge)"/>
+      </svg>
+    </div>
+
+    <!-- SPEAKING -->
+    <div class="spren-layer" data-state="speaking">
+      <svg class="spren-svg" viewBox="-50 -50 600 600" xmlns="http://www.w3.org/2000/svg">
+        <defs>
+          <path id="speak-base">
+            <animate attributeName="d" dur="8s" repeatCount="indefinite" calcMode="spline"
+              keySplines="0.45 0 0.25 1; 0.45 0 0.25 1; 0.45 0 0.25 1; 0.45 0 0.25 1"
+              keyTimes="0; 0.25; 0.5; 0.75; 1"
+              values="M 250,80 C 340,70 420,140 420,250 C 420,360 360,420 250,420 C 140,420 80,340 80,250 C 80,160 160,90 250,80 Z;
+                      M 250,60 C 300,60 360,150 400,300 C 420,380 340,440 250,440 C 150,440 80,360 100,260 C 120,160 200,60 250,60 Z;
+                      M 200,50 C 280,30 400,160 420,280 C 430,380 320,440 220,430 C 120,420 60,340 80,220 C 100,120 120,70 200,50 Z;
+                      M 280,90 C 380,80 440,180 410,280 C 380,380 280,420 180,400 C 80,380 60,280 110,180 C 140,100 200,100 280,90 Z;
+                      M 250,80 C 340,70 420,140 420,250 C 420,360 360,420 250,420 C 140,420 80,340 80,250 C 80,160 160,90 250,80 Z" />
+          </path>
+          <radialGradient id="speak-grad" cx="50%" cy="50%" r="75%">
+            <animate attributeName="fx" calcMode="spline" keySplines="0.4 0 0.6 1; 0.4 0 0.6 1; 0.4 0 0.6 1; 0.4 0 0.6 1" values="35%; 45%; 30%; 40%; 35%" dur="8s" repeatCount="indefinite" />
+            <animate attributeName="fy" calcMode="spline" keySplines="0.4 0 0.6 1; 0.4 0 0.6 1; 0.4 0 0.6 1; 0.4 0 0.6 1" values="30%; 45%; 45%; 30%; 30%" dur="8s" repeatCount="indefinite" />
+            <stop offset="0%" stop-color="#ffe1cc"/>
+            <stop offset="50%" stop-color="#ff876c"/>
+            <stop offset="85%" stop-color="#e82182"/>
+            <stop offset="100%" stop-color="#c9146c"/>
+          </radialGradient>
+          <filter id="speak-deep" x="-50%" y="-50%" width="200%" height="200%"><feGaussianBlur stdDeviation="60"/></filter>
+          <filter id="speak-mid" x="-50%" y="-50%" width="200%" height="200%"><feGaussianBlur stdDeviation="30"/></filter>
+          <filter id="speak-core" x="-50%" y="-50%" width="200%" height="200%"><feGaussianBlur stdDeviation="3"/></filter>
+          <radialGradient id="speak-mask" cx="250" cy="250" r="280" gradientUnits="userSpaceOnUse">
+            <animate attributeName="cx" calcMode="spline" keySplines="0.4 0 0.6 1; 0.4 0 0.6 1; 0.4 0 0.6 1; 0.4 0 0.6 1" values="400; 250; 100; 250; 400" dur="8s" repeatCount="indefinite" />
+            <animate attributeName="cy" calcMode="spline" keySplines="0.4 0 0.6 1; 0.4 0 0.6 1; 0.4 0 0.6 1; 0.4 0 0.6 1" values="250; 400; 250; 100; 250" dur="8s" repeatCount="indefinite" />
+            <stop offset="0%" stop-color="white"/>
+            <stop offset="35%" stop-color="white"/>
+            <stop offset="100%" stop-color="black"/>
+          </radialGradient>
+          <mask id="speak-edge"><rect x="-100" y="-100" width="700" height="700" fill="url(#speak-mask)"/></mask>
+        </defs>
+        <use href="#speak-base" fill="url(#speak-grad)" filter="url(#speak-deep)" opacity="0.75"/>
+        <use href="#speak-base" fill="url(#speak-grad)" filter="url(#speak-mid)" opacity="0.85"/>
+        <use href="#speak-base" fill="url(#speak-grad)" filter="url(#speak-core)" mask="url(#speak-edge)"/>
+      </svg>
+    </div>
+
+    <!-- THINKING -->
+    <div class="spren-layer" data-state="thinking">
+      <svg class="spren-svg" viewBox="-50 -50 600 600" xmlns="http://www.w3.org/2000/svg">
+        <defs>
+          <path id="think-base">
+            <animate attributeName="d" dur="3s" repeatCount="indefinite" calcMode="spline"
+              keySplines="0.45 0 0.25 1; 0.45 0 0.25 1" keyTimes="0; 0.5; 1"
+              values="M 250,100 C 330,100 390,160 400,250 C 410,340 340,400 250,400 C 160,400 90,340 100,250 C 110,160 170,100 250,100 Z;
+                      M 250,120 C 310,110 380,180 380,250 C 380,320 320,380 250,380 C 180,380 120,320 120,250 C 120,180 190,130 250,120 Z;
+                      M 250,100 C 330,100 390,160 400,250 C 410,340 340,400 250,400 C 160,400 90,340 100,250 C 110,160 170,100 250,100 Z" />
+          </path>
+          <radialGradient id="think-grad" cx="50%" cy="50%" r="75%">
+            <animate attributeName="fx" calcMode="spline" keySplines="0.4 0 0.6 1; 0.4 0 0.6 1; 0.4 0 0.6 1; 0.4 0 0.6 1" values="30%; 50%; 70%; 50%; 30%" dur="1.5s" repeatCount="indefinite" />
+            <animate attributeName="fy" calcMode="spline" keySplines="0.4 0 0.6 1; 0.4 0 0.6 1; 0.4 0 0.6 1; 0.4 0 0.6 1" values="50%; 30%; 50%; 70%; 50%" dur="1.5s" repeatCount="indefinite" />
+            <stop offset="0%" stop-color="#ffceaa"/>
+            <stop offset="42%" stop-color="#ff876c"/>
+            <stop offset="82%" stop-color="#e82182"/>
+            <stop offset="100%" stop-color="#c9146c"/>
+          </radialGradient>
+          <filter id="think-deep" x="-50%" y="-50%" width="200%" height="200%"><feGaussianBlur stdDeviation="35"/></filter>
+          <filter id="think-mid" x="-50%" y="-50%" width="200%" height="200%"><feGaussianBlur stdDeviation="15"/></filter>
+          <filter id="think-core" x="-50%" y="-50%" width="200%" height="200%"><feGaussianBlur stdDeviation="3"/></filter>
+          <radialGradient id="think-mask" cx="250" cy="250" r="280" gradientUnits="userSpaceOnUse">
+            <animate attributeName="cx" calcMode="spline" keySplines="0.4 0 0.6 1; 0.4 0 0.6 1; 0.4 0 0.6 1; 0.4 0 0.6 1" values="100; 250; 400; 250; 100" dur="1.5s" repeatCount="indefinite" />
+            <animate attributeName="cy" calcMode="spline" keySplines="0.4 0 0.6 1; 0.4 0 0.6 1; 0.4 0 0.6 1; 0.4 0 0.6 1" values="250; 100; 250; 400; 250" dur="1.5s" repeatCount="indefinite" />
+            <stop offset="0%" stop-color="white"/>
+            <stop offset="35%" stop-color="white"/>
+            <stop offset="100%" stop-color="black"/>
+          </radialGradient>
+          <mask id="think-edge"><rect x="-100" y="-100" width="700" height="700" fill="url(#think-mask)"/></mask>
+        </defs>
+        <g>
+          <animateTransform attributeName="transform" type="translate" values="-5,0; 5,0; -5,0" dur="1s" repeatCount="indefinite"/>
+          <use href="#think-base" fill="url(#think-grad)" filter="url(#think-deep)" opacity="0.65"/>
+        </g>
+        <g>
+          <animateTransform attributeName="transform" type="translate" values="0,-3; 0,3; 0,-3" dur="0.8s" repeatCount="indefinite"/>
+          <use href="#think-base" fill="url(#think-grad)" filter="url(#think-mid)" opacity="0.85"/>
+        </g>
+        <use href="#think-base" fill="url(#think-grad)" filter="url(#think-core)" mask="url(#think-edge)"/>
+      </svg>
+    </div>
+
+    <!-- TYPING -->
+    <div class="spren-layer" data-state="typing" id="typing-container"></div>
+  </div>
+
+  <div class="typing-restart-marker" id="typing-restart-marker"></div>
+  <div class="controls">
+    <button data-target="idle" class="is-active">Idle</button>
+    <button data-target="typing">Typing</button>
+    <button data-target="thinking">Thinking</button>
+    <button data-target="speaking">Speaking</button>
+  </div>
+
+  <script>
+    // The typing layer's SVG is dynamically inserted/recreated each time
+    // we transition INTO `typing`. This mirrors the React mount-key
+    // discipline in apps/web/src/components/Spren/Spren.tsx.
+    function typingLayerSVG() {
+      const ns = "http://www.w3.org/2000/svg";
+      return `
+        <div class="type-vortex-wrapper">
+          <svg class="spren-svg" viewBox="-50 -50 600 600" xmlns="${ns}">
+            <defs>
+              <path id="type-path-1">
+                <animate attributeName="d" dur="6s" repeatCount="indefinite" calcMode="spline"
+                  keySplines="0.45 0 0.25 1; 0.45 0 0.25 1; 0.45 0 0.25 1; 0.45 0 0.25 1"
+                  keyTimes="0; 0.25; 0.5; 0.75; 1"
+                  values="M 250,80 C 340,70 420,140 420,250 C 420,360 360,420 250,420 C 140,420 80,340 80,250 C 80,160 160,90 250,80 Z;
+                          M 250,60 C 300,60 360,150 400,300 C 420,380 340,440 250,440 C 150,440 80,360 100,260 C 120,160 200,60 250,60 Z;
+                          M 200,50 C 280,30 400,160 420,280 C 430,380 320,440 220,430 C 120,420 60,340 80,220 C 100,120 120,70 200,50 Z;
+                          M 280,90 C 380,80 440,180 410,280 C 380,380 280,420 180,400 C 80,380 60,280 110,180 C 140,100 200,100 280,90 Z;
+                          M 250,80 C 340,70 420,140 420,250 C 420,360 360,420 250,420 C 140,420 80,340 80,250 C 80,160 160,90 250,80 Z" />
+              </path>
+              <path id="type-path-2">
+                <animate attributeName="d" dur="3s" repeatCount="indefinite" calcMode="spline"
+                  keySplines="0.45 0 0.25 1; 0.45 0 0.25 1; 0.45 0 0.25 1; 0.45 0 0.25 1"
+                  keyTimes="0; 0.25; 0.5; 0.75; 1"
+                  values="M 250,80 C 340,70 420,140 420,250 C 420,360 360,420 250,420 C 140,420 80,340 80,250 C 80,160 160,90 250,80 Z;
+                          M 200,50 C 280,30 400,160 420,280 C 430,380 320,440 220,430 C 120,420 60,340 80,220 C 100,120 120,70 200,50 Z;
+                          M 280,90 C 380,80 440,180 410,280 C 380,380 280,420 180,400 C 80,380 60,280 110,180 C 140,100 200,100 280,90 Z;
+                          M 250,60 C 300,60 360,150 400,300 C 420,380 340,440 250,440 C 150,440 80,360 100,260 C 120,160 200,60 250,60 Z;
+                          M 250,80 C 340,70 420,140 420,250 C 420,360 360,420 250,420 C 140,420 80,340 80,250 C 80,160 160,90 250,80 Z" />
+              </path>
+              <path id="type-path-3">
+                <animate attributeName="d" dur="2s" repeatCount="indefinite" calcMode="spline"
+                  keySplines="0.45 0 0.25 1; 0.45 0 0.25 1; 0.45 0 0.25 1; 0.45 0 0.25 1"
+                  keyTimes="0; 0.25; 0.5; 0.75; 1"
+                  values="M 250,80 C 340,70 420,140 420,250 C 420,360 360,420 250,420 C 140,420 80,340 80,250 C 80,160 160,90 250,80 Z;
+                          M 280,90 C 380,80 440,180 410,280 C 380,380 280,420 180,400 C 80,380 60,280 110,180 C 140,100 200,100 280,90 Z;
+                          M 250,60 C 300,60 360,150 400,300 C 420,380 340,440 250,440 C 150,440 80,360 100,260 C 120,160 200,60 250,60 Z;
+                          M 200,50 C 280,30 400,160 420,280 C 430,380 320,440 220,430 C 120,420 60,340 80,220 C 100,120 120,70 200,50 Z;
+                          M 250,80 C 340,70 420,140 420,250 C 420,360 360,420 250,420 C 140,420 80,340 80,250 C 80,160 160,90 250,80 Z" />
+              </path>
+              <radialGradient id="type-grad" cx="50%" cy="50%" r="90%">
+                <animate attributeName="cx" values="25%; 75%; 25%; 75%; 25%" dur="12s" repeatCount="indefinite" />
+                <stop offset="0%" stop-color="#ffd8b8"/>
+                <stop offset="42%" stop-color="#ff876c"/>
+                <stop offset="82%" stop-color="#e82182"/>
+                <stop offset="100%" stop-color="#c9146c"/>
+              </radialGradient>
+              <filter id="type-deep" x="-100%" y="-100%" width="300%" height="300%">
+                <feGaussianBlur stdDeviation="55">
+                  <animate attributeName="stdDeviation" dur="12s" repeatCount="indefinite" calcMode="spline"
+                    keySplines="0.4 0 0.2 1; 0.4 0 0.2 1; 0.4 0 0.2 1; 0.4 0 0.2 1"
+                    keyTimes="0; 0.75; 0.80; 0.85; 1"
+                    values="55; 55; 140; 55; 55" />
+                </feGaussianBlur>
+              </filter>
+              <filter id="type-mid" x="-100%" y="-100%" width="300%" height="300%"><feGaussianBlur stdDeviation="25"/></filter>
+              <filter id="type-goo" x="-100%" y="-100%" width="300%" height="300%">
+                <feGaussianBlur in="SourceGraphic" stdDeviation="16" result="blur"/>
+                <feColorMatrix in="blur" mode="matrix" values="1 0 0 0 0  0 1 0 0 0  0 0 1 0 0  0 0 0 25 -10" result="goo"/>
+                <feComposite in="SourceGraphic" in2="goo" operator="atop" result="composite"/>
+                <feGaussianBlur in="composite" stdDeviation="3"/>
+              </filter>
+              <radialGradient id="type-mask" cx="250" cy="250" r="500" gradientUnits="userSpaceOnUse">
+                <stop offset="0%" stop-color="white"/>
+                <stop offset="60%" stop-color="white"/>
+                <stop offset="100%" stop-color="black"/>
+              </radialGradient>
+              <mask id="type-edge"><rect x="-500" y="-500" width="1500" height="1500" fill="url(#type-mask)"/></mask>
+            </defs>
+            <g opacity="0.65">
+              <g class="type-dot type-dot-1"><use href="#type-path-1" fill="url(#type-grad)" filter="url(#type-deep)"/></g>
+              <g class="type-dot type-dot-2"><use href="#type-path-2" fill="url(#type-grad)" filter="url(#type-deep)"/></g>
+              <g class="type-dot type-dot-3"><use href="#type-path-3" fill="url(#type-grad)" filter="url(#type-deep)"/></g>
+            </g>
+            <g opacity="0.85">
+              <g class="type-dot type-dot-1"><use href="#type-path-1" fill="url(#type-grad)" filter="url(#type-mid)"/></g>
+              <g class="type-dot type-dot-2"><use href="#type-path-2" fill="url(#type-grad)" filter="url(#type-mid)"/></g>
+              <g class="type-dot type-dot-3"><use href="#type-path-3" fill="url(#type-grad)" filter="url(#type-mid)"/></g>
+            </g>
+            <g filter="url(#type-goo)" mask="url(#type-edge)">
+              <g class="type-dot type-dot-1"><use href="#type-path-1" fill="url(#type-grad)"/></g>
+              <g class="type-dot type-dot-2"><use href="#type-path-2" fill="url(#type-grad)"/></g>
+              <g class="type-dot type-dot-3"><use href="#type-path-3" fill="url(#type-grad)"/></g>
+            </g>
+          </svg>
+        </div>
+      `;
+    }
+
+    const root = document.getElementById("spren");
+    const buttons = document.querySelectorAll(".controls button");
+    const typingContainer = document.getElementById("typing-container");
+    const restartMarker = document.getElementById("typing-restart-marker");
+    let typingRestartCount = 0;
+    let currentState = "idle";
+
+    function setState(next) {
+      if (next === currentState) return;
+      const prev = currentState;
+      currentState = next;
+
+      // If re-entering typing, rebuild the SVG to restart the keyframe.
+      if (next === "typing") {
+        typingContainer.innerHTML = typingLayerSVG();
+        typingRestartCount += 1;
+        restartMarker.textContent = `typing restart count: ${typingRestartCount}`;
+      } else {
+        restartMarker.textContent = `typing restart count: ${typingRestartCount}`;
+      }
+
+      // Toggle .is-active. Both incoming + outgoing pass through the
+      // converged-orb pose at 50% opacity each (scale 0.92, opacity 0).
+      for (const layer of root.querySelectorAll(".spren-layer")) {
+        layer.classList.toggle("is-active", layer.dataset.state === next);
+      }
+
+      // Update button highlight.
+      for (const b of buttons) {
+        b.classList.toggle("is-active", b.dataset.target === next);
+      }
+
+      console.log(`crossfade ${prev} → ${next}`);
+    }
+
+    for (const b of buttons) {
+      b.addEventListener("click", () => setState(b.dataset.target));
+    }
+  </script>
+</body>
+</html>

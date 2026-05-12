@@ -1,0 +1,444 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<title>Spren</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Geist:wght@300;400;500;600&family=Geist+Mono:wght@400;500&family=Instrument+Serif:ital@0;1&display=swap" rel="stylesheet">
+<style>
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  :root {
+    --bg:          #FCFAF6;
+    --ink:         #1A1410;
+    --ink-soft:    #6B5F58;
+    --ink-faint:   #9B8F88;
+    --rule:        #EDE6DA;
+    --rule-soft:   #F4EFE5;
+    --magenta:     #D03A8A;
+    --magenta-deep:#A91E68;
+    --coral:       #FF9D70;
+    --peach:       #FFC298;
+    --pink-soft:   #F49DC0;
+  }
+  html, body {
+    background: var(--bg);
+    color: var(--ink);
+    font-family: 'Geist', -apple-system, sans-serif;
+    -webkit-font-smoothing: antialiased;
+    line-height: 1.45;
+    min-height: 100vh;
+  }
+  body {
+    display: grid;
+    grid-template-rows: auto 1fr auto;
+    min-height: 100vh;
+  }
+
+  /* ─── HEADER ─────────────────────────────────────────────────── */
+  .header {
+    display: flex; align-items: center; justify-content: space-between;
+    padding: 32px 48px;
+  }
+  .wordmark {
+    font-family: 'Instrument Serif', serif;
+    font-style: italic;
+    font-size: 24px;
+    font-weight: 400;
+    color: var(--ink);
+    letter-spacing: -0.01em;
+    line-height: 1;
+  }
+  .wordmark::after {
+    content: '.';
+    color: var(--magenta);
+    margin-left: 1px;
+  }
+
+  .avatar {
+    width: 34px; height: 34px;
+    border-radius: 50%;
+    background: linear-gradient(140deg, var(--coral) 0%, var(--magenta) 100%);
+    display: flex; align-items: center; justify-content: center;
+    color: white;
+    font-family: 'Geist', sans-serif;
+    font-weight: 500; font-size: 12px;
+    letter-spacing: 0.01em;
+    box-shadow: 0 1px 0 rgba(212, 57, 144, 0.08);
+  }
+
+  /* ─── STAGE ─────────────────────────────────────────────────── */
+  .stage {
+    display: grid;
+    place-items: center;
+    padding: 0 24px;
+    grid-template-rows: 1fr auto auto;
+    gap: 48px;
+  }
+
+  /* ─── ORB ───────────────────────────────────────────────────── */
+  .orb-wrap {
+    width: 320px;
+    height: 380px;
+    position: relative;
+    animation: float 12s ease-in-out infinite;
+  }
+  @keyframes float {
+    0%, 100% { transform: translateY(0); }
+    50%      { transform: translateY(-8px); }
+  }
+
+  .orb-svg {
+    width: 100%; height: 100%;
+    display: block;
+    animation: morph 14s ease-in-out infinite;
+  }
+  @keyframes morph {
+    0%, 100% { transform: scale(1, 1)       rotate(0deg);   }
+    25%      { transform: scale(1.02, 0.97) rotate(0.4deg); }
+    50%      { transform: scale(0.97, 1.03) rotate(-0.3deg);}
+    75%      { transform: scale(1.01, 0.99) rotate(0.2deg); }
+  }
+
+  /* ─── HEADLINE ──────────────────────────────────────────────── */
+  .headline {
+    text-align: center;
+    max-width: 28ch;
+  }
+  .headline h1 {
+    font-family: 'Geist', sans-serif;
+    font-size: 34px;
+    font-weight: 400;
+    color: var(--ink);
+    letter-spacing: -0.025em;
+    line-height: 1.15;
+  }
+  .headline h1 .you {
+    font-family: 'Instrument Serif', serif;
+    font-style: italic;
+    font-weight: 400;
+    color: var(--magenta);
+    padding: 0 0.05em;
+  }
+  .headline .sub {
+    margin-top: 14px;
+    font-family: 'Geist', sans-serif;
+    font-size: 15px;
+    color: var(--ink-soft);
+    font-weight: 400;
+    max-width: 36ch;
+    margin-left: auto;
+    margin-right: auto;
+    line-height: 1.55;
+  }
+  .headline .sub em {
+    font-family: 'Instrument Serif', serif;
+    font-style: italic;
+    color: var(--ink);
+    font-weight: 400;
+  }
+
+  /* ─── INPUT ─────────────────────────────────────────────────── */
+  .input {
+    width: min(640px, calc(100% - 80px));
+    margin: 0 auto;
+    background: white;
+    border: 1px solid var(--rule);
+    border-radius: 24px;
+    padding: 6px 6px 6px 24px;
+    display: grid;
+    grid-template-columns: 1fr auto;
+    align-items: center;
+    gap: 12px;
+    transition: border-color 240ms cubic-bezier(0.2, 0, 0, 1),
+                box-shadow 240ms cubic-bezier(0.2, 0, 0, 1);
+  }
+  .input:focus-within {
+    border-color: var(--pink-soft);
+    box-shadow:
+      0 0 0 4px rgba(208, 58, 138, 0.06),
+      0 12px 40px -16px rgba(208, 58, 138, 0.25);
+  }
+  .input input {
+    background: transparent;
+    border: 0;
+    outline: none;
+    width: 100%;
+    padding: 18px 0;
+    font-family: 'Geist', sans-serif;
+    font-size: 15px;
+    color: var(--ink);
+  }
+  .input input::placeholder {
+    color: var(--ink-faint);
+  }
+  .send {
+    background: var(--ink);
+    color: white;
+    border: 0;
+    cursor: pointer;
+    width: 44px; height: 44px;
+    border-radius: 50%;
+    display: flex; align-items: center; justify-content: center;
+    transition: background 240ms cubic-bezier(0.2, 0, 0, 1),
+                transform 120ms ease;
+  }
+  .send:hover {
+    background: var(--magenta);
+  }
+  .send:active { transform: scale(0.96); }
+  .send svg { width: 16px; height: 16px; }
+
+  /* ─── FOOTER HINT ───────────────────────────────────────────── */
+  .foot {
+    padding: 32px 48px 40px;
+    text-align: center;
+    font-family: 'Geist Mono', monospace;
+    font-size: 10.5px;
+    color: var(--ink-faint);
+    letter-spacing: 0.16em;
+    text-transform: uppercase;
+  }
+  .foot kbd {
+    font-family: 'Geist Mono', monospace;
+    background: var(--rule-soft);
+    border: 1px solid var(--rule);
+    border-radius: 4px;
+    padding: 1px 5px;
+    font-size: 10px;
+    color: var(--ink-soft);
+    text-transform: none;
+    letter-spacing: 0;
+  }
+  .foot .dot {
+    margin: 0 14px;
+    color: var(--rule);
+  }
+
+  /* ─── PALETTE FOOTNOTE ──────────────────────────────────────── */
+  .notes {
+    padding: 64px 48px 80px;
+    background: var(--bg);
+    border-top: 1px solid var(--rule);
+    margin-top: 56px;
+  }
+  .notes-wrap { max-width: 720px; margin: 0 auto; }
+  .notes h2 {
+    font-family: 'Instrument Serif', serif;
+    font-style: italic;
+    font-size: 28px;
+    font-weight: 400;
+    color: var(--ink);
+    letter-spacing: -0.015em;
+    margin-bottom: 24px;
+  }
+  .notes p {
+    font-size: 14.5px;
+    line-height: 1.65;
+    color: var(--ink-soft);
+    margin-bottom: 14px;
+    max-width: 60ch;
+  }
+  .notes p strong { color: var(--ink); font-weight: 500; }
+  .notes p em {
+    font-family: 'Instrument Serif', serif;
+    font-style: italic;
+    color: var(--ink);
+    font-weight: 400;
+  }
+
+  .palette {
+    display: flex;
+    gap: 4px;
+    margin: 24px 0 32px;
+    border-radius: 12px;
+    overflow: hidden;
+    border: 1px solid var(--rule);
+  }
+  .palette .chip {
+    flex: 1;
+    height: 80px;
+    padding: 14px;
+    display: flex;
+    align-items: flex-end;
+    font-family: 'Geist Mono', monospace;
+    font-size: 10px;
+    letter-spacing: 0.02em;
+  }
+  .palette .chip.dark { color: white; }
+  .palette .chip.light { color: var(--ink); }
+
+  .principles {
+    margin-top: 24px;
+    border-top: 1px solid var(--rule);
+    padding-top: 24px;
+  }
+  .principle {
+    display: grid;
+    grid-template-columns: 24px 1fr;
+    gap: 16px;
+    align-items: start;
+    margin-bottom: 14px;
+  }
+  .principle .num {
+    font-family: 'Instrument Serif', serif;
+    font-style: italic;
+    color: var(--magenta);
+    font-size: 18px;
+    line-height: 1.2;
+  }
+  .principle p {
+    margin-bottom: 0;
+    line-height: 1.6;
+  }
+
+  @media (prefers-reduced-motion: reduce) {
+    .orb-svg, .orb-wrap { animation: none !important; }
+  }
+</style>
+</head>
+<body>
+
+  <!-- ─── HEADER ─── -->
+  <header class="header">
+    <div class="wordmark">spren</div>
+    <div class="avatar">R</div>
+  </header>
+
+  <!-- ─── STAGE ─── -->
+  <main class="stage">
+
+    <!-- ORB -->
+    <div class="orb-wrap">
+      <svg class="orb-svg" viewBox="0 0 320 380" xmlns="http://www.w3.org/2000/svg">
+        <defs>
+          <!-- Radial gradient: peach top → pink middle → magenta lower → fade out -->
+          <radialGradient id="spren-gradient" cx="50%" cy="22%" r="68%" fx="48%" fy="20%">
+            <stop offset="0%"   stop-color="#FFD0AC" stop-opacity="1"/>
+            <stop offset="18%"  stop-color="#FFB088" stop-opacity="1"/>
+            <stop offset="38%"  stop-color="#FF8FA8" stop-opacity="0.96"/>
+            <stop offset="58%"  stop-color="#E85AA0" stop-opacity="0.92"/>
+            <stop offset="78%"  stop-color="#C92E7E" stop-opacity="0.85"/>
+            <stop offset="92%"  stop-color="#C92E7E" stop-opacity="0.35"/>
+            <stop offset="100%" stop-color="#C92E7E" stop-opacity="0"/>
+          </radialGradient>
+
+          <!-- Grain texture -->
+          <filter id="grain" x="-20%" y="-20%" width="140%" height="140%">
+            <feTurbulence type="fractalNoise" baseFrequency="0.9" numOctaves="2" seed="3" stitchTiles="stitch"/>
+            <feColorMatrix values="0 0 0 0 0
+                                   0 0 0 0 0
+                                   0 0 0 0 0
+                                   0 0 0 0.42 0"/>
+            <feComposite in2="SourceGraphic" operator="in" result="noise"/>
+            <feBlend in="SourceGraphic" in2="noise" mode="multiply"/>
+          </filter>
+
+          <!-- Soft outer feather for the shape edges -->
+          <filter id="feather" x="-15%" y="-15%" width="130%" height="130%">
+            <feGaussianBlur stdDeviation="3"/>
+          </filter>
+
+          <!-- The asymmetric egg shape — wider at bottom, slightly tapered top -->
+          <clipPath id="spren-shape">
+            <path d="
+              M 160 8
+              C 235 8, 296 70, 296 168
+              C 296 226, 282 286, 250 322
+              C 222 354, 192 372, 160 372
+              C 128 372, 98 354, 70 322
+              C 38 286, 24 226, 24 168
+              C 24 70, 85 8, 160 8 Z
+            "/>
+          </clipPath>
+        </defs>
+
+        <!-- Render: clip a grainy gradient-filled rect to the egg shape -->
+        <g clip-path="url(#spren-shape)" filter="url(#feather)">
+          <rect width="320" height="380" fill="url(#spren-gradient)" filter="url(#grain)"/>
+        </g>
+
+        <!-- Bottom outer haze (soft pink ground glow) -->
+        <ellipse cx="160" cy="372" rx="120" ry="20" fill="#E85AA0" opacity="0.14" filter="url(#feather)"/>
+      </svg>
+    </div>
+
+    <!-- HEADLINE -->
+    <div class="headline">
+      <h1>Welcome back, <span class="you">Reza</span>.</h1>
+      <div class="sub">I'm here. <em>Tell me what you're thinking about</em>, or pick up where we left off last night.</div>
+    </div>
+
+    <!-- INPUT -->
+    <div class="input">
+      <input type="text" placeholder="What's on your mind?" autocomplete="off">
+      <button class="send" aria-label="Send">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+          <path d="M5 12 L19 12 M13 6 L19 12 L13 18"/>
+        </svg>
+      </button>
+    </div>
+  </main>
+
+  <!-- ─── FOOT ─── -->
+  <footer class="foot">
+    <kbd>⌘</kbd> <kbd>K</kbd>
+    <span class="dot">·</span>
+    workflows
+    <span class="dot">·</span>
+    runs
+    <span class="dot">·</span>
+    memory
+    <span class="dot">·</span>
+    settings
+  </footer>
+
+  <!-- ─── NOTES ─── -->
+  <section class="notes">
+    <div class="notes-wrap">
+      <h2>Design system</h2>
+
+      <p><strong>Palette.</strong> Pure warm-white ground. Spren is the only color in the room — peach at the top, soft pink through the middle, magenta toward the base, fading out at the edges. No second accent color anywhere else on the surface. Text is warm near-black; small text is warm gray. The send button is the same warm near-black, becoming magenta on hover.</p>
+
+      <div class="palette">
+        <div class="chip light" style="background:#FCFAF6;">#FCFAF6 ground</div>
+        <div class="chip light" style="background:#FFD0AC;">#FFD0AC peach</div>
+        <div class="chip light" style="background:#FF8FA8;">#FF8FA8 pink</div>
+        <div class="chip dark"  style="background:#E85AA0;">#E85AA0 magenta</div>
+        <div class="chip dark"  style="background:#C92E7E;">#C92E7E deep</div>
+        <div class="chip dark"  style="background:#1A1410;">#1A1410 ink</div>
+      </div>
+
+      <p><strong>Typography.</strong> Geist for everything functional. <em>Instrument Serif Italic</em> only when something is personal — your name, Spren's voice, the wordmark, section titles. Two voices: the clean technological frame and the warm italic presence inside it. Geist Mono only for the smallest system text at the bottom (the command-bar hint).</p>
+
+      <p><strong>The orb.</strong> SVG path clipped to an asymmetric egg (wider at bottom, slightly tapered up). Filled with a radial gradient: peach to pink to magenta, fading transparent at the bottom edge. A turbulence filter overlays grain so the surface is alive, not plastic. Animation is two slow loops — a 12-second vertical drift and a 14-second non-uniform scale + 0.4° rotation — composed so the orb never lands in the same position twice within a normal viewing window. No hard edges anywhere.</p>
+
+      <p><strong>Layout.</strong> Spren occupies the entire stage. Header is two small marks — the wordmark in italic serif, your avatar in a soft coral-to-magenta gradient. Below the orb: a single welcoming sentence (your name in italic, in magenta) and one subline. Then a single input field. Then a thin command-bar hint at the very bottom. No nav rail. No panels. Nothing competes with the orb.</p>
+
+      <p><strong>Motion.</strong> Three layers, all slow. The orb floats up and down 8px over 12s. The orb path scales and rotates microscopically over 14s. Hovering the send button colors it magenta over 240ms. Focusing the input draws a soft magenta halo around the field. Everything respects <code style="font-family:'Geist Mono',monospace;background:var(--rule-soft);padding:1px 5px;border-radius:3px;font-size:12px;">prefers-reduced-motion</code>.</p>
+
+      <div class="principles">
+        <div class="principle">
+          <span class="num">i.</span>
+          <p>Spren is the interface. Workflows, runs, memory, and settings are surfaces Spren takes you to — reached via <kbd style="font-family:'Geist Mono',monospace;background:var(--rule-soft);border:1px solid var(--rule);border-radius:3px;padding:1px 5px;font-size:11px;">⌘K</kbd> or by asking. No persistent navigation.</p>
+        </div>
+        <div class="principle">
+          <span class="num">ii.</span>
+          <p>White is the room. The orb is the warmth in it. Adding any other color outside the orb breaks the meditation.</p>
+        </div>
+        <div class="principle">
+          <span class="num">iii.</span>
+          <p>Grain is non-negotiable. Without it the orb looks plastic. With it, the orb feels alive.</p>
+        </div>
+        <div class="principle">
+          <span class="num">iv.</span>
+          <p>Italic serif is reserved. It carries names, voice, and presence. Never a button label, never UI chrome.</p>
+        </div>
+      </div>
+
+      <p style="margin-top:24px; color: var(--ink-faint); font-size:13px;">If this lands, I lock the design system and dispatch the Researcher with this palette + typography + layout philosophy. If anything is off — orb scale, shape proportions, gradient stops, font weights, copy tone — point at the specific thing.</p>
+    </div>
+  </section>
+
+</body>
+</html>

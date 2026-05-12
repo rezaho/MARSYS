@@ -1,0 +1,402 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <script src="https://cdn.tailwindcss.com"></script>
+  <title>Morphing 3D Liquid Gas</title>
+  <style>
+    body {
+      background-color: #ffffff;
+      margin: 0;
+      overflow: hidden;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      height: 100vh;
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+    }
+
+    .blob-container {
+      position: relative;
+      width: 600px;
+      height: 600px;
+    }
+
+    .blob-layer {
+      position: absolute;
+      inset: 0;
+      opacity: 0;
+      pointer-events: none;
+      transform: scale(0.9);
+      transition: opacity 0.7s cubic-bezier(0.4, 0, 0.2, 1), transform 0.7s cubic-bezier(0.4, 0, 0.2, 1);
+    }
+
+    .blob-layer.active {
+      opacity: 1;
+      transform: scale(1);
+    }
+
+    .svg-blob {
+      width: 100%;
+      height: 100%;
+      /* Safari-safe origin for the base SVG */
+      transform-origin: 50% 50%;
+      overflow: visible; 
+    }
+
+    /* --- IDLE STATE --- */
+    #layer-idle .svg-blob {
+      animation: float-idle 8s ease-in-out infinite;
+    }
+    @keyframes float-idle {
+      0%, 100% { transform: scale(1) translate(0px, 0px) rotate(0deg); }
+      33% { transform: scale(1.02) translate(8px, -6px) rotate(2deg); }
+      66% { transform: scale(0.98) translate(-6px, 8px) rotate(-1.5deg); }
+    }
+
+    /* --- SPEAKING STATE --- */
+    #layer-speaking.active .svg-blob {
+      animation: speak-amplitude 1.8s cubic-bezier(0.34, 1.56, 0.64, 1) infinite, float-idle 8s ease-in-out infinite;
+    }
+    @keyframes speak-amplitude {
+      0% { transform: scale(1); }
+      12% { transform: scale(1.15); }      
+      25% { transform: scale(0.96); }      
+      40% { transform: scale(1.22); }      
+      55%, 65% { transform: scale(1); }    
+      75% { transform: scale(1.12); }      
+      85% { transform: scale(0.98); }      
+      95%, 100% { transform: scale(1); }   
+    }
+
+    /* --- THINKING STATE --- */
+    #layer-thinking.active .svg-blob {
+      animation: think-pulse 2s ease-in-out infinite;
+    }
+    @keyframes think-pulse {
+      0%, 100% { transform: scale(0.92); }
+      50% { transform: scale(0.98); }
+    }
+
+    /* --- TYPING STATE (THE PRO CINEMATIC ENGINE) --- */
+    #layer-typing.active .svg-blob {
+      animation: float-idle 8s ease-in-out infinite;
+    }
+
+    /* Hardware accelerated HTML Div wrapper drives the master rotations safely */
+    .type-vortex-wrapper {
+      width: 100%;
+      height: 100%;
+      transform-origin: 50% 50%; 
+      animation: type-vortex-spin 12s infinite;
+    }
+
+    @keyframes type-vortex-spin {
+      0%, 5%    { transform: rotate(0deg); }
+      /* The initial dive swoop finishes exactly as the dots align horizontally */
+      20%, 75%  { transform: rotate(-360deg); animation-timing-function: cubic-bezier(0.8, 0, 0.2, 1); }
+      /* The final starry vortex collision merge */
+      85%, 100% { transform: rotate(-1080deg); }
+    }
+
+    /* SVG Group tags handle the independent dot movements flawlessly */
+    .type-dot {
+      transform-origin: 250px 250px;
+    }
+
+    .type-dot-1 { animation: dot1-anim 12s infinite; }
+    .type-dot-2 { animation: dot2-anim 12s infinite; }
+    .type-dot-3 { animation: dot3-anim 12s infinite; }
+
+    /* Dot 1: Swoops left, holds, executes two cascading wave bounces, then merges.
+       This acts as the "Mother" orb that absorbs the others. */
+    @keyframes dot1-anim {
+      0%, 5%   { transform: translate(0px, 0px) scale(1); animation-timing-function: cubic-bezier(0.5, 0, 0.2, 1); }
+      20%      { transform: translate(-120px, 0px) scale(0.25); }
+      35%      { transform: translate(-120px, -12px) scale(0.25); } /* Wave bounce 1 */
+      45%      { transform: translate(-120px, 0px) scale(0.25); }
+      55%      { transform: translate(-120px, -12px) scale(0.25); } /* Wave bounce 2 */
+      65%, 75% { transform: translate(-120px, 0px) scale(0.25); animation-timing-function: cubic-bezier(0.8, 0, 0.2, 1); }
+      85%, 100%{ transform: translate(0px, 0px) scale(1); }
+    }
+
+    /* Dot 2: Starts invisible. Materializes inside Dot 1, splits to Center, 
+       wave bounces, then fades and shrinks to nothing as it hits the center. */
+    @keyframes dot2-anim {
+      0%, 19%  { transform: translate(-120px, 0px) scale(0.01); opacity: 0; }
+      20%      { transform: translate(-120px, 0px) scale(0.25); opacity: 1; animation-timing-function: cubic-bezier(0.5, 0, 0.2, 1); }
+      30%      { transform: translate(0px, 0px) scale(0.25); opacity: 1; }
+      40%      { transform: translate(0px, -12px) scale(0.25); opacity: 1; } /* Wave bounce 1 */
+      50%      { transform: translate(0px, 0px) scale(0.25); opacity: 1; }
+      60%      { transform: translate(0px, -12px) scale(0.25); opacity: 1; } /* Wave bounce 2 */
+      70%, 75% { transform: translate(0px, 0px) scale(0.25); opacity: 1; animation-timing-function: cubic-bezier(0.8, 0, 0.2, 1); }
+      85%      { transform: translate(0px, 0px) scale(0.01); opacity: 0; }
+      86%, 100%{ transform: translate(0px, 0px) scale(0.01); opacity: 0; }
+    }
+
+    /* Dot 3: Starts invisible. Materializes inside Dot 2, splits to Right, 
+       wave bounces, then fades and shrinks to nothing as it hits the center. */
+    @keyframes dot3-anim {
+      0%, 29%  { transform: translate(0px, 0px) scale(0.01); opacity: 0; }
+      30%      { transform: translate(0px, 0px) scale(0.25); opacity: 1; animation-timing-function: cubic-bezier(0.5, 0, 0.2, 1); }
+      40%      { transform: translate(120px, 0px) scale(0.25); opacity: 1; }
+      45%      { transform: translate(120px, -12px) scale(0.25); opacity: 1; } /* Wave bounce 1 */
+      55%      { transform: translate(120px, 0px) scale(0.25); opacity: 1; }
+      65%      { transform: translate(120px, -12px) scale(0.25); opacity: 1; } /* Wave bounce 2 */
+      75%      { transform: translate(120px, 0px) scale(0.25); opacity: 1; animation-timing-function: cubic-bezier(0.8, 0, 0.2, 1); }
+      85%      { transform: translate(0px, 0px) scale(0.01); opacity: 0; }
+      86%, 100%{ transform: translate(0px, 0px) scale(0.01); opacity: 0; }
+    }
+
+  </style>
+</head>
+<body>
+
+  <div class="blob-container">
+
+    <!-- ==========================================
+         STATE 1: IDLE
+         ========================================== -->
+    <div id="layer-idle" class="blob-layer active">
+      <svg class="svg-blob" viewBox="-50 -50 600 600" xmlns="http://www.w3.org/2000/svg">
+        <defs>
+          <path id="idle-base">
+            <animate attributeName="d" dur="8s" repeatCount="indefinite" calcMode="spline" keySplines="0.45 0 0.25 1; 0.45 0 0.25 1; 0.45 0 0.25 1; 0.45 0 0.25 1" keyTimes="0; 0.25; 0.5; 0.75; 1"
+              values="M 250, 80 C 340, 70 420, 140 420, 250 C 420, 360 360, 420 250, 420 C 140, 420 80, 340 80, 250 C 80, 160 160, 90 250, 80 Z; M 250, 60 C 300, 60 360, 150 400, 300 C 420, 380 340, 440 250, 440 C 150, 440 80, 360 100, 260 C 120, 160 200, 60 250, 60 Z; M 200, 50 C 280, 30 400, 160 420, 280 C 430, 380 320, 440 220, 430 C 120, 420 60, 340 80, 220 C 100, 120 120, 70 200, 50 Z; M 280, 90 C 380, 80 440, 180 410, 280 C 380, 380 280, 420 180, 400 C 80, 380 60, 280 110, 180 C 140, 100 200, 100 280, 90 Z; M 250, 80 C 340, 70 420, 140 420, 250 C 420, 360 360, 420 250, 420 C 140, 420 80, 340 80, 250 C 80, 160 160, 90 250, 80 Z" />
+          </path>
+          <radialGradient id="idle-grad" cx="50%" cy="50%" r="75%">
+            <animate attributeName="fx" calcMode="spline" keySplines="0.4 0 0.6 1; 0.4 0 0.6 1; 0.4 0 0.6 1; 0.4 0 0.6 1" values="35%; 45%; 30%; 40%; 35%" dur="8s" repeatCount="indefinite" />
+            <animate attributeName="fy" calcMode="spline" keySplines="0.4 0 0.6 1; 0.4 0 0.6 1; 0.4 0 0.6 1; 0.4 0 0.6 1" values="30%; 45%; 45%; 30%; 30%" dur="8s" repeatCount="indefinite" />
+            <stop offset="0%" stop-color="#ffceaa" /><stop offset="42%" stop-color="#ff876c" /><stop offset="82%" stop-color="#e82182" /><stop offset="100%" stop-color="#c9146c" />
+          </radialGradient>
+          
+          <filter id="idle-deep-blur" x="-50%" y="-50%" width="200%" height="200%"><feGaussianBlur stdDeviation="55" /></filter>
+          <filter id="idle-mid-blur" x="-50%" y="-50%" width="200%" height="200%"><feGaussianBlur stdDeviation="25" /></filter>
+          <filter id="idle-core-blur" x="-50%" y="-50%" width="200%" height="200%"><feGaussianBlur stdDeviation="3" /></filter>
+          
+          <radialGradient id="idle-mask" cx="250" cy="250" r="280" gradientUnits="userSpaceOnUse">
+            <animate attributeName="cx" calcMode="spline" keySplines="0.4 0 0.6 1; 0.4 0 0.6 1; 0.4 0 0.6 1; 0.4 0 0.6 1" values="400; 250; 100; 250; 400" dur="8s" repeatCount="indefinite" />
+            <animate attributeName="cy" calcMode="spline" keySplines="0.4 0 0.6 1; 0.4 0 0.6 1; 0.4 0 0.6 1; 0.4 0 0.6 1" values="250; 400; 250; 100; 250" dur="8s" repeatCount="indefinite" />
+            <stop offset="0%" stop-color="white" /><stop offset="35%" stop-color="white" /><stop offset="100%" stop-color="black" />
+          </radialGradient>
+          <mask id="idle-edge-mask"><rect x="-100" y="-100" width="700" height="700" fill="url(#idle-mask)" /></mask>
+        </defs>
+        <use href="#idle-base" fill="url(#idle-grad)" filter="url(#idle-deep-blur)" opacity="0.65"></use>
+        <use href="#idle-base" fill="url(#idle-grad)" filter="url(#idle-mid-blur)" opacity="0.85"></use>
+        <use href="#idle-base" fill="url(#idle-grad)" filter="url(#idle-core-blur)" mask="url(#idle-edge-mask)" />
+      </svg>
+    </div>
+
+    <!-- ==========================================
+         STATE 2: SPEAKING 
+         ========================================== -->
+    <div id="layer-speaking" class="blob-layer">
+      <svg class="svg-blob" viewBox="-50 -50 600 600" xmlns="http://www.w3.org/2000/svg">
+        <defs>
+          <path id="speak-base">
+            <animate attributeName="d" dur="8s" repeatCount="indefinite" calcMode="spline" keySplines="0.45 0 0.25 1; 0.45 0 0.25 1; 0.45 0 0.25 1; 0.45 0 0.25 1" keyTimes="0; 0.25; 0.5; 0.75; 1"
+              values="M 250, 80 C 340, 70 420, 140 420, 250 C 420, 360 360, 420 250, 420 C 140, 420 80, 340 80, 250 C 80, 160 160, 90 250, 80 Z; M 250, 60 C 300, 60 360, 150 400, 300 C 420, 380 340, 440 250, 440 C 150, 440 80, 360 100, 260 C 120, 160 200, 60 250, 60 Z; M 200, 50 C 280, 30 400, 160 420, 280 C 430, 380 320, 440 220, 430 C 120, 420 60, 340 80, 220 C 100, 120 120, 70 200, 50 Z; M 280, 90 C 380, 80 440, 180 410, 280 C 380, 380 280, 420 180, 400 C 80, 380 60, 280 110, 180 C 140, 100 200, 100 280, 90 Z; M 250, 80 C 340, 70 420, 140 420, 250 C 420, 360 360, 420 250, 420 C 140, 420 80, 340 80, 250 C 80, 160 160, 90 250, 80 Z" />
+          </path>
+          <radialGradient id="speak-grad" cx="50%" cy="50%" r="75%">
+            <animate attributeName="fx" calcMode="spline" keySplines="0.4 0 0.6 1; 0.4 0 0.6 1; 0.4 0 0.6 1; 0.4 0 0.6 1" values="35%; 45%; 30%; 40%; 35%" dur="8s" repeatCount="indefinite" />
+            <animate attributeName="fy" calcMode="spline" keySplines="0.4 0 0.6 1; 0.4 0 0.6 1; 0.4 0 0.6 1; 0.4 0 0.6 1" values="30%; 45%; 45%; 30%; 30%" dur="8s" repeatCount="indefinite" />
+            <stop offset="0%" stop-color="#ffe1cc" /><stop offset="50%" stop-color="#ff876c" /><stop offset="85%" stop-color="#ff3399" /><stop offset="100%" stop-color="#c9146c" />
+          </radialGradient>
+          
+          <filter id="speak-deep-blur" x="-50%" y="-50%" width="200%" height="200%"><feGaussianBlur stdDeviation="60" /></filter>
+          <filter id="speak-mid-blur" x="-50%" y="-50%" width="200%" height="200%">
+            <feTurbulence type="fractalNoise" baseFrequency="0.01" numOctaves="1" result="noise" />
+            <feDisplacementMap in="SourceGraphic" in2="noise" scale="0" xChannelSelector="R" yChannelSelector="G" result="displaced">
+              <animate attributeName="scale" dur="1.8s" repeatCount="indefinite" calcMode="spline"
+                keySplines="0.4 0 0.2 1; 0.4 0 0.2 1; 0.4 0 0.2 1; 0.4 0 0.2 1; 0.4 0 0.2 1; 0.4 0 0.2 1; 0.4 0 0.2 1; 0.4 0 0.2 1; 0.4 0 0.2 1" 
+                keyTimes="0; 0.12; 0.25; 0.4; 0.55; 0.65; 0.75; 0.85; 0.95; 1"
+                values="0; 90; 45; 120; 0; 0; 80; 35; 0; 0" />
+            </feDisplacementMap>
+            <feGaussianBlur in="displaced" stdDeviation="30" />
+          </filter>
+          <filter id="speak-core-blur" x="-50%" y="-50%" width="200%" height="200%">
+            <feTurbulence type="fractalNoise" baseFrequency="0.01" numOctaves="1" result="noise">
+               <animate attributeName="baseFrequency" values="0.01; 0.015; 0.01" dur="1.8s" repeatCount="indefinite" />
+            </feTurbulence>
+            <feDisplacementMap in="SourceGraphic" in2="noise" scale="0" xChannelSelector="R" yChannelSelector="G" result="displaced">
+              <animate attributeName="scale" dur="1.8s" repeatCount="indefinite" calcMode="spline"
+                keySplines="0.4 0 0.2 1; 0.4 0 0.2 1; 0.4 0 0.2 1; 0.4 0 0.2 1; 0.4 0 0.2 1; 0.4 0 0.2 1; 0.4 0 0.2 1; 0.4 0 0.2 1; 0.4 0 0.2 1" 
+                keyTimes="0; 0.12; 0.25; 0.4; 0.55; 0.65; 0.75; 0.85; 0.95; 1"
+                values="0; 65; 25; 85; 0; 0; 55; 20; 0; 0" />
+            </feDisplacementMap>
+            <feGaussianBlur in="displaced" stdDeviation="3" />
+          </filter>
+          <radialGradient id="speak-mask" cx="250" cy="250" r="280" gradientUnits="userSpaceOnUse">
+            <animate attributeName="cx" calcMode="spline" keySplines="0.4 0 0.6 1; 0.4 0 0.6 1; 0.4 0 0.6 1; 0.4 0 0.6 1" values="400; 250; 100; 250; 400" dur="8s" repeatCount="indefinite" />
+            <animate attributeName="cy" calcMode="spline" keySplines="0.4 0 0.6 1; 0.4 0 0.6 1; 0.4 0 0.6 1; 0.4 0 0.6 1" values="250; 400; 250; 100; 250" dur="8s" repeatCount="indefinite" />
+            <stop offset="0%" stop-color="white" /><stop offset="35%" stop-color="white" /><stop offset="100%" stop-color="black" />
+          </radialGradient>
+          <mask id="speak-edge-mask"><rect x="-100" y="-100" width="700" height="700" fill="url(#speak-mask)" /></mask>
+        </defs>
+        <use href="#speak-base" fill="url(#speak-grad)" filter="url(#speak-deep-blur)" opacity="0.75"></use>
+        <use href="#speak-base" fill="url(#speak-grad)" filter="url(#speak-mid-blur)" opacity="0.85"></use>
+        <use href="#speak-base" fill="url(#speak-grad)" filter="url(#speak-core-blur)" mask="url(#speak-edge-mask)" />
+      </svg>
+    </div>
+
+    <!-- ==========================================
+         STATE 3: THINKING
+         ========================================== -->
+    <div id="layer-thinking" class="blob-layer">
+      <svg class="svg-blob" viewBox="-50 -50 600 600" xmlns="http://www.w3.org/2000/svg">
+        <defs>
+          <path id="think-base">
+            <animate attributeName="d" dur="3s" repeatCount="indefinite" calcMode="spline" keySplines="0.45 0 0.25 1; 0.45 0 0.25 1" keyTimes="0; 0.5; 1"
+              values="
+              M 250,100 C 330,100 390,160 400,250 C 410,340 340,400 250,400 C 160,400 90,340 100,250 C 110,160 170,100 250,100 Z;
+              M 250,120 C 310,110 380,180 380,250 C 380,320 320,380 250,380 C 180,380 120,320 120,250 C 120,180 190,130 250,120 Z;
+              M 250,100 C 330,100 390,160 400,250 C 410,340 340,400 250,400 C 160,400 90,340 100,250 C 110,160 170,100 250,100 Z" />
+          </path>
+          <radialGradient id="think-grad" cx="50%" cy="50%" r="75%">
+            <animate attributeName="fx" calcMode="spline" keySplines="0.4 0 0.6 1; 0.4 0 0.6 1; 0.4 0 0.6 1; 0.4 0 0.6 1" values="30%; 50%; 70%; 50%; 30%" dur="1.5s" repeatCount="indefinite" />
+            <animate attributeName="fy" calcMode="spline" keySplines="0.4 0 0.6 1; 0.4 0 0.6 1; 0.4 0 0.6 1; 0.4 0 0.6 1" values="50%; 30%; 50%; 70%; 50%" dur="1.5s" repeatCount="indefinite" />
+            <stop offset="0%" stop-color="#ffceaa" /><stop offset="35%" stop-color="#ff876c" /><stop offset="75%" stop-color="#e82182" /><stop offset="100%" stop-color="#c9146c" />
+          </radialGradient>
+          
+          <filter id="think-deep-blur" x="-50%" y="-50%" width="200%" height="200%"><feGaussianBlur stdDeviation="35" /></filter>
+          <filter id="think-mid-blur" x="-50%" y="-50%" width="200%" height="200%"><feGaussianBlur stdDeviation="15" /></filter>
+          <filter id="think-core-blur" x="-50%" y="-50%" width="200%" height="200%"><feGaussianBlur stdDeviation="3" /></filter>
+          
+          <radialGradient id="think-mask" cx="250" cy="250" r="280" gradientUnits="userSpaceOnUse">
+            <animate attributeName="cx" calcMode="spline" keySplines="0.4 0 0.6 1; 0.4 0 0.6 1; 0.4 0 0.6 1; 0.4 0 0.6 1" values="100; 250; 400; 250; 100" dur="1.5s" repeatCount="indefinite" />
+            <animate attributeName="cy" calcMode="spline" keySplines="0.4 0 0.6 1; 0.4 0 0.6 1; 0.4 0 0.6 1; 0.4 0 0.6 1" values="250; 100; 250; 400; 250" dur="1.5s" repeatCount="indefinite" />
+            <stop offset="0%" stop-color="white" /><stop offset="35%" stop-color="white" /><stop offset="100%" stop-color="black" />
+          </radialGradient>
+          <mask id="think-edge-mask"><rect x="-100" y="-100" width="700" height="700" fill="url(#think-mask)" /></mask>
+        </defs>
+        
+        <g>
+           <animateTransform attributeName="transform" type="translate" values="-5,0; 5,0; -5,0" dur="1s" repeatCount="indefinite" />
+           <use href="#think-base" fill="url(#think-grad)" filter="url(#think-deep-blur)" opacity="0.65" />
+        </g>
+        <g>
+           <animateTransform attributeName="transform" type="translate" values="0,-3; 0,3; 0,-3" dur="0.8s" repeatCount="indefinite" />
+           <use href="#think-base" fill="url(#think-grad)" filter="url(#think-mid-blur)" opacity="0.85" />
+        </g>
+        <use href="#think-base" fill="url(#think-grad)" filter="url(#think-core-blur)" mask="url(#think-edge-mask)" />
+      </svg>
+    </div>
+
+    <!-- ==========================================
+         STATE 4: TYPING (THE PRO CINEMATIC SPLIT)
+         ========================================== -->
+    <div id="layer-typing" class="blob-layer">
+      <div class="type-vortex-wrapper">
+        <svg class="svg-blob" viewBox="-50 -50 600 600" xmlns="http://www.w3.org/2000/svg">
+          <defs>
+            <path id="type-path-1">
+              <animate attributeName="d" dur="6s" repeatCount="indefinite" calcMode="spline" keySplines="0.45 0 0.25 1; 0.45 0 0.25 1; 0.45 0 0.25 1; 0.45 0 0.25 1" keyTimes="0; 0.25; 0.5; 0.75; 1"
+                values="M 250, 80 C 340, 70 420, 140 420, 250 C 420, 360 360, 420 250, 420 C 140, 420 80, 340 80, 250 C 80, 160 160, 90 250, 80 Z; M 250, 60 C 300, 60 360, 150 400, 300 C 420, 380 340, 440 250, 440 C 150, 440 80, 360 100, 260 C 120, 160 200, 60 250, 60 Z; M 200, 50 C 280, 30 400, 160 420, 280 C 430, 380 320, 440 220, 430 C 120, 420 60, 340 80, 220 C 100, 120 120, 70 200, 50 Z; M 280, 90 C 380, 80 440, 180 410, 280 C 380, 380 280, 420 180, 400 C 80, 380 60, 280 110, 180 C 140, 100 200, 100 280, 90 Z; M 250, 80 C 340, 70 420, 140 420, 250 C 420, 360 360, 420 250, 420 C 140, 420 80, 340 80, 250 C 80, 160 160, 90 250, 80 Z" />
+            </path>
+            <path id="type-path-2">
+              <animate attributeName="d" dur="3s" repeatCount="indefinite" calcMode="spline" keySplines="0.45 0 0.25 1; 0.45 0 0.25 1; 0.45 0 0.25 1; 0.45 0 0.25 1" keyTimes="0; 0.25; 0.5; 0.75; 1"
+                values="M 250, 80 C 340, 70 420, 140 420, 250 C 420, 360 360, 420 250, 420 C 140, 420 80, 340 80, 250 C 80, 160 160, 90 250, 80 Z; M 200, 50 C 280, 30 400, 160 420, 280 C 430, 380 320, 440 220, 430 C 120, 420 60, 340 80, 220 C 100, 120 120, 70 200, 50 Z; M 280, 90 C 380, 80 440, 180 410, 280 C 380, 380 280, 420 180, 400 C 80, 380 60, 280 110, 180 C 140, 100 200, 100 280, 90 Z; M 250, 60 C 300, 60 360, 150 400, 300 C 420, 380 340, 440 250, 440 C 150, 440 80, 360 100, 260 C 120, 160 200, 60 250, 60 Z; M 250, 80 C 340, 70 420, 140 420, 250 C 420, 360 360, 420 250, 420 C 140, 420 80, 340 80, 250 C 80, 160 160, 90 250, 80 Z" />
+            </path>
+            <path id="type-path-3">
+              <animate attributeName="d" dur="2s" repeatCount="indefinite" calcMode="spline" keySplines="0.45 0 0.25 1; 0.45 0 0.25 1; 0.45 0 0.25 1; 0.45 0 0.25 1" keyTimes="0; 0.25; 0.5; 0.75; 1"
+                values="M 250, 80 C 340, 70 420, 140 420, 250 C 420, 360 360, 420 250, 420 C 140, 420 80, 340 80, 250 C 80, 160 160, 90 250, 80 Z; M 280, 90 C 380, 80 440, 180 410, 280 C 380, 380 280, 420 180, 400 C 80, 380 60, 280 110, 180 C 140, 100 200, 100 280, 90 Z; M 250, 60 C 300, 60 360, 150 400, 300 C 420, 380 340, 440 250, 440 C 150, 440 80, 360 100, 260 C 120, 160 200, 60 250, 60 Z; M 200, 50 C 280, 30 400, 160 420, 280 C 430, 380 320, 440 220, 430 C 120, 420 60, 340 80, 220 C 100, 120 120, 70 200, 50 Z; M 250, 80 C 340, 70 420, 140 420, 250 C 420, 360 360, 420 250, 420 C 140, 420 80, 340 80, 250 C 80, 160 160, 90 250, 80 Z" />
+            </path>
+
+            <radialGradient id="type-grad" cx="50%" cy="50%" r="90%">
+              <animate attributeName="cx" values="25%; 75%; 25%; 75%; 25%" dur="12s" repeatCount="indefinite" />
+              <animate attributeName="fy" values="40%; 60%; 40%" dur="12s" repeatCount="indefinite" />
+              <stop offset="0%" stop-color="#ffceaa" /><stop offset="42%" stop-color="#ff876c" /><stop offset="82%" stop-color="#e82182" /><stop offset="100%" stop-color="#c9146c" />
+            </radialGradient>
+            
+            <filter id="type-deep-blur" x="-100%" y="-100%" width="300%" height="300%">
+              <feGaussianBlur stdDeviation="55">
+                 <animate attributeName="stdDeviation" dur="12s" repeatCount="indefinite" calcMode="spline"
+                    keySplines="0.4 0 0.2 1; 0.4 0 0.2 1; 0.4 0 0.2 1; 0.4 0 0.2 1"
+                    keyTimes="0; 0.75; 0.80; 0.85; 1"
+                    values="55; 55; 140; 55; 55" />
+              </feGaussianBlur>
+            </filter>
+            
+            <filter id="type-mid-blur" x="-100%" y="-100%" width="300%" height="300%">
+              <feGaussianBlur stdDeviation="25" />
+            </filter>
+            
+            <filter id="type-gooey-split" x="-100%" y="-100%" width="300%" height="300%">
+              <feGaussianBlur in="SourceGraphic" stdDeviation="16" result="blur" />
+              <feColorMatrix in="blur" mode="matrix" values="1 0 0 0 0  0 1 0 0 0  0 0 1 0 0  0 0 0 25 -10" result="goo" />
+              <feComposite in="SourceGraphic" in2="goo" operator="atop" result="composite" />
+              <feGaussianBlur in="composite" stdDeviation="3" />
+            </filter>
+
+            <radialGradient id="type-mask" cx="250" cy="250" r="500" gradientUnits="userSpaceOnUse">
+               <stop offset="0%" stop-color="white" />
+               <stop offset="60%" stop-color="white" />
+               <stop offset="100%" stop-color="black" />
+            </radialGradient>
+            <mask id="type-edge-mask"><rect x="-500" y="-500" width="1500" height="1500" fill="url(#type-mask)" /></mask>
+          </defs>
+          
+          <g opacity="0.65">
+            <g class="type-dot type-dot-1"><use href="#type-path-1" fill="url(#type-grad)" filter="url(#type-deep-blur)" /></g>
+            <g class="type-dot type-dot-2"><use href="#type-path-2" fill="url(#type-grad)" filter="url(#type-deep-blur)" /></g>
+            <g class="type-dot type-dot-3"><use href="#type-path-3" fill="url(#type-grad)" filter="url(#type-deep-blur)" /></g>
+          </g>
+
+          <g opacity="0.85">
+            <g class="type-dot type-dot-1"><use href="#type-path-1" fill="url(#type-grad)" filter="url(#type-mid-blur)" /></g>
+            <g class="type-dot type-dot-2"><use href="#type-path-2" fill="url(#type-grad)" filter="url(#type-mid-blur)" /></g>
+            <g class="type-dot type-dot-3"><use href="#type-path-3" fill="url(#type-grad)" filter="url(#type-mid-blur)" /></g>
+          </g>
+
+          <g filter="url(#type-gooey-split)" mask="url(#type-edge-mask)">
+            <g class="type-dot type-dot-1"><use href="#type-path-1" fill="url(#type-grad)" /></g>
+            <g class="type-dot type-dot-2"><use href="#type-path-2" fill="url(#type-grad)" /></g>
+            <g class="type-dot type-dot-3"><use href="#type-path-3" fill="url(#type-grad)" /></g>
+          </g>
+          
+        </svg>
+      </div>
+    </div>
+
+  </div>
+
+  <!-- State Controls -->
+  <div class="fixed bottom-10 left-1/2 -translate-x-1/2 flex space-x-2 bg-white/60 backdrop-blur-lg p-2 rounded-full shadow-[0_8px_30px_rgb(0,0,0,0.12)] border border-gray-100 z-50">
+    <button data-state="idle" class="state-btn px-6 py-2 rounded-full text-sm font-semibold transition-all duration-300 bg-gray-900 text-white shadow-md">Idle</button>
+    <button data-state="typing" class="state-btn px-6 py-2 rounded-full text-sm font-semibold transition-all duration-300 bg-transparent text-gray-600 hover:bg-gray-100">Typing</button>
+    <button data-state="thinking" class="state-btn px-6 py-2 rounded-full text-sm font-semibold transition-all duration-300 bg-transparent text-gray-600 hover:bg-gray-100">Thinking</button>
+    <button data-state="speaking" class="state-btn px-6 py-2 rounded-full text-sm font-semibold transition-all duration-300 bg-transparent text-gray-600 hover:bg-gray-100">Speaking</button>
+  </div>
+
+  <script>
+    const layers = document.querySelectorAll('.blob-layer');
+    const buttons = document.querySelectorAll('.state-btn');
+
+    buttons.forEach(btn => {
+      btn.addEventListener('click', () => {
+        // Reset buttons
+        buttons.forEach(b => {
+          b.classList.remove('bg-gray-900', 'text-white', 'shadow-md');
+          b.classList.add('bg-transparent', 'text-gray-600', 'hover:bg-gray-100');
+        });
+
+        // Activate clicked button
+        btn.classList.remove('bg-transparent', 'text-gray-600', 'hover:bg-gray-100');
+        btn.classList.add('bg-gray-900', 'text-white', 'shadow-md');
+
+        // Crossfade layers: fade out all, fade in target
+        const targetState = btn.getAttribute('data-state');
+        layers.forEach(layer => {
+          if(layer.id === `layer-${targetState}`) {
+            layer.classList.add('active');
+          } else {
+            layer.classList.remove('active');
+          }
+        });
+      });
+    });
+  </script>
+
+</body>
+</html>
