@@ -4,6 +4,7 @@ import { useState, type ReactElement } from "react";
 import { InputBar } from "../components/InputBar";
 import { Spren, type SprenState } from "../components/Spren";
 import { TopBar } from "../components/TopBar";
+import { Kbd } from "../components/ui";
 import { useCapabilities } from "../providers/capabilities";
 import { useCommandStore } from "../stores/commands";
 
@@ -28,8 +29,8 @@ function HomeRoute(): ReactElement {
         </p>
       </main>
       <footer className="home-footer">
-        <kbd>⌘</kbd>
-        <kbd>K</kbd>
+        <Kbd>⌘</Kbd>
+        <Kbd>K</Kbd>
         <span className="home-footer-sep">·</span>
         <button
           type="button"
