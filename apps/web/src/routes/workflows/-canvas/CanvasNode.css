@@ -1,0 +1,97 @@
+.canvas-node {
+  width: 220px;
+  background: var(--surface);
+  border: 1px solid var(--rule);
+  border-radius: 10px;
+  padding: 10px 12px 12px;
+  font-family: var(--font-sans);
+  font-size: 13px;
+  color: var(--ink);
+  transition:
+    border-color 200ms var(--ease-out),
+    box-shadow 200ms var(--ease-out);
+}
+
+.canvas-node.is-selected {
+  border-color: var(--magenta);
+  box-shadow: 0 0 0 3px rgba(232, 33, 130, 0.12);
+}
+
+.canvas-node-body {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  position: relative;
+}
+
+.canvas-node-tag {
+  font-family: var(--font-mono);
+  font-size: 10.5px;
+  color: var(--ink-faint);
+  letter-spacing: 0.01em;
+  word-break: break-all;
+}
+
+.canvas-node-name {
+  font-weight: 600;
+  font-size: 13px;
+}
+
+.canvas-node--user {
+  background: linear-gradient(0deg, var(--rule-soft), var(--surface));
+}
+
+.canvas-node--system {
+  background: var(--rule-soft);
+}
+
+.canvas-node--tool .canvas-node-name {
+  font-family: var(--font-mono);
+}
+
+.canvas-node-marker {
+  position: absolute;
+  top: -2px;
+  right: -2px;
+  width: 16px;
+  height: 16px;
+  border-radius: 50%;
+  font-size: 10px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-weight: 600;
+}
+
+.canvas-node-marker--error {
+  background: var(--magenta-deep);
+  color: var(--surface);
+}
+
+.canvas-node-marker--warning {
+  background: var(--peach);
+  color: var(--ink);
+}
+
+.canvas-node-converted {
+  position: absolute;
+  top: -2px;
+  left: -2px;
+  width: 16px;
+  height: 16px;
+  border-radius: 50%;
+  background: var(--peach);
+  color: var(--ink);
+  font-size: 10px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-weight: 600;
+}
+
+.canvas-node-handle {
+  background: var(--ink) !important;
+  border: 2px solid var(--surface) !important;
+  width: 8px !important;
+  height: 8px !important;
+}

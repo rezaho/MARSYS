@@ -1,0 +1,173 @@
+.pattern-modal-backdrop {
+  position: fixed;
+  inset: 0;
+  background: rgba(26, 20, 16, 0.22);
+  backdrop-filter: blur(6px);
+  -webkit-backdrop-filter: blur(6px);
+  z-index: 60;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.pattern-modal {
+  width: min(520px, calc(100% - 32px));
+  max-height: 80vh;
+  background: var(--surface);
+  border: 1px solid var(--rule);
+  border-radius: 14px;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+  box-shadow: 0 24px 64px -24px rgba(232, 33, 130, 0.18),
+              0 8px 24px -12px rgba(26, 20, 16, 0.18);
+}
+
+.pattern-modal-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 16px 24px;
+  border-bottom: 1px solid var(--rule);
+}
+
+.pattern-modal-header h2 {
+  margin: 0;
+  font-family: var(--font-sans);
+  font-size: 16px;
+  font-weight: 500;
+}
+
+.pattern-modal-close {
+  background: transparent;
+  border: 0;
+  font-size: 20px;
+  color: var(--ink-soft);
+  cursor: pointer;
+}
+
+.pattern-modal-options {
+  list-style: none;
+  margin: 0;
+  padding: 12px 24px;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  overflow-y: auto;
+}
+
+.pattern-option {
+  display: grid;
+  grid-template-columns: 20px 1fr;
+  grid-template-rows: auto auto auto;
+  gap: 4px 12px;
+  padding: 10px 12px;
+  border-radius: 8px;
+  border: 1px solid var(--rule);
+  cursor: pointer;
+  transition: border-color 200ms var(--ease-out), background 200ms var(--ease-out);
+}
+
+.pattern-option:hover {
+  border-color: var(--ink-faint);
+}
+
+.pattern-option.is-selected {
+  border-color: var(--magenta);
+  background: rgba(232, 33, 130, 0.04);
+}
+
+.pattern-option input {
+  grid-column: 1;
+  grid-row: 1;
+}
+
+.pattern-option-label {
+  grid-column: 2;
+  grid-row: 1;
+  font-family: var(--font-mono);
+  font-size: 12px;
+  color: var(--ink);
+  font-weight: 600;
+}
+
+.pattern-option-desc {
+  grid-column: 2;
+  grid-row: 2;
+  font-family: var(--font-sans);
+  font-size: 13px;
+  color: var(--ink-soft);
+}
+
+.pattern-option-use {
+  grid-column: 2;
+  grid-row: 3;
+  font-family: var(--font-sans);
+  font-size: 12px;
+  color: var(--ink-faint);
+  font-style: italic;
+}
+
+.pattern-modal-controls {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 16px;
+  padding: 12px 24px 16px;
+  border-top: 1px solid var(--rule);
+}
+
+.pattern-modal-controls label {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  font-family: var(--font-sans);
+  font-size: 12px;
+  color: var(--ink-soft);
+}
+
+.pattern-modal-controls input,
+.pattern-modal-controls select {
+  background: var(--surface);
+  border: 1px solid var(--rule);
+  border-radius: 6px;
+  padding: 8px 10px;
+  font-family: var(--font-sans);
+  font-size: 13px;
+  color: var(--ink);
+}
+
+.pattern-modal-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 12px;
+  padding: 14px 24px 20px;
+  border-top: 1px solid var(--rule);
+}
+
+.pattern-modal-cancel {
+  background: transparent;
+  border: 1px solid var(--rule);
+  color: var(--ink-soft);
+  padding: 8px 14px;
+  border-radius: 6px;
+  font-family: var(--font-sans);
+  font-size: 13px;
+  cursor: pointer;
+}
+
+.pattern-modal-insert {
+  background: var(--ink);
+  color: var(--surface);
+  border: 0;
+  padding: 8px 14px;
+  border-radius: 6px;
+  font-family: var(--font-sans);
+  font-size: 13px;
+  font-weight: 500;
+  cursor: pointer;
+  transition: background 200ms var(--ease-out);
+}
+
+.pattern-modal-insert:hover {
+  background: var(--magenta);
+}

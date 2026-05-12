@@ -1,0 +1,12 @@
+.new-workflow-shell {
+  min-height: 100vh;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 16px;
+  background: var(--ground);
+  color: var(--ink-soft);
+  font-family: var(--font-mono);
+  font-size: 12px;
+}

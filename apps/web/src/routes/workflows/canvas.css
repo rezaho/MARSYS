@@ -1,0 +1,156 @@
+.canvas-shell {
+  display: grid;
+  grid-template-rows: auto auto 1fr;
+  grid-template-columns: 1fr 360px;
+  grid-template-areas:
+    "topbar topbar"
+    "toolbar toolbar"
+    "stage rail";
+  min-height: 100vh;
+  background: var(--ground);
+}
+
+.canvas-shell > header {
+  grid-area: topbar;
+}
+
+.canvas-toolbar {
+  grid-area: toolbar;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 10px 24px;
+  border-bottom: 1px solid var(--rule);
+  background: var(--surface);
+}
+
+.canvas-name-input {
+  background: transparent;
+  border: 0;
+  font-family: var(--font-sans);
+  font-size: 13px;
+  color: var(--ink);
+  outline: none;
+  padding: 4px 8px;
+  border-radius: 4px;
+  width: 280px;
+}
+
+.canvas-name-input:focus {
+  background: var(--rule-soft);
+}
+
+.canvas-toolbar-button {
+  background: var(--surface);
+  border: 1px solid var(--rule);
+  color: var(--ink);
+  padding: 6px 12px;
+  border-radius: 6px;
+  font-family: var(--font-sans);
+  font-size: 12px;
+  cursor: pointer;
+  transition: background 200ms var(--ease-out), border-color 200ms var(--ease-out);
+}
+
+.canvas-toolbar-button:hover {
+  border-color: var(--ink-faint);
+}
+
+.canvas-toolbar-button--primary {
+  background: var(--ink);
+  color: var(--surface);
+  border-color: var(--ink);
+}
+
+.canvas-toolbar-button--primary:hover {
+  background: var(--magenta);
+  border-color: var(--magenta);
+}
+
+.canvas-toolbar-button:disabled {
+  opacity: 0.4;
+  cursor: not-allowed;
+}
+
+.canvas-toolbar-toast {
+  margin-left: auto;
+  font-family: var(--font-mono);
+  font-size: 11px;
+  color: var(--magenta);
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  animation: canvas-toast-fade 2.4s var(--ease-out) forwards;
+}
+
+.canvas-toolbar-toast--error {
+  color: var(--magenta-deep);
+  text-transform: none;
+  letter-spacing: 0;
+  font-size: 12px;
+  animation: none;
+}
+
+@keyframes canvas-toast-fade {
+  0% { opacity: 0; }
+  20%, 80% { opacity: 1; }
+  100% { opacity: 0; }
+}
+
+.canvas-stage {
+  grid-area: stage;
+  position: relative;
+  background: var(--ground);
+  min-height: 0;
+}
+
+.canvas-stage .react-flow {
+  background:
+    radial-gradient(circle, var(--rule) 1px, transparent 1px) 0 0 / 24px 24px,
+    var(--ground);
+  background-blend-mode: normal;
+}
+
+.canvas-rail {
+  grid-area: rail;
+  background: var(--surface);
+  border-left: 1px solid var(--rule);
+  min-height: 0;
+  overflow-y: auto;
+}
+
+.canvas-empty {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 16px;
+  color: var(--ink-faint);
+  pointer-events: none;
+}
+
+.canvas-empty pre {
+  font-family: var(--font-mono);
+  font-size: 14px;
+  margin: 0;
+  white-space: pre;
+  color: var(--ink-faint);
+}
+
+@media (max-width: 880px) {
+  .canvas-shell {
+    grid-template-columns: 1fr;
+    grid-template-rows: auto auto 1fr auto;
+    grid-template-areas:
+      "topbar"
+      "toolbar"
+      "stage"
+      "rail";
+  }
+  .canvas-rail {
+    border-left: 0;
+    border-top: 1px solid var(--rule);
+    max-height: 50vh;
+  }
+}

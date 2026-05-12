@@ -1,0 +1,127 @@
+.home-shell {
+  display: grid;
+  grid-template-rows: auto 1fr auto;
+  min-height: 100vh;
+  background: var(--ground);
+}
+
+.home-stage {
+  display: grid;
+  place-items: center;
+  padding: 0 24px;
+  grid-template-rows: 1fr auto auto auto;
+  gap: 48px;
+}
+
+.home-orb-stage {
+  width: 320px;
+  height: 380px;
+}
+
+.home-greeting {
+  text-align: center;
+  max-width: 36ch;
+}
+
+.home-greeting h1 {
+  font-family: var(--font-sans);
+  font-size: 48px;
+  font-weight: 400;
+  color: var(--ink);
+  letter-spacing: -0.025em;
+  line-height: 1.15;
+  margin: 0;
+}
+
+.home-greeting-name {
+  color: var(--magenta);
+}
+
+.home-greeting p {
+  margin: 14px auto 0;
+  font-family: var(--font-sans);
+  font-size: 15px;
+  font-weight: 400;
+  color: var(--ink-soft);
+  max-width: 40ch;
+  line-height: 1.55;
+}
+
+.home-coming-soon {
+  font-family: var(--font-mono);
+  font-size: 11px;
+  color: var(--ink-faint);
+  max-width: 60ch;
+  margin: 0 auto;
+  text-align: center;
+  line-height: 1.6;
+  padding: 0 24px;
+}
+
+.home-stage > .input-bar {
+  width: min(540px, calc(100% - 80px));
+}
+
+.home-footer {
+  padding: 32px 48px 40px;
+  text-align: center;
+  font-family: var(--font-mono);
+  font-size: 10.5px;
+  color: var(--ink-faint);
+  letter-spacing: 0.16em;
+  text-transform: uppercase;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+}
+
+.home-footer kbd {
+  font-family: var(--font-mono);
+  background: var(--rule-soft);
+  border: 1px solid var(--rule);
+  border-radius: 4px;
+  padding: 1px 5px;
+  font-size: 10px;
+  color: var(--ink-soft);
+  letter-spacing: 0;
+  text-transform: none;
+}
+
+.home-footer-sep {
+  margin: 0 8px;
+  color: var(--rule);
+}
+
+.home-footer-link {
+  background: transparent;
+  border: 0;
+  color: inherit;
+  font: inherit;
+  letter-spacing: inherit;
+  text-transform: inherit;
+  cursor: pointer;
+  padding: 4px 6px;
+  border-radius: 4px;
+  transition: color 200ms var(--ease-out);
+}
+
+.home-footer-link:hover {
+  color: var(--ink-soft);
+}
+
+@media (max-width: 640px) {
+  .home-stage {
+    gap: 32px;
+  }
+  .home-orb-stage {
+    width: 240px;
+    height: 280px;
+  }
+  .home-greeting h1 {
+    font-size: 32px;
+  }
+  .home-footer {
+    padding: 24px 24px 32px;
+  }
+}

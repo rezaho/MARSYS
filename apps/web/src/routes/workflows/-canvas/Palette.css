@@ -1,0 +1,42 @@
+.canvas-palette {
+  position: absolute;
+  bottom: 16px;
+  left: 16px;
+  display: flex;
+  gap: 6px;
+  align-items: center;
+  padding: 8px 10px;
+  background: var(--surface);
+  border: 1px solid var(--rule);
+  border-radius: 999px;
+  z-index: 5;
+  font-family: var(--font-mono);
+  font-size: 11px;
+}
+
+.canvas-palette-label {
+  color: var(--ink-faint);
+  margin-right: 4px;
+}
+
+.canvas-palette-chip {
+  background: transparent;
+  border: 1px solid var(--rule);
+  color: var(--ink);
+  padding: 4px 10px;
+  border-radius: 999px;
+  font-family: var(--font-sans);
+  font-size: 12px;
+  font-weight: 500;
+  cursor: grab;
+  transition: border-color 200ms var(--ease-out), background 200ms var(--ease-out);
+}
+
+.canvas-palette-chip:hover {
+  background: var(--rule-soft);
+  border-color: var(--ink-faint);
+}
+
+.canvas-palette-chip:active {
+  cursor: grabbing;
+}
