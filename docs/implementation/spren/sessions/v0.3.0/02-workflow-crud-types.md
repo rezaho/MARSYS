@@ -170,17 +170,19 @@ The bootstrap response from Session 01 is extended to include the workflow list 
 ### Acceptance criteria
 
 - [ ] SQLite database initialized at `<data-dir>/data/spren.db` on first server start (creates parent directory if needed)
-- [ ] Migrations runner: schema versioned in a `_migrations` table; idempotent; migration scripts under `packages/spren/src/spren/storage/migrations/`
-- [ ] First migration creates the `workflows` table per the data model in `02-data-model.md` (including `provenance` and `provenance_metadata` columns)
-- [ ] Pydantic schemas for `Workflow`, `WorkflowDefinition`, `TopologySpec`, `NodeSpec`, `EdgeSpec`, `AgentSpec`, `ExecutionConfigSpec` mirror marsys's dataclass types; `ModelConfig` is imported directly from `marsys.models` (already Pydantic)
+- [ ] Migrations runner at `packages/spren/src/spren/storage/migrations/runner.py`: schema versioned in a `_migrations` table; idempotent; migration scripts under `packages/spren/src/spren/storage/migrations/`. `__init__.py` re-exports `MigrationsRunner`; runner logic lives in `runner.py`, NOT `__init__.py`
+- [ ] First migration creates the `workflows` table per the data model in `02-data-model.md` (including `provenance` and `provenance_metadata` columns) AND the `_idempotency` table (cache key `(method, path, idempotency_key)`, body + status + headers + expires_at)
+- [ ] Pydantic schemas for `Workflow`, `WorkflowDefinition`, `TopologySpec`, `NodeSpec`, `EdgeSpec`, `AgentSpec`, `ExecutionConfigSpec` mirror marsys's dataclass types; `ModelConfig` is imported directly from `marsys.models` (already Pydantic); `RESERVED_NODE_NAMES` is imported from `marsys.coordination.topology.core` and enforced on `NodeSpec.name`
+- [ ] `WorkflowDefinition` enforces `model_validator(mode='after')` cross-validation: every `node.agent_ref` (when `node_type == agent`) must be a key of `agents`; every `edge.source` and `edge.target` must be a `node.name`
 - [ ] REST CRUD endpoints under `/v1/workflows`: GET (list, paginated, filterable by `provenance` and `archived`), POST (create), GET (read), PUT (replace), PATCH (partial update / archive), DELETE (hard delete only when no runs reference; if runs reference, return HTTP 409 with `error.code = "WORKFLOW_HAS_RUNS"` and leave the row intact)
-- [ ] `POST /v1/workflows/import-python` accepts a multipart upload of a `.py` file, parses agent / topology / execution_config constructs in the constructor-only style (Step 3), materializes a workflow record with `provenance="code_import"` and `provenance_metadata={source_filename, sha256}`. Parsing uses two-pass Python AST inspection (no `exec`/`eval`); rejects dict-DSL, comprehensions, conditionals, function/class defs, f-strings, and files >1 MB
-- [ ] All endpoints require auth (per session 01's auth pattern)
-- [ ] Cursor-based pagination on the list endpoint (`?cursor=...&limit=N`, max 100)
+- [ ] `POST /v1/workflows/import-python` accepts a multipart upload of a `.py` file, parses agent / topology / execution_config constructs in the constructor-only style (Step 3), materializes a workflow record with `provenance="code_import"` and `provenance_metadata={source_filename, sha256}`. Parsing uses two-pass Python AST inspection (no `exec`/`eval`); rejects dict-DSL, comprehensions, conditionals, function/class defs, f-strings, and files >1 MB (size limit enforced at the FastAPI handler boundary, returning structured 422 with `PYTHON_IMPORT_REJECTED`)
+- [ ] All endpoints require auth (per session 01's auth pattern); the workflows router is constructed via `make_workflows_router(require_auth)` taking the auth dep as a constructor parameter (no module-level globals)
+- [ ] Cursor-based pagination on the list endpoint (`?cursor=...&limit=N`, max 100, default 20). Cursor is the opaque string-form ULID of the last returned row; the server queries `WHERE id > :cursor ORDER BY id LIMIT :limit + 1`. No HMAC signing — auth-token-gated localhost-only scope makes signing ceremonial AND the regenerate-secret-on-restart failure mode is unnecessary cost
+- [ ] `Idempotency-Key` header replay works for POST/PUT/PATCH/DELETE within a 24-hour window: cache key `(method, path, idempotency_key)`; replay returns the cached body + status; cache survives daemon restart; expired rows swept on startup
 - [ ] OpenAPI schema available at `/openapi.json` (FastAPI auto-generates)
-- [ ] Build script in `apps/web/` fetches `/openapi.json` from a running dev server (or static snapshot) and runs `openapi-typescript` to generate `apps/web/src/lib/api-types.generated.ts`
-- [ ] Pydantic-only models that aren't represented in OpenAPI request/response schemas are exported to JSON Schema (via `model.model_json_schema()`) and then to TypeScript (via `json-schema-to-typescript`) into `apps/web/src/lib/types.generated.ts`
+- [ ] Build script in `apps/web/scripts/generate-types.mjs` (Node native ESM) generates a transient `/openapi.json` snapshot at build time and runs `openapi-typescript` to produce `apps/web/src/lib/api-types.generated.ts`. The snapshot is NOT committed to git; only the generated `.ts` is tracked. There is exactly ONE generator (`openapi-typescript`) — `json-schema-to-typescript` is dropped: every Pydantic model the frontend consumes reaches OpenAPI through a route handler
 - [ ] `apps/web` placeholder route is updated to: list workflows from `/v1/workflows` (with provenance shown), allow creating a workflow with a hand-typed name + JSON definition (placeholder textarea — Session 03 replaces with canvas), allow deleting one, allow uploading a `.py` file to test the Python import endpoint
+- [ ] Stale `// Session 02 generates these from Pydantic via datamodel-code-generator` comments in `apps/web/src/lib/api.ts:1` and `apps/web/src/types/api.ts:1` are updated to reflect the actual generator (`openapi-typescript`) and the post-Session-02 file purpose
 - [ ] All required tests written and passing (see Tests section)
 - [ ] No mocks of in-codebase features (SP-007)
 - [ ] No backward-compat code (SP-006) — first migration is the only schema
@@ -201,14 +203,14 @@ The bootstrap response from Session 01 is extended to include the workflow list 
 7. [`packages/framework/src/marsys/agents/agents.py`](../../../../packages/framework/src/marsys/agents/agents.py) — Agent constructor params
 8. [`packages/framework/src/marsys/coordination/config.py`](../../../../packages/framework/src/marsys/coordination/config.py) — ExecutionConfig fields
 9. [`packages/framework/src/marsys/models/models.py`](../../../../packages/framework/src/marsys/models/models.py) — ModelConfig fields
-10. [json-schema-to-typescript docs](https://www.npmjs.com/package/json-schema-to-typescript) — verify current version + JSON Schema 2020-12 compatibility
-11. [openapi-typescript docs](https://openapi-ts.dev/) — verify current version + CLI invocation
-12. Python `ast` module documentation — used by the Python-file import endpoint to parse marsys constructs without executing the file
+10. [openapi-typescript docs](https://openapi-ts.dev/) — verify current version + CLI invocation; the smoke check in Step 4 is the gate
+11. Python `ast` module documentation — used by the Python-file import endpoint to parse marsys constructs without executing the file
 
 **Verify before proceeding:**
 - `git log --oneline -20 packages/framework/src/marsys/coordination/topology/core.py` — see if Node/Edge/NodeType/EdgeType have moved or changed signatures
 - `grep -rn 'class Node\b\|class Edge\b\|class NodeType\b\|class EdgeType\b' packages/framework/src/marsys/coordination/topology/` — confirm these classes are at the paths the brief assumes
-- Check current pinned versions of `pydantic`, `fastapi`, `openapi-typescript`, `json-schema-to-typescript`. Pin within the same major; bump patches as needed.
+- Check current pinned versions of `pydantic`, `fastapi`, `openapi-typescript`. Pin within the same major; bump patches as needed.
+- Run the openapi-typescript × TS 6 smoke check in Step 4 BEFORE writing route handlers — if it fails, surface the alternative-tool decision via `AskUserQuestion` first.
 
 ---
 
@@ -217,30 +219,37 @@ The bootstrap response from Session 01 is extended to include the workflow list 
 ### Step 1 — Add storage module skeleton
 
 Create:
-- `packages/spren/src/spren/storage/__init__.py` — empty
-- `packages/spren/src/spren/storage/db.py` — thin `SQLiteConnection` wrapper that opens `<data-dir>/data/spren.db` via `platformdirs.user_data_dir("spren")` and ensures the parent directory exists
-- `packages/spren/src/spren/storage/migrations/__init__.py` — `MigrationsRunner` class: reads `*.py` migration files in order, runs unapplied ones, records applied IDs in a `_migrations` table
+- `packages/spren/src/spren/storage/__init__.py` — re-exports `Database`, `MigrationsRunner` for ergonomic imports
+- `packages/spren/src/spren/storage/db.py` — thin `Database` class wrapping a `sqlite3.Connection` opened at `<data-dir>/data/spren.db` (parent directory created on first call); enables `PRAGMA foreign_keys = ON` and `PRAGMA journal_mode = WAL`. Uses `detect_types=PARSE_DECLTYPES` so timestamps round-trip cleanly
+- `packages/spren/src/spren/storage/migrations/__init__.py` — empty (or just re-exports `MigrationsRunner`)
+- `packages/spren/src/spren/storage/migrations/runner.py` — `MigrationsRunner` class: reads `*.py` migration files in order, runs unapplied ones in a transaction, records applied IDs in a `_migrations` table
 
 Migration file convention: `<NN>__<slug>.py` — each exports `def upgrade(conn: sqlite3.Connection) -> None`. Forward-only (SP-006); no downgrade. The runner is roll-our-own (~50 lines); Alembic is heavier than v0.3 needs.
 
-The first migration `01__create_workflows.py` creates the `workflows` table per `docs/architecture/spren/02-data-model.md`: `id` (TEXT PRIMARY KEY, ULID), `name`, `description`, `definition` (TEXT JSON), `definition_version` (INTEGER), `provenance` (TEXT NOT NULL), `provenance_metadata` (TEXT), `is_archived` (INTEGER), `created_at` (TEXT), `updated_at` (TEXT).
+The first migration `01__create_workflows.py` creates BOTH:
+- The `workflows` table per `docs/architecture/spren/02-data-model.md`: `id` (TEXT PRIMARY KEY, ULID), `name`, `description`, `definition` (TEXT JSON), `definition_version` (INTEGER), `provenance` (TEXT NOT NULL), `provenance_metadata` (TEXT), `is_archived` (INTEGER), `created_at` (TEXT), `updated_at` (TEXT). Indexes on `provenance`, `is_archived`, `created_at`.
+- The `_idempotency` table for the `Idempotency-Key` cache: `key` (TEXT) + `method` (TEXT) + `path` (TEXT) compound PRIMARY KEY; `response_status` (INTEGER), `response_body` (BLOB), `response_headers` (TEXT JSON), `created_at` (TEXT), `expires_at` (TEXT). Index on `expires_at` for the startup sweep.
 
-IDs are ULIDs generated via `python-ulid ^3.0` (added to `packages/spren/pyproject.toml` deps): `from ulid import ULID; str(ULID())`. Verify the pin against current PyPI before installing.
+IDs are ULIDs from the `python-ulid` PyPI package, pinned as `python-ulid >= 3.0,<4.0` in `packages/spren/pyproject.toml`. Distribution name is `python-ulid`; import name is `ulid` (`from ulid import ULID; str(ULID())`). DO NOT install the unrelated `ulid-py` package — different surface, will break the import.
 
 Timestamps in `created_at` / `updated_at` are ISO 8601 UTC with microsecond precision, generated in Pydantic via `datetime.now(timezone.utc).isoformat()`. Do not use SQLite's `CURRENT_TIMESTAMP` — it is second-precision only and breaks the architecture doc's microsecond contract.
 
-Migrations run on FastAPI app startup (lifespan event).
+Migrations run on FastAPI app startup (lifespan event). Expired `_idempotency` rows are also swept on startup (single `DELETE FROM _idempotency WHERE expires_at < ?` with the current UTC timestamp).
 
 ### Step 2 — Pydantic models
 
-`marsys.models.ModelConfig` is the only marsys type Spren needs that is already a Pydantic `BaseModel` (`packages/framework/src/marsys/models/models.py`). The rest — `Node`, `Edge`, `Topology`, `PatternConfig`, `ExecutionConfig`, `ConvergencePolicyConfig`, `TracingConfig`, `StatusConfig`, `BaseAgent` — are dataclasses or runtime objects.
+`marsys.models.ModelConfig` is a Pydantic `BaseModel`, BUT it carries a `@model_validator(mode='after')` (`packages/framework/src/marsys/models/models.py:209-263`) that requires the provider's API key to be present in the environment at validation time. That validator is correct for marsys's runtime (the model adapter immediately tries to instantiate a real client) but breaks Spren's storage layer: workflows are persisted before the user has configured their keys, on machines that may only hold a subset of provider keys, and via Python-file imports where literal `api_key="sk-..."` values must NEVER be persisted to SQLite.
 
-Pattern: import `ModelConfig` directly from `marsys.models`; mirror everything else as Pydantic. The mirror is the API-boundary contract; the conversion to runnable marsys topology happens at execution time in Session 04, not at storage time.
+Spren's response: define a Spren-side `ModelConfigSpec` Pydantic mirror at `packages/spren/src/spren/models/model_config.py` that mirrors every field of `marsys.models.ModelConfig` EXCEPT `api_key`. Credentials live in the per-user secrets store (OS keychain primary, encrypted SQLite fallback — Session 10) keyed by **provider**, not per-agent. At execution time (Session 04+) the runtime materializer reads the spec, looks up the matching credential by `provider`, and constructs a runnable `marsys.models.ModelConfig` with the resolved key. `oauth_profile` (a profile *name*, not a credential) IS preserved on the spec — it's a reference, storage-safe.
 
-**Future cleanup commitment (post-Framework Session 04)**: when the framework's canonical Pydantic ↔ runtime-topology serializer (Framework Session 04) merges and is released, Spren opens a follow-up cleanup PR within 24 hours that deletes `packages/spren/src/spren/models/topology.py`, `packages/spren/src/spren/models/agent.py`, `packages/spren/src/spren/models/execution_config.py` and replaces their imports with `from marsys.coordination.topology.serialize import WorkflowDefinition, TopologySpec, NodeSpec, EdgeSpec, AgentSpec, ExecutionConfigSpec`. Framework Session 04's brief carries the symmetric commitment.
+Pattern: ALL marsys types — `ModelConfig`, `Node`, `Edge`, `Topology`, `PatternConfig`, `ExecutionConfig`, `ConvergencePolicyConfig`, `TracingConfig`, `StatusConfig`, `BaseAgent` — are mirrored as Pydantic models on the Spren side. The mirror is the API-boundary + storage contract; conversion to runnable marsys types happens at execution time in Session 04. Per-agent provider choice is preserved (each `AgentSpec.agent_model.provider` is independent); per-provider credentials come from the secrets store at execution time.
+
+**Future cleanup commitment (post-Framework Session 04)**: when the framework's canonical Pydantic ↔ runtime-topology serializer (Framework Session 04) merges and is released, Spren opens a follow-up cleanup PR within 24 hours that deletes `packages/spren/src/spren/models/topology.py`, `packages/spren/src/spren/models/agent.py`, `packages/spren/src/spren/models/execution_config.py`, `packages/spren/src/spren/models/model_config.py` and replaces their imports with `from marsys.coordination.topology.serialize import ...`. Framework Session 04's brief carries the symmetric commitment, including a flag/parameter on `ModelConfig` validation so the framework-side serializer doesn't enforce credential presence at storage time.
 
 Create:
-- `packages/spren/src/spren/models/__init__.py` — re-exports including `from marsys.models import ModelConfig`
+- `packages/spren/src/spren/models/__init__.py` — re-exports
+- `packages/spren/src/spren/models/model_config.py`:
+  - `class ModelConfigSpec(BaseModel)` — mirrors every field of `marsys.models.ModelConfig` EXCEPT `api_key`. Includes `type: Literal["local","api"]`, `name: str`, `provider: Optional[Literal[...]]`, `base_url`, `max_tokens`, `temperature`, `thinking_budget`, `reasoning_effort`, `oauth_profile`, plus the local-model fields (`model_class`, `backend`, `torch_dtype`, `device_map`, `quantization_config`, `tensor_parallel_size`, `gpu_memory_utilization`, `quantization`)
 - `packages/spren/src/spren/models/workflow.py`:
   - `class WorkflowDefinition(BaseModel)` — topology + agents map + execution_config
   - `class Workflow(BaseModel)` — SQLite row shape: id, name, description, definition, definition_version, provenance: Literal["visual_builder","meta_agent","code_import","template","api"], provenance_metadata: dict | None, is_archived, created_at, updated_at
@@ -248,9 +257,10 @@ Create:
 - `packages/spren/src/spren/models/topology.py`:
   - `class TopologySpec(BaseModel)` — nodes: list[NodeSpec], edges: list[EdgeSpec], rules: list[str]
   - `class NodeSpec`, `class EdgeSpec` — mirror marsys's Node/Edge dataclasses
-  - `NodeType` and `EdgeType` enums — values match marsys's enum values exactly. Read `marsys.coordination.topology.core` to confirm: they're plain `Enum` (NOT `StrEnum`) with lowercase string values. Mirror that shape exactly.
+  - `NodeType` and `EdgeType` and `EdgePattern` enums — values match marsys's enum values exactly. Verified against `packages/framework/src/marsys/coordination/topology/core.py:11-43`: they're plain `Enum` (NOT `StrEnum`) with lowercase string values: `NodeType ∈ {USER="user", AGENT="agent", SYSTEM="system", TOOL="tool"}`, `EdgeType ∈ {INVOKE="invoke", NOTIFY="notify", QUERY="query", STREAM="stream"}`, `EdgePattern ∈ {ALTERNATING="alternating", SYMMETRIC="symmetric"}`
+  - `NodeSpec.name` field validator imports `RESERVED_NODE_NAMES` from `marsys.coordination.topology.core` (line 29: `frozenset({"user", "system", "tool"})`) and rejects any agent name whose lowercase form collides. SP-018 forbids the framework importing Spren — the reverse (Spren importing framework constants) is fine and already happens via `from marsys.models import ModelConfig`
 - `packages/spren/src/spren/models/agent.py`:
-  - `class AgentSpec(BaseModel)` — `agent_model: ModelConfig` (NOT `model_config` — that name is reserved by Pydantic v2's `BaseModel`), name, goal, instruction, `tools: list[str]` (string names; runtime tool registry resolves them at execution time), memory_retention, allowed_peers, plan_config (optional)
+  - `class AgentSpec(BaseModel)` — `agent_model: ModelConfigSpec` (NOT `model_config` — that name is reserved by Pydantic v2's `BaseModel` `ClassVar`; NOT `marsys.models.ModelConfig` directly — that type's API-key-required validator breaks storage), name, goal, instruction, `tools: list[str]` (string names; the runtime tool registry that resolves names → callables ships in Session 04, NOT this session — v0.3 stores names as opaque strings), `memory_retention: Literal["session", "ephemeral", "persistent"]`, `allowed_peers: list[str]`. **Drop `plan_config` from v0.3** — `PlanConfigSpec` is undefined and the framework's `PlanningConfig` polymorphism (`Union[PlanningConfig, Dict, bool, None]`) is not worth mirroring before agents actually run; revisit when Session 04 wires execution
 - `packages/spren/src/spren/models/execution_config.py`:
   - `class ExecutionConfigSpec(BaseModel)` — mirror marsys's ExecutionConfig + ConvergencePolicyConfig (the convergence policy is a polymorphic union: `Union[float, str, ConvergencePolicyConfigSpec]` with a discriminator)
 - `packages/spren/src/spren/models/errors.py`:
@@ -266,9 +276,9 @@ Create:
 - `packages/spren/src/spren/importers/__init__.py`
 - `packages/spren/src/spren/importers/python_workflow.py` — AST-based parser. Reads a marsys-framework `.py` file, walks the AST to extract `Agent(...)` constructors, `Topology(...)` constructor calls, ModelConfig literals, tool name references; returns a `WorkflowDefinition` Pydantic model. Refuses any file that contains constructs outside the expected pattern.
 
-The Python-file importer reads source written against the **marsys framework's own constructor surface** (NOT the Spren API-boundary shape) and translates to a Spren `WorkflowDefinition`. The parser must understand the real marsys signatures:
+The Python-file importer reads source written against the **marsys framework's own constructor surface** (NOT the Spren API-boundary shape) and translates to a Spren `WorkflowDefinition`. The parser targets the public `Agent` subclass at `packages/framework/src/marsys/agents/agents.py:2748` (NOT `BaseAgent` at `:131` which uses a different signature). The parser must understand these real marsys signatures:
 
-- `Agent(name=..., model_config=<ModelConfig>, goal=..., instruction=..., tools=<Dict[str, Callable]>, ...)` — note the kwarg is `model_config` (matching `agents.py:131`), NOT `agent_model`. The `tools` value is a dict whose keys are tool names; values are callables. The parser extracts the dict's keys (string names) and discards the callables — Spren's API mirror uses `tools: list[str]` of names; the runtime tool registry resolves names to callables at execution time per Framework Session 04's pattern.
+- `Agent(model_config=<ModelConfig>, goal=..., instruction=..., tools=<Dict[str, Callable]>, name=..., allowed_peers=..., memory_retention=..., ...)` — the kwarg is `model_config` (matching `agents.py:2748`), NOT `agent_model`. The `tools` value is a dict whose keys are tool names; values are callables. The parser extracts the dict's keys (string names) and discards the callables — Spren's API mirror uses `tools: list[str]` of names. **The runtime tool registry that resolves names → callables ships in Session 04 (run execution); v0.3 stores names as opaque strings only.** All constructor arguments are accepted in keyword form; positional-arg-style calls (`Agent(model_config_value, goal_str, instruction_str)`) are also supported by walking the parameter list in declaration order.
 - `Topology(nodes=[Node(...), ...], edges=[Edge(...), ...])` — explicit constructor calls.
 - `ModelConfig(...)`, `ExecutionConfig(...)` — literal kwargs only.
 - Module-level constants (`AGENT_NAME = "researcher"`) resolved via a two-pass AST walk: pass 1 builds a `Name → Constant` table; pass 2 resolves constructor-arg `Name` references against it.
@@ -290,41 +300,54 @@ The parser rejects any file containing:
 
 Rejections return `422 Unprocessable Entity` with `{"error": {"code": "PYTHON_IMPORT_REJECTED", "message": "<human-readable>", "details": {"reason": "<short-tag>", "line": <N>}}}`. The human-readable message names the unsupported construct and points the user at the visual builder.
 
-Test fixtures live at `packages/spren/tests/fixtures/python_workflows/` and use synthetic constructor-style files written against marsys's real signatures:
-- `valid_minimal.py` — 2-agent linear pipeline using `Agent(model_config=ModelConfig(...), tools={...})` + explicit `Topology(nodes=[Node(...)], edges=[Edge(...)])`
-- `valid_with_constants.py` — same shape but uses module-level `AGENT_NAME = "researcher"` Name refs
-- `invalid_dict_dsl.py` — uses `{"Start -> Researcher": ...}`
+Test fixtures live at `packages/spren/tests/fixtures/python_workflows/` and use synthetic constructor-style files written against marsys's real signatures. The valid fixtures must exercise every field the parser extracts so the round-trip test proves field-by-field preservation:
+- `valid_minimal.py` — 2-agent linear pipeline. Each `Agent(...)` call sets `name`, `goal`, `instruction`, `model_config=ModelConfig(...)`, `tools={"search_web": <stub_callable>, "read_file": <stub_callable>}`, `memory_retention="session"`, `allowed_peers=[...]`. Explicit `Topology(nodes=[Node(name=..., node_type=NodeType.AGENT, agent_ref="agent_id_1"), ...], edges=[Edge(source=..., target=..., edge_type=EdgeType.INVOKE, bidirectional=False, pattern=None), ...])`. `ExecutionConfig(convergence_timeout=300.0, response_format="json", user_interaction="none")`. The fixture's stub callables exist only so the parser sees real `Dict[str, Callable]` AST shapes — they're never invoked.
+- `valid_with_constants.py` — same field coverage as `valid_minimal.py` but uses module-level `AGENT_NAME = "researcher"`, `MODEL_NAME = "claude-opus-4-7"` Name refs that the two-pass walker must resolve
+- `invalid_dict_dsl.py` — uses `{"Start -> Researcher": ...}` topology dict-DSL
 - `invalid_exec.py` — contains `exec(...)`
 - `invalid_dynamic_topology.py` — builds edges via comprehension
 - `invalid_too_large.py` — 1.5 MB
 
 The framework's own example files at `packages/framework/examples/` (e.g., `example_01_Deep_Research.py`, `example_02_local_models.py`) predominantly use the dict-DSL style and are NOT used as fixtures — they're the reason the rejected-DSL test fixture exists. Step 7's manual integration loop should cite a synthetic constructor-style fixture as the import target, not a real example file (real examples 422 by design until they're rewritten to constructor style).
 
-**Auth pattern (mandatory)**: each endpoint takes auth at the **route level**, not the function signature, matching Session 01's pattern. Build the router with the auth dep from `spren.server` (or pass via `APIRouter(dependencies=[Depends(require_auth)])`). Do NOT use `Annotated[None, Depends(require_auth)]` in handler signatures — that surface returns 422 not 401.
+**Auth pattern (mandatory)**: each endpoint takes auth at the **route level**, not the function signature, matching Session 01's pattern. The auth dep is **passed by constructor injection** to the router factory — there are no module-level globals or imports that depend on `server.create_app()`'s call order. Do NOT use `Annotated[None, Depends(require_auth)]` in handler signatures — that surface returns 422 not 401.
 
 ```python
 # packages/spren/src/spren/routes/workflows.py — pattern
 from fastapi import APIRouter, Depends
-def make_workflows_router(require_auth) -> APIRouter:
+def make_workflows_router(require_auth, db: Database) -> APIRouter:
     router = APIRouter(prefix="/v1/workflows", dependencies=[Depends(require_auth)])
     @router.get("")
     def list_workflows(...) -> WorkflowListResponse: ...
     return router
 ```
 
-Mount the router in `spren.server.create_app()` after the CORS middleware: `app.include_router(make_workflows_router(require_auth))`. Endpoints per `docs/architecture/spren/03-api-design.md` § Workflows.
+Mount the router in `spren.server.create_app()` after the CORS middleware: `app.include_router(make_workflows_router(require_auth, db))`. Endpoints per `docs/architecture/spren/03-api-design.md` § Workflows.
 
 Error response format: `{"error": {"code": ErrorCode, "message": str, "details": dict}}` where `ErrorCode` is the `Literal[...]` union from `spren.models.errors`. A global exception handler maps Pydantic `ValidationError` → `VALIDATION_FAILED`, marsys exceptions → their respective codes, and unexpected errors → `INTERNAL_ERROR` (with the original message in `details` only in dev mode).
 
-**Cursor pagination on the list endpoint**: `?cursor=<opaque>&limit=<N>` (max 100, default 20). The cursor is a base64-encoded JSON `{"id": "<ulid>", "ts": "<iso>"}` HMAC-signed with a per-launch secret (regenerated on each server start, alongside the auth token, in `auth.py`). The server validates the HMAC before consuming the cursor; tampered cursors return 400. The `next_cursor` field on `WorkflowListResponse` is `null` when no more pages exist.
+**Cursor pagination on the list endpoint**: `?cursor=<opaque-ulid>&limit=<N>` (max 100, default 20). The cursor is the string-form ULID of the last returned row from the previous page. The server queries `SELECT ... FROM workflows WHERE (... filters ...) AND id > :cursor ORDER BY id LIMIT :limit + 1`. ULIDs are k-sortable monotonic, so this is correct and survives daemon restart. No HMAC signing — auth-token-gated localhost-only scope makes signing ceremonial AND the regenerate-secret-on-restart failure mode is unnecessary cost. The response shape is `{items: [...], next_cursor: <ulid> | null, has_more: bool}` (the server fetches `limit + 1` rows, returns the first `limit`, and sets `next_cursor` to the last returned row's `id` if `has_more`). When no more pages exist, `next_cursor` is null and `has_more` is false.
 
-**Idempotency-Key header** (optional on `POST` / `PUT` / `PATCH` / `DELETE` under `/v1/workflows*`; ignored on `GET`): when present, the server caches the response for 24 hours and replays the cached response on a key-match within that window. Cache lives in a `_idempotency` table in `<data-dir>/data/spren.db` so it survives daemon restart inside the 24-hour window; expired rows are swept on startup. Cache key is `(method, path, idempotency_key)`; mismatched method/path with the same key is treated as a fresh request.
+**Idempotency-Key header** (optional on `POST` / `PUT` / `PATCH` / `DELETE` under `/v1/workflows*`; ignored on `GET`): when present, the server caches the response for 24 hours and replays the cached response on a key-match within that window. Cache lives in the `_idempotency` table inside `<data-dir>/data/spren.db` (NOT a separate `*.db._idempotency` file — that's the architecture-doc wording bug fixed as part of this PR) so it survives daemon restart inside the 24-hour window; expired rows are swept on startup. Cache key is `(method, path, idempotency_key)`; mismatched method/path with the same key is treated as a fresh request. Implemented as a small ASGI middleware OR an APIRouter-level dependency that runs before the handler; the simpler shape is preferred — surface this as an implementation detail at PR time.
 
 ### Step 4 — Type generation pipeline
 
-The TS type-gen pipeline produces two files: `apps/web/src/lib/api-types.generated.ts` (request/response shapes from `/openapi.json`) and `apps/web/src/lib/types.generated.ts` (standalone Pydantic types not in OpenAPI request/response schemas).
+The TS type-gen pipeline produces ONE file: `apps/web/src/lib/api-types.generated.ts` (every shape the frontend consumes, derived from `/openapi.json`). There is NO second emitter — every Pydantic model the frontend actually consumes reaches OpenAPI through a route handler. Models that don't surface via REST aren't part of the frontend's contract; if a future need surfaces a model that doesn't have a route, it gets added as a route response (or as a small `pydantic.TypeAdapter`-driven response model) — not via a parallel generator.
 
-`openapi-typescript@7.x` declares `peerDependencies: { typescript: "^5.x" }`; the workspace pins `typescript: ^6.0.0`. Configure a pnpm peer-dep override (`apps/web/package.json` → `pnpm.overrides`) to allow TS 6 and verify empirically that the emitted `.ts` compiles under TS 6:
+**Tooling choice**: `openapi-typescript@7.x` declares `peerDependencies: { typescript: "^5.x" }`; the workspace pins `typescript: ^6.0.0`. Use `pnpm.peerDependencyRules.allowedVersions` (NOT `pnpm.overrides` — that field forces installed versions, it doesn't relax peer ranges) in `apps/web/package.json` to allow TS 6 against `openapi-typescript`'s ^5 peer:
+
+```jsonc
+// apps/web/package.json (additive)
+"pnpm": {
+  "peerDependencyRules": {
+    "allowedVersions": {
+      "openapi-typescript>typescript": "^6"
+    }
+  }
+}
+```
+
+Then verify empirically that the emitted `.ts` compiles under TS 6:
 
 ```bash
 cd apps/web/
@@ -334,17 +357,14 @@ pnpm exec openapi-typescript /tmp/openapi-smoke.json -o /tmp/types-smoke.ts
 pnpm exec tsc --noEmit /tmp/types-smoke.ts
 ```
 
-If the smoke check fails (emitted `.ts` has TS 6 syntactic incompatibilities) or produces deprecation warnings on common shapes, switch to `@hey-api/openapi-ts` (verify its TS 6 peer-dep first); ask the user via `AskUserQuestion` if the alternative meaningfully changes the API surface.
-
-For Pydantic → TypeScript on standalone models that aren't in OpenAPI request/response shapes, use `json-schema-to-typescript` (npm package, actively maintained, accepts JSON Schema 2020-12). **Do not use `datamodel-code-generator`** — despite its name, that package only emits Python (Pydantic / dataclasses / msgspec / TypedDict); it has no TypeScript output mode. Verify current `json-schema-to-typescript` version + JSON Schema 2020-12 compatibility on npm before pinning.
+If the smoke check fails (emitted `.ts` has TS 6 syntactic incompatibilities), surface to the user via `AskUserQuestion` — the alternative is `@hey-api/openapi-ts` (already accepts TS 6 in its peer dep range; verified at `npm view @hey-api/openapi-ts peerDependencies`). Note: `@hey-api/openapi-ts` is NOT a drop-in replacement — it generates a typed client + types whereas `openapi-typescript` generates types only. Switching changes the import surface in `apps/web/src/lib/api.ts`.
 
 Then create:
-- `apps/web/scripts/generate-types.ts` — fetches `/openapi.json` from a running dev server (resolved via `__SPREN_PORT__` or `VITE_SPREN_API_URL`), runs the chosen OpenAPI generator to produce `api-types.generated.ts`. Falls back to a static snapshot at `apps/web/openapi-snapshot.json` for CI-style builds without a live server.
-- A second script (`apps/web/scripts/generate-pydantic-types.ts`) that:
-  1. Calls a small Python helper (`uv run --package spren python -m spren.scripts.export_json_schema`) to export JSON Schema for each Pydantic model in `spren.models` via `model.model_json_schema()` (using `mode='serialization'` for response shapes and `mode='validation'` for request shapes per Pydantic v2). Writes consolidated schema to `apps/web/types-source.json`.
-  2. Runs `json-schema-to-typescript` against `types-source.json` into `apps/web/src/lib/types.generated.ts`.
+- `apps/web/scripts/generate-types.mjs` — Node native ESM (matching the existing `apps/web/scripts/preflight-e2e.mjs` convention; no `tsx` devDep needed). Spawns the sidecar in a transient subprocess (`uv run --package spren python -m spren --port 0`), parses the `spren-ready: port=N token=T data-dir=P` line from stdout, fetches `/openapi.json` with the auth token, writes the snapshot to `apps/web/openapi-snapshot.json`, runs `pnpm exec openapi-typescript apps/web/openapi-snapshot.json -o apps/web/src/lib/api-types.generated.ts`, then sends `shutdown\n` on the sidecar's stdin and waits for clean exit. The snapshot file is gitignored (added to `.gitignore` in this session) — only the generated `.ts` is tracked.
 
-Wire both into `package.json`'s `predev` and `prebuild` scripts so types are always fresh before the dev server starts and before each build. `generate-types.ts` and `generate-pydantic-types.ts` run under `tsx` (declared as a devDep).
+Wire ONLY into `package.json`'s `prebuild` script (NOT `predev`). Type freshness matters for production builds; in interactive iteration the types you care about are stable across dozens of restarts and a `predev` hook would block every `pnpm dev` start on a sidecar boot. Backstop: a missing `*.generated.ts` on first checkout fails hard with a clear TS error — the user runs `pnpm --filter @marsys/spren-web build` once.
+
+The Python helper script previously planned (`spren.scripts.export_json_schema`) is NOT created — the single-emitter approach makes it unnecessary.
 
 ### Step 5 — Frontend placeholder UI for workflows
 
@@ -354,9 +374,11 @@ Update `apps/web/src/routes/index.tsx` to add minimal workflow CRUD controls. Us
 - Use `fetch(...)` directly (Session 02 doesn't add TanStack Query data fetching wiring; Session 03 will)
 - **Inline styles only** (`style={{ ... }}`) matching `routes/index.tsx`'s current pattern. **Do NOT add Tailwind / shadcn / radix / cmdk / Geist as CSS** — those are deferred to Session 03 (Session 01's "What was actually built" explicitly defers them; adding them here is scope creep)
 
-Add the new TS types (`Workflow`, `WorkflowDefinition`, etc.) to `apps/web/src/lib/api.ts` as **placeholder interfaces** (matching the existing pattern of `BootstrapResponse`). Do NOT replace `api.ts`'s placeholder types with the generated ones in this same edit — that's Step 4's job (the generated `api-types.generated.ts` and `types.generated.ts` files). Once those generate cleanly, switch the inline interfaces to imports from the generated files in a final cleanup commit at the end of the session.
+Add the new TS types (`Workflow`, `WorkflowDefinition`, etc.) to `apps/web/src/lib/api.ts` as **placeholder interfaces** (matching the existing pattern of `BootstrapResponse`). Do NOT replace `api.ts`'s placeholder types with the generated ones in this same edit — that's Step 4's job (the generated `api-types.generated.ts` file). Once that generates cleanly, switch the inline interfaces to imports from the generated file in a final cleanup commit at the end of the session.
 
-**End-state requirement**: when the session is declared done, no TypeScript file in `apps/web/src/lib/` (other than the two `*.generated.ts` files) declares interfaces or types named after Pydantic models (`Workflow`, `WorkflowDefinition`, `TopologySpec`, `NodeSpec`, `EdgeSpec`, `AgentSpec`, `ExecutionConfigSpec`). The acceptance auditor verifies this end-state.
+**End-state requirement**: when the session is declared done, no TypeScript file in `apps/web/src/lib/` (other than `api-types.generated.ts`) declares interfaces or types named after Pydantic models (`Workflow`, `WorkflowDefinition`, `TopologySpec`, `NodeSpec`, `EdgeSpec`, `AgentSpec`, `ExecutionConfigSpec`). The acceptance auditor verifies this end-state.
+
+Also: the stale `// v0.3 placeholder types — Session 02 generates these from Pydantic via datamodel-code-generator.` comment in `apps/web/src/lib/api.ts:1` and the placeholder note in `apps/web/src/types/api.ts` get updated as part of the cleanup commit. `apps/web/src/types/api.ts` either gets replaced with re-exports from `api-types.generated.ts` or deleted if it has no other purpose post-Session-02.
 
 The placeholder route renders:
 - A list of workflow names + a provenance badge per row (small inline `<span>` with provenance-specific background color)
@@ -398,7 +420,11 @@ Visit the placeholder UI at `http://localhost:5173/#token=$TOKEN` and verify CRU
 ### Files NOT to touch
 
 - Anything inside `packages/framework/src/marsys/coordination/`, `agents/`, `models/`, `environment/` — TRUNK-CRITICAL or TRUNK-STABLE; we mirror their types but don't modify them
-- `docs/` — only update if links break
+- `docs/` — limit edits to:
+  1. `docs/architecture/spren/03-api-design.md` — clarify the idempotency cache wording (line 164, "in-DB `_idempotency` table" not a separate file) and update the type-generation pipeline section (lines 119-128) to reflect the single-emitter approach
+  2. `docs/architecture/spren/08-design-principles.md` — fix the `datamodel-code-generator` reference in SP-005 (it's Python-only, doesn't emit TS)
+  3. Any link-fix necessitated by file moves above
+  These doc edits are part of the same PR per CLAUDE.md's "doc bugs are fair game to fix in-PR" rule. They were applied during the planning phase before implementation began.
 - Existing marsys framework tests under `packages/framework/tests/` — those belong to the marsys repo; don't modify from the Spren side
 
 ### Load-bearing shapes
@@ -457,17 +483,17 @@ class EdgeSpec(BaseModel):
 
 ```python
 # packages/spren/src/spren/models/agent.py
-from marsys.models import ModelConfig         # imported directly; already Pydantic
+from .model_config import ModelConfigSpec     # Spren-side mirror, no api_key field
 
 class AgentSpec(BaseModel):
-    agent_model: ModelConfig                  # NOT named `model_config` (Pydantic v2 reserves that)
+    agent_model: ModelConfigSpec              # NOT named `model_config` (Pydantic v2 reserves that)
     name: str
     goal: str
     instruction: str
-    tools: list[str] = []                     # tool names; runtime registry resolves at execution time
+    tools: list[str] = []                     # tool names; runtime registry ships in Session 04 (NOT this session)
     memory_retention: Literal["session", "ephemeral", "persistent"] = "session"
     allowed_peers: list[str] = []
-    plan_config: PlanConfigSpec | None = None
+    # plan_config dropped from v0.3 — see Step 2 rationale; revisit in Session 04 when agents actually run
 ```
 
 ---
@@ -500,23 +526,33 @@ class AgentSpec(BaseModel):
 
 - `packages/spren/tests/test_models_workflow.py`:
   - Pydantic models accept valid examples and reject invalid (missing required fields, wrong types, reserved node names, invalid provenance values)
+  - `NodeSpec.name` rejects each member of `RESERVED_NODE_NAMES` (`user`, `system`, `tool`) — case-insensitive
+  - `WorkflowDefinition` cross-validation: rejects when `node.agent_ref` (for `node_type == agent`) does not match a key of `agents`; rejects when `edge.source` or `edge.target` does not match a `node.name`
   - JSON Schema export produces a non-empty schema for each model
 - `packages/spren/tests/test_storage_migrations.py`:
-  - Migrations runner is idempotent
+  - Migrations runner is idempotent (running twice in a row applies once)
   - First migration creates the `workflows` table with all expected columns + indexes (including `provenance` and `provenance_metadata`)
+  - First migration also creates the `_idempotency` table with the compound primary key + `expires_at` column
+  - `_migrations` table records the applied migration ID after a successful run; a partially-failed migration leaves the row absent (no half-written state)
 - `packages/spren/tests/test_routes_workflows.py`:
   - With FastAPI test client and a temp-file SQLite, exercise each endpoint:
     - POST creates and returns the new workflow with generated `id`, `created_at`, `updated_at`, `provenance` defaulted to `api` if not specified
     - GET list returns it; filterable by `provenance` and `archived`
     - GET by id returns it
     - PUT replaces; updated_at changes; created_at preserved
-    - PATCH `is_archived=true` works
-    - DELETE removes
-    - Pagination: create 25 workflows; GET list with `limit=10` returns 10 items + non-null `next_cursor`; following the cursor returns the next batch
+    - PATCH `is_archived=true` works; archived rows are filtered out of the default list and reappear with `?archived=true`
+    - DELETE removes when no runs reference (in v0.3 there are no runs, so the cascade-blocker path is exercised by stub-inserting a row into `runs` if a `runs` table exists OR by mocking the count-runs query — surface to user if the runs table doesn't exist yet at this point in the codebase). Otherwise DELETE returns 409 with `error.code = "WORKFLOW_HAS_RUNS"`
+    - Pagination: create 25 workflows; GET list with `limit=10` returns 10 items + non-null `next_cursor` (= last row's ULID); following the cursor returns the next 10; following again returns the final 5 with `next_cursor=null` and `has_more=false`
+    - Auth: missing `Authorization` header returns 401 (NOT 422 — Session 01 fixed this; verify it still holds at the router level); invalid bearer also returns 401
+    - Idempotency-Key: POST with a key returns the new workflow; replaying the same POST with the same key within 24h returns the cached body + status; replaying with a DIFFERENT method or path under the same key is treated as fresh (proves cache key is `(method, path, key)`, not just `key`)
 - `packages/spren/tests/test_importers_python.py`:
-  - Provide a fixture file with a known marsys-framework workflow → AST parse extracts the right agents, topology, configs
+  - `valid_minimal.py` → AST parse extracts the right agents (with name, goal, instruction, tools, memory_retention, allowed_peers preserved), topology (with node_type / edge_type / edge_pattern / agent_ref preserved), execution_config (with the kwargs from the fixture preserved)
+  - `valid_with_constants.py` → two-pass AST walker resolves the module-level Name refs to their string values
   - Provide a malformed file (missing topology) → returns a 422 with a clear error
-  - Provide a file containing `exec(...)` or other forbidden constructs → rejects without execution
+  - Provide a file containing `exec(...)` or other forbidden constructs → rejects without execution (the parser MUST NOT call `exec`/`eval`/`compile` itself; the test verifies via a side-effect-free fixture — e.g., the rejected file would set a global variable if executed, and the test asserts the global is unset)
+  - Provide `invalid_dict_dsl.py` → rejected with `PYTHON_IMPORT_REJECTED` and a message naming the dict-DSL construct
+  - Provide `invalid_dynamic_topology.py` → rejected
+  - Provide `invalid_too_large.py` (>1 MB) → rejected at the handler boundary BEFORE AST parse (fast-fail)
 
 ### Integration tests
 
@@ -540,10 +576,10 @@ class AgentSpec(BaseModel):
 
 ### Type-generation tests
 
-- `apps/web/scripts/generate-types.test.ts` (Vitest):
-  - Generated `api-types.generated.ts` is non-empty and parses as TS
-  - Generated `types.generated.ts` is non-empty and parses as TS
-  - The generated `Workflow` type round-trips with a JSON sample
+- `apps/web/tests/generate-types.test.ts` (Vitest, picked up by the existing `include: ["tests/**/*.test.{ts,tsx}"]` glob in `apps/web/vitest.config.ts`):
+  - Generated `api-types.generated.ts` exists, is non-empty, and parses as valid TS (use `typescript`'s `createSourceFile` for the parse check)
+  - The generated `paths['/v1/workflows'].get.responses[200].content['application/json'].schema` is reachable from the generated module's exports (smoke check that `openapi-typescript` produced the expected nested structure)
+  - A small JSON sample of `Workflow` (matching the Pydantic shape) typechecks against the generated type when assigned to a typed variable
 
 ### Test framework conventions
 
@@ -567,7 +603,7 @@ Tests passing isn't enough. Before marking this session done, run through the li
 - [ ] Patch a workflow with `is_archived=true`; archived workflow disappears from default list, reappears with `?archived=true` filter
 - [ ] Hit `/openapi.json` directly; spec is non-empty and includes `/v1/workflows` paths
 - [ ] In Tauri shell (`just dev-desktop`): same flows work; auth token is injected via `window.__SPREN_AUTH__` not URL fragment
-- [ ] Generated `apps/web/src/lib/api-types.generated.ts` and `types.generated.ts` are present + non-empty after build; `pnpm --filter web build` succeeds
+- [ ] Generated `apps/web/src/lib/api-types.generated.ts` is present + non-empty after build; `pnpm --filter @marsys/spren-web build` succeeds; the `apps/web/openapi-snapshot.json` transient file is gitignored (run `git status` after build to verify nothing untracked has been staged accidentally)
 - [ ] `grep -rn 'Mock\|mock.patch\|vi.mock\|MagicMock' packages/spren/src/ apps/web/src/` returns ZERO hits in product code (test files only)
 - [ ] No `if version` / `# legacy` / `# TODO: remove` patterns in product code
 - [ ] All tests green: `just test` exits 0
@@ -578,9 +614,11 @@ If any item fails: investigate and fix before declaring done. Do NOT close out t
 
 ## Open questions for the user
 
-The implementer must surface these via `AskUserQuestion` BEFORE writing code:
+The implementer must surface these via `AskUserQuestion` BEFORE writing code IF AND ONLY IF the case arises:
 
-1. **If the openapi-typescript × TypeScript 6 smoke check (Step 4) fails or produces meaningful incompatibilities**: surface the alternative-tool choice (`@hey-api/openapi-ts` is the leading candidate; `swagger-typescript-api` is the fallback). Particularly important if the alternative changes the emitted API surface for handlers (different naming conventions, different response-typing helpers).
+1. **If the openapi-typescript × TypeScript 6 smoke check (Step 4) fails or produces meaningful incompatibilities**: surface the alternative-tool choice (`@hey-api/openapi-ts` is the leading candidate — verified to accept TS 6 in its peer deps as of session date; NOT a drop-in replacement: it generates a typed client + types, changing `apps/web/src/lib/api.ts`'s import surface). Surface even when the smoke passes IF the emitted code uses TS-5-only syntax that compiles only because TS 6 is backwards-compatible — that's a hidden time bomb.
+
+(Architectural decisions previously listed as open questions — single TS generator vs dual, HMAC-signed cursor vs bare ULID, idempotency-key implementation in v0.3, architecture-doc 03-api-design.md:164 wording — were resolved during the planning phase before implementation began. The brief above carries the resolutions inline.)
 
 ---
 
