@@ -1,0 +1,35 @@
+/* Card primitive. Matches the workflow-list card surface exactly:
+ * 14px radius (matches --radius-card), 1px rule border, interactive
+ * variant lifts on hover via the spring curve.
+ */
+
+.ui-card {
+  background: var(--surface);
+  border: 1px solid var(--rule);
+  border-radius: var(--radius-card);
+  color: inherit;
+  text-decoration: none;
+  display: block;
+  transition:
+    border-color 200ms var(--ease-out);
+}
+
+.ui-card--padding-sm {
+  padding: 12px 14px;
+}
+
+.ui-card--padding-md {
+  padding: 16px 18px;
+}
+
+.ui-card--interactive {
+  transition:
+    border-color 200ms var(--ease-out),
+    transform 200ms var(--ease-spring);
+  cursor: pointer;
+}
+
+.ui-card--interactive:hover {
+  border-color: rgba(155, 143, 136, 0.55);
+  transform: translateY(-1px);
+}

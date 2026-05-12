@@ -1,0 +1,116 @@
+/* Button primitive.
+ *
+ * Sizes match two canonical shapes that recur across the app:
+ *   - sm: 12px font, 6px 12px padding, 6px radius. Canvas toolbar.
+ *   - md: 13px font, 8px 14px padding, 8px radius. Workflows list.
+ *
+ * Variants control color + border. Tone (orthogonal) flips the hover
+ * accent — `danger` swaps to `--magenta-deep` for destructive actions.
+ *
+ * Transition timing matches the 200ms/240ms `var(--ease-out)` curve
+ * used elsewhere in the system. Disabled and loading states share
+ * the same dimmed/no-hover look.
+ */
+
+.ui-button {
+  font-family: var(--font-sans);
+  cursor: pointer;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  border: 1px solid transparent;
+  transition:
+    background 200ms var(--ease-out),
+    border-color 200ms var(--ease-out),
+    color 200ms var(--ease-out),
+    opacity 200ms var(--ease-out);
+}
+
+/* — Sizes — */
+.ui-button--sm {
+  padding: 6px 12px;
+  font-size: 12px;
+  border-radius: var(--radius-button-sm);
+  /* font-weight is normal at sm (matches canvas toolbar). */
+}
+
+.ui-button--md {
+  padding: 8px 14px;
+  font-size: 13px;
+  font-weight: 500;
+  border-radius: var(--radius-button-md);
+}
+
+/* — Primary: ink default, magenta hover (canonical CTA). */
+.ui-button--primary {
+  background: var(--ink);
+  color: var(--surface);
+  border-color: var(--ink);
+}
+
+.ui-button--primary:hover:not(:disabled) {
+  background: var(--magenta);
+  border-color: var(--magenta);
+}
+
+/* — Secondary: transparent + rule border, soft ink text. */
+.ui-button--secondary {
+  background: var(--surface);
+  color: var(--ink);
+  border-color: var(--rule);
+}
+
+.ui-button--secondary:hover:not(:disabled) {
+  border-color: var(--ink-faint);
+}
+
+/* — Ghost: transparent + no border. */
+.ui-button--ghost {
+  background: transparent;
+  color: var(--ink-soft);
+  border-color: transparent;
+}
+
+.ui-button--ghost:hover:not(:disabled) {
+  background: var(--rule-soft);
+  color: var(--ink);
+}
+
+/* — Icon: 36×36 square, transparent + rule border, ink-soft icon.
+ *    Padding + size + radius are size-independent; this variant
+ *    pins its own. */
+.ui-button--icon {
+  width: 36px;
+  height: 36px;
+  padding: 0;
+  background: transparent;
+  color: var(--ink);
+  border-color: var(--rule);
+  border-radius: var(--radius-button-md);
+}
+
+.ui-button--icon:hover:not(:disabled) {
+  background: var(--rule-soft);
+  border-color: var(--ink-faint);
+}
+
+.ui-button--icon[aria-expanded="true"] {
+  background: var(--ink);
+  border-color: var(--ink);
+  color: var(--surface);
+}
+
+/* — Tone: danger flips hover to magenta-deep. Composes with secondary
+ *    today; could extend to other variants if a use case arrives. */
+.ui-button--danger.ui-button--secondary:hover:not(:disabled) {
+  color: var(--magenta-deep);
+  border-color: var(--magenta-deep);
+}
+
+/* — Shared: disabled + loading. */
+.ui-button:disabled,
+.ui-button[data-loading="true"] {
+  opacity: 0.4;
+  cursor: not-allowed;
+}

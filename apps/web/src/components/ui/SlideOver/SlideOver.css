@@ -1,0 +1,55 @@
+/* Slide-over primitive — side panel. Matches the pre-refactor Sidebar
+ * surface: 0.18 dim, 4px backdrop blur, 200ms backdrop fade, 280ms
+ * slide-in. */
+
+.ui-slide-over-backdrop {
+  position: fixed;
+  inset: 0;
+  background: rgba(26, 20, 16, 0.18);
+  backdrop-filter: blur(4px);
+  -webkit-backdrop-filter: blur(4px);
+  z-index: 70;
+  animation: ui-slide-over-fade 200ms var(--ease-out);
+}
+
+.ui-slide-over {
+  position: fixed;
+  top: 0;
+  bottom: 0;
+  background: var(--surface);
+  border: 0 solid var(--rule);
+  z-index: 80;
+  display: flex;
+  flex-direction: column;
+  animation-duration: 280ms;
+  animation-timing-function: var(--ease-out);
+}
+
+.ui-slide-over--left {
+  left: 0;
+  border-right-width: 1px;
+  box-shadow: 6px 0 24px -12px rgba(26, 20, 16, 0.14);
+  animation-name: ui-slide-over-slide-from-left;
+}
+
+.ui-slide-over--right {
+  right: 0;
+  border-left-width: 1px;
+  box-shadow: -6px 0 24px -12px rgba(26, 20, 16, 0.14);
+  animation-name: ui-slide-over-slide-from-right;
+}
+
+@keyframes ui-slide-over-fade {
+  from { opacity: 0; }
+  to   { opacity: 1; }
+}
+
+@keyframes ui-slide-over-slide-from-left {
+  from { transform: translateX(-100%); }
+  to   { transform: translateX(0); }
+}
+
+@keyframes ui-slide-over-slide-from-right {
+  from { transform: translateX(100%); }
+  to   { transform: translateX(0); }
+}

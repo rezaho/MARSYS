@@ -1,0 +1,14 @@
+/* Keyboard-key chip. Matches the pre-refactor styling in both
+ * sidebar-footer-hint kbd and home-footer kbd. */
+
+.ui-kbd {
+  font-family: var(--font-mono);
+  background: var(--rule-soft);
+  border: 1px solid var(--rule);
+  border-radius: var(--radius-chip);
+  padding: 1px 5px;
+  font-size: 10px;
+  color: var(--ink-soft);
+  letter-spacing: 0;
+  text-transform: none;
+}
