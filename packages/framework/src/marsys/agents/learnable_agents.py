@@ -217,8 +217,7 @@ class BaseLearnableAgent(BaseAgent, ABC):
                 'model_type': type(self.model).__name__
             }
             
-            # Future: Add hooks for PEFT gradient updates, loss calculation, etc.
-            # This will be implemented when StateManager supports model checkpoints
+            # Future: PEFT gradient updates, loss calculation, model checkpointing.
             
         return result
 
