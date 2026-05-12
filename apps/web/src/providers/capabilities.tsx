@@ -3,6 +3,7 @@ import { fetchBootstrap, type BootstrapResponse } from "../lib/api";
 
 interface CapabilitiesState {
   data: BootstrapResponse | null;
+  token: string | null;
   error: Error | null;
   isLoading: boolean;
 }
@@ -28,6 +29,7 @@ function readToken(): string | null {
 export function CapabilitiesProvider({ children }: { children: ReactNode }) {
   const [state, setState] = useState<CapabilitiesState>({
     data: null,
+    token: null,
     error: null,
     isLoading: true,
   });
@@ -38,6 +40,7 @@ export function CapabilitiesProvider({ children }: { children: ReactNode }) {
     if (!token) {
       setState({
         data: null,
+        token: null,
         error: new Error("no auth token (Tauri injection or #token= fragment required)"),
         isLoading: false,
       });
@@ -45,10 +48,10 @@ export function CapabilitiesProvider({ children }: { children: ReactNode }) {
     }
     fetchBootstrap(token)
       .then((data) => {
-        if (!cancelled) setState({ data, error: null, isLoading: false });
+        if (!cancelled) setState({ data, token, error: null, isLoading: false });
       })
       .catch((error: Error) => {
-        if (!cancelled) setState({ data: null, error, isLoading: false });
+        if (!cancelled) setState({ data: null, token, error, isLoading: false });
       });
     return () => {
       cancelled = true;
