@@ -40,19 +40,24 @@ marsys execution
        │                                         │           └─► ...
        │
        │  ┌────────────────────────────────────────────┐
-       └─►│ AG-UI translator (Spren-side)              │
-          │ packages/spren/src/spren/events.py         │
+       └─►│ AG-UI translator (framework-side)          │
+          │ marsys.transport.aggui (Framework v0.3 S06)│
           │ subscribes to BranchCreatedEvent /         │
           │ BranchCompletedEvent / generation +        │
           │ tool-call lifecycle; emits AG-UI events    │
-          │ on per-run SSE channel                     │
-          │ /v1/runs/{id}/events                       │
+          │ as AsyncIterator[AGUIEvent] from           │
+          │ AGUIEventStream(orchestra, run_id)         │
+          │                                            │
+          │ Spren wraps in SSE HTTP endpoint at        │
+          │ /v1/runs/{id}/events (Spren v0.3 S04)      │
           └────────────────────────────────────────────┘
 ```
 
 The NDJSON writer and the `TelemetrySink` fan-out are framework-side, hooked into `TraceCollector` at every `span.close(...)` site (`_handle_branch_completed`, `_handle_agent_complete`, `_handle_tool_call`, `_handle_generation`, `_handle_final_response`, plus the orphan-close loop in `finalize`). They consume closed spans, never raw events.
 
-The AG-UI translator is Spren-side, subscribing to `EventBus` directly for in-flight lifecycle events (the events Spren cares about are `BranchCreatedEvent` / `BranchCompletedEvent` from `coordination/events.py` plus generation + tool-call lifecycle events from `coordination/status/events.py`). It emits AG-UI events on the per-run SSE channel. Different layer, different consumer surface, different cadence — a closed span vs. a live event.
+The AG-UI translator is framework-side (`marsys.transport.aggui`, shipping in Framework v0.3 Session 06), subscribing to `EventBus` directly for in-flight lifecycle events (`BranchCreatedEvent` / `BranchCompletedEvent` from `coordination/events.py` plus generation + tool-call lifecycle events from `coordination/status/events.py`). It emits AG-UI events as `AsyncIterator[AGUIEvent]` from `AGUIEventStream(orchestra, run_id)`; Spren v0.3 Session 04 wraps the iterator in an SSE HTTP endpoint at `/v1/runs/{id}/events`. The translator is reusable by any consumer who wants live UI streaming (MARSYS Cloud's hosted dashboard, third-party AG-UI clients, custom UIs) — Spren is one consumer of a generic seam, matching the `TelemetrySink` pattern.
+
+Different layer, different consumer surface, different cadence — a closed span vs. a live event.
 
 Both surfaces are append-only. Crash mid-run loses neither — the NDJSON file is durable through any crash up to the moment of the crash, and the SSE channel is reconnect-tolerant (clients tail-read the file from start to current EOF, then resume from latest `Last-Event-ID`).
 

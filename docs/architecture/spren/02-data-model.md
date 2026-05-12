@@ -185,7 +185,7 @@ Two non-span line types are emitted by the writer and must be filtered by reader
 - `kind == "stream_event"` — diagnostic (e.g. `{"event": "dropped_span", "dropped_span_count": N}`).
 - `kind == "stream_completed"` — terminal marker, exactly once on close. Missing marker on EOF means the writer crashed.
 
-The Spren-side AG-UI translator (`packages/spren/src/spren/events.py`, Spren v0.3 Session 04) is a separate `EventBus` consumer that translates framework lifecycle events into AG-UI events on the SSE channel; it does not consume `trace.ndjson`. The trace file is for the run inspector + cold reads.
+The framework-side AG-UI translator (`marsys.transport.aggui`, Framework v0.3 Session 06) is a separate `EventBus` consumer that translates framework lifecycle events into AG-UI events. Spren v0.3 Session 04 wraps the framework's `AGUIEventStream(orchestra, run_id) -> AsyncIterator[AGUIEvent]` adapter in an SSE HTTP endpoint at `GET /v1/runs/{id}/events`; it does not consume `trace.ndjson` for live streaming. The trace file is for the run inspector + cold reads (reconnect replay).
 
 ## Migrations
 

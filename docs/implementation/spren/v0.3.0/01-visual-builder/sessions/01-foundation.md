@@ -42,9 +42,9 @@ Strategic, opinionated, or subjective decisions belong to the user. Use `AskUser
 
 ### Foundational project rules
 
-- [`/CLAUDE.md`](../../../../CLAUDE.md) — umbrella repo's working rules
-- [`/BRAINDUMP.md`](../../../../BRAINDUMP.md) — context dump from prior design conversations (READ FIRST every fresh session)
-- [`docs/architecture/spren/08-design-principles.md`](../../../architecture/spren/08-design-principles.md) — Spren design principles SP-001..SP-019
+- [`/CLAUDE.md`](../../../../../../CLAUDE.md) — umbrella repo's working rules
+- [`/BRAINDUMP.md`](../../../../../../BRAINDUMP.md) — context dump from prior design conversations (READ FIRST every fresh session)
+- [`docs/architecture/spren/08-design-principles.md`](../../../../../architecture/spren/08-design-principles.md) — Spren design principles SP-001..SP-019
 
 ---
 
@@ -68,7 +68,7 @@ The umbrella is **distinct from** two proprietary products in sibling repos: **M
 
 The visual builder is a feature of marsys (every framework deserves a visual debugger / inspector for its core data structures) AND a feature of Spren (it's Spren's home page surface). The Tauri shell, the TUI, and the adapter SDK all consume the same FastAPI backend (SP-019). Splitting them across repos forces awkward cross-repo dependency management. Keeping them in one umbrella avoids that.
 
-The framework remains a **library** distributed via PyPI (`pip install marsys`) — its audience is Python developers. **Spren** is a **product** distributed via native installers + secondary channels (brew / winget / apt / npm / pipx / Docker). See [`docs/architecture/spren/05-packaging-distribution.md`](../../../architecture/spren/05-packaging-distribution.md).
+The framework remains a **library** distributed via PyPI (`pip install marsys`) — its audience is Python developers. **Spren** is a **product** distributed via native installers + secondary channels (brew / winget / apt / npm / pipx / Docker). See [`docs/architecture/spren/05-packaging-distribution.md`](../../../../../architecture/spren/05-packaging-distribution.md).
 
 ### Your role as an implementer
 
@@ -80,14 +80,14 @@ The framework remains a **library** distributed via PyPI (`pip install marsys`) 
 
 ### Where to read deeper if you need it
 
-- High-level: [`docs/architecture/spren/00-overview.md`](../../../architecture/spren/00-overview.md)
-- System context: [`docs/architecture/spren/01-system-context.md`](../../../architecture/spren/01-system-context.md)
-- Frontend architecture: [`docs/architecture/spren/04-frontend-architecture.md`](../../../architecture/spren/04-frontend-architecture.md)
-- Packaging & distribution: [`docs/architecture/spren/05-packaging-distribution.md`](../../../architecture/spren/05-packaging-distribution.md)
-- Meta-agent design: [`docs/architecture/spren/09-meta-agent.md`](../../../architecture/spren/09-meta-agent.md)
-- Memory architecture: [`docs/architecture/spren/10-memory-architecture.md`](../../../architecture/spren/10-memory-architecture.md)
+- High-level: [`docs/architecture/spren/00-overview.md`](../../../../../architecture/spren/00-overview.md)
+- System context: [`docs/architecture/spren/01-system-context.md`](../../../../../architecture/spren/01-system-context.md)
+- Frontend architecture: [`docs/architecture/spren/04-frontend-architecture.md`](../../../../../architecture/spren/04-frontend-architecture.md)
+- Packaging & distribution: [`docs/architecture/spren/05-packaging-distribution.md`](../../../../../architecture/spren/05-packaging-distribution.md)
+- Meta-agent design: [`docs/architecture/spren/09-meta-agent.md`](../../../../../architecture/spren/09-meta-agent.md)
+- Memory architecture: [`docs/architecture/spren/10-memory-architecture.md`](../../../../../architecture/spren/10-memory-architecture.md)
 - Full v0.3 plan: [`docs/implementation/spren/v0.3-mvp.md`](../v0.3-mvp.md), [`docs/implementation/spren/00-overview.md`](../00-overview.md)
-- BRAINDUMP: [`/BRAINDUMP.md`](../../../../BRAINDUMP.md)
+- BRAINDUMP: [`/BRAINDUMP.md`](../../../../../../BRAINDUMP.md)
 
 ---
 
@@ -122,7 +122,7 @@ If the baseline test suite has unexpected failures, **stop and surface to the us
 
 ## Bundle position + tier
 
-- **Bundle**: A — Visual workflow builder ([test scenarios](../bundles/A-visual-builder/test-scenarios.md))
+- **Bundle**: A — Visual workflow builder ([test scenarios](../testing/test-scenarios.md))
 - **Position in bundle**: 1 of 3 (foundation; Sessions 02 + 03 build on top)
 - **Tier**: CRITICAL — Researcher + Designer + Validator/Critic. Foundation work touches the framework relocation (TRUNK-CRITICAL implication: zero `.py` edits inside `src/marsys/`), distribution scaffolding, and the Tauri sidecar protocol — all load-bearing for everything after.
 - **Bundle outcome this session contributes to**: dev environment exists; Tauri shell launches sidecar + opens webview; framework regression tests still green at new location.
@@ -192,14 +192,14 @@ After this session, the umbrella repo has:
 
 ## Background reading (do this before writing code)
 
-1. [`/CLAUDE.md`](../../../../CLAUDE.md)
-2. [`/BRAINDUMP.md`](../../../../BRAINDUMP.md)
-3. [`docs/architecture/spren/00-overview.md`](../../../architecture/spren/00-overview.md)
-4. [`docs/architecture/spren/01-system-context.md`](../../../architecture/spren/01-system-context.md)
-5. [`docs/architecture/spren/04-frontend-architecture.md`](../../../architecture/spren/04-frontend-architecture.md) — full stack spec
-6. [`docs/architecture/spren/05-packaging-distribution.md`](../../../architecture/spren/05-packaging-distribution.md) — distribution channels + Tauri sidecar pattern
-7. [`docs/architecture/spren/07-security.md`](../../../architecture/spren/07-security.md) — § Localhost API exposure (auth-token pattern)
-8. [`docs/architecture/spren/08-design-principles.md`](../../../architecture/spren/08-design-principles.md) — SP-001 through SP-019
+1. [`/CLAUDE.md`](../../../../../../CLAUDE.md)
+2. [`/BRAINDUMP.md`](../../../../../../BRAINDUMP.md)
+3. [`docs/architecture/spren/00-overview.md`](../../../../../architecture/spren/00-overview.md)
+4. [`docs/architecture/spren/01-system-context.md`](../../../../../architecture/spren/01-system-context.md)
+5. [`docs/architecture/spren/04-frontend-architecture.md`](../../../../../architecture/spren/04-frontend-architecture.md) — full stack spec
+6. [`docs/architecture/spren/05-packaging-distribution.md`](../../../../../architecture/spren/05-packaging-distribution.md) — distribution channels + Tauri sidecar pattern
+7. [`docs/architecture/spren/07-security.md`](../../../../../architecture/spren/07-security.md) — § Localhost API exposure (auth-token pattern)
+8. [`docs/architecture/spren/08-design-principles.md`](../../../../../architecture/spren/08-design-principles.md) — SP-001 through SP-019
 9. [`docs/implementation/spren/v0.3-mvp.md`](../v0.3-mvp.md) — what the rest of v0.3 builds on this foundation
 10. Current root `pyproject.toml` — see what we're moving and what dependencies stay
 11. Current `src/marsys/` and `tests/` layouts — verify what relocates

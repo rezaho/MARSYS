@@ -4,7 +4,7 @@
 >
 > Status: **ready for implementation**. Acceptance criteria are frozen separately at [`./03-visual-builder/acceptance.md`](./03-visual-builder/acceptance.md) before coding starts (extracted by `acceptance-criteria-extractor` agent on the first implementation turn).
 
-Visual anchor: [`./03-visual-builder/assets/spren-inspiration.png`](./03-visual-builder/assets/spren-inspiration.png) — the soft grainy egg-shape that is Spren's living presence. The entire UI is built around this. Reference HTML preview of the design system in context lives at [`./03-visual-builder/palette-preview.html`](./03-visual-builder/palette-preview.html) (open in a browser to see the orb animation + typography + spacing — not source of truth for implementation, but a sanity check).
+Visual anchor: [`../assets/spren-inspiration.png`](../assets/spren-inspiration.png) — the soft grainy egg-shape that is Spren's living presence. The entire UI is built around this. Reference HTML preview of the design system in context lives at [`../assets/palette-preview.html`](../assets/palette-preview.html) (open in a browser to see the orb animation + typography + spacing — not source of truth for implementation, but a sanity check).
 
 ---
 
@@ -171,7 +171,7 @@ These are spatial sketches anchored on the journey steps. Detail (component spac
 
 ### W-A — Home (orb-centered)
 
-The home page is the Spren orb. See §9 Design System and [`./03-visual-builder/assets/spren-inspiration.png`](./03-visual-builder/assets/spren-inspiration.png) for the visual reference.
+The home page is the Spren orb. See §9 Design System and [`../assets/spren-inspiration.png`](../assets/spren-inspiration.png) for the visual reference.
 
 ```
 ┌─────────────────────────────────────────────────────────────────────┐
@@ -428,7 +428,7 @@ These were the open questions at the start of Stage 0. Each is resolved.
 
 ## 9. Design System (locked)
 
-Visual anchor: [`./03-visual-builder/assets/spren-inspiration.png`](./03-visual-builder/assets/spren-inspiration.png). The entire system is built around the soft grainy egg-form: warm white surface, the orb is the only color in the room.
+Visual anchor: [`../assets/spren-inspiration.png`](../assets/spren-inspiration.png). The entire system is built around the soft grainy egg-form: warm white surface, the orb is the only color in the room.
 
 ### 9.1 Color palette
 
@@ -476,7 +476,7 @@ Body line-height: 1.5–1.6. Max body width: 60–65ch.
 
 ### 9.3 Spren orb — specification
 
-Lives at `apps/web/src/components/Spren.tsx`. SVG-based, multi-layer crossfade approach (adapted from the user-approved reference at [`./03-visual-builder/spren-orb-v4.html`](./03-visual-builder/spren-orb-v4.html)) — but with state-transition discipline the v4 prototype lacks.
+Lives at `apps/web/src/components/Spren.tsx`. SVG-based, multi-layer crossfade approach (adapted from the user-approved reference at [`../assets/spren-orb-v4.html`](../assets/spren-orb-v4.html)) — but with state-transition discipline the v4 prototype lacks.
 
 **Why multi-layer crossfade, not single-path-morph:** The v4 reference uses four separate `<svg>` layers (idle / typing / thinking / speaking), each with its own gradient + blur stack + path-morph timeline. Layers crossfade by toggling an `.active` class (opacity + scale transition over 700ms). This gives us:
 - Per-state visuals tuned independently (typing has the three-dot cinematic split; thinking has the high-frequency pulse; etc.) without a single timeline trying to be all four.
@@ -712,7 +712,7 @@ All animations respect `prefers-reduced-motion`. Orb has a documented static fal
 These are the design gaps the prototype surfaced; they're scoped INTO Session 03's implementation rather than punted to a later session. Each becomes an explicit acceptance criterion the implementer must check off.
 
 1. **Dynamic orb states.** Implement all four (idle / typing / thinking / speaking) per §9.3. Class-based, swappable from `<Spren state="…" />`. Demo each in the manual-verify checklist. Visual regression baselines cover idle + typing minimum.
-2. **Asymmetric orb path.** Tune the SVG `<path>` to lean per the inspiration image's slightly-wider-lower-right form. Currently the path in §9.3 is mirror-symmetric. Acceptance: side-by-side comparison with [`./03-visual-builder/assets/spren-inspiration.png`](./03-visual-builder/assets/spren-inspiration.png) shows visual match.
+2. **Asymmetric orb path.** Tune the SVG `<path>` to lean per the inspiration image's slightly-wider-lower-right form. Currently the path in §9.3 is mirror-symmetric. Acceptance: side-by-side comparison with [`../assets/spren-inspiration.png`](../assets/spren-inspiration.png) shows visual match.
 3. **Spren on non-home surfaces.** Implement the presence orb (48-72px) at top-right of `/workflows`, canvas, agent config, etc. Clicking opens a chat sheet overlaying the surface; the sheet contains the same input bar + send button. The sheet dismisses with Esc or click-outside. Designer in Stage 2 commits to exact sheet behavior (full-overlay vs side-anchored).
 4. **Welcome screen tightening.** Greeting headline at 48px (Geist 400, `-0.025em` tracking). Subline cut to one sentence. Input bar width 520-560px. Add a small temporal anchor under or beside the wordmark (e.g., `Tuesday · 9:14` in Geist Mono 11px `--ink-faint`) — returning users feel Spren remembers context.
 5. **Design-system docs out of the home.** Embedded design notes in the prototype broke the meditation of the home page. Ship documentation as a separate `apps/web/src/design-system/` directory with MDX, or via Storybook (Researcher to recommend approach in Stage 1).
@@ -736,7 +736,7 @@ These are the design gaps the prototype surfaced; they're scoped INTO Session 03
 
 ## 11. Success criteria
 
-From `docs/implementation/spren/bundles/A-visual-builder/test-scenarios.md`:
+From `docs/implementation/spren/v0.3.0/01-visual-builder/testing/test-scenarios.md`:
 
 - **G-07** (canvas round-trip golden path): user opens canvas (after `+ New Workflow` from ⌘K), drags agent nodes, connects with edges, configures via agent form, applies a pattern preset, saves; workflow appears with `provenance=visual_builder`; reload page → canvas renders the same topology + agent config without losing layout, edge metadata, or fields.
 - **U-05** (manual smoke): build a 3-agent workflow on the canvas; save; reload; canvas renders the same topology.
@@ -779,7 +779,7 @@ If any of these surface a conflict with the locked design system in §9, the imp
 - [x] Three user journeys approved (section 6).
 - [x] Skeleton wireframes approved (section 7).
 - [x] Decisions locked (section 8). All 9 open questions resolved.
-- [x] Design system locked (section 9). Anchored on [`./03-visual-builder/assets/spren-inspiration.png`](./03-visual-builder/assets/spren-inspiration.png).
+- [x] Design system locked (section 9). Anchored on [`../assets/spren-inspiration.png`](../assets/spren-inspiration.png).
 - [x] Polish items captured for in-session work (section 10).
 - [x] Success criteria affirmed (section 11).
 - [ ] Acceptance criteria frozen at [`./03-visual-builder/acceptance.md`](./03-visual-builder/acceptance.md) — extracted by the `acceptance-criteria-extractor` agent on the first implementation turn, before any code is written.

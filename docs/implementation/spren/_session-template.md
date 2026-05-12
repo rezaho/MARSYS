@@ -124,7 +124,7 @@ You are building one slice of a careful product. The slice has been scoped, desi
 <2-4 sentences describing what already exists in the repo / what's been deployed / what's working. The implementer should be able to verify this state with a few git/grep commands before they start.>
 
 **Relevant prior session briefs to consult if needed:**
-- `sessions/<NN>-<title>.md` — <one-line description of when to read it>
+- `<version>/<NN>-<bundle>/sessions/<NN>-<title>.md` — <one-line description of when to read it>
 
 ---
 

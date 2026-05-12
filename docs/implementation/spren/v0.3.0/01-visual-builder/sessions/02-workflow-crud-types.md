@@ -50,9 +50,9 @@ Do NOT ask for purely technical implementation choices you can decide.
 
 ### Foundational project rules
 
-- [`/CLAUDE.md`](../../../../CLAUDE.md)
-- [`/BRAINDUMP.md`](../../../../BRAINDUMP.md)
-- [`docs/architecture/spren/08-design-principles.md`](../../../architecture/spren/08-design-principles.md)
+- [`/CLAUDE.md`](../../../../../../CLAUDE.md)
+- [`/BRAINDUMP.md`](../../../../../../BRAINDUMP.md)
+- [`docs/architecture/spren/08-design-principles.md`](../../../../../architecture/spren/08-design-principles.md)
 
 ---
 
@@ -84,10 +84,10 @@ Today the only way to use the marsys framework is to write Python. Spren lowers 
 
 ### Where to read deeper if you need it
 
-- High-level: [`docs/architecture/spren/00-overview.md`](../../../architecture/spren/00-overview.md)
-- System context: [`docs/architecture/spren/01-system-context.md`](../../../architecture/spren/01-system-context.md)
-- **Data model (load-bearing for this session):** [`docs/architecture/spren/02-data-model.md`](../../../architecture/spren/02-data-model.md)
-- **API design (load-bearing for this session):** [`docs/architecture/spren/03-api-design.md`](../../../architecture/spren/03-api-design.md)
+- High-level: [`docs/architecture/spren/00-overview.md`](../../../../../architecture/spren/00-overview.md)
+- System context: [`docs/architecture/spren/01-system-context.md`](../../../../../architecture/spren/01-system-context.md)
+- **Data model (load-bearing for this session):** [`docs/architecture/spren/02-data-model.md`](../../../../../architecture/spren/02-data-model.md)
+- **API design (load-bearing for this session):** [`docs/architecture/spren/03-api-design.md`](../../../../../architecture/spren/03-api-design.md)
 - v0.3 plan: [`docs/implementation/spren/v0.3-mvp.md`](../v0.3-mvp.md)
 
 ---
@@ -150,7 +150,7 @@ Verify the chosen `openapi-typescript` and `json-schema-to-typescript` versions 
 
 ## Bundle position + tier
 
-- **Bundle**: A — Visual workflow builder ([test scenarios](../bundles/A-visual-builder/test-scenarios.md))
+- **Bundle**: A — Visual workflow builder ([test scenarios](../testing/test-scenarios.md))
 - **Position in bundle**: 2 of 3 (after foundation, before visual builder)
 - **Tier**: HIGH — Designer + Validator/Critic (no Researcher; CRUD over SQLite + FastAPI + Pydantic is well-understood territory; only `json-schema-to-typescript` and `openapi-typescript` invocation syntax warrants a quick verification at session start)
 - **Bundle outcome this session contributes to**: workflows persist in SQLite + REST CRUD works + Python file imports round-trip + TS types are generated from Pydantic. (Session 03 turns this into a real visual UI.)
@@ -194,10 +194,10 @@ The bootstrap response from Session 01 is extended to include the workflow list 
 
 ## Background reading (do this before writing code)
 
-1. [`/CLAUDE.md`](../../../../CLAUDE.md) — project rules, TRUNK criticality
-2. [`docs/architecture/spren/08-design-principles.md`](../../../architecture/spren/08-design-principles.md) — especially SP-005 (Pydantic source of truth), SP-006 (no backward-compat), SP-009 (run snapshots immutable), SP-018 (framework knows nothing of Spren), SP-019 (API is single source of truth)
-3. [`docs/architecture/spren/02-data-model.md`](../../../architecture/spren/02-data-model.md) — the SQLite schema for `workflows` (including `provenance` columns) and the JSON shape of `definition`
-4. [`docs/architecture/spren/03-api-design.md`](../../../architecture/spren/03-api-design.md) — the workflow REST endpoints (including `import-python`), error format, idempotency, pagination
+1. [`/CLAUDE.md`](../../../../../../CLAUDE.md) — project rules, TRUNK criticality
+2. [`docs/architecture/spren/08-design-principles.md`](../../../../../architecture/spren/08-design-principles.md) — especially SP-005 (Pydantic source of truth), SP-006 (no backward-compat), SP-009 (run snapshots immutable), SP-018 (framework knows nothing of Spren), SP-019 (API is single source of truth)
+3. [`docs/architecture/spren/02-data-model.md`](../../../../../architecture/spren/02-data-model.md) — the SQLite schema for `workflows` (including `provenance` columns) and the JSON shape of `definition`
+4. [`docs/architecture/spren/03-api-design.md`](../../../../../architecture/spren/03-api-design.md) — the workflow REST endpoints (including `import-python`), error format, idempotency, pagination
 5. [`packages/framework/src/marsys/coordination/topology/core.py`](../../../../packages/framework/src/marsys/coordination/topology/core.py) — marsys's Node, Edge, NodeType, EdgeType
 6. [`packages/framework/src/marsys/coordination/topology/patterns.py`](../../../../packages/framework/src/marsys/coordination/topology/patterns.py) — PatternConfig presets
 7. [`packages/framework/src/marsys/agents/agents.py`](../../../../packages/framework/src/marsys/agents/agents.py) — Agent constructor params

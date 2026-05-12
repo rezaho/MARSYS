@@ -9,7 +9,7 @@
 This file is the source of truth for Bundle A's bundle-end real-world test. Four testing layers consume it at the bundle boundary:
 
 1. **Cross-session scripted integration** — Playwright (browser GUI) + tauri-driver/WebdriverIO (Tauri shell) + httpx (API-only flows). Runs in CI; deterministic. Covers golden-path + edge-case scenarios that benefit from automation.
-2. **Agent-driven exploratory** — Claude Code with `mcp__claude-in-chrome__*` reads this file and runs through golden-path + edge-case + exploratory scenarios, plus variations of its own. Produces `tmp/spren/bundles/A-visual-builder/exploratory-report.md`.
+2. **Agent-driven exploratory** — Claude Code with `mcp__claude-in-chrome__*` reads this file and runs through golden-path + edge-case + exploratory scenarios, plus variations of its own. Produces `tmp/spren/v0.3.0/01-visual-builder/testing/exploratory-report.md`.
 3. **Visual regression** — Argos snapshots key screens. Bundle A captures the first baseline; Bundles B onward diff against it.
 4. **User manual smoke** — 5-min checklist on a fresh data dir + fresh install. Bundle ships only on 100% pass.
 
@@ -289,7 +289,7 @@ Variations the agent-driven exploratory layer should try. Not exhaustive; agent 
 - **X-09 — Slow disk on data dir**: simulate via `chmod 444` or a fuse FS with latency. Migrations + workflow writes either succeed or fail with a clear error; no silent corruption.
 - **X-10 — Token rotation mid-session**: kill sidecar, restart, copy new token into the existing browser's URL fragment, refresh. UI reconnects cleanly.
 
-The agent-driven layer SHOULD also try things outside this list — the point is to surface gaps the implementer didn't anticipate. Pass/fail/inconclusive per scenario, with screenshots/logs into `tmp/spren/bundles/A-visual-builder/exploratory-report.md`.
+The agent-driven layer SHOULD also try things outside this list — the point is to surface gaps the implementer didn't anticipate. Pass/fail/inconclusive per scenario, with screenshots/logs into `tmp/spren/v0.3.0/01-visual-builder/testing/exploratory-report.md`.
 
 ## Per-layer guidance
 
@@ -319,7 +319,7 @@ The agent-driven layer SHOULD also try things outside this list — the point is
 
 **Tooling**: `mcp__claude-in-chrome__*` for the browser layer; `mcp__claude-in-chrome__tabs_context_mcp` for state inspection. For Tauri, the agent invokes the binary via subprocess + drives via tauri-driver.
 
-**Output**: `tmp/spren/bundles/A-visual-builder/exploratory-report.md` with per-scenario pass/fail/inconclusive + screenshots/logs/traces + at least 5 implementer-not-anticipated paths attempted with results.
+**Output**: `tmp/spren/v0.3.0/01-visual-builder/testing/exploratory-report.md` with per-scenario pass/fail/inconclusive + screenshots/logs/traces + at least 5 implementer-not-anticipated paths attempted with results.
 
 ### Visual regression (Argos)
 
