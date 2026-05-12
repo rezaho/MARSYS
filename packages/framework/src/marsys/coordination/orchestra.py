@@ -337,6 +337,24 @@ class Orchestra:
                 execution_config.tracing.output_dir,
             )
 
+        # AG-UI translator (peer subscriber to EventBus). Sibling to the trace
+        # collector — the trace collector consumes closed spans; the translator
+        # consumes raw events for live UI streaming. Wired here (in
+        # _wire_event_bus) rather than _initialize_components so resume_session
+        # also re-attaches the translator on the freshly-constructed EventBus.
+        self.aggui_translator = None
+        if execution_config.aggui.enabled:
+            from .aggui.translator import AGGUITranslator
+
+            self.aggui_translator = AGGUITranslator(
+                event_bus=self.event_bus,
+                config=execution_config.aggui,
+            )
+            logger.info(
+                "AG-UI translator enabled (queue max size: %d)",
+                execution_config.aggui.queue_max_size,
+            )
+
     def _initialize_components(self):
         """Initialize all internal coordination components."""
         # Create event bus for coordination events
@@ -1136,6 +1154,15 @@ class Orchestra:
                             result.metadata["tracing"] = tracing_meta
                     except Exception as e:
                         logger.warning(f"Collect tracing metadata failed: {e}")
+
+            # Unsubscribe the AG-UI translator from EventBus and drain its queue.
+            # Without this, listener callbacks stay attached and the translator's
+            # last in-flight events are silently dropped when EventBus exits.
+            if getattr(self, "aggui_translator", None) is not None:
+                try:
+                    await self.aggui_translator.close()
+                except Exception as e:
+                    logger.warning(f"AGGUI translator close failed: {e}")
 
         return result
 

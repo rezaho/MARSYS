@@ -64,6 +64,11 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
+aggui = [
+    "ag-ui-protocol==0.1.18",
+    "jsonpatch>=1.33",
+]
+
 local-models = [
     "torch>=2.6.0",
     "torchvision>=0.23.0",
@@ -114,6 +119,8 @@ test = [
     "pytest>=8.4.1",
     "pytest-asyncio>=1.0.0",
     "pytest-mock>=3.14.1",
+    "hypothesis>=6.0.0",
+    "jsonschema>=4.23.0",
 ]
 
 [project.urls]
