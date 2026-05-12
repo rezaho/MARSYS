@@ -8,14 +8,20 @@
  * briefly show them (the predicate hides them, but the round-trip is
  * still wasted).
  *
- * On mount: POST an empty workflow with `provenance=visual_builder`,
- * grab the returned id, and `replace`-navigate to `/workflows/{id}`. If
- * the user opens the canvas and never saves a single node, the draft
- * sweeper deletes the row after 24h.
+ * Visible states the user can land in:
+ *  - capabilities still bootstrapping → "Connecting to Spren…"
+ *  - capabilities failed (no auth token, sidecar dead) → error + link home
+ *  - mutation pending → "Setting up a new canvas…" + elapsed-time counter
+ *  - mutation errored → error + Retry + Cancel
+ *  - mutation succeeded → flash success then redirect
+ *
+ * Earlier versions silently sat on the pending state forever when auth
+ * was missing or the POST never resolved — the user got no signal. This
+ * version surfaces every state.
  */
 import { useMutation } from "@tanstack/react-query";
-import { createFileRoute, useNavigate } from "@tanstack/react-router";
-import { useEffect, useRef, type ReactElement } from "react";
+import { Link, createFileRoute, useNavigate } from "@tanstack/react-router";
+import { useEffect, useRef, useState, type ReactElement } from "react";
 
 import { Spren } from "../../components/Spren";
 import { createWorkflow, type Workflow, type WorkflowCreateRequest } from "../../lib/api";
@@ -35,12 +41,14 @@ const EMPTY_DEFINITION: WorkflowCreateRequest["definition"] = {
 
 function NewWorkflowRoute(): ReactElement {
   const navigate = useNavigate();
-  const { token } = useCapabilities();
+  const { token, isLoading: capsLoading, error: capsError } = useCapabilities();
   const firedRef = useRef(false);
+  const [startedAt, setStartedAt] = useState<number | null>(null);
+  const [elapsed, setElapsed] = useState(0);
 
   const mutation = useMutation({
     mutationFn: async (): Promise<Workflow> => {
-      if (!token) throw new Error("no auth token");
+      if (!token) throw new Error("no auth token (bootstrap returned without one)");
       return createWorkflow(token, {
         name: "Untitled workflow",
         description: null,
@@ -56,25 +64,138 @@ function NewWorkflowRoute(): ReactElement {
         replace: true,
       });
     },
+    onError: (err) => {
+      // eslint-disable-next-line no-console
+      console.error("workflow create failed", err);
+    },
   });
 
+  // Fire the mutation once on the first mount where we have a token.
   useEffect(() => {
     if (firedRef.current) return;
+    if (capsLoading) return;
     if (!token) return;
     firedRef.current = true;
+    setStartedAt(Date.now());
     mutation.mutate();
-    // mutation is stable; we only want this on first ready mount.
+    // mutation.mutate is stable; intentionally one-shot on token-arrival.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [token]);
+  }, [token, capsLoading]);
+
+  // Elapsed-time counter so a hung pending state surfaces a number rather
+  // than looking frozen. Cheap setInterval; cleared on unmount.
+  useEffect(() => {
+    if (!startedAt) return;
+    if (!mutation.isPending) return;
+    const id = window.setInterval(() => setElapsed(Date.now() - startedAt), 250);
+    return () => window.clearInterval(id);
+  }, [startedAt, mutation.isPending]);
+
+  function retry() {
+    firedRef.current = false;
+    mutation.reset();
+    setStartedAt(null);
+    setElapsed(0);
+    if (token) {
+      firedRef.current = true;
+      setStartedAt(Date.now());
+      mutation.mutate();
+    }
+  }
 
   return (
     <div className="new-workflow-shell" data-testid="new-workflow-shell">
-      <Spren state="thinking" size="presence" />
-      <p data-testid="new-workflow-status">
-        {mutation.isError
-          ? `Couldn't create workflow: ${(mutation.error as Error).message}`
-          : "Setting up a new canvas…"}
+      <div className="new-workflow-orb">
+        <Spren state={mutation.isError ? "idle" : "thinking"} size="presence" />
+      </div>
+      <NewWorkflowStatus
+        capsLoading={capsLoading}
+        capsError={capsError}
+        token={token}
+        mutation={mutation}
+        elapsed={elapsed}
+        onRetry={retry}
+      />
+    </div>
+  );
+}
+
+interface StatusProps {
+  capsLoading: boolean;
+  capsError: Error | null;
+  token: string | null;
+  mutation: ReturnType<typeof useMutation<Workflow, Error, void>>;
+  elapsed: number;
+  onRetry: () => void;
+}
+
+function NewWorkflowStatus({
+  capsLoading,
+  capsError,
+  token,
+  mutation,
+  elapsed,
+  onRetry,
+}: StatusProps): ReactElement {
+  if (capsLoading) {
+    return (
+      <p className="new-workflow-msg" data-testid="new-workflow-status">
+        Connecting to Spren…
       </p>
+    );
+  }
+
+  if (capsError || !token) {
+    return (
+      <div className="new-workflow-error" data-testid="new-workflow-status">
+        <p>Can't reach the Spren sidecar.</p>
+        <p className="new-workflow-detail">{capsError?.message ?? "no auth token in URL or window"}</p>
+        <Link to="/" className="new-workflow-link">← back home</Link>
+      </div>
+    );
+  }
+
+  if (mutation.isError) {
+    return (
+      <div className="new-workflow-error" data-testid="new-workflow-status">
+        <p>Couldn't create workflow.</p>
+        <p className="new-workflow-detail">{mutation.error.message}</p>
+        <div className="new-workflow-actions">
+          <button type="button" className="new-workflow-retry" onClick={onRetry}>
+            Retry
+          </button>
+          <Link to="/workflows" className="new-workflow-link">Cancel</Link>
+        </div>
+      </div>
+    );
+  }
+
+  if (mutation.isSuccess) {
+    return (
+      <p className="new-workflow-msg" data-testid="new-workflow-status">
+        Opening canvas…
+      </p>
+    );
+  }
+
+  const seconds = Math.floor(elapsed / 1000);
+  const slow = seconds >= 5;
+  return (
+    <div className="new-workflow-pending" data-testid="new-workflow-status">
+      <p className="new-workflow-msg">Setting up a new canvas…</p>
+      {slow ? (
+        <p className="new-workflow-detail">
+          Still waiting on the sidecar ({seconds}s elapsed). Network or server may be stuck.
+        </p>
+      ) : null}
+      {slow ? (
+        <div className="new-workflow-actions">
+          <button type="button" className="new-workflow-retry" onClick={onRetry}>
+            Retry
+          </button>
+          <Link to="/workflows" className="new-workflow-link">Cancel</Link>
+        </div>
+      ) : null}
     </div>
   );
 }
