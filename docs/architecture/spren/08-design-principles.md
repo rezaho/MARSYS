@@ -8,7 +8,7 @@ Cross-cutting invariants for Spren. Violating one of these = ASK FIRST. These ar
 | SP-002 | **Localhost-only by default** | `src/spren/server.py` | The HTTP server binds to `127.0.0.1`, never `0.0.0.0`. Per-launch auth token required on every request. The only exception is when the user explicitly opts into `marsys expose` (v0.3) for tunnel-based external access. |
 | SP-003 | **One transport per concern** | `03-api-design.md` | REST for CRUD; SSE for server→client event streams; one POST for mid-run user interaction. NO WebSocket. NO gRPC. Don't add a transport unless an existing one cannot meet the requirement. |
 | SP-004 | **AG-UI as the wire schema for run events** | EventBus → SSE translator | All server→client events sent over SSE conform to the AG-UI protocol event taxonomy. Don't invent a parallel schema. If AG-UI lacks an event we need, propose it upstream OR use AG-UI's `Custom` event type — don't add ad-hoc shapes. |
-| SP-005 | **Pydantic is the source of truth for types** | All HTTP boundaries and persisted shapes | Types are defined in Pydantic; TS types are generated from JSON Schema at build time via `datamodel-code-generator`. Hand-written TS types for shared shapes are FORBIDDEN — they will drift. |
+| SP-005 | **Pydantic is the source of truth for types** | All HTTP boundaries and persisted shapes | Types are defined in Pydantic; TS types are generated at build time from `/openapi.json` via `openapi-typescript`. Hand-written TS types for shared shapes are FORBIDDEN — they will drift. |
 | SP-006 | **Single-version code** (no backward-compatibility shims) | All spren code | When we change the shape of a feature, we change it everywhere. No `if version_v1 do X else do Y` paths. Stored data is migrated via one-shot migration scripts in `src/spren/migrations/`. |
 | SP-007 | **No mocked features in product code** | All spren code | Test fixtures at external boundaries (LLM responses, network) are fine and live in `tests/fixtures/`. In-codebase placeholder feature implementations are FORBIDDEN — they get treated as real by future agents and rot. Either the feature is built or it is not in scope. |
 | SP-008 | **Distinct from MARSYS Studio** | All product decisions | When a feature is ambiguous between "local-single-user" and "hosted-team", default to the local-single-user interpretation. Multi-user, RBAC, sharing, hosted concerns are explicitly out of scope (they belong to Studio). See [`01-system-context.md`](./01-system-context.md). |
@@ -28,7 +28,7 @@ Cross-cutting invariants for Spren. Violating one of these = ASK FIRST. These ar
 
 - **Mock services that "look real but return canned data"** for end-to-end testing. Use real services with recorded fixtures at the boundary. (SP-007)
 - **Version-mode feature flags** that keep two implementations alive in production code. (SP-006)
-- **Hand-rolling a TypeScript interface that mirrors a Pydantic model.** Generate it. (SP-005)
+- **Hand-rolling a TypeScript interface that mirrors a Pydantic model.** Generate it from `/openapi.json` via `openapi-typescript`. (SP-005)
 - **Hand-rolling a Python TUI client type that mirrors a Pydantic model.** Import it directly. (SP-019)
 - **A new WebSocket endpoint "because real-time is faster".** SSE is real-time enough; reach for a new transport only when SSE truly cannot do the job. (SP-003)
 - **"Reusable" abstractions added speculatively** before the second use case actually exists.
@@ -59,7 +59,7 @@ Always escalate when:
 - SP-002 from research: Tauri docs explicitly warn about localhost binding without auth
 - SP-003 from research: AG-UI / Vercel AI SDK / Bedrock AgentCore all picked SSE; SSE outscales WS for our workload
 - SP-004 from research: AG-UI is the emerging 2026 standard with major adopters (LangGraph, CrewAI, Pydantic AI, Bedrock)
-- SP-005 from research: `datamodel-code-generator` is the robust 2026 path; hand-written TS drifts
+- SP-005 from research: `openapi-typescript` is the robust 2026 path for FastAPI-driven OpenAPI → TS generation; hand-written TS drifts. (`datamodel-code-generator`, despite the name, is Python-only — it emits Pydantic / dataclasses / msgspec / TypedDict and does not produce TypeScript.)
 - SP-006, SP-007 directly from user-stated rules during planning
 - SP-008 to protect proprietary MARSYS Studio's product space
 - SP-009 from observability best practices: traces must be stable retroactive records

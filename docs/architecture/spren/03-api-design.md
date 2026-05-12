@@ -114,13 +114,13 @@ Event types map 1:1 to AG-UI:
 - `StateSnapshot` / `StateDelta`
 - `Custom` (for events that don't fit standard types — used sparingly, see SP-004)
 
-The translation layer lives in `src/spren/events.py`. It subscribes to MARSYS `EventBus` and emits AG-UI events on a per-run channel.
+The translation layer ships in the framework at `marsys.transport.aggui` (Framework v0.3 Session 06). It subscribes to MARSYS `EventBus` and emits AG-UI events as `AsyncIterator[AGUIEvent]` from `AGUIEventStream(orchestra, run_id)`. Spren v0.3 Session 04 wraps the iterator in an SSE HTTP endpoint at `/v1/runs/{id}/events`.
 
 ## OpenAPI, TypeScript, and Python type generation
 
 FastAPI emits `/openapi.json` automatically. The same Pydantic models are reused across every client (SP-019):
 
-1. `apps/web` build script fetches `/openapi.json` from a running dev server (or static-build snapshot) and runs `openapi-typescript` to generate `apps/web/src/lib/api-types.generated.ts`. Pydantic-only models (not in OpenAPI request/response) are emitted to JSON Schema via Pydantic's `model_json_schema()` and then to TypeScript via `json-schema-to-typescript` into `apps/web/src/lib/types.generated.ts`. (`datamodel-code-generator` is Python-only; it does not emit TypeScript.)
+1. `apps/web` build script generates `/openapi.json` via a transient sidecar process at build time (NOT committed to git) and runs `openapi-typescript` to generate `apps/web/src/lib/api-types.generated.ts`. Every Pydantic model the frontend consumes reaches OpenAPI through a route handler — there is no second emitter. Models that don't surface via REST are not part of the frontend's contract.
 2. The Spren API client (`apps/web/src/lib/api.ts`) imports those types.
 3. The TUI (`apps/tui/`) imports the same Pydantic models directly from `packages/spren/src/spren/models/`. No code generation needed — same Python.
 4. The framework adapter (`spren.telemetry`, in `packages/spren/src/spren/telemetry/`) imports the same Pydantic models for its API client.
@@ -157,11 +157,11 @@ Cursor-based, not page-based. List responses include:
 }
 ```
 
-Listing accepts `?cursor=...&limit=N` (max limit 100).
+Listing accepts `?cursor=...&limit=N` (max limit 100). The cursor is the opaque string-form ULID of the last returned row; the server uses it as `WHERE id > :cursor ORDER BY id` to fetch the next page. ULIDs are k-sortable monotonic, so this orders correctly and survives daemon restart.
 
 ## Idempotency
 
-Mutating endpoints accept an optional `Idempotency-Key` header. If the same key is replayed within 24 hours, the response is replayed from a cache (in `<data-dir>/data/spren.db._idempotency`). Required when posting from the meta-agent (so a retry doesn't double-create).
+Mutating endpoints accept an optional `Idempotency-Key` header. If the same key is replayed within 24 hours, the response is replayed from a cache stored in the `_idempotency` table inside `<data-dir>/data/spren.db`. The cache key is `(method, path, idempotency_key)`; mismatched method/path with the same key is treated as a fresh request. Expired rows are swept on startup. Required when posting from the meta-agent (so a retry doesn't double-create).
 
 ## Cancellation semantics
 
