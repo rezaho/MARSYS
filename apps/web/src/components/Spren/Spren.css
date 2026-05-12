@@ -1,0 +1,206 @@
+/* Spren orb styles.
+ *
+ * Layout: every layer is absolutely positioned inside `.spren-wrap` so
+ * crossfades happen in place. Each layer's animations (path morph,
+ * gradient drift, vortex orbit) are owned by SVG `<animate>` /
+ * `<animateTransform>` elements and CSS keyframes per `data-state`.
+ *
+ * Crossfade transition discipline:
+ *   - outgoing layer: opacity 1 → 0, scale 1 → 0.92 over 700ms
+ *   - incoming layer: opacity 0 → 1, scale 0.92 → 1 over 700ms
+ * Both pass through the converged-orb pose at 50% opacity each (since
+ * each layer's resting shape is the same canonical egg).
+ *
+ * Reduced-motion: `prefers-reduced-motion: reduce` falls back to the
+ * idle layer rendered without keyframe animations, with a static
+ * drop-shadow so the orb still feels present.
+ */
+
+.spren-wrap {
+  position: relative;
+  width: 100%;
+  height: 100%;
+  display: block;
+}
+
+.spren-wrap[data-clickable="true"] {
+  cursor: pointer;
+}
+
+.spren-wrap[data-clickable="true"]:focus-visible {
+  outline: 2px solid var(--magenta);
+  outline-offset: 4px;
+  border-radius: 50%;
+}
+
+.spren-layer {
+  position: absolute;
+  inset: 0;
+  display: block;
+  opacity: 0;
+  pointer-events: none;
+  transform: scale(0.92);
+  transition: opacity 700ms cubic-bezier(0.4, 0, 0.2, 1),
+              transform 700ms cubic-bezier(0.4, 0, 0.2, 1);
+  will-change: opacity, transform;
+}
+
+.spren-layer[data-active="true"] {
+  opacity: 1;
+  transform: scale(1);
+}
+
+.spren-svg {
+  width: 100%;
+  height: 100%;
+  display: block;
+  transform-origin: 50% 50%;
+  overflow: visible;
+}
+
+/* ── per-state container animations ─────────────────────────────────── */
+
+.spren-layer[data-state="idle"] .spren-svg {
+  animation: spren-float-idle 8s ease-in-out infinite;
+}
+
+.spren-layer[data-state="speaking"] .spren-svg {
+  animation:
+    spren-speak-amplitude 1.8s cubic-bezier(0.34, 1.56, 0.64, 1) infinite,
+    spren-float-idle 8s ease-in-out infinite;
+}
+
+.spren-layer[data-state="thinking"] .spren-svg {
+  animation: spren-think-pulse 2s ease-in-out infinite;
+}
+
+.spren-layer[data-state="typing"] .spren-svg {
+  animation: spren-float-idle 8s ease-in-out infinite;
+}
+
+@keyframes spren-float-idle {
+  0%, 100% {
+    transform: scale(1) translate(0px, 0px) rotate(0deg);
+  }
+  33% {
+    transform: scale(1.02) translate(8px, -6px) rotate(2deg);
+  }
+  66% {
+    transform: scale(0.98) translate(-6px, 8px) rotate(-1.5deg);
+  }
+}
+
+@keyframes spren-speak-amplitude {
+  0% { transform: scale(1); }
+  12% { transform: scale(1.15); }
+  25% { transform: scale(0.96); }
+  40% { transform: scale(1.22); }
+  55%, 65% { transform: scale(1); }
+  75% { transform: scale(1.12); }
+  85% { transform: scale(0.98); }
+  95%, 100% { transform: scale(1); }
+}
+
+@keyframes spren-think-pulse {
+  0%, 100% { transform: scale(0.92); }
+  50% { transform: scale(0.98); }
+}
+
+/* ── typing layer — three-dot cinematic vortex ─────────────────────── */
+
+.spren-vortex-wrapper {
+  width: 100%;
+  height: 100%;
+  transform-origin: 50% 50%;
+  animation: spren-vortex-spin 12s infinite;
+}
+
+@keyframes spren-vortex-spin {
+  0%, 5% { transform: rotate(0deg); }
+  20%, 75% {
+    transform: rotate(-360deg);
+    animation-timing-function: cubic-bezier(0.8, 0, 0.2, 1);
+  }
+  85%, 100% { transform: rotate(-1080deg); }
+}
+
+.spren-type-dot {
+  transform-origin: 250px 250px;
+}
+
+.spren-type-dot-1 { animation: spren-dot1 12s infinite; }
+.spren-type-dot-2 { animation: spren-dot2 12s infinite; }
+.spren-type-dot-3 { animation: spren-dot3 12s infinite; }
+
+@keyframes spren-dot1 {
+  0%, 5% {
+    transform: translate(0px, 0px) scale(1);
+    animation-timing-function: cubic-bezier(0.5, 0, 0.2, 1);
+  }
+  20% { transform: translate(-120px, 0px) scale(0.25); }
+  35% { transform: translate(-120px, -12px) scale(0.25); }
+  45% { transform: translate(-120px, 0px) scale(0.25); }
+  55% { transform: translate(-120px, -12px) scale(0.25); }
+  65%, 75% {
+    transform: translate(-120px, 0px) scale(0.25);
+    animation-timing-function: cubic-bezier(0.8, 0, 0.2, 1);
+  }
+  85%, 100% { transform: translate(0px, 0px) scale(1); }
+}
+
+@keyframes spren-dot2 {
+  0%, 19% { transform: translate(-120px, 0px) scale(0.01); opacity: 0; }
+  20% {
+    transform: translate(-120px, 0px) scale(0.25);
+    opacity: 1;
+    animation-timing-function: cubic-bezier(0.5, 0, 0.2, 1);
+  }
+  30% { transform: translate(0px, 0px) scale(0.25); opacity: 1; }
+  40% { transform: translate(0px, -12px) scale(0.25); opacity: 1; }
+  50% { transform: translate(0px, 0px) scale(0.25); opacity: 1; }
+  60% { transform: translate(0px, -12px) scale(0.25); opacity: 1; }
+  70%, 75% {
+    transform: translate(0px, 0px) scale(0.25);
+    opacity: 1;
+    animation-timing-function: cubic-bezier(0.8, 0, 0.2, 1);
+  }
+  85% { transform: translate(0px, 0px) scale(0.01); opacity: 0; }
+  86%, 100% { transform: translate(0px, 0px) scale(0.01); opacity: 0; }
+}
+
+@keyframes spren-dot3 {
+  0%, 29% { transform: translate(0px, 0px) scale(0.01); opacity: 0; }
+  30% {
+    transform: translate(0px, 0px) scale(0.25);
+    opacity: 1;
+    animation-timing-function: cubic-bezier(0.5, 0, 0.2, 1);
+  }
+  40% { transform: translate(120px, 0px) scale(0.25); opacity: 1; }
+  45% { transform: translate(120px, -12px) scale(0.25); opacity: 1; }
+  55% { transform: translate(120px, 0px) scale(0.25); opacity: 1; }
+  65% { transform: translate(120px, -12px) scale(0.25); opacity: 1; }
+  75% {
+    transform: translate(120px, 0px) scale(0.25);
+    opacity: 1;
+    animation-timing-function: cubic-bezier(0.8, 0, 0.2, 1);
+  }
+  85% { transform: translate(0px, 0px) scale(0.01); opacity: 0; }
+  86%, 100% { transform: translate(0px, 0px) scale(0.01); opacity: 0; }
+}
+
+/* ── reduced-motion fallback ────────────────────────────────────────── */
+
+@media (prefers-reduced-motion: reduce) {
+  .spren-wrap {
+    filter: drop-shadow(0 12px 48px rgba(232, 33, 130, 0.25));
+  }
+  .spren-svg,
+  .spren-svg *,
+  .spren-vortex-wrapper {
+    animation: none !important;
+  }
+  .spren-svg animate,
+  .spren-svg animateTransform {
+    display: none;
+  }
+}

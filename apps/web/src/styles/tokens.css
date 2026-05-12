@@ -1,0 +1,59 @@
+/* Spren design tokens — the canonical values consumed by Tailwind v4's
+ * `@theme inline` block in globals.css and by hand-written CSS for the
+ * orb + canvas surfaces.
+ *
+ * Coral-dominant palette per docs/implementation/spren/sessions/v0.3.0/03-visual-builder.md §9.1.
+ * The orb is the only place where multiple colors converge; outside the
+ * orb, magenta returns ONLY for the wordmark dot, the user's name in the
+ * welcome, the send-button hover, the input focus ring, and the
+ * selected-canvas-node border.
+ */
+
+:root {
+  /* — Surfaces — */
+  --ground: #fcfaf6;            /* page background, warm off-white */
+  --surface: #ffffff;           /* cards, modals, input bars, raised surfaces */
+
+  /* — Orb gradient stops (coral-dominant — NO soft-pink middle) — */
+  --peach: #ffceaa;             /* orb 0% — peach highlight */
+  --coral: #ff876c;             /* orb ~42% — coral, load-bearing middle */
+  --magenta: #e82182;           /* orb ~82% — magenta + the accent color */
+  --magenta-deep: #c9146c;      /* orb 100% — deep magenta */
+
+  /* — Ink — */
+  --ink: #1a1410;               /* primary text, send-button default background */
+  --ink-soft: #6b5f58;          /* secondary text, breadcrumbs, subline copy */
+  --ink-faint: #9b8f88;         /* tertiary — ONLY at 18px+ (fails WCAG AA below) */
+
+  /* — Rules — */
+  --rule: #ede6da;              /* hairline borders */
+  --rule-soft: #f4efe5;         /* border-quiet surfaces (kbd, hover) */
+
+  /* — Motion easing — */
+  --ease-out: cubic-bezier(0.2, 0, 0, 1);            /* hover/focus micro-interactions (240ms) */
+  --ease-spring: cubic-bezier(0.34, 1.56, 0.64, 1);  /* hover lift gentle overshoot (200ms) */
+  --ease-organic: cubic-bezier(0.45, 0, 0.55, 1);    /* orb breath / morph (6–14s loops) */
+
+  /* — Provenance badge backgrounds — */
+  --provenance-visual: var(--magenta);
+  --provenance-import: var(--peach);
+  --provenance-meta: var(--magenta-deep);
+  --provenance-api: var(--ink-soft);
+  --provenance-template: var(--coral);
+
+  color-scheme: light;
+}
+
+/* Reduced-motion users get a still orb and instant focus transitions —
+ * the rest of the UI's motion respects the same preference at component
+ * level (see Spren.tsx + canvas styles). */
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+    scroll-behavior: auto !important;
+  }
+}
