@@ -11,28 +11,45 @@
     "lint": "eslint . --max-warnings 0",
     "typecheck": "tsc --noEmit",
     "test": "vitest",
-    "test:e2e": "node scripts/preflight-e2e.mjs && playwright test"
+    "test:e2e": "node scripts/preflight-e2e.mjs && playwright test",
+    "generate:types": "node scripts/generate-types.mjs",
+    "prebuild": "node scripts/generate-types.mjs"
   },
   "dependencies": {
+    "@fontsource/geist-mono": "^5.2.0",
+    "@fontsource/geist-sans": "^5.2.0",
+    "@hookform/resolvers": "^3.10.0",
     "@tanstack/react-query": "^5.100.0",
     "@tanstack/react-router": "^1.169.0",
-    "geist": "^1.7.0",
+    "@xyflow/react": "^12.10.0",
+    "cmdk": "^1.1.0",
+    "dagre": "^0.8.5",
+    "jotai": "^2.13.0",
+    "motion": "^12.38.0",
     "react": "^19.2.0",
-    "react-dom": "^19.2.0"
+    "react-dom": "^19.2.0",
+    "react-hook-form": "^7.55.0",
+    "zod": "^3.24.0",
+    "zustand": "^5.0.0"
   },
   "devDependencies": {
     "@playwright/test": "^1.59.0",
+    "@tailwindcss/vite": "^4.0.0",
     "@tanstack/router-plugin": "^1.167.0",
     "@testing-library/jest-dom": "^6.9.0",
     "@testing-library/react": "^16.3.0",
+    "@types/dagre": "^0.7.52",
     "@types/node": "^25.0.0",
     "@types/react": "^19.2.0",
     "@types/react-dom": "^19.2.0",
     "@vitejs/plugin-react": "^6.0.0",
     "jsdom": "^29.0.0",
     "msw": "^2.14.0",
+    "openapi-typescript": "^7.13.0",
+    "tailwindcss": "^4.0.0",
     "typescript": "^6.0.0",
     "vite": "^8.0.0",
     "vitest": "^4.1.0"
-  }
+  },
+  "packageManager": "pnpm@10.33.0+sha512.10568bb4a6afb58c9eb3630da90cc9516417abebd3fabbe6739f0ae795728da1491e9db5a544c76ad8eb7570f5c4bb3d6c637b2cb41bfdcdb47fa823c8649319"
 }

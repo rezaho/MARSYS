@@ -5007,6 +5007,8 @@ dependencies = [
     { name = "platformdirs" },
     { name = "pydantic" },
     { name = "python-dotenv" },
+    { name = "python-multipart" },
+    { name = "python-ulid" },
     { name = "uvicorn", extra = ["standard"] },
 ]
 
@@ -5028,6 +5030,8 @@ requires-dist = [
     { name = "pytest", marker = "extra == 'test'", specifier = ">=8.4" },
     { name = "pytest-asyncio", marker = "extra == 'test'", specifier = ">=1.0" },
     { name = "python-dotenv", specifier = ">=1.0" },
+    { name = "python-multipart", specifier = ">=0.0.20" },
+    { name = "python-ulid", specifier = ">=3.0,<4.0" },
     { name = "uvicorn", extras = ["standard"], specifier = ">=0.32" },
 ]
 provides-extras = ["test"]

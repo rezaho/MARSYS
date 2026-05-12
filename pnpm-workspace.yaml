@@ -1,2 +1,9 @@
 packages:
   - "apps/web"
+
+# Allow openapi-typescript@^7 (peer typescript: ^5.x) to coexist with our
+# pinned typescript ^6. The emitted .ts is verified against tsc --noEmit in
+# the smoke check + the Vitest suite.
+peerDependencyRules:
+  allowedVersions:
+    "openapi-typescript>typescript": "^6"

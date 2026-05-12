@@ -18,6 +18,8 @@ dependencies = [
     "click>=8.1",
     "platformdirs>=4.2",
     "python-dotenv>=1.0",
+    "python-ulid>=3.0,<4.0",
+    "python-multipart>=0.0.20",
 ]
 
 [project.optional-dependencies]
