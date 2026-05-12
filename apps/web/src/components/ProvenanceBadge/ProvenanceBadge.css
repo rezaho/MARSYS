@@ -1,0 +1,37 @@
+.provenance-badge {
+  display: inline-flex;
+  align-items: center;
+  font-family: var(--font-mono);
+  font-size: 10px;
+  font-weight: 500;
+  letter-spacing: 0.02em;
+  padding: 3px 7px;
+  border-radius: 3px;
+  color: var(--surface);
+  white-space: nowrap;
+}
+
+.provenance-badge--visual_builder {
+  background: var(--magenta);
+  color: var(--surface);
+}
+
+.provenance-badge--code_import {
+  background: var(--peach);
+  color: var(--ink);
+}
+
+.provenance-badge--meta_agent {
+  background: var(--magenta-deep);
+  color: var(--surface);
+}
+
+.provenance-badge--template {
+  background: var(--coral);
+  color: var(--surface);
+}
+
+.provenance-badge--api {
+  background: var(--ink-soft);
+  color: var(--surface);
+}

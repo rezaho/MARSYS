@@ -1,0 +1,74 @@
+.input-bar {
+  width: 100%;
+  background: var(--surface);
+  border: 1px solid var(--rule);
+  border-radius: 24px;
+  padding: 6px 6px 6px 24px;
+  display: grid;
+  grid-template-columns: 1fr auto;
+  align-items: center;
+  gap: 12px;
+  transition:
+    border-color 240ms var(--ease-out),
+    box-shadow 240ms var(--ease-out);
+}
+
+.input-bar:focus-within {
+  border-color: var(--magenta);
+  box-shadow:
+    0 0 0 4px rgba(232, 33, 130, 0.07),
+    0 12px 40px -16px rgba(232, 33, 130, 0.28);
+}
+
+.input-bar textarea {
+  background: transparent;
+  border: 0;
+  outline: none;
+  resize: none;
+  width: 100%;
+  padding: 18px 0;
+  font-family: var(--font-sans);
+  font-size: 15px;
+  color: var(--ink);
+  line-height: 1.4;
+  max-height: 6lh;
+  overflow-y: auto;
+}
+
+.input-bar textarea::placeholder {
+  color: var(--ink-faint);
+}
+
+.input-bar-send {
+  background: var(--ink);
+  color: var(--surface);
+  border: 0;
+  cursor: pointer;
+  width: 44px;
+  height: 44px;
+  border-radius: 50%;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  transition:
+    background 240ms var(--ease-out),
+    transform 120ms ease,
+    opacity 240ms var(--ease-out);
+}
+
+.input-bar-send:hover:not(:disabled) {
+  background: var(--magenta);
+}
+
+.input-bar-send:active:not(:disabled) {
+  transform: scale(0.96);
+}
+
+.input-bar-send:disabled {
+  opacity: 0.4;
+  cursor: not-allowed;
+}
+
+.input-bar-send svg {
+  pointer-events: none;
+}

@@ -1,0 +1,14 @@
+.presence-orb {
+  position: fixed;
+  top: 24px;
+  right: 24px;
+  z-index: 30;
+  pointer-events: auto;
+}
+
+@media (max-width: 640px) {
+  .presence-orb {
+    top: 16px;
+    right: 16px;
+  }
+}
