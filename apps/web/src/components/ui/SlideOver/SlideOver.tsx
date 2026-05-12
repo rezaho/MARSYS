@@ -11,7 +11,14 @@
  * The backdrop has subtler dim + blur than Dialog's center variant —
  * matches the Sidebar's pre-refactor surface (0.18 dim, 4px blur).
  */
-import { useEffect, useRef, type ReactElement, type ReactNode } from "react";
+import {
+  useEffect,
+  useRef,
+  type CSSProperties,
+  type ReactElement,
+  type ReactNode,
+  type RefObject,
+} from "react";
 import { createPortal } from "react-dom";
 
 import { useBodyScrollLock } from "../../../hooks/useBodyScrollLock";
@@ -35,6 +42,11 @@ export interface SlideOverProps {
   testId?: string;
   /** Test id forwarded to the backdrop. */
   backdropTestId?: string;
+  /**
+   * Element to receive initial focus when the slide-over opens. If
+   * omitted, the first focusable descendant of the panel is used.
+   */
+  initialFocusRef?: RefObject<HTMLElement | null>;
   children: ReactNode;
 }
 
@@ -47,13 +59,14 @@ export function SlideOver({
   className,
   testId,
   backdropTestId,
+  initialFocusRef,
   children,
 }: SlideOverProps): ReactElement | null {
   const panelRef = useRef<HTMLDivElement>(null);
   const previouslyFocusedRef = useRef<HTMLElement | null>(null);
 
   useEscapeKey(onClose, open);
-  useFocusTrap(panelRef, open);
+  useFocusTrap(panelRef, open, initialFocusRef);
   useBodyScrollLock(open);
 
   useEffect(() => {
@@ -74,6 +87,13 @@ export function SlideOver({
     .filter(Boolean)
     .join(" ");
 
+  // Width is passed via a CSS custom property so consumers can override
+  // it inside media queries (e.g. a wider panel on small viewports)
+  // without having to fight inline-style specificity.
+  const panelStyle = {
+    ["--ui-slide-over-width" as string]: `${width}px`,
+  } as CSSProperties;
+
   const content = (
     <>
       <div
@@ -88,7 +108,7 @@ export function SlideOver({
         aria-modal="true"
         aria-label={ariaLabel}
         data-testid={testId}
-        style={{ width }}
+        style={panelStyle}
       >
         {children}
       </aside>

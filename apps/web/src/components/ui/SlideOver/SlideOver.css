@@ -16,6 +16,7 @@
   position: fixed;
   top: 0;
   bottom: 0;
+  width: var(--ui-slide-over-width, 280px);
   background: var(--surface);
   border: 0 solid var(--rule);
   z-index: 80;

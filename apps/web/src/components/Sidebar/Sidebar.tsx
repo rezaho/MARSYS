@@ -16,8 +16,9 @@
  * focus when the sidebar opens.
  */
 import { Link } from "@tanstack/react-router";
-import { useEffect, useRef, type ReactElement } from "react";
+import { useRef, type ReactElement } from "react";
 
+import { Button, Kbd, SlideOver } from "../ui";
 import { useUIStore } from "../../stores/ui";
 
 import "./Sidebar.css";
@@ -50,88 +51,74 @@ export function Sidebar(): ReactElement | null {
   const setOpen = useUIStore((s) => s.setSidebarOpen);
   const firstLinkRef = useRef<HTMLAnchorElement>(null);
 
-  useEffect(() => {
-    if (!open) return;
-    function onKey(e: KeyboardEvent) {
-      if (e.key === "Escape") setOpen(false);
-    }
-    window.addEventListener("keydown", onKey);
-    return () => window.removeEventListener("keydown", onKey);
-  }, [open, setOpen]);
-
-  useEffect(() => {
-    if (!open) return;
-    // Focus the first link so keyboard users can Tab immediately.
-    requestAnimationFrame(() => firstLinkRef.current?.focus());
-  }, [open]);
-
-  if (!open) return null;
-
   return (
-    <>
-      <div
-        className="sidebar-backdrop"
-        onMouseDown={() => setOpen(false)}
-        data-testid="sidebar-backdrop"
-      />
-      <aside className="sidebar" data-testid="sidebar" aria-label="Main navigation">
-        <header className="sidebar-header">
-          <span className="sidebar-wordmark">
-            spren<span className="sidebar-wordmark-dot">.</span>
-          </span>
-          <button
-            type="button"
-            className="sidebar-close"
-            onClick={() => setOpen(false)}
-            aria-label="Close menu"
-          >
-            ×
-          </button>
-        </header>
+    <SlideOver
+      open={open}
+      onClose={() => setOpen(false)}
+      ariaLabel="Main navigation"
+      side="left"
+      width={280}
+      className="sidebar"
+      testId="sidebar"
+      backdropTestId="sidebar-backdrop"
+      initialFocusRef={firstLinkRef}
+    >
+      <header className="sidebar-header">
+        <span className="sidebar-wordmark">
+          spren<span className="sidebar-wordmark-dot">.</span>
+        </span>
+        <button
+          type="button"
+          className="sidebar-close"
+          onClick={() => setOpen(false)}
+          aria-label="Close menu"
+        >
+          ×
+        </button>
+      </header>
 
-        <nav className="sidebar-section">
-          <p className="sidebar-section-label">Surfaces</p>
-          <ul>
-            {PRIMARY_ITEMS.map((item, i) => (
-              <li key={item.to}>
-                <Link
-                  to={item.to}
-                  ref={i === 0 ? firstLinkRef : undefined}
-                  className="sidebar-link"
-                  activeProps={{ className: "sidebar-link is-active" }}
-                  onClick={() => setOpen(false)}
-                  data-testid={`sidebar-link-${item.to.replace(/\//g, "_") || "home"}`}
-                >
-                  <span className="sidebar-link-label">{item.label}</span>
-                  {item.hint ? <span className="sidebar-link-hint">{item.hint}</span> : null}
-                </Link>
-              </li>
-            ))}
-          </ul>
-        </nav>
+      <nav className="sidebar-section">
+        <p className="sidebar-section-label">Surfaces</p>
+        <ul>
+          {PRIMARY_ITEMS.map((item, i) => (
+            <li key={item.to}>
+              <Link
+                to={item.to}
+                ref={i === 0 ? firstLinkRef : undefined}
+                className="sidebar-link"
+                activeProps={{ className: "sidebar-link is-active" }}
+                onClick={() => setOpen(false)}
+                data-testid={`sidebar-link-${item.to.replace(/\//g, "_") || "home"}`}
+              >
+                <span className="sidebar-link-label">{item.label}</span>
+                {item.hint ? <span className="sidebar-link-hint">{item.hint}</span> : null}
+              </Link>
+            </li>
+          ))}
+        </ul>
+      </nav>
 
-        <nav className="sidebar-section">
-          <p className="sidebar-section-label">Coming soon</p>
-          <ul>
-            {COMING_SOON.map((item) => (
-              <li key={item.label}>
-                <span className="sidebar-link is-disabled" aria-disabled="true">
-                  <span className="sidebar-link-label">{item.label}</span>
-                  <span className="sidebar-link-hint">{item.hint}</span>
-                </span>
-              </li>
-            ))}
-          </ul>
-        </nav>
+      <nav className="sidebar-section">
+        <p className="sidebar-section-label">Coming soon</p>
+        <ul>
+          {COMING_SOON.map((item) => (
+            <li key={item.label}>
+              <span className="sidebar-link is-disabled" aria-disabled="true">
+                <span className="sidebar-link-label">{item.label}</span>
+                <span className="sidebar-link-hint">{item.hint}</span>
+              </span>
+            </li>
+          ))}
+        </ul>
+      </nav>
 
-        <footer className="sidebar-footer">
-          <p className="sidebar-footer-hint">
-            <kbd>⌘</kbd>
-            <kbd>K</kbd> for the command palette
-          </p>
-        </footer>
-      </aside>
-    </>
+      <footer className="sidebar-footer">
+        <p className="sidebar-footer-hint">
+          <Kbd>⌘</Kbd>
+          <Kbd>K</Kbd> for the command palette
+        </p>
+      </footer>
+    </SlideOver>
   );
 }
 
@@ -142,9 +129,8 @@ export function SidebarTrigger(): ReactElement {
   const open = useUIStore((s) => s.sidebarOpen);
   const toggle = useUIStore((s) => s.toggleSidebar);
   return (
-    <button
-      type="button"
-      className="sidebar-trigger"
+    <Button
+      variant="icon"
       onClick={toggle}
       aria-label={open ? "Close menu" : "Open menu"}
       aria-expanded={open}
@@ -159,6 +145,6 @@ export function SidebarTrigger(): ReactElement {
           strokeLinecap="round"
         />
       </svg>
-    </button>
+    </Button>
   );
 }

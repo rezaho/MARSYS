@@ -90,7 +90,7 @@ describe("SlideOver", () => {
     expect(panel.className).toContain("ui-slide-over--right");
   });
 
-  it("width prop is applied via inline style", () => {
+  it("width prop is set via CSS custom property so consumers can override responsively", () => {
     render(
       <SlideOver
         open={true}
@@ -105,6 +105,6 @@ describe("SlideOver", () => {
     const panel = document.body.querySelector(
       "[data-testid='panel']",
     ) as HTMLElement;
-    expect(panel.style.width).toBe("320px");
+    expect(panel.style.getPropertyValue("--ui-slide-over-width")).toBe("320px");
   });
 });

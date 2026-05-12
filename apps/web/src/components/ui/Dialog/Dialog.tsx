@@ -24,7 +24,13 @@
  * `createPortal` to `document.body` so the dialog escapes ancestral
  * `overflow: hidden` or `transform` containers.
  */
-import { useEffect, useRef, type ReactElement, type ReactNode } from "react";
+import {
+  useEffect,
+  useRef,
+  type ReactElement,
+  type ReactNode,
+  type RefObject,
+} from "react";
 import { createPortal } from "react-dom";
 
 import { useBodyScrollLock } from "../../../hooks/useBodyScrollLock";
@@ -46,6 +52,11 @@ export interface DialogProps {
   className?: string;
   /** Test id forwarded to the backdrop. */
   testId?: string;
+  /**
+   * Element to receive initial focus when the dialog opens. If omitted,
+   * the first focusable descendant of the dialog is used.
+   */
+  initialFocusRef?: RefObject<HTMLElement | null>;
   children: ReactNode;
 }
 
@@ -57,13 +68,14 @@ export function Dialog({
   size = "md",
   className,
   testId,
+  initialFocusRef,
   children,
 }: DialogProps): ReactElement | null {
   const dialogRef = useRef<HTMLDivElement>(null);
   const previouslyFocusedRef = useRef<HTMLElement | null>(null);
 
   useEscapeKey(onClose, open);
-  useFocusTrap(dialogRef, open);
+  useFocusTrap(dialogRef, open, initialFocusRef);
   useBodyScrollLock(open);
 
   // Restore focus to whatever was focused before the dialog opened.

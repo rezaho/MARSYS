@@ -37,20 +37,24 @@ function focusableDescendants(root: HTMLElement): HTMLElement[] {
 export function useFocusTrap(
   ref: RefObject<HTMLElement | null>,
   enabled: boolean,
+  initialFocusRef?: RefObject<HTMLElement | null>,
 ): void {
   useEffect(() => {
     if (!enabled) return;
     const root = ref.current;
     if (!root) return;
 
-    // Initial focus — first focusable, falling back to the root itself
-    // (which must be made focusable by the caller via `tabIndex={-1}`
-    // if no focusable child exists).
-    const initialTargets = focusableDescendants(root);
-    if (initialTargets.length > 0) {
-      initialTargets[0].focus();
-    } else if (root.tabIndex >= 0 || root.hasAttribute("tabindex")) {
-      root.focus();
+    // Initial focus — caller-supplied target wins; otherwise first
+    // focusable descendant; otherwise the root (if it has a tabindex).
+    if (initialFocusRef?.current) {
+      initialFocusRef.current.focus();
+    } else {
+      const initialTargets = focusableDescendants(root);
+      if (initialTargets.length > 0) {
+        initialTargets[0].focus();
+      } else if (root.tabIndex >= 0 || root.hasAttribute("tabindex")) {
+        root.focus();
+      }
     }
 
     function onKey(event: KeyboardEvent) {
@@ -78,5 +82,5 @@ export function useFocusTrap(
 
     document.addEventListener("keydown", onKey);
     return () => document.removeEventListener("keydown", onKey);
-  }, [ref, enabled]);
+  }, [ref, enabled, initialFocusRef]);
 }

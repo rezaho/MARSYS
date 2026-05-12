@@ -10,6 +10,7 @@ import { useNavigate } from "@tanstack/react-router";
 import { useRef, useState, type ChangeEvent, type ReactElement } from "react";
 
 import { importPythonWorkflow } from "../../../lib/api";
+import { Button } from "../../../components/ui";
 import { useCapabilities } from "../../../providers/capabilities";
 
 export function ImportPythonButton(): ReactElement {
@@ -59,15 +60,15 @@ export function ImportPythonButton(): ReactElement {
         onChange={handleChange}
         data-testid="import-python-file"
       />
-      <button
-        type="button"
-        className="workflows-button"
+      <Button
+        variant="secondary"
+        size="md"
         onClick={() => inputRef.current?.click()}
         disabled={busy}
         data-testid="import-python-button"
       >
         {busy ? "Importing…" : "+ Import from Python"}
-      </button>
+      </Button>
       {error ? (
         <span className="workflows-error" data-testid="import-python-error">
           {error}
