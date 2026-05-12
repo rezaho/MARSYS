@@ -7,6 +7,7 @@ from typing import Literal, Optional, List, Dict, Any, Union
 from enum import IntEnum
 
 from .tracing.config import TracingConfig
+from .aggui.config import AGGUIConfig
 
 
 class VerbosityLevel(IntEnum):
@@ -259,6 +260,13 @@ class ExecutionConfig:
 
     # Tracing configuration
     tracing: 'TracingConfig' = field(default_factory=lambda: TracingConfig())
+
+    # AG-UI translator configuration. Off by default. When enabled, the framework
+    # wires an EventBus → AG-UI translator alongside the trace collector so
+    # consumers (Spren SSE, MARSYS Cloud, Studio, third-party AG-UI clients) can
+    # iterate live events via ``orchestra.aggui_translator``. Requires the
+    # optional ``aggui`` extras (``pip install 'marsys[aggui]'``).
+    aggui: 'AGGUIConfig' = field(default_factory=lambda: AGGUIConfig())
 
     # Retry/backoff and error-handling configuration. Consumed by the
     # model-adapter retry loop (``models/adapters/base.py``) and the
