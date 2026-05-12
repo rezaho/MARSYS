@@ -49,6 +49,26 @@ class AgentMessagesPreparedEvent(StatusEvent):
 
 
 @dataclass
+class AssistantMessageEvent(StatusEvent):
+    """Emitted by the agent immediately after ``model.arun()`` returns.
+
+    Carries the assistant's response content (text + optional tool_calls metadata).
+    Pairs symmetrically with AgentMessagesPreparedEvent (input → output).
+
+    Like AgentMessagesPreparedEvent, this is a heavy payload — the trace collector
+    stores ``content`` via the content-addressed MessageStore and may null the
+    field after hashing.
+    """
+    agent_name: str = ""
+    step_number: Optional[int] = None
+    step_span_id: Optional[str] = None
+    message_id: str = field(default_factory=new_id)
+    content: str = ""
+    tool_calls: Optional[List[Dict[str, Any]]] = None
+    finish_reason: Optional[str] = None
+
+
+@dataclass
 class AgentThinkingEvent(StatusEvent):
     """Agent thinking/reasoning."""
     agent_name: str

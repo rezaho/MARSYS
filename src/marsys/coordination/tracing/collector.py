@@ -102,6 +102,7 @@ class TraceCollector:
             # Existing events (enriched)
             'AgentStartEvent': self._handle_agent_start,
             'AgentMessagesPreparedEvent': self._handle_agent_messages_prepared,
+            'AssistantMessageEvent': self._handle_assistant_message,
             'AgentCompleteEvent': self._handle_agent_complete,
             'ToolCallEvent': self._handle_tool_call,
             # Branch lifecycle events
@@ -327,6 +328,52 @@ class TraceCollector:
                 )
             # Release the heavy payload — see this handler's docstring.
             event.messages = None
+
+    async def _handle_assistant_message(self, event: Any) -> None:
+        """Hash the assistant's response into the store, attach the ref to the step span.
+
+        Mirrors ``_handle_agent_messages_prepared`` (input → output symmetric
+        pair). The content payload can be large; we hash it into the
+        content-addressed MessageStore and null ``event.content`` to release
+        memory once the bus has finished broadcasting.
+
+        Honors ``TracingConfig.include_message_content`` — when False, only
+        the hash and message_id are attached; the raw content is not stored.
+        """
+        if self._message_store is None:
+            return
+        async with self._lock:
+            step_span_id = getattr(event, "step_span_id", None) or ""
+            step_span = self.step_spans.get(step_span_id)
+            if step_span is None:
+                return
+            content = event.content or ""
+            message_id = getattr(event, "message_id", "") or ""
+            try:
+                if self.config.include_message_content and content:
+                    msg = {
+                        "role": "assistant",
+                        "content": content,
+                        "tool_calls": event.tool_calls,
+                        "finish_reason": event.finish_reason,
+                    }
+                    redacted = copy.deepcopy(msg)
+                    if isinstance(redacted, dict):
+                        self._redactor.redact(redacted)
+                    content_hash = self._message_store.write_blob(redacted)
+                else:
+                    # Skip body storage; still record the message_id for correlation.
+                    content_hash = None
+                step_span.attributes["output_message_ref"] = {
+                    "message_id": message_id,
+                    "content_hash": content_hash,
+                }
+            except Exception as e:  # noqa: BLE001
+                logger.warning(
+                    "Assistant-output capture skipped for step %s: %s", step_span_id, e
+                )
+            # Release the heavy payload — same idiom as _handle_agent_messages_prepared.
+            event.content = ""
 
     def _redact_messages_for_store(
         self,

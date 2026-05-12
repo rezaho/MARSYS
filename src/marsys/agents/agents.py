@@ -3133,6 +3133,22 @@ class Agent(BaseAgent):
                 raw_model_output, name=self.name
             )
 
+            # Emit assistant-output event for trace capture + AG-UI translation.
+            # Mirrors the AgentMessagesPreparedEvent emission above (input → output
+            # symmetric pair). Same gate; same step-context plumbing.
+            if self._step_event_bus is not None and self._step_context:
+                from ..coordination.status.events import AssistantMessageEvent
+                await self._step_event_bus.emit(AssistantMessageEvent(
+                    session_id=self._step_context.get("session_id", "") or "",
+                    branch_id=self._step_context.get("branch_id"),
+                    agent_name=self.name,
+                    step_number=self._step_context.get("step_number"),
+                    step_span_id=self._step_context.get("step_span_id"),
+                    content=assistant_message.content or "",
+                    tool_calls=assistant_message.tool_calls,
+                    finish_reason=getattr(raw_model_output, "finish_reason", None),
+                ))
+
             return assistant_message
 
         except ModelAPIError as e:
