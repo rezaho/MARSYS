@@ -7,18 +7,22 @@ coordination components and manages the execution lifecycle.
 """
 
 import asyncio
+import hashlib
+import json
 import logging
 import time
 import uuid
 from dataclasses import dataclass, field
+from datetime import datetime, timedelta, timezone
+from pathlib import Path
 from typing import Any, Dict, List, Optional, Set, Tuple, TYPE_CHECKING
 
+from .. import __version__ as _MARSYS_VERSION
 from ..agents.registry import AgentRegistry
 from ..agents.exceptions import (
     TopologyError,
     StateError,
     SessionNotFoundError,
-    CheckpointError
 )
 from ..utils.display import print_marsys_banner
 from .branches.types import BranchResult
@@ -30,11 +34,31 @@ from .topology.converters.string_converter import StringNotationConverter
 from .topology.converters.object_converter import ObjectNotationConverter
 from .topology.converters.pattern_converter import PatternConfigConverter
 from .execution.step_executor import StepExecutor
+from .execution.orchestrator import Orchestrator, OrchestratorState
+from .execution.orchestrator_types import (
+    Branch,
+    Barrier,
+    ConvergencePolicy,
+)
 from .validation.response_validator import ValidationProcessor
 from .formats import SystemPromptBuilder
 from .routing.router import Router
 from .rules.rule_factory import RuleFactory, RuleFactoryConfig
-from .state.state_manager import StateManager
+from .state.errors import (
+    IncompatibleSnapshotError,
+    SnapshotCorruptionError,
+    SnapshotNotFoundError,
+    SnapshotSerializationError,
+)
+from .state.snapshot import (
+    BarrierState,
+    BranchState,
+    ConvergencePolicyState,
+    PausedSessionMetadata,
+    StateSnapshot,
+    UserInteractionState,
+)
+from .state.storage import FileStorageBackend, StorageBackend
 from .event_bus import EventBus
 
 if TYPE_CHECKING:
@@ -134,9 +158,10 @@ class Orchestra:
         self,
         agent_registry: AgentRegistry,
         rule_factory_config: Optional[RuleFactoryConfig] = None,
-        state_manager: Optional[StateManager] = None,
         communication_manager: Optional['CommunicationManager'] = None,
-        execution_config: Optional['ExecutionConfig'] = None
+        execution_config: Optional['ExecutionConfig'] = None,
+        storage_backend: Optional[StorageBackend] = None,
+        snapshot_retention: timedelta = timedelta(days=30),
     ):
         """
         Initialize the Orchestra with an agent registry.
@@ -144,65 +169,157 @@ class Orchestra:
         Args:
             agent_registry: Registry containing all available agents
             rule_factory_config: Optional configuration for rule generation
-            state_manager: Optional state manager for persistence and checkpointing
             communication_manager: Optional communication manager for user interaction
             execution_config: Optional execution configuration with status settings
+            storage_backend: Optional StorageBackend for pause/resume snapshots.
+                Defaults to FileStorageBackend rooted at the framework's
+                standard data directory.
+            snapshot_retention: How long to keep paused-run snapshots before
+                the construction-time sweeper deletes them. Default 30 days.
         """
         self.agent_registry = agent_registry
         self._sessions = {}
+        # Live orchestrators keyed by session_id, populated in execute()
+        # and popped in finally — pause_session looks up here.
+        self._active_orchestrators: dict[str, Orchestrator] = {}
         self.rule_factory = RuleFactory(rule_factory_config)
-        self.state_manager = state_manager
         self.communication_manager = communication_manager
 
         # Store config for component initialization
         self._execution_config = execution_config
 
-        self._initialize_components()
-        logger.info("Orchestra initialized")
-    
-    def _initialize_components(self):
-        """Initialize all internal coordination components."""
-        # Create event bus for coordination events
-        self.event_bus = EventBus()
+        # Snapshot storage: default to a file backend under the framework's
+        # standard data directory. Construction must not fail if a default
+        # location can't be created; callers passing a backend explicitly
+        # skip the default creation entirely.
+        if storage_backend is None:
+            default_root = self._default_snapshot_root()
+            storage_backend = FileStorageBackend(default_root)
+        self.storage_backend: StorageBackend = storage_backend
+        self.snapshot_retention: timedelta = snapshot_retention
 
-        # Get execution config
+        self._initialize_components()
+
+        # Periodic snapshot sweeper runs once on construction. Schedule on
+        # the loop if one is running; otherwise skip silently — long-running
+        # consumers reconstruct Orchestra anyway, and tests construct on
+        # the loop.
+        self._schedule_retention_sweep()
+
+        logger.info("Orchestra initialized")
+
+    @staticmethod
+    def _default_snapshot_root() -> Path:
+        """Default snapshot root.
+
+        Honors `MARSYS_DATA_DIR` env var if set; otherwise uses
+        `~/.marsys/runs`. Spren overrides via the `storage_backend=`
+        constructor argument so on-disk paths match Spren's data model.
+        """
+        import os
+        env_root = os.environ.get("MARSYS_DATA_DIR")
+        if env_root:
+            return Path(env_root) / "runs"
+        return Path.home() / ".marsys" / "runs"
+
+    def _schedule_retention_sweep(self) -> None:
+        """Schedule the sweeper as a fire-and-forget task if a loop is
+        running; otherwise no-op (the sweeper will not run for this
+        Orchestra construction)."""
+        try:
+            loop = asyncio.get_running_loop()
+        except RuntimeError:
+            logger.debug(
+                "Orchestra: no running event loop at construction; "
+                "snapshot retention sweeper skipped for this Orchestra"
+            )
+            return
+        loop.create_task(
+            self._run_retention_sweep(),
+            name="marsys-snapshot-retention-sweep",
+        )
+
+    async def _run_retention_sweep(self) -> None:
+        try:
+            count = await self.storage_backend.expire_older_than(self.snapshot_retention)
+            if count:
+                logger.info(
+                    "Orchestra: snapshot retention sweeper deleted %d entries "
+                    "older than %s",
+                    count, self.snapshot_retention,
+                )
+        except Exception as exc:  # pragma: no cover
+            logger.warning("Orchestra: retention sweeper failed: %s", exc)
+
+    def _initialize_per_topology(
+        self,
+        topology_graph: TopologyGraph,
+        execution_config: 'ExecutionConfig',
+    ) -> None:
+        """Build the per-topology components needed for a workflow run.
+
+        Called from `execute()` (with a freshly-analyzed topology) and from
+        `resume_session()` (with the topology bound on `self`). Populates
+        `self.rules_engine`, `self.validation_processor`, `self.router`,
+        and wires `set_topology_reference` onto registered agents.
+
+        Without this, `RealRuntime.step` crashes on the first tick because
+        `self.validator` is `None`, and agent terminate-gating returns
+        wrong answers because `_topology_graph_ref` is unset.
+        """
+        for node_name in topology_graph.nodes:
+            if node_name == "User":
+                continue
+            agent = self.agent_registry.get(node_name)
+            if agent and hasattr(agent, "set_topology_reference"):
+                agent.set_topology_reference(topology_graph)
+
+        self.rules_engine = self.rule_factory.create_rules_engine(
+            topology_graph, self.canonical_topology,
+        )
+        self.validation_processor = ValidationProcessor(
+            topology_graph,
+            response_format=execution_config.response_format,
+        )
+        self.router = Router(topology_graph)
+
+    def _wire_event_bus(self) -> None:
+        """Attach the standard listener set onto self.event_bus.
+
+        Called from __init__ and from resume_session (which constructs a
+        fresh EventBus). Wires:
+          - StatusManager (if execution_config.status.enabled)
+          - TraceCollector (if execution_config.tracing.enabled)
+          - TelemetrySink instances live inside TraceCollector and
+            register at TraceCollector construction.
+        """
         execution_config = getattr(self, '_execution_config', None)
         if not execution_config:
             from .config import ExecutionConfig
-            execution_config = ExecutionConfig()  # Default: status disabled
+            execution_config = ExecutionConfig()
+            self._execution_config = execution_config
 
-        # Create status manager if enabled
+        # Status manager
         self.status_manager = None
-        # Note: UserInteractionManager removed - use communication_manager instead
         if execution_config.status.enabled:
             from .status.manager import StatusManager
             from .status.channels import CLIChannel, PrefixedCLIChannel
-            # UserInteractionManager removed - functionality moved to CommunicationManager
 
-            # Create status manager
             self.status_manager = StatusManager(self.event_bus, execution_config.status)
 
-            # Create user interaction manager if enabled
-            # UserInteractionManager removed - use communication_manager instead
-            # (user interactions now handled via CommunicationManager)
-
-            # Add configured channels
             if "cli" in execution_config.status.channels:
-                # Use prefixed channel if configured
                 if getattr(execution_config.status, 'show_agent_prefixes', False):
                     channel = PrefixedCLIChannel(execution_config.status)
                 else:
                     channel = CLIChannel(execution_config.status)
-
-                # Connect interaction manager to channel if available
-                # Interaction manager connection removed - using CommunicationManager instead
-
                 self.status_manager.add_channel(channel)
 
-            logger.info("Status updates enabled with verbosity: %s",
-                       execution_config.status.verbosity)
+            logger.info(
+                "Status updates enabled with verbosity: %s",
+                execution_config.status.verbosity,
+            )
 
-        # Create trace collector if tracing enabled
+        # Trace collector
         self.trace_collector = None
         if execution_config.tracing.enabled:
             from .tracing.collector import TraceCollector
@@ -215,7 +332,27 @@ class Orchestra:
                 config=execution_config.tracing,
                 sinks=sinks,
             )
-            logger.info("Tracing enabled, output dir: %s", execution_config.tracing.output_dir)
+            logger.info(
+                "Tracing enabled, output dir: %s",
+                execution_config.tracing.output_dir,
+            )
+
+    def _initialize_components(self):
+        """Initialize all internal coordination components."""
+        # Create event bus for coordination events
+        self.event_bus = EventBus()
+
+        # Wire StatusManager / TraceCollector / TelemetrySink listeners onto
+        # the EventBus. Extracted into a helper so resume_session can rebuild
+        # the standard listener set on a freshly-constructed EventBus.
+        self._wire_event_bus()
+
+        # Get execution config (the same one _wire_event_bus resolves)
+        execution_config = self._execution_config
+        if not execution_config:
+            from .config import ExecutionConfig
+            execution_config = ExecutionConfig()
+            self._execution_config = execution_config
 
         # Create SystemPromptBuilder (doesn't need topology)
         response_format = execution_config.response_format
@@ -550,9 +687,10 @@ class Orchestra:
         context: Optional[Dict[str, Any]] = None,
         execution_config: Optional['ExecutionConfig'] = None,
         max_steps: int = 100,
-        state_manager: Optional[StateManager] = None,
         verbosity: Optional[int] = None,
-        allow_follow_ups: bool = False
+        allow_follow_ups: bool = False,
+        storage_backend: Optional[StorageBackend] = None,
+        snapshot_retention: timedelta = timedelta(days=30),
     ) -> OrchestraResult:
         """
         Simple one-line execution of a multi-agent workflow.
@@ -566,9 +704,10 @@ class Orchestra:
                 If execution_config.user_interaction is set to "terminal", a
                 CommunicationManager will be automatically created for user interaction.
             max_steps: Maximum steps before timeout
-            state_manager: Optional state manager for persistence
             verbosity: Simple verbosity level (0-2) for quick status setup
             allow_follow_ups: Whether to wait for follow-up requests after completion
+            storage_backend: Optional StorageBackend for pause/resume snapshots.
+            snapshot_retention: Retention window for paused-run snapshots.
 
         Returns:
             OrchestraResult with execution details
@@ -645,9 +784,10 @@ class Orchestra:
         orchestra = cls(
             agent_registry,
             rule_factory_config=None,
-            state_manager=state_manager,
             communication_manager=comm_manager,  # Pass auto-created or None
-            execution_config=execution_config
+            execution_config=execution_config,
+            storage_backend=storage_backend,
+            snapshot_retention=snapshot_retention,
         )
 
         # Track start time for final response
@@ -817,23 +957,10 @@ class Orchestra:
                 }
                 trace.metadata["agent_names"] = agent_names
 
-            # Wire topology back into agent instances (for dynamic instructions).
-            for node_name in self.topology_graph.nodes:
-                if node_name == "User":
-                    continue
-                agent = self.agent_registry.get(node_name)
-                if agent and hasattr(agent, "set_topology_reference"):
-                    agent.set_topology_reference(self.topology_graph)
-
-            # Per-session validators & rules.
-            self.rules_engine = self.rule_factory.create_rules_engine(
-                self.topology_graph, self.canonical_topology,
-            )
-            self.validation_processor = ValidationProcessor(
-                self.topology_graph,
-                response_format=execution_config.response_format,
-            )
-            self.router = Router(self.topology_graph)
+            # Per-topology component setup (validator, rules, router,
+            # agent topology references). Extracted for reuse from
+            # resume_session — see _initialize_per_topology.
+            self._initialize_per_topology(self.topology_graph, execution_config)
 
             # Convergence policy.
             policy_config = ConvergencePolicyConfig.from_value(execution_config.convergence_policy)
@@ -862,6 +989,10 @@ class Orchestra:
                 session_id=session_id,
                 user_node_handler=self._user_node_handler,
             )
+
+            # Register the live orchestrator so pause_session(session_id)
+            # can find it. Cleared in the finally block below.
+            self._active_orchestrators[session_id] = orchestrator
 
             # Bind UserNodeHandler to any UserNode det-node on the graph
             # (post-shim). Without a bound handler, UserNode.on_single_invoke
@@ -906,12 +1037,16 @@ class Orchestra:
             workflow = await orchestrator.run(task=task, entry_agent=entry_agent)
 
             duration = time.time() - start_time
-            logger.info(f"Orchestration completed in {duration:.2f}s")
+            paused = workflow.error == "paused"
+            if paused:
+                logger.info(f"Orchestration paused after {duration:.2f}s")
+            else:
+                logger.info(f"Orchestration completed in {duration:.2f}s")
 
             # Emit FinalResponseEvent BEFORE finalize() runs in the finally block,
             # so the trace collector can close the root span with the correct status.
             total_steps = sum(b.step_count for b in workflow.branches.values())
-            if self.trace_collector and self.event_bus:
+            if self.trace_collector and self.event_bus and not paused:
                 from .status.events import FinalResponseEvent
                 summary = workflow.final_response
                 summary = (summary[:500] if isinstance(summary, str) else str(summary)[:500])
@@ -941,7 +1076,7 @@ class Orchestra:
                 ],
                 total_steps=total_steps,
                 total_duration=duration,
-                error=workflow.error,
+                error=None if paused else workflow.error,
                 metadata={
                     "session_id": session_id,
                     "max_steps": max_steps,
@@ -949,6 +1084,7 @@ class Orchestra:
                     "topology_edges": len(self.canonical_topology.edges),
                     "barrier_count": len(workflow.barriers),
                     "branch_count": len(workflow.branches),
+                    "paused": paused,
                 },
             )
 
@@ -965,6 +1101,12 @@ class Orchestra:
                 metadata={"session_id": session_id}
             )
         finally:
+            # Drop the live-orchestrator reference now that execute() is
+            # exiting. Pause/resume callers can no longer find it; that's
+            # intentional — the run is either complete, failed, or paused
+            # (in which case resume_session reconstructs a fresh one).
+            self._active_orchestrators.pop(session_id, None)
+
             # Finalize trace (writes output even on failure)
             if self.trace_collector:
                 try:
@@ -1042,125 +1184,505 @@ class Orchestra:
             logger.error(f"Failed to find entry agents: {e}")
             raise
     
-    async def pause_session(self, session_id: str) -> bool:
+    async def pause_session(self, session_id: str) -> None:
+        """Cleanly halt the run for ``session_id`` and write a snapshot
+        atomically.
+
+        Looks up the live ``Orchestrator`` via ``self._active_orchestrators``;
+        calls ``await orchestrator.quiesce()`` to drain the in-flight tick
+        at the next dispatch boundary; calls ``orchestrator.snapshot()``
+        (sync — orchestrator is no longer running); maps the
+        ``OrchestratorState`` into a ``StateSnapshot``; writes it
+        atomically via the configured ``StorageBackend``.
+
+        The pending ``Orchestra.execute()`` call returns an
+        ``OrchestraResult`` flagged paused (``metadata["paused"] = True``,
+        ``success=False``, ``error=None``).
+
+        Idempotent: a second call on an already-paused session is a no-op
+        log line. Raises ``SessionNotFoundError`` if ``session_id`` is not
+        currently in ``self._active_orchestrators``.
         """
-        Pause an active session.
-        
-        Args:
-            session_id: Session to pause
-            
-        Returns:
-            True if successfully paused
-        """
-        if not self.state_manager:
-            logger.warning("Cannot pause session without StateManager")
-            return False
-        
-        if session_id not in self._sessions:
-            logger.warning(f"Session {session_id} not found")
-            return False
-        
-        session = self._sessions[session_id]
-        
-        # Load current state
-        state = await self.state_manager.load_session(session_id)
-        if not state:
-            logger.error(f"Failed to load state for session {session_id}")
-            return False
-        
-        # Mark as paused
-        await self.state_manager.pause_execution(session_id, state)
-        
-        # Update session status
-        session.status = "paused"
-        
-        logger.info(f"Paused session {session_id}")
-        return True
-    
-    async def resume_session(self, session_id: str) -> OrchestraResult:
-        """
-        Resume a paused session.
-        
-        Args:
-            session_id: Session to resume
-            
-        Returns:
-            OrchestraResult from continued execution
-        """
-        if not self.state_manager:
-            raise StateError(
-                "Cannot resume session without StateManager",
-                error_code="STATE_MANAGER_MISSING"
+        orchestrator = self._active_orchestrators.get(session_id)
+        if orchestrator is None:
+            # Idempotent: a snapshot already exists at the storage backend
+            # for this session_id. Verify and no-op.
+            key = self._snapshot_key(session_id)
+            try:
+                await self.storage_backend.read(key)
+                logger.info(
+                    "pause_session: session %s already paused (snapshot exists); "
+                    "this call is a no-op", session_id,
+                )
+                return
+            except FileNotFoundError:
+                raise SessionNotFoundError(
+                    f"No active or paused session for session_id={session_id!r}",
+                    session_id=session_id,
+                )
+
+        if orchestrator._paused:
+            logger.info(
+                "pause_session: session %s already quiesced; re-writing snapshot",
+                session_id,
             )
 
-        # Load paused state
-        state = await self.state_manager.resume_execution(session_id)
-        if not state:
-            raise SessionNotFoundError(
-                f"Failed to load state for session {session_id}",
-                session_id=session_id
+        await orchestrator.quiesce()
+
+        # Race guard: if the orchestrator's run loop already exited
+        # naturally (workflow completed or failed) between the pause
+        # request and now, do not write a stale "paused" snapshot.
+        # The execute() caller will return its terminal result; pause
+        # is a no-op log line.
+        root_id = orchestrator.root_barrier_id
+        root = orchestrator.barriers.get(root_id) if root_id else None
+        if (root is not None and root.status != "OPEN") or orchestrator._workflow_error:
+            logger.info(
+                "pause_session: session %s already terminal (root status=%s, "
+                "error=%r); skipping snapshot write",
+                session_id,
+                root.status if root else None,
+                orchestrator._workflow_error,
             )
-        
-        # Reconstruct execution context
-        task = state.get("task")
-        context = state.get("context", {})
-        context["resumed"] = True
-        context["session_id"] = session_id
-        
-        logger.info(f"Resuming session {session_id}")
-        
-        # Continue execution from saved state
-        # TODO: Implement proper state restoration and continuation
-        # For now, just return a placeholder result
+            return
+
+        snapshot = self._build_state_snapshot(session_id, orchestrator)
+        payload = snapshot.model_dump_json(indent=2).encode("utf-8")
+        await self.storage_backend.write(self._snapshot_key(session_id), payload)
+        logger.info("pause_session: wrote snapshot for session %s", session_id)
+
+    async def resume_session(self, session_id: str) -> OrchestraResult:
+        """Read the snapshot for ``session_id`` and continue dispatch
+        through to terminal state.
+
+        Returns the final ``OrchestraResult`` (matching ``Orchestra.run()``'s
+        shape). Events flow via the existing ``EventBus`` → SSE pathway,
+        not via the return value.
+
+        NOTE: only the standard listener set is restored on resume
+        (StatusManager, TraceCollector, registered TelemetrySink instances).
+        Custom listeners attached via ``EventBus.subscribe`` by the caller
+        are NOT restored; the caller must re-attach them BEFORE calling
+        resume_session — the snapshot read is fast, but the resumed run
+        begins dispatching inside this method.
+        """
+        from .config import ConvergencePolicyConfig, ExecutionConfig
+        from .execution.real_runtime import RealRuntime
+        from .execution.det_nodes import UserNode
+
+        # 1. Read the snapshot.
+        key = self._snapshot_key(session_id)
+        try:
+            payload = await self.storage_backend.read(key)
+        except FileNotFoundError:
+            raise SnapshotNotFoundError(session_id)
+        try:
+            snapshot = StateSnapshot.model_validate_json(payload)
+        except Exception as exc:
+            raise SnapshotCorruptionError(
+                f"Snapshot for session {session_id!r} could not be deserialized",
+                session_id=session_id,
+                cause=exc,
+            )
+
+        # 2. Verify framework_version. Exact-string match in v0.3.
+        if snapshot.framework_version != _MARSYS_VERSION:
+            raise IncompatibleSnapshotError(
+                snapshot_version=snapshot.framework_version,
+                current_version=_MARSYS_VERSION,
+                session_id=session_id,
+            )
+
+        # 3. Reconstruct EventBus + listener set.
+        self.event_bus = EventBus()
+        self._wire_event_bus()
+
+        # 4. Resolve execution config + reconstruct components per-topology.
+        execution_config = self._execution_config or ExecutionConfig()
+        self._execution_config = execution_config
+
+        # The topology must already be bound on this Orchestra instance.
+        # For cross-process resume the consumer either (a) calls execute()
+        # once to seed the topology before resume_session, or (b) sets
+        # `orchestra.topology_graph` and `orchestra.canonical_topology`
+        # explicitly. (Future PR may serialize topology into the snapshot.)
+        if not getattr(self, "topology_graph", None):
+            raise StateError(
+                f"resume_session: no topology bound on this Orchestra instance. "
+                f"Construct the topology via execute() (or set it explicitly) "
+                f"before resuming session {session_id!r}.",
+                error_code="RESUME_NO_TOPOLOGY",
+            )
+
+        # Verify the snapshot's topology digest matches the live topology.
+        if snapshot.topology_digest != self._compute_topology_digest():
+            raise IncompatibleSnapshotError(
+                snapshot_version=snapshot.framework_version,
+                current_version=_MARSYS_VERSION,
+                session_id=session_id,
+            )
+
+        # 5. Build per-topology components — same surface as execute()
+        # constructs (validator, rules, router, agent topology refs).
+        # Without this, RealRuntime gets validator=None and crashes on
+        # the first tick.
+        self._initialize_per_topology(self.topology_graph, execution_config)
+
+        # 6. Build a fresh Orchestrator + RealRuntime.
+        policy_config = ConvergencePolicyConfig.from_value(execution_config.convergence_policy)
+        policy = ConvergencePolicy(
+            min_ratio=policy_config.min_ratio,
+            on_insufficient=policy_config.on_insufficient,
+            terminate_orphans=policy_config.terminate_orphans,
+        )
+        runtime = RealRuntime(
+            registry=self.agent_registry,
+            step_executor=self.step_executor,
+            validator=self.validation_processor,
+            topology_graph=self.topology_graph,
+            session_id=session_id,
+            execution_config=execution_config,
+        )
+        # max_steps is preserved across resume via the snapshot; use the
+        # snapshot's value as the constructor default. restore_from()
+        # overwrites it post-construction for clarity.
+        orchestrator = Orchestrator(
+            topology=self.topology_graph,
+            runtime=runtime,
+            policy=policy,
+            max_steps=snapshot.max_steps,
+            event_bus=self.event_bus,
+            session_id=session_id,
+            user_node_handler=self._user_node_handler,
+        )
+        if self._user_node_handler is not None:
+            for det in (self.topology_graph.det_nodes or {}).values():
+                if isinstance(det, UserNode):
+                    det.handler = self._user_node_handler
+
+        # 7. Restore state and resume dispatch.
+        state = self._snapshot_to_orchestrator_state(snapshot)
+        orchestrator.restore_from(state)
+        self._active_orchestrators[session_id] = orchestrator
+
+        logger.info("resume_session: resuming session %s", session_id)
+        start_time = time.time()
+        try:
+            workflow = await orchestrator.resume()
+        finally:
+            self._active_orchestrators.pop(session_id, None)
+
+        duration = time.time() - start_time
+        paused_again = workflow.error == "paused"
+        total_steps = sum(b.step_count for b in workflow.branches.values())
+
+        # 8. On successful terminal state, discard the snapshot. Failed
+        # resumes leave the snapshot in place for inspection — log a
+        # warning so the operator knows.
+        if workflow.success:
+            try:
+                await self.storage_backend.delete(key)
+            except Exception as exc:  # pragma: no cover
+                logger.warning(
+                    "resume_session: failed to delete snapshot for %s: %s",
+                    session_id, exc,
+                )
+        elif not paused_again:
+            logger.warning(
+                "resume_session: %s ended in error=%r; snapshot left in place "
+                "for inspection. Call discard_paused_session(%r) explicitly "
+                "to remove it.",
+                session_id, workflow.error, session_id,
+            )
+
         return OrchestraResult(
-            success=True,
-            final_response="Session resumed (implementation pending)",
-            branch_results=[],
-            total_steps=state.get("metadata", {}).get("total_steps", 0),
-            total_duration=0,
+            success=workflow.success,
+            final_response=workflow.final_response,
+            branch_results=[
+                BranchResult(
+                    branch_id=br.id,
+                    success=br.status == "TERMINATED",
+                    final_response=br.input,
+                    total_steps=br.step_count,
+                    execution_trace=[],
+                    branch_memory={br.current_agent: br.memory},
+                    metadata={"current_agent": br.current_agent, "status": br.status},
+                    error=None if br.status == "TERMINATED" else f"branch ended in status {br.status}",
+                )
+                for br in workflow.branches.values()
+            ],
+            total_steps=total_steps,
+            total_duration=duration,
+            error=None if paused_again else workflow.error,
             metadata={
                 "session_id": session_id,
-                "resumed": True
-            }
+                "resumed": True,
+                "paused": paused_again,
+                "barrier_count": len(workflow.barriers),
+                "branch_count": len(workflow.branches),
+            },
         )
-    
-    async def create_checkpoint(self, session_id: str, checkpoint_name: str) -> str:
-        """
-        Create a checkpoint for the current session state.
-        
-        Args:
-            session_id: Session to checkpoint
-            checkpoint_name: Name for the checkpoint
-            
-        Returns:
-            Checkpoint ID
-        """
-        if not self.state_manager:
-            raise StateError(
-                "Cannot create checkpoint without StateManager",
-                error_code="STATE_MANAGER_MISSING"
-            )
 
-        return await self.state_manager.create_checkpoint(session_id, checkpoint_name)
-    
-    async def restore_checkpoint(self, checkpoint_id: str) -> Dict[str, Any]:
-        """
-        Restore state from a checkpoint.
-        
-        Args:
-            checkpoint_id: Checkpoint to restore
-            
-        Returns:
-            Restored state
-        """
-        if not self.state_manager:
-            raise StateError(
-                "Cannot restore checkpoint without StateManager",
-                error_code="STATE_MANAGER_MISSING"
-            )
+    async def list_paused_sessions(self) -> List[PausedSessionMetadata]:
+        """Enumerate paused snapshots without loading their full bodies.
 
-        return await self.state_manager.restore_checkpoint(checkpoint_id)
-    
+        Reads each snapshot's JSON header (just enough to extract
+        ``session_id``, ``workflow_id``, ``paused_at``, ``framework_version``
+        and the file size) — the rest of the snapshot body is not parsed.
+        Used by Spren v0.4-29 on daemon startup to populate the
+        run-inspector UI's paused tab; used by Cloud on node-spinup to
+        discover runs that need to migrate.
+        """
+        entries = await self.storage_backend.list_with_metadata()
+        results: List[PausedSessionMetadata] = []
+        for entry in entries:
+            if not entry.key.endswith("/snapshot.json"):
+                continue
+            try:
+                payload = await self.storage_backend.read(entry.key)
+                # Streaming-read enough to extract the header. We parse the
+                # whole JSON object here for v0.3 — a future PR can switch
+                # to ijson if snapshots grow large enough to matter.
+                doc = json.loads(payload)
+                results.append(
+                    PausedSessionMetadata(
+                        session_id=doc["session_id"],
+                        workflow_id=doc.get("workflow_id"),
+                        paused_at=doc["paused_at"],
+                        framework_version=doc["framework_version"],
+                        snapshot_size_bytes=entry.size_bytes,
+                    )
+                )
+            except Exception as exc:
+                logger.warning(
+                    "list_paused_sessions: skipping %s: %s",
+                    entry.key, exc,
+                )
+                continue
+        return results
+
+    async def discard_paused_session(self, session_id: str) -> None:
+        """Delete the snapshot for ``session_id``. Idempotent — deleting a
+        non-existent snapshot is not an error.
+        """
+        await self.storage_backend.delete(self._snapshot_key(session_id))
+        logger.info("discard_paused_session: removed snapshot for %s", session_id)
+
+    @staticmethod
+    def _snapshot_key(session_id: str) -> str:
+        return f"{session_id}/snapshot.json"
+
+    def _compute_topology_digest(self) -> str:
+        """Stable digest of the current canonical topology — used as a
+        sanity check on resume that the snapshot was created against
+        the same topology.
+        """
+        if not getattr(self, "canonical_topology", None):
+            return ""
+        nodes = sorted(node.name for node in self.canonical_topology.nodes)
+        edges = sorted(
+            (e.source, e.target, getattr(e, "edge_type", None) and e.edge_type.name or "")
+            for e in self.canonical_topology.edges
+        )
+        canonical_repr = json.dumps(
+            {"nodes": nodes, "edges": edges},
+            sort_keys=True,
+        ).encode("utf-8")
+        return hashlib.sha256(canonical_repr).hexdigest()
+
+    def _build_state_snapshot(
+        self, session_id: str, orchestrator: Orchestrator,
+    ) -> StateSnapshot:
+        """Map ``OrchestratorState`` (in-memory) → ``StateSnapshot``
+        (on-disk Pydantic model).
+
+        Raises ``SnapshotSerializationError`` if any value in
+        ``Branch.memory`` or ``Barrier.arrived`` cannot be serialized to
+        JSON (the contract — JSON-safe values only).
+        """
+        state = orchestrator.snapshot()
+
+        try:
+            branches = {
+                bid: self._branch_to_state(b) for bid, b in state.branches.items()
+            }
+            barriers = {
+                barid: self._barrier_to_state(b) for barid, b in state.barriers.items()
+            }
+        except (TypeError, ValueError) as exc:
+            raise SnapshotSerializationError(
+                f"Failed to serialize branch/barrier state for session {session_id!r}",
+                session_id=session_id,
+            ) from exc
+
+        # Verify the resulting StateSnapshot is JSON-encodable; this
+        # catches non-serializable values inside `arrived`/`memory` that
+        # slip past the per-field handling above.
+        snapshot = StateSnapshot(
+            framework_version=_MARSYS_VERSION,
+            session_id=session_id,
+            workflow_id=None,
+            topology_digest=self._compute_topology_digest(),
+            created_at=datetime.now(tz=timezone.utc),
+            paused_at=datetime.now(tz=timezone.utc),
+            branches=branches,
+            barriers=barriers,
+            convergence_barriers=state.convergence_barriers,
+            runnable=state.runnable,
+            fire_queue=state.fire_queue,
+            root_barrier_id=state.root_barrier_id,
+            workflow_error=state.workflow_error,
+            completed_emitted=sorted(state.completed_emitted),
+            user_interactions=[
+                self._user_interaction_to_state(item)
+                for item in state.user_interactions
+            ],
+            user_interaction_inflight=state.user_interaction_inflight,
+            max_steps=state.max_steps,
+        )
+        try:
+            snapshot.model_dump_json()
+        except Exception as exc:
+            raise SnapshotSerializationError(
+                f"Snapshot for session {session_id!r} contains a non-JSON-"
+                f"serializable value",
+                session_id=session_id,
+            ) from exc
+        return snapshot
+
+    @staticmethod
+    def _branch_to_state(b: "Branch") -> BranchState:
+        memory = []
+        for item in b.memory:
+            if hasattr(item, "model_dump"):
+                memory.append(item.model_dump(mode="json"))
+            elif isinstance(item, dict):
+                memory.append(item)
+            else:
+                # Last-chance: try JSON-encoding directly. If it fails, the
+                # caller's StateSnapshot.model_dump_json check raises.
+                memory.append(item)
+        return BranchState(
+            id=b.id,
+            current_agent=b.current_agent,
+            status=b.status,
+            delivery_target=b.delivery_target,
+            input=b.input,
+            memory=memory,
+            waiting_on=b.waiting_on,
+            candidate_of=sorted(b.candidate_of),
+            parent_spawn=b.parent_spawn,
+            step_count=b.step_count,
+            created_at=b.created_at,
+            last_invoked_agent=b.last_invoked_agent,
+            consecutive_content_only=b.consecutive_content_only,
+        )
+
+    @staticmethod
+    def _barrier_to_state(bar: "Barrier") -> BarrierState:
+        return BarrierState(
+            id=bar.id,
+            policy=ConvergencePolicyState(
+                min_ratio=bar.policy.min_ratio,
+                on_insufficient=bar.policy.on_insufficient,
+                terminate_orphans=bar.policy.terminate_orphans,
+                timeout=bar.policy.timeout,
+            ),
+            status=bar.status,
+            resolver_branch=bar.resolver_branch,
+            resolver_agent=bar.resolver_agent,
+            rendezvous_node=bar.rendezvous_node,
+            candidates=sorted(bar.candidates),
+            arrived=dict(bar.arrived),
+            failed=dict(bar.failed),
+            upstream=sorted(bar.upstream),
+            downstream=sorted(bar.downstream),
+            created_at=bar.created_at,
+            metadata=dict(bar.metadata),
+        )
+
+    @staticmethod
+    def _user_interaction_to_state(item: tuple) -> UserInteractionState:
+        # Items are (suspended_branch_id, prompt, resume_agent, delivery_target)
+        # tuples per Orchestrator.enqueue_user_interaction.
+        bid, prompt, resume_agent, delivery_target = item
+        return UserInteractionState(
+            suspended_branch_id=bid,
+            prompt=prompt,
+            resume_agent=resume_agent,
+            delivery_target=delivery_target,
+        )
+
+    def _snapshot_to_orchestrator_state(
+        self, snapshot: StateSnapshot,
+    ) -> OrchestratorState:
+        """Map ``StateSnapshot`` (on-disk) → ``OrchestratorState`` (in-memory)."""
+        from .execution.orchestrator_types import (
+            Branch as _Branch,
+            Barrier as _Barrier,
+            ConvergencePolicy as _ConvergencePolicy,
+        )
+
+        branches = {
+            bid: _Branch(
+                id=s.id,
+                current_agent=s.current_agent,
+                status=s.status,  # type: ignore[arg-type]
+                delivery_target=s.delivery_target,
+                input=s.input,
+                memory=list(s.memory),
+                waiting_on=s.waiting_on,
+                candidate_of=set(s.candidate_of),
+                parent_spawn=s.parent_spawn,
+                step_count=s.step_count,
+                created_at=s.created_at,
+                last_invoked_agent=s.last_invoked_agent,
+                consecutive_content_only=s.consecutive_content_only,
+            )
+            for bid, s in snapshot.branches.items()
+        }
+        barriers = {
+            barid: _Barrier(
+                id=s.id,
+                policy=_ConvergencePolicy(
+                    min_ratio=s.policy.min_ratio,
+                    on_insufficient=s.policy.on_insufficient,  # type: ignore[arg-type]
+                    terminate_orphans=s.policy.terminate_orphans,
+                    timeout=s.policy.timeout,
+                ),
+                status=s.status,  # type: ignore[arg-type]
+                resolver_branch=s.resolver_branch,
+                resolver_agent=s.resolver_agent,
+                rendezvous_node=s.rendezvous_node,
+                candidates=set(s.candidates),
+                arrived=dict(s.arrived),
+                failed=dict(s.failed),
+                upstream=set(s.upstream),
+                downstream=set(s.downstream),
+                created_at=s.created_at,
+                metadata=dict(s.metadata),
+            )
+            for barid, s in snapshot.barriers.items()
+        }
+        user_interactions = [
+            (ui.suspended_branch_id, ui.prompt, ui.resume_agent, ui.delivery_target)
+            for ui in snapshot.user_interactions
+        ]
+        return OrchestratorState(
+            branches=branches,
+            barriers=barriers,
+            convergence_barriers=dict(snapshot.convergence_barriers),
+            runnable=list(snapshot.runnable),
+            fire_queue=list(snapshot.fire_queue),
+            root_barrier_id=snapshot.root_barrier_id,
+            workflow_error=snapshot.workflow_error,
+            completed_emitted=set(snapshot.completed_emitted),
+            user_interactions=user_interactions,
+            user_interaction_inflight=snapshot.user_interaction_inflight,
+            max_steps=snapshot.max_steps,
+        )
+
+
     async def create_session(
         self,
         task: Any,
@@ -1229,31 +1751,35 @@ class Session:
         )
     
     async def pause(self) -> bool:
-        """Pause the session."""
+        """Pause the session.
+
+        Returns True if the snapshot was written; False if pause failed
+        (e.g. no active orchestrator for this session).
+        """
         if not self.enable_pause:
             return False
-        
-        if self.orchestra.state_manager:
-            success = await self.orchestra.pause_session(self.id)
-            if success:
-                self.status = "paused"
-            return success
-        else:
-            logger.warning("Cannot pause session without StateManager")
+        try:
+            await self.orchestra.pause_session(self.id)
+            self.status = "paused"
+            return True
+        except StateError as exc:
+            logger.warning("Session.pause: %s", exc)
             return False
-    
+
     async def resume(self) -> bool:
-        """Resume the session."""
+        """Resume the session.
+
+        Returns True if the resumed run reached terminal state successfully,
+        False otherwise (including the run pausing again or failing).
+        """
         if self.status != "paused":
             return False
-        
-        if self.orchestra.state_manager:
-            # Resume through orchestra
+        try:
             result = await self.orchestra.resume_session(self.id)
-            if result.success:
-                self.status = "running"
-                return True
+        except StateError as exc:
+            logger.warning("Session.resume: %s", exc)
             return False
-        else:
-            logger.warning("Cannot resume session without StateManager")
-            return False
+        if result.success:
+            self.status = "completed"
+            return True
+        return False

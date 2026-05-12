@@ -35,8 +35,18 @@ from .execution.step_executor import StepExecutor
 # High-level orchestration
 from .orchestra import Orchestra, OrchestraResult
 
-# State management
-from .state import StateManager, StorageBackend, FileStorageBackend, CheckpointManager
+# State management — pause/resume snapshot APIs (Framework Session 03,
+# ADR-007). The legacy ``StateManager`` / ``CheckpointManager`` classes
+# were removed in v0.3.0; the replacement surface lives on ``Orchestra``
+# (see ``Orchestra.pause_session`` / ``resume_session`` /
+# ``list_paused_sessions`` / ``discard_paused_session``).
+from .state import (
+    StateSnapshot,
+    StorageBackend,
+    FileStorageBackend,
+    PausedSessionMetadata,
+    IncompatibleSnapshotError,
+)
 
 # Rules engine
 from .rules import RulesEngine, Rule, RuleResult, RuleContext, TimeoutRule, MaxAgentsRule, MaxStepsRule
@@ -73,11 +83,12 @@ __all__ = [
     # Orchestra
     'Orchestra',
     'OrchestraResult',
-    # State management
-    'StateManager',
+    # State management — pause/resume snapshot APIs (ADR-007)
+    'StateSnapshot',
     'StorageBackend',
     'FileStorageBackend',
-    'CheckpointManager',
+    'PausedSessionMetadata',
+    'IncompatibleSnapshotError',
     # Rules engine
     'RulesEngine',
     'Rule',
