@@ -225,11 +225,12 @@ def delete_workflow(conn: sqlite3.Connection, workflow_id: str) -> bool:
 
 
 def count_runs_referencing(conn: sqlite3.Connection, workflow_id: str) -> int:
-    """Returns 0 in v0.3 (the `runs` table is created in a later session).
+    """Count run rows referencing ``workflow_id``.
 
-    The DELETE handler uses this to enforce the `WORKFLOW_HAS_RUNS` 409 path.
-    Once the `runs` table exists this becomes a real query; for now a missing
-    table is the same as zero references.
+    The DELETE workflow handler uses this to enforce the
+    ``WORKFLOW_HAS_RUNS`` 409 path. The runs table was introduced by
+    Session 04; the fallback to return 0 when the table is missing
+    guards pre-migration code paths only.
     """
     table_exists = conn.execute(
         "SELECT name FROM sqlite_master WHERE type='table' AND name='runs'"
