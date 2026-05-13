@@ -17,7 +17,7 @@
 import { useState, type ReactElement } from "react";
 
 import { Spren } from "../Spren";
-import type { SprenMood, SprenSize } from "../Spren";
+import type { SprenMood, SprenSize, SprenState } from "../Spren";
 import { ChatSheet } from "../ChatSheet";
 
 import "./PresenceOrb.css";
@@ -35,6 +35,13 @@ interface PresenceOrbProps {
    */
   size?: SprenSize;
 
+  /**
+   * Override the orb state. Defaults to "idle"; the canvas wires this
+   * to the run state during execution (thinking/speaking/idle) per
+   * Session 04 §8.2.
+   */
+  state?: SprenState;
+
   /** Forwarded test id. */
   testId?: string;
 }
@@ -42,6 +49,7 @@ interface PresenceOrbProps {
 export function PresenceOrb({
   mood = "attentive",
   size = "presence",
+  state = "idle",
   testId = "presence-orb",
 }: PresenceOrbProps): ReactElement {
   const [open, setOpen] = useState(false);
@@ -49,7 +57,7 @@ export function PresenceOrb({
     <>
       <div className="presence-orb" data-testid={testId}>
         <Spren
-          state="idle"
+          state={state}
           mood={mood}
           size={size}
           onClick={() => setOpen(true)}

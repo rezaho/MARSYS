@@ -38,9 +38,30 @@ export type LintCode = LintFinding["code"];
 
 export type ErrorEnvelope = components["schemas"]["ErrorEnvelope"];
 
+export type RunStatus = components["schemas"]["RunStatus"];
+export type TaskInput = components["schemas"]["TaskInput"];
+export type RunCreate = components["schemas"]["RunCreate"];
+export type RunCreateResponse = components["schemas"]["RunCreateResponse"];
+export type RunRead = components["schemas"]["RunRead"];
+export type RunListItem = components["schemas"]["RunListItem"];
+export type RunListResponse = components["schemas"]["RunListResponse"];
+export type RunCreatedEvent = components["schemas"]["RunCreatedEvent"];
+export type RunUpdatedEvent = components["schemas"]["RunUpdatedEvent"];
+export type RunFinishedEvent = components["schemas"]["RunFinishedEvent"];
+export type RunCancelledEvent = components["schemas"]["RunCancelledEvent"];
+export type RunsListEvent =
+  | RunCreatedEvent
+  | RunUpdatedEvent
+  | RunFinishedEvent
+  | RunCancelledEvent;
+
 export type { paths };
 
-function resolveBaseUrl(): string {
+export function isTerminalStatus(status: RunStatus): boolean {
+  return status === "succeeded" || status === "failed" || status === "cancelled";
+}
+
+export function resolveBaseUrl(): string {
   if (typeof window !== "undefined" && window.__SPREN_PORT__) {
     return `http://127.0.0.1:${window.__SPREN_PORT__}`;
   }
@@ -165,4 +186,63 @@ export async function importPythonWorkflow(
     throw new Error(`python import failed: ${res.status} ${body}`);
   }
   return res.json() as Promise<WorkflowImportResponse>;
+}
+
+// ---- Runs ----
+
+export async function createRun(
+  token: string,
+  payload: RunCreate,
+): Promise<RunCreateResponse> {
+  const res = await fetch(`${resolveBaseUrl()}/v1/runs`, {
+    method: "POST",
+    headers: { ...authHeader(token), "Content-Type": "application/json" },
+    body: JSON.stringify(payload),
+  });
+  if (!res.ok) {
+    const body = await res.text();
+    throw new Error(`create run failed: ${res.status} ${body}`);
+  }
+  return res.json() as Promise<RunCreateResponse>;
+}
+
+export async function getRun(token: string, id: string): Promise<RunRead> {
+  const res = await fetch(`${resolveBaseUrl()}/v1/runs/${id}`, {
+    headers: authHeader(token),
+  });
+  if (!res.ok) throw new Error(`get run failed: ${res.status} ${res.statusText}`);
+  return res.json() as Promise<RunRead>;
+}
+
+export interface ListRunsOptions {
+  workflow_id?: string;
+  status?: RunStatus;
+  cursor?: string;
+  limit?: number;
+}
+
+export async function listRuns(
+  token: string,
+  options: ListRunsOptions = {},
+): Promise<RunListResponse> {
+  const url = new URL("/v1/runs", resolveBaseUrl() || window.location.origin);
+  if (options.workflow_id) url.searchParams.set("workflow_id", options.workflow_id);
+  if (options.status) url.searchParams.set("status", options.status);
+  if (options.cursor) url.searchParams.set("cursor", options.cursor);
+  if (options.limit) url.searchParams.set("limit", String(options.limit));
+  const res = await fetch(url.toString(), { headers: authHeader(token) });
+  if (!res.ok) throw new Error(`list runs failed: ${res.status} ${res.statusText}`);
+  return res.json() as Promise<RunListResponse>;
+}
+
+export async function cancelRun(token: string, id: string): Promise<RunRead> {
+  const res = await fetch(`${resolveBaseUrl()}/v1/runs/${id}/cancel`, {
+    method: "POST",
+    headers: authHeader(token),
+  });
+  if (!res.ok) {
+    const body = await res.text();
+    throw new Error(`cancel run failed: ${res.status} ${body}`);
+  }
+  return res.json() as Promise<RunRead>;
 }

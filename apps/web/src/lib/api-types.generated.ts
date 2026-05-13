@@ -127,6 +127,116 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/v1/runs": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** List Runs Handler */
+        get: operations["list_runs_handler_v1_runs_get"];
+        put?: never;
+        /** Create Run */
+        post: operations["create_run_v1_runs_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/v1/runs/_event_schemas": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Event Schemas
+         * @description Returns null-shaped schemas for the aggregate SSE event union.
+         *
+         *     Forces the OpenAPI schema to include `RunCreatedEvent` /
+         *     `RunUpdatedEvent` / `RunFinishedEvent` / `RunCancelledEvent` so
+         *     the generated TypeScript client can discriminate them.
+         */
+        get: operations["event_schemas_v1_runs__event_schemas_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/v1/runs/events": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Aggregate Events */
+        get: operations["aggregate_events_v1_runs_events_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/v1/runs/{run_id}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Read Run */
+        get: operations["read_run_v1_runs__run_id__get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/v1/runs/{run_id}/cancel": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Cancel Run Handler */
+        post: operations["cancel_run_handler_v1_runs__run_id__cancel_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/v1/runs/{run_id}/events": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Per Run Events */
+        get: operations["per_run_events_v1_runs__run_id__events_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
 }
 export type webhooks = Record<string, never>;
 export interface components {
@@ -242,7 +352,7 @@ export interface components {
              * Code
              * @enum {string}
              */
-            code: "WORKFLOW_NOT_FOUND" | "WORKFLOW_HAS_RUNS" | "PYTHON_IMPORT_REJECTED" | "MIGRATION_FAILED" | "VALIDATION_FAILED" | "INVALID_CURSOR" | "INTERNAL_ERROR";
+            code: "WORKFLOW_NOT_FOUND" | "WORKFLOW_HAS_RUNS" | "WORKFLOW_ARCHIVED" | "PYTHON_IMPORT_REJECTED" | "MIGRATION_FAILED" | "VALIDATION_FAILED" | "INVALID_CURSOR" | "INTERNAL_ERROR" | "RUN_NOT_FOUND" | "RUN_NOT_CANCELLABLE" | "ATTACHMENTS_NOT_YET_SUPPORTED" | "TRIGGER_NOT_YET_SUPPORTED" | "INVALID_TASK_INPUT";
             /** Message */
             message: string;
             /** Details */
@@ -506,6 +616,187 @@ export interface components {
          * @enum {string}
          */
         NodeType: "user" | "agent" | "system" | "tool";
+        /** RunCancelledEvent */
+        RunCancelledEvent: {
+            /**
+             * Schema Version
+             * @default 1
+             */
+            schema_version?: number;
+            /**
+             * Type
+             * @default RunCancelled
+             * @constant
+             */
+            type?: "RunCancelled";
+            run: components["schemas"]["RunListItem"];
+        };
+        /** RunCreate */
+        RunCreate: {
+            /**
+             * Schema Version
+             * @default 1
+             */
+            schema_version?: number;
+            /** Workflow Id */
+            workflow_id: string;
+            task_input?: components["schemas"]["TaskInput"];
+            /**
+             * Trigger
+             * @default manual
+             */
+            trigger?: string;
+        };
+        /** RunCreateResponse */
+        RunCreateResponse: {
+            /**
+             * Schema Version
+             * @default 1
+             */
+            schema_version?: number;
+            /** Run Id */
+            run_id: string;
+            status: components["schemas"]["RunStatus"];
+        };
+        /** RunCreatedEvent */
+        RunCreatedEvent: {
+            /**
+             * Schema Version
+             * @default 1
+             */
+            schema_version?: number;
+            /**
+             * Type
+             * @default RunCreated
+             * @constant
+             */
+            type?: "RunCreated";
+            run: components["schemas"]["RunListItem"];
+        };
+        /** RunFinishedEvent */
+        RunFinishedEvent: {
+            /**
+             * Schema Version
+             * @default 1
+             */
+            schema_version?: number;
+            /**
+             * Type
+             * @default RunFinished
+             * @constant
+             */
+            type?: "RunFinished";
+            run: components["schemas"]["RunListItem"];
+        };
+        /** RunListItem */
+        RunListItem: {
+            /**
+             * Schema Version
+             * @default 1
+             */
+            schema_version?: number;
+            /** Id */
+            id: string;
+            /** Workflow Id */
+            workflow_id: string;
+            status: components["schemas"]["RunStatus"];
+            /**
+             * Created At
+             * Format: date-time
+             */
+            created_at: string;
+            /** Finished At */
+            finished_at?: string | null;
+            /** Total Duration Ms */
+            total_duration_ms?: number | null;
+            /**
+             * Total Cost Usd
+             * @default 0
+             */
+            total_cost_usd?: number;
+        };
+        /** RunListResponse */
+        RunListResponse: {
+            /** Items */
+            items: components["schemas"]["RunListItem"][];
+            /** Next Cursor */
+            next_cursor: string | null;
+            /** Has More */
+            has_more: boolean;
+        };
+        /** RunRead */
+        RunRead: {
+            /**
+             * Schema Version
+             * @default 1
+             */
+            schema_version?: number;
+            /** Id */
+            id: string;
+            /** Workflow Id */
+            workflow_id: string;
+            status: components["schemas"]["RunStatus"];
+            task_input: components["schemas"]["TaskInput"];
+            /** Trigger */
+            trigger: string;
+            /** Started At */
+            started_at?: string | null;
+            /** Finished At */
+            finished_at?: string | null;
+            /** Total Steps */
+            total_steps?: number | null;
+            /** Total Duration Ms */
+            total_duration_ms?: number | null;
+            /**
+             * Total Tokens Input
+             * @default 0
+             */
+            total_tokens_input?: number;
+            /**
+             * Total Tokens Output
+             * @default 0
+             */
+            total_tokens_output?: number;
+            /**
+             * Total Cost Usd
+             * @default 0
+             */
+            total_cost_usd?: number;
+            /** Final Response */
+            final_response?: unknown | null;
+            /** Error */
+            error?: string | null;
+            /**
+             * Created At
+             * Format: date-time
+             */
+            created_at: string;
+            /**
+             * Updated At
+             * Format: date-time
+             */
+            updated_at: string;
+        };
+        /**
+         * RunStatus
+         * @enum {string}
+         */
+        RunStatus: "queued" | "running" | "cancelling" | "succeeded" | "failed" | "cancelled";
+        /** RunUpdatedEvent */
+        RunUpdatedEvent: {
+            /**
+             * Schema Version
+             * @default 1
+             */
+            schema_version?: number;
+            /**
+             * Type
+             * @default RunUpdated
+             * @constant
+             */
+            type?: "RunUpdated";
+            run: components["schemas"]["RunListItem"];
+        };
         /** SprenInfo */
         SprenInfo: {
             /** Active */
@@ -522,6 +813,16 @@ export interface components {
             enabled?: boolean;
             /** Verbosity */
             verbosity?: number | null;
+        };
+        /** TaskInput */
+        TaskInput: {
+            /**
+             * Text
+             * @default
+             */
+            text?: string;
+            /** Attachments */
+            attachments?: string[];
         };
         /** ToolInfo */
         ToolInfo: {
@@ -669,6 +970,13 @@ export interface components {
             provenance_metadata?: {
                 [key: string]: unknown;
             } | null;
+        };
+        /** _RunsEventSchemas */
+        _RunsEventSchemas: {
+            created?: components["schemas"]["RunCreatedEvent"] | null;
+            updated?: components["schemas"]["RunUpdatedEvent"] | null;
+            finished?: components["schemas"]["RunFinishedEvent"] | null;
+            cancelled?: components["schemas"]["RunCancelledEvent"] | null;
         };
     };
     responses: never;
@@ -1114,6 +1422,294 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    list_runs_handler_v1_runs_get: {
+        parameters: {
+            query?: {
+                cursor?: string | null;
+                limit?: number;
+                workflow_id?: string | null;
+                status?: components["schemas"]["RunStatus"] | null;
+                since?: string | null;
+            };
+            header?: {
+                authorization?: string | null;
+            };
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["RunListResponse"];
+                };
+            };
+            /** @description Bad Request */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    create_run_v1_runs_post: {
+        parameters: {
+            query?: never;
+            header?: {
+                authorization?: string | null;
+            };
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["RunCreate"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            201: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["RunCreateResponse"];
+                };
+            };
+            /** @description Bad Request */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+            /** @description Not Found */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    event_schemas_v1_runs__event_schemas_get: {
+        parameters: {
+            query?: never;
+            header?: {
+                authorization?: string | null;
+            };
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["_RunsEventSchemas"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    aggregate_events_v1_runs_events_get: {
+        parameters: {
+            query?: never;
+            header?: {
+                authorization?: string | null;
+            };
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": unknown;
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    read_run_v1_runs__run_id__get: {
+        parameters: {
+            query?: never;
+            header?: {
+                authorization?: string | null;
+            };
+            path: {
+                run_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["RunRead"];
+                };
+            };
+            /** @description Not Found */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    cancel_run_handler_v1_runs__run_id__cancel_post: {
+        parameters: {
+            query?: never;
+            header?: {
+                authorization?: string | null;
+            };
+            path: {
+                run_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["RunRead"];
+                };
+            };
+            /** @description Not Found */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+            /** @description Conflict */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    per_run_events_v1_runs__run_id__events_get: {
+        parameters: {
+            query?: never;
+            header?: {
+                "Last-Event-ID"?: string | null;
+                authorization?: string | null;
+            };
+            path: {
+                run_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": unknown;
                 };
             };
             /** @description Validation Error */

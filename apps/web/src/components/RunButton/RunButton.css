@@ -1,0 +1,111 @@
+.run-button-wrap {
+  position: relative;
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.run-button {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  height: 36px;
+  padding: 0 14px;
+  border-radius: 16px;
+  border: 0;
+  background: var(--ink);
+  color: var(--surface);
+  font-family: var(--font-sans);
+  font-weight: 500;
+  font-size: 14px;
+  cursor: pointer;
+  transition: background 150ms var(--ease-out);
+}
+
+.run-button:hover:not(:disabled) {
+  background: var(--magenta);
+}
+
+.run-button:disabled {
+  opacity: 0.6;
+  cursor: not-allowed;
+}
+
+.run-button--cancel,
+.run-button--cancelling {
+  background: var(--magenta);
+}
+
+.run-button--submitting {
+  min-width: 36px;
+  justify-content: center;
+}
+
+.run-button-spinner {
+  display: inline-block;
+  font-size: 16px;
+  animation: run-button-spin 1s linear infinite;
+}
+
+@keyframes run-button-spin {
+  to { transform: rotate(360deg); }
+}
+
+.run-button-mono {
+  font-family: var(--font-mono);
+  font-size: 11px;
+  letter-spacing: 0.02em;
+}
+
+.run-button-cancel-confirm {
+  position: absolute;
+  top: calc(100% + 8px);
+  right: 0;
+  padding: 12px;
+  background: var(--surface);
+  border: 1px solid var(--rule);
+  border-radius: 12px;
+  box-shadow: 0 4px 16px rgba(26, 20, 16, 0.06);
+  width: 280px;
+  z-index: 10;
+}
+
+.run-button-cancel-confirm-copy {
+  font-family: var(--font-sans);
+  font-size: 13px;
+  color: var(--ink);
+  margin-bottom: 10px;
+}
+
+.run-button-cancel-confirm-actions {
+  display: flex;
+  gap: 8px;
+  justify-content: flex-end;
+}
+
+.run-button-confirm-keep,
+.run-button-confirm-stop {
+  border: 1px solid var(--rule);
+  background: var(--surface);
+  font-family: var(--font-sans);
+  font-size: 12px;
+  padding: 6px 12px;
+  border-radius: 8px;
+  cursor: pointer;
+}
+
+.run-button-confirm-stop {
+  background: var(--magenta);
+  color: var(--surface);
+  border-color: var(--magenta);
+}
+
+.run-button-confirm-keep:hover {
+  background: var(--rule-soft);
+}
+
+.run-button-reconnecting {
+  font-family: var(--font-mono);
+  font-size: 10px;
+  color: var(--ink-faint);
+}
