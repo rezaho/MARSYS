@@ -1,0 +1,87 @@
+.run-detail-shell {
+  min-height: 100vh;
+  background: var(--ground);
+  display: flex;
+  flex-direction: column;
+}
+
+.run-detail-main {
+  max-width: 720px;
+  margin: 0 auto;
+  padding: 32px 24px 80px;
+  width: 100%;
+}
+
+.run-detail-header {
+  display: flex;
+  align-items: center;
+  gap: 16px;
+  margin-bottom: 24px;
+}
+
+.run-detail-title {
+  font-family: var(--font-sans);
+  font-weight: 500;
+  font-size: 24px;
+  color: var(--ink);
+  margin: 0;
+}
+
+.run-detail-title a {
+  color: inherit;
+  text-decoration: none;
+}
+
+.run-detail-title a:hover {
+  color: var(--magenta);
+}
+
+.run-detail-meta {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  margin: 0 0 32px;
+}
+
+.run-detail-meta-row {
+  display: grid;
+  grid-template-columns: 110px 1fr;
+  gap: 16px;
+  font-family: var(--font-mono);
+  font-size: 12px;
+}
+
+.run-detail-meta-row dt {
+  color: var(--ink-soft);
+  text-transform: lowercase;
+  letter-spacing: 0.02em;
+}
+
+.run-detail-meta-row dd {
+  color: var(--ink);
+  margin: 0;
+}
+
+.run-detail-meta-row .sep {
+  color: var(--ink-faint);
+  margin: 0 4px;
+}
+
+.run-detail-error-row dd {
+  color: var(--magenta-deep);
+  font-family: var(--font-mono);
+}
+
+.run-detail-divider {
+  border: 0;
+  border-top: 1px solid var(--rule);
+  margin: 32px 0 24px;
+}
+
+.run-detail-trace-empty {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  padding: 24px 0;
+  color: var(--ink-soft);
+}

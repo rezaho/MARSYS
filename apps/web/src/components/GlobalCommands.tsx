@@ -56,10 +56,8 @@ export function GlobalCommands(): ReactElement {
         id: "go-runs",
         label: "Go to Runs",
         section: "navigate",
-        keywords: ["history", "traces"],
-        // /runs lands in Session 05 — until then, show a "coming soon"
-        // surface by navigating to home with a fragment.
-        run: () => navigate({ to: "/", hash: "runs-coming-soon" }),
+        keywords: ["history", "traces", "executions"],
+        run: () => navigate({ to: "/runs" }),
       },
       {
         id: "go-memory",

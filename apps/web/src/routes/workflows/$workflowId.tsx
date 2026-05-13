@@ -24,8 +24,11 @@ import {
   type ReactElement,
 } from "react";
 
+import { CompletionToast } from "../../components/CompletionToast";
+import { RunButton } from "../../components/RunButton";
 import { PresenceOrb, TopBar } from "../../components/TopBar";
 import { Button } from "../../components/ui";
+import { orbStateAtom } from "../../stores/run";
 import {
   getWorkflow,
   lintWorkflowById,
@@ -462,7 +465,7 @@ function CanvasInner(): ReactElement {
           </span>
         }
       />
-      <PresenceOrb />
+      <CanvasPresenceOrb />
       <CanvasEdgeArrow />
       <div className="canvas-toolbar" data-testid="canvas-toolbar">
         <LintChip onGoToNode={focusNodeByName} />
@@ -483,6 +486,11 @@ function CanvasInner(): ReactElement {
         >
           {saveMutation.isPending ? "Saving…" : "Save"}
         </Button>
+        <RunButton
+          workflowId={workflowId}
+          workflowName={name || workflowId}
+          testId="canvas-toolbar-run"
+        />
         {saveMutation.isSuccess ? (
           <span className="canvas-toolbar-toast" data-testid="canvas-save-toast">
             saved
@@ -540,8 +548,14 @@ function CanvasInner(): ReactElement {
         onInsert={insertPattern}
         onClose={() => setPatternModalOpen(false)}
       />
+      <CompletionToast />
     </div>
   );
+}
+
+function CanvasPresenceOrb(): ReactElement {
+  const [orbState] = useAtom(orbStateAtom);
+  return <PresenceOrb state={orbState} />;
 }
 
 function CanvasEmpty(): ReactElement {
