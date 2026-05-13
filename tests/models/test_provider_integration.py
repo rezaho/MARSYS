@@ -44,6 +44,15 @@ from typing import Any, Dict, List, Optional
 import pytest
 from dotenv import load_dotenv
 
+# Capture which API keys are set as real environment variables BEFORE dotenv
+# loading, so that skipif decorators can distinguish between genuinely
+# configured keys and stale/invalid entries in a .env file.
+_HAS_OPENAI_KEY = bool(os.environ.get("OPENAI_API_KEY"))
+_HAS_ANTHROPIC_KEY = bool(os.environ.get("ANTHROPIC_API_KEY"))
+_HAS_GOOGLE_KEY = bool(os.environ.get("GOOGLE_API_KEY"))
+_HAS_OPENROUTER_KEY = bool(os.environ.get("OPENROUTER_API_KEY"))
+_HAS_XAI_KEY = bool(os.environ.get("XAI_API_KEY"))
+
 # Load environment variables from .env file
 # override=True ensures .env values take precedence over existing env vars
 load_dotenv(override=True)
@@ -540,6 +549,7 @@ class BaseProviderTest:
 # Provider-Specific Test Classes
 # =============================================================================
 
+@pytest.mark.skipif(not _HAS_OPENAI_KEY, reason="OPENAI_API_KEY not set")
 class TestOpenAIProvider(BaseProviderTest):
     """Tests for OpenAI provider."""
     provider_name = "openai"
@@ -594,6 +604,7 @@ class TestOpenAIProvider(BaseProviderTest):
         logger.save()
 
 
+@pytest.mark.skipif(not _HAS_ANTHROPIC_KEY, reason="ANTHROPIC_API_KEY not set")
 class TestAnthropicProvider(BaseProviderTest):
     """Tests for Anthropic Claude provider."""
     provider_name = "anthropic"
@@ -630,6 +641,7 @@ class TestAnthropicProvider(BaseProviderTest):
         logger.save()
 
 
+@pytest.mark.skipif(not _HAS_GOOGLE_KEY, reason="GOOGLE_API_KEY not set")
 class TestGoogleProvider(BaseProviderTest):
     """Tests for Google Gemini provider."""
     provider_name = "google"
@@ -685,6 +697,7 @@ class TestGoogleProvider(BaseProviderTest):
         logger.save()
 
 
+@pytest.mark.skipif(not _HAS_OPENROUTER_KEY, reason="OPENROUTER_API_KEY not set")
 class TestOpenRouterProvider(BaseProviderTest):
     """Tests for OpenRouter provider (unified API)."""
     provider_name = "openrouter"
@@ -821,6 +834,7 @@ class TestOpenRouterProvider(BaseProviderTest):
         logger.save()
 
 
+@pytest.mark.skipif(not _HAS_XAI_KEY, reason="XAI_API_KEY not set")
 class TestXAIProvider(BaseProviderTest):
     """Tests for xAI Grok provider."""
     provider_name = "xai"
@@ -1036,6 +1050,10 @@ class TestLocalVLLM:
 # Cross-Provider Tests
 # =============================================================================
 
+@pytest.mark.skipif(
+    not any([_HAS_OPENAI_KEY, _HAS_ANTHROPIC_KEY, _HAS_GOOGLE_KEY, _HAS_OPENROUTER_KEY, _HAS_XAI_KEY]),
+    reason="No API keys available for cross-provider comparison"
+)
 class TestCrossProviderComparison:
     """Compare behavior across providers."""
 
@@ -1080,6 +1098,7 @@ class TestCrossProviderComparison:
 class TestErrorHandling:
     """Test error handling across providers."""
 
+    @pytest.mark.skipif(not _HAS_OPENAI_KEY, reason="OPENAI_API_KEY not set (needed to verify auth error)")
     def test_invalid_api_key_openai(self):
         """Test handling of invalid OpenAI API key."""
         from marsys.agents.exceptions import ModelAPIError
@@ -1095,6 +1114,7 @@ class TestErrorHandling:
         with pytest.raises((ModelAPIError, Exception)):
             model.run([{"role": "user", "content": "Hello"}])
 
+    @pytest.mark.skipif(not _HAS_OPENAI_KEY, reason="OPENAI_API_KEY not set")
     def test_invalid_model_name(self):
         """Test handling of invalid model name."""
         config = PROVIDERS.get("openai")
