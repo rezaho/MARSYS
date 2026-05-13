@@ -32,7 +32,7 @@ def clear_registry():
 
 @pytest.fixture
 def api_model_config():
-    """Create an API model config."""
+    """Create an API model config with a dummy key for testing."""
     return ModelConfig(
         type="api",
         name="anthropic/claude-haiku-4.5",
@@ -204,23 +204,41 @@ class TestAgentMemory:
     """Tests for Agent memory functionality."""
 
     @patch('marsys.agents.agents.Agent._create_model_from_config')
-    def test_memory_has_system_message(self, mock_create_model, api_model_config, mock_api_model):
-        """Test that memory is initialized with instruction as system message."""
+    def test_memory_has_system_message_conversation_history(self, mock_create_model, api_model_config, mock_api_model):
+        """Test that conversation_history memory stores instruction as system message."""
         mock_create_model.return_value = mock_api_model
 
         agent = Agent(
             model_config=api_model_config,
             goal="Test goal",
             instruction="You are a helpful assistant.",
-            name="TestAgent"
+            name="TestAgent",
+            memory_type="conversation_history",
         )
 
         messages = agent.memory.get_messages()
         system_messages = [m for m in messages if m.get("role") == "system"]
 
-        # Should have system message with instruction
         assert len(system_messages) == 1
         assert "You are a helpful assistant" in system_messages[0].get("content", "")
+
+    @patch('marsys.agents.agents.Agent._create_model_from_config')
+    def test_managed_memory_no_system_message(self, mock_create_model, api_model_config, mock_api_model):
+        """Test that managed_conversation memory does not store system messages (Agent rebuilds dynamically)."""
+        mock_create_model.return_value = mock_api_model
+
+        agent = Agent(
+            model_config=api_model_config,
+            goal="Test goal",
+            instruction="You are a helpful assistant.",
+            name="TestAgent",
+        )
+
+        messages = agent.memory.get_messages()
+        system_messages = [m for m in messages if m.get("role") == "system"]
+
+        # ManagedConversationMemory does not store system messages
+        assert len(system_messages) == 0
 
     @patch('marsys.agents.agents.Agent._create_model_from_config')
     def test_memory_add_and_retrieve(self, mock_create_model, api_model_config, mock_api_model):
@@ -385,3 +403,103 @@ class TestAllowedPeers:
         )
 
         assert agent._bidirectional_peers is True
+
+
+# =============================================================================
+# Memory Config and ACM Tests
+# =============================================================================
+
+class TestAgentMemoryConfig:
+    """Tests for Agent memory_config, compaction_model_config, and default memory_type."""
+
+    @patch('marsys.agents.agents.Agent._create_model_from_config')
+    def test_default_memory_type_is_managed_conversation(self, mock_create_model, api_model_config, mock_api_model):
+        """Agent default memory_type should be managed_conversation."""
+        mock_create_model.return_value = mock_api_model
+
+        agent = Agent(
+            model_config=api_model_config,
+            goal="Test goal",
+            instruction="Test instruction",
+            name="TestDefaultMemory"
+        )
+
+        assert agent.memory.memory_type == "managed_conversation"
+
+    @patch('marsys.agents.agents.Agent._create_model_from_config')
+    def test_memory_config_passthrough(self, mock_create_model, api_model_config, mock_api_model):
+        """memory_config should be forwarded to MemoryManager."""
+        mock_create_model.return_value = mock_api_model
+
+        from marsys.agents.memory import ManagedMemoryConfig
+        custom_config = ManagedMemoryConfig(
+            threshold_tokens=50_000,
+        )
+
+        agent = Agent(
+            model_config=api_model_config,
+            goal="Test goal",
+            instruction="Test instruction",
+            name="TestMemoryConfig",
+            memory_config=custom_config,
+        )
+
+        # Verify the config was passed through
+        mem_module = agent.memory.memory_module
+        assert mem_module.config.threshold_tokens == 50_000
+
+    @patch('marsys.agents.agents.Agent._create_model_from_config')
+    def test_compaction_model_config_fallback(self, mock_create_model, api_model_config, mock_api_model):
+        """Without compaction_model_config, _compaction_model should be None."""
+        mock_create_model.return_value = mock_api_model
+
+        agent = Agent(
+            model_config=api_model_config,
+            goal="Test goal",
+            instruction="Test instruction",
+            name="TestNoCompactionModel",
+        )
+
+        assert agent._compaction_model is None
+        assert agent._compaction_model_config is None
+
+    @patch('marsys.agents.agents.Agent._create_model_from_config')
+    def test_compaction_model_config_creates_model(self, mock_create_model, api_model_config, mock_api_model):
+        """With compaction_model_config, a separate compaction model should be created."""
+        mock_create_model.return_value = mock_api_model
+
+        compaction_config = ModelConfig(
+            type="api",
+            name="anthropic/claude-haiku-4.5",
+            provider="openrouter",
+            api_key="test-dummy-key",
+            max_tokens=500,
+        )
+
+        agent = Agent(
+            model_config=api_model_config,
+            goal="Test goal",
+            instruction="Test instruction",
+            name="TestWithCompactionModel",
+            compaction_model_config=compaction_config,
+        )
+
+        assert agent._compaction_model is not None
+        assert agent._compaction_model_config == compaction_config
+        # _create_model_from_config called twice: once for main, once for compaction
+        assert mock_create_model.call_count == 2
+
+    @patch('marsys.agents.agents.Agent._create_model_from_config')
+    def test_explicit_conversation_history_memory_type(self, mock_create_model, api_model_config, mock_api_model):
+        """Explicitly passing conversation_history should use ConversationMemory."""
+        mock_create_model.return_value = mock_api_model
+
+        agent = Agent(
+            model_config=api_model_config,
+            goal="Test goal",
+            instruction="Test instruction",
+            name="TestConvHistory",
+            memory_type="conversation_history",
+        )
+
+        assert agent.memory.memory_type == "conversation_history"

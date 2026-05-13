@@ -1,10 +1,17 @@
 # Model Provider Integration Tests
 
-This directory contains comprehensive integration tests for `BaseAPIModel` and `BaseLocalModel` with all supported providers.
+This directory contains integration tests for `BaseAPIModel` and `BaseLocalModel` with all supported providers, plus unit tests for the OAuth credential store.
 
-## Overview
+## Test Files
 
-The tests validate the complete lifecycle of model interactions:
+| File | Tests | Description |
+|------|-------|-------------|
+| `test_provider_integration.py` | 81 | Provider integration tests (API + local models) |
+| `test_credentials.py` | 38 | OAuth credential store unit tests |
+
+## Provider Integration Tests (`test_provider_integration.py`)
+
+### Test Categories
 
 1. **Simple Messages** - Basic request/response exchanges
 2. **Tool Calling** - Single tool invocation and parsing
@@ -16,7 +23,7 @@ The tests validate the complete lifecycle of model interactions:
 8. **Async Execution** - `arun()` method testing
 9. **Error Handling** - Invalid keys, models, and edge cases
 
-## Providers Tested
+### Providers
 
 | Provider | Model | Env Variable | Features |
 |----------|-------|--------------|----------|
@@ -28,69 +35,69 @@ The tests validate the complete lifecycle of model interactions:
 | **Local HuggingFace** | `Qwen/Qwen3-VL-8B-Thinking-FP8` | N/A | VLM, Tools, Thinking |
 | **Local vLLM** | `Qwen/Qwen3-VL-8B-Thinking-FP8` | N/A | VLM, High-throughput |
 
-## Test Categories
+### Test Classes
 
-### API Provider Tests
+```
+BaseProviderTest          # Shared tests inherited by all API providers
+├── TestOpenAIProvider    # OpenAI-specific (structured output, reasoning)
+├── TestAnthropicProvider # Anthropic-specific (vision)
+├── TestGoogleProvider    # Google-specific (thinking, structured output)
+├── TestOpenRouterProvider # OpenRouter multi-model tests
+└── TestXAIProvider       # xAI Grok tool calling
 
-Each provider has its own test class with standardized tests:
-
-```python
-class TestOpenAIProvider(BaseProviderTest):
-    provider_name = "openai"
-
-    # Inherited tests:
-    # - test_simple_message
-    # - test_tool_call_invocation
-    # - test_multi_turn_with_tool_response
-    # - test_json_mode
-    # - test_async_execution
-
-    # Provider-specific tests:
-    # - test_structured_output
-    # - test_reasoning_effort
+TestLocalHuggingFace      # HuggingFace backend (config validation + GPU inference)
+TestLocalVLLM             # vLLM backend (config validation + GPU inference)
+TestCrossProviderComparison # Same query across all providers
+TestErrorHandling         # Invalid keys and model names
 ```
 
-### Local Model Tests
+### Running
 
-```python
-class TestLocalHuggingFace:
-    # Config validation (no GPU needed):
-    # - test_model_config_validation
-    # - test_model_config_llm
-    # - test_model_config_missing_model_class
+```bash
+# Run all tests (skips unavailable providers)
+source .venv/bin/activate && python -m pytest tests/models/test_provider_integration.py -v
 
-    # Real inference (requires GPU, TEST_LOCAL_MODELS=1):
-    # - test_huggingface_inference
-    # - test_huggingface_tool_calling
+# Test specific provider
+pytest tests/models/test_provider_integration.py::TestOpenAIProvider -v -s
+pytest tests/models/test_provider_integration.py::TestAnthropicProvider -v -s
+pytest tests/models/test_provider_integration.py::TestGoogleProvider -v -s
+
+# Test specific capability
+pytest tests/models/test_provider_integration.py -k "tool_call" -v
+pytest tests/models/test_provider_integration.py -k "async" -v
+
+# Local models (requires GPU)
+TEST_LOCAL_MODELS=1 pytest tests/models/test_provider_integration.py::TestLocalHuggingFace -v -s
+TEST_VLLM_MODELS=1 pytest tests/models/test_provider_integration.py::TestLocalVLLM -v -s
 ```
 
-### Cross-Provider Tests
+## OAuth Credential Store Tests (`test_credentials.py`)
 
-```python
-class TestCrossProviderComparison:
-    # - test_all_respond_to_same_query
+Unit tests for `OAuthProfile` and `OAuthCredentialStore` covering:
+
+- Profile CRUD (add, remove, get, list)
+- Serialization roundtrip (to_dict / from_dict)
+- Default profile resolution per provider
+- Auto-discovery of existing credential files
+- File permissions and security checks
+- Singleton behavior
+- `ModelConfig` integration with `oauth_profile` field
+
+### Running
+
+```bash
+source .venv/bin/activate && python -m pytest tests/models/test_credentials.py -v
 ```
 
-### Error Handling Tests
-
-```python
-class TestErrorHandling:
-    # - test_invalid_api_key_openai
-    # - test_invalid_model_name
-```
-
-## Running Tests
-
-### Prerequisites
+## Prerequisites
 
 1. Install test dependencies:
    ```bash
    pip install pytest pytest-asyncio python-dotenv
    ```
 
-2. Set up API keys in `.env` file (recommended) or environment variables:
+2. Set up API keys in `.env` file or environment variables:
    ```bash
-   # In .env file (takes precedence over environment variables)
    OPENAI_API_KEY=sk-...
    ANTHROPIC_API_KEY=sk-ant-...
    GOOGLE_API_KEY=...
@@ -98,86 +105,11 @@ class TestErrorHandling:
    XAI_API_KEY=xai-...
    ```
 
-   **Note**: The tests use `load_dotenv(override=True)` so `.env` values always take precedence over existing environment variables.
-
-### Run All Tests
-
-```bash
-# Run all tests (skips unavailable providers)
-python -m pytest tests/models/test_provider_integration.py -v
-
-# Run with detailed output
-python -m pytest tests/models/test_provider_integration.py -v -s
-```
-
-### Run Specific Provider
-
-```bash
-# Test OpenAI only
-python -m pytest tests/models/test_provider_integration.py::TestOpenAIProvider -v -s
-
-# Test Anthropic only
-python -m pytest tests/models/test_provider_integration.py::TestAnthropicProvider -v -s
-
-# Test Google Gemini only
-python -m pytest tests/models/test_provider_integration.py::TestGoogleProvider -v -s
-```
-
-### Run Specific Test Type
-
-```bash
-# Run all simple message tests
-python -m pytest tests/models/test_provider_integration.py -k "test_simple_message" -v
-
-# Run all tool call tests
-python -m pytest tests/models/test_provider_integration.py -k "tool_call" -v
-
-# Run all async tests
-python -m pytest tests/models/test_provider_integration.py -k "async" -v
-```
-
-### Run Local Model Tests (Requires GPU)
-
-```bash
-# Run HuggingFace backend tests
-TEST_LOCAL_MODELS=1 python -m pytest tests/models/test_provider_integration.py::TestLocalHuggingFace -v -s
-
-# Run vLLM backend tests
-TEST_VLLM_MODELS=1 python -m pytest tests/models/test_provider_integration.py::TestLocalVLLM -v -s
-```
-
-## Test Success Criteria
-
-### Simple Message Test
-- **PASS**: Response is `HarmonizedResponse` with non-empty `content`
-- **FAIL**: Exception raised or empty response
-
-### Tool Call Test
-- **PASS**: Model returns `tool_calls` with correct function name and valid arguments
-- **PASS (soft)**: Model responds with content if tool calling not triggered
-- **FAIL**: Exception or malformed tool call
-
-### Multi-turn Tool Response Test
-- **PASS**: Model processes tool response and generates coherent final response referencing the tool data
-- **FAIL**: Exception or response doesn't incorporate tool data
-
-### Multimodal/Vision Test
-- **PASS**: Model processes image and returns relevant response
-- **SKIP**: Provider doesn't support vision
-- **FAIL**: Exception during image processing
-
-### JSON Mode Test
-- **PASS**: Response parses as valid JSON
-- **PASS (soft)**: Response contains JSON-like content but may not strictly parse
-- **FAIL**: Exception raised
-
-### Async Test
-- **PASS**: `arun()` completes and returns valid `HarmonizedResponse`
-- **FAIL**: Exception or async execution failure
+   The tests use `load_dotenv(override=True)` so `.env` values take precedence.
 
 ## Test Output
 
-All tests log detailed results to `tests/models/outputs/`:
+All provider integration tests log results to `tests/models/outputs/`:
 
 ```
 outputs/
@@ -187,51 +119,12 @@ outputs/
 └── ...
 ```
 
-Each log file contains:
-- Step-by-step execution details
-- Request/response data
-- Timestamps and success status
-- Error details if any
-
 ## Troubleshooting
 
-### Test Skipped: "API key not set"
-Set the required environment variable for that provider.
-
-### Test Failed: "ModelAPIError"
-Check:
-1. API key is valid and not expired
-2. Model name is correct and available
-3. Account has sufficient credits
-
-### Test Failed: "Tool call not invoked"
-Some models may not always use tools. The test retries with explicit instruction.
-
-### Test Failed: "JSON parse error"
-Not all providers fully support JSON mode. Check provider docs.
-
-### Test Failed: Google 429 "RESOURCE_EXHAUSTED"
-The Google Generative Language API (ai.google.dev) has a free tier limit of ~20 requests per minute. If you see rate limit errors:
-1. Wait 30-60 seconds for the quota to reset
-2. Or use a Vertex AI service account key for higher limits
-3. Or test via OpenRouter which routes to Gemini without this limit
-
-## Model Selection Notes
-
-We use cost-effective models for testing:
-
-- **OpenAI**: `gpt-5.1-codex` - Latest coding model with tool calling and reasoning
-- **Anthropic**: `claude-haiku-4-5-20251001` - Fast, cheap, vision-capable with full tool support
-- **Google**: `gemini-3-flash-preview` - Latest Gemini Flash with thinking and thought signatures
-- **OpenRouter**: Tests all three major models (Claude, Gemini, GPT) via unified API
-- **xAI**: `grok-4-1-fast-reasoning` - Fast reasoning with 2M context
-- **Local**: Qwen3-VL thinking models with FP8 quantization
-
-## Contributing
-
-When adding new providers:
-
-1. Add `ProviderConfig` to `PROVIDERS` dict
-2. Create test class inheriting from `BaseProviderTest`
-3. Add provider-specific tests for unique features
-4. Update this README with the new provider info
+| Issue | Solution |
+|-------|----------|
+| Test Skipped: "API key not set" | Set the required environment variable |
+| ModelAPIError | Check API key validity, model name, account credits |
+| Tool call not invoked | Some models may not always use tools; test retries with explicit instruction |
+| JSON parse error | Not all providers fully support JSON mode |
+| Google 429 RESOURCE_EXHAUSTED | Wait 30-60s for quota reset, or use Vertex AI / OpenRouter |

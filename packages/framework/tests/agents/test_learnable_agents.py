@@ -860,15 +860,12 @@ class TestLearnableAgentMemory:
             )
 
             assert hasattr(agent, 'memory')
-            # Memory should be initialized with conversation_history type
-            assert agent.memory.memory_type == "conversation_history"
-            # Check that messages were initialized (system message with instruction)
+            # Memory should be initialized with managed_conversation type
+            assert agent.memory.memory_type == "managed_conversation"
+            # ManagedConversationMemory does not store a system message on init
+            # (system prompts are rebuilt dynamically by Agent/Orchestra)
             messages = agent.memory.get_messages()
-            assert len(messages) >= 1
-            # First message should be system message with instruction
-            system_msgs = [m for m in messages if m.get("role") == "system"]
-            assert len(system_msgs) == 1
-            assert "You are a helpful research assistant." in system_msgs[0].get("content", "")
+            assert isinstance(messages, list)
 
     def test_memory_type_defaults_to_conversation_history(
         self, local_model_config, mock_local_adapter_factory
