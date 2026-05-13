@@ -37,6 +37,7 @@ def api_model_config():
         type="api",
         name="anthropic/claude-haiku-4.5",
         provider="openrouter",
+        api_key="test-key",
         max_tokens=1000,
         temperature=0.7,
     )
@@ -158,6 +159,7 @@ class TestMaxTokensHandling:
             type="api",
             name="test-model",
             provider="openrouter",
+            api_key="test-key",
             max_tokens=2000,
         )
 
@@ -179,6 +181,7 @@ class TestMaxTokensHandling:
             type="api",
             name="test-model",
             provider="openrouter",
+            api_key="test-key",
             max_tokens=2000,
         )
 
