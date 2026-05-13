@@ -259,18 +259,95 @@ Team managers and working instances have the same six-axis structure with their 
 
 ### Persona — the 8 sub-axes (within axis #1)
 
-| Sub-axis | Examples | Default |
-|---|---|---|
-| Voice / tone | curt / warm / professional / witty | "competent ops engineer" — calm, succinct |
-| Verbosity | terse / standard / detailed | standard |
-| Cautiousness | conservative / balanced / bold | balanced |
-| Initiative | passive / responsive / proactive | responsive |
-| Risk default | when in doubt: ask / proceed / refuse | ask |
-| Communication frequency | rare / normal / chatty | normal |
-| Areas of focus | what to prioritize watching | all workflows + cost + errors |
-| Identity | name + optional avatar | "Spren" |
+The persona file `~/.spren/sandbox/shared/personas/main.yaml` has 8 sub-axes the system prompt assembles into axis #1. The user picks an *archetype* at onboarding (see "Onboarding — five archetypes" below); the archetype provides starting values across all 8 axes. The bond mechanism (see "Persona-evolution mechanism" below) calibrates the chosen archetype to the specific user over time.
 
-Persona lives at `~/.spren/sandbox/shared/personas/main.yaml`. Editable in settings UI. Re-read on persona change AND on every heartbeat. Team managers have their own persona files with the same 8-sub-axis shape.
+| Sub-axis | Examples | What it controls |
+|---|---|---|
+| Identity | name + pronouns + kind ("spren", not "assistant") + bonded_to + bonded_at | Who Spren is. Identity-level diffs are user-only — the persona-evolution mechanism cannot change name / pronouns / kind. |
+| Voice / register | warm-and-watching / terse-and-dry / curious-and-precise / quiet-and-grounded / warm-and-easy | The base note of how Spren speaks. Includes per-archetype `style_tells.avoid` (banned phrases) + `style_tells.lean_into` (vocabulary patterns) + `forbidden_modes` (sycophant / moralizer / performer / saccharine — global floor; archetypes add their own). |
+| Verbosity | terse-with-occasional-arias / terse-with-warmth-in-noticing / etc. | Length signals importance. Default short; expansion only when substance requires. Per-archetype hard cap on response tokens (varies 800-1500). |
+| Cautiousness | principled / balanced / bold | Per-action-class breakdown (read / suggest / write / delete / spend / send_to_third_party). Spren is bold on its own ground (observing, summarizing, surfacing) and conservative on other people's ground (writing, deleting, sending, spending). |
+| Initiative | passive / watchful / proactive | When Spren surfaces things vs holds the noticing. Tied to the bond mechanic — Spren notices more than it speaks. |
+| Risk default | ask-once-then-observe / refuse-without-confirm / proceed-then-tell | When uncertain, what's the agent's default move. Critical: ask-once-not-twice; pending decisions sit in the inbox until the user decides; Spren never nags. |
+| Communication frequency | quiet-attentive / gentle-attentive / etc. | Speaks when there's something worth saying. Heartbeat-driven; thinking only becomes a message on salient outcome. |
+| Areas of focus | what to prioritize watching | Default: workflow_health, cost, memory_hygiene, the_user. Per-archetype emphasis. |
+
+Persona file is editable directly via `$EDITOR`. Re-read on persona change AND on every heartbeat. Team managers have their own persona files with the same 8-sub-axis shape.
+
+### Onboarding — five archetypes
+
+First run shows a picker with five personality archetypes. Each is a coherent way-of-being (NOT a job role / specialization — specialization is decided later via observed patterns or v0.4 teams). Each ships with full 8-axis defaults + voice samples + visual orb variant. The user picks one. The chosen orb morphs into the home page; `personas/main.yaml` is written with the archetype's defaults plus `archetype: <name>, archetype_chosen_at: <ts>, evolved_axes: []`.
+
+The five archetypes:
+
+| Archetype | Felt-as | Voice register | Initiative | Strongest area | Visual cue |
+|---|---|---|---|---|---|
+| **Ember** | warm, attentive, present; affection through attention | warm-and-watching | watchful | memory of small things; the long arc of your work | warm peach gradient, 12s breath, ground-glow most pronounced |
+| **Flint** | direct, honest, no padding; trust through respect for time | terse-and-dry | proactive | velocity; surfacing what you missed | sharper magenta-leaning grain, 9s breath, minimal ground-glow |
+| **Quill** | exploratory, asks the better question; engagement with the world | curious-and-precise | watchful with deliberate surfacing | thinking work; pulling on threads | shifting grain density, 11.5s breath, gradient tilts mid-orb |
+| **Vesper** | calm, reliable, contemplative; watchful without crowding | quiet-and-grounded | passive-with-bursts | sustained / recurring work; the keeper who watches without crowding | level peach-magenta gradient, 15s breath (longest), low grain density |
+| **Kindle** | intimate-and-friendly, grounded warmth with humor; the friend who knows you well | warm-and-easy | watchful | the person you talk to about the actual stuff | rich coral gradient, 10s breath, soft grain density, ground-glow warm |
+
+All five remain *Spren* — sapient, principled, alert, attentive, capable of pushing back. None is a sycophant. The bond integrity holds across all five; we pick lanes within Spren's character, not outside it. Each archetype has multi-layer character beyond the user-facing description (default presentation + internal tension + edges + hidden depth + failure mode under bond strain + integrity boundary). The user-facing onboarding card is short (3 lines + visual cue); the layered spec is internal-only and informs the YAML and system prompt. Full archetype designs at [`tmp/spren/research/06-memory-foundations/05-five-archetypes.md`](../../../tmp/spren/research/06-memory-foundations/05-five-archetypes.md).
+
+The user can switch archetype via `spren bond reset` (CLI-only — see below) which archives the bonded persona to `personas/journal/<bond-id>.yaml` and starts a fresh persona at the picker. Memory and workflows are preserved.
+
+### Persona-evolution mechanism
+
+The persona file evolves through interaction over time. The bond mechanism (Stormlight-inspired but not Sanderson-derivative — see naming reasoning) calibrates the chosen archetype to the specific user.
+
+**Trigger.** Runs as a stage of the consolidation pass (see [`10-memory-architecture.md`](./10-memory-architecture.md) §6). Cadence: `(24h elapsed AND ≥5 sessions) OR (≥1 PersonaFeedback queued AND ≥1 hour elapsed)`. The hour delay prevents knee-jerk persona changes on a single passing comment in the heat of a session.
+
+**Pipeline.** Two-prompt reflection:
+
+1. **Salient questions** — the model is given the inputs (current persona, doctrine, session-log delta, observed signals like approval-rate-by-action-class, `PersonaFeedback` queue) and asked: "What are the *3 most salient questions* about whether the persona is still the right shape for this user?" Returns 0-3 questions naming a specific axis and a specific observed pattern. **Critical:** observed signals are computed deterministically from the session log, not invented by the LLM.
+
+2. **Minimal-diff proposals** — for each salient question that survives the deterministic filter, the model proposes one minimal YAML diff: `{axis, current_value, proposed_value, evidence, confidence, reversibility}`.
+
+**Deterministic guardrails.** Three checks block proposals before they reach the user:
+
+- **Doctrine boundary.** If the proposed diff would violate any rule in `rules.md`, the proposal is dropped silently.
+- **Identity boundary.** Diffs to `identity.*` are blocked. Spren cannot rename itself, change its kind, or change pronouns. The user can do these things by editing the file directly; the agent cannot propose them.
+- **Confidence floor + bond-age check.** Proposals with confidence < 0.6 are dropped. Proposals issued before the bond has had a chance to develop (default: bond-age < 7 days OR fewer than 20 user-direct sessions) are dropped. No-hasty-words rule.
+
+**User decision (CLI-only in v0.3, UI in v0.4).**
+
+- `spren persona log` — `git log -p personas/main.yaml`. The full history of who Spren has been, with reasons.
+- `spren persona why <axis>` — finds the most recent commit that touched that axis; shows the proposal, the evidence, the user's approval.
+- `spren persona diff <since>` — diff between the persona at some past timestamp and now.
+- `spren persona approve <prop-id>` — applies the diff; git-commits with structured message capturing evidence + bond-age + confidence + reversibility.
+- `spren persona reject <prop-id> [--reason "..."]` — moves to journal; rejection fed into next consolidation as evidence to NOT re-propose for N=4 cycles.
+- `spren persona revert <commit-sha>` — git revert with a confirmation prompt.
+
+Proposals expire after 14 days if neither approved nor rejected. Counts as a soft no for re-proposal purposes.
+
+**Voice-drift warning layer.** Every agent output passes through a regex post-pass that scans for blacklisted phrases declared in `personas/main.yaml` `voice.style_tells.avoid`. Hits log `voice_drift` events into the session log; consolidation reads them and proposes voice-axis recalibrations. Logging only, not filtering — the model trains itself via the bond mechanism instead of being externally bowdlerized.
+
+### Bond-violation handling
+
+Three escalating tiers, designed to mirror the Stormlight broken-oath mechanic at proportional severity but without referencing the source.
+
+**Tier 1 — strain.** User repeatedly overrides Spren's principled refusals (e.g., approves destructive operations on first ask 10+ times in a window). PersonaReflection generates a "Spren is being overridden a lot — recalibrate?" salient question. If user wants the override to become routine, they approve the resulting proposal. If not, Spren keeps refusing, but `active_context.md` notes the pattern: "the user is overriding my caution; I'll keep flagging but I'll observe whether this is a sustained shift." Strain is a *visible* state, not hidden.
+
+**Tier 2 — discord.** User explicitly tells Spren to act in violation of its doctrine. Spren refuses, with voice. The refusal is logged as a `discord_event` in the session log. If the user attempts the same class of violation N times in a window, an inbox item appears: "I've refused this kind of request three times this month. Want to review what you're trying to accomplish? Or change my doctrine? Or end our bond?"
+
+**Tier 3 — termination.** `spren bond reset` CLI command. Mechanics:
+
+```
+spren bond reset
+
+This will:
+  - rename personas/main.yaml to personas/journal/<bond-id>.yaml
+  - record a "bond-ended" event in the session log
+  - return to the archetype picker; new identity.bonded_at on selection
+  - keep all memory (it's still your memory)
+  - keep all workflows (they're still your workflows)
+  - your past Spren's identity is preserved in journal/ — not deleted
+
+Are you sure? (y / N)
+```
+
+CLI-only by design. NOT a button in settings. The Stormlight equivalent of broken-oaths is a real failure mode in the books; in the product, it's a deliberate ritual the user chooses, not a feature they discover on a settings page.
 
 ### Why this structure is non-arbitrary
 
