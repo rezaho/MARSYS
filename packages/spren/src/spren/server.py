@@ -33,9 +33,13 @@ from pydantic import BaseModel
 from . import __version__ as spren_version
 from .auth import make_auth_dependency
 from .models import ErrorEnvelope, ErrorPayload
+from .cost import warn_if_rates_stale
 from .routes.lint import make_lint_router
+from .routes.runs import make_runs_router
 from .routes.tools import make_tools_router
 from .routes.workflows import make_workflows_router
+from .runs.broker import RunsBroker
+from .runs.lifecycle import shutdown_all_active
 from .storage import Database, MigrationsRunner
 from .storage.idempotency import sweep_expired
 from .workers import run_draft_sweeper_forever
@@ -86,6 +90,7 @@ def create_app(
         runner = MigrationsRunner(db.connection)
         runner.run()
         sweep_expired(db.connection)
+        warn_if_rates_stale()
         sweeper_task: asyncio.Task | None = None
         if enable_draft_sweeper:
             sweeper_task = asyncio.create_task(
@@ -94,6 +99,11 @@ def create_app(
         try:
             yield
         finally:
+            # Drain in-flight runs before shutdown (AC-77).
+            try:
+                await shutdown_all_active(timeout=5.0)
+            except Exception:  # noqa: BLE001
+                pass
             if sweeper_task is not None:
                 sweeper_task.cancel()
                 try:
@@ -105,6 +115,7 @@ def create_app(
     app = FastAPI(title="Spren", version=spren_version, lifespan=lifespan)
     require_auth = make_auth_dependency(token)
     boot_time = started_at or datetime.now(timezone.utc)
+    runs_broker = RunsBroker()
 
     # CORS: localhost on any port (handles Vite fallback ports + random sidecar
     # ports) plus tauri://localhost (per docs/architecture/spren/07-security.md).
@@ -135,6 +146,7 @@ def create_app(
                 "workflows": "/v1/workflows",
                 "tools": "/v1/tools",
                 "lint": "/v1/workflows/{id}/lint",
+                "runs": "/v1/runs",
             },
             started_at=boot_time,
             data_dir=str(data_dir),
@@ -169,6 +181,14 @@ def create_app(
             require_auth,
             db_factory=lambda: db.connection,
             known_tools_provider=lambda: tool_names,
+        ),
+    )
+    app.include_router(
+        make_runs_router(
+            require_auth,
+            db_factory=lambda: db.connection,
+            broker=runs_broker,
+            data_dir=data_dir,
         ),
     )
 
