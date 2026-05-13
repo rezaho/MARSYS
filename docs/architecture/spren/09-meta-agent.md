@@ -27,6 +27,17 @@ The Spren runtime *consumes* Marsys: when the meta-agent decides "let's run work
 
 If, after months of operation, we discover patterns from this runtime that belong upstream in Marsys, we propose them as a framework feature with an ADR. For now: keep separate.
 
+### Generic-runtime vs Spren-specific boundary (SP-023)
+
+Within `packages/spren/`, the always-on machinery splits along a designed boundary that's enforced in code from v0.3 onward:
+
+- **Generic always-on runtime** (no Spren-specific imports; consumes only `packages/framework/`'s three doors and standard / approved deps): inbox + priority queue, time scheduler, watcher ABC, agent-loop pattern, heartbeat tick primitive, crash-recovery primitives, sub-instance lifecycle primitives, cost-ceiling primitives, the *shape* of the six-axis context loader.
+- **Spren-specific layer** (consumes generic primitives via documented interfaces): the bond mechanic, persona-evolution mechanism, the five archetypes, markdown KB taxonomy, consolidation pipeline, suggest-with-confirm flow, the concrete tool catalog, the specific watcher implementations that observe Spren-specific state, the FastAPI server / REST endpoints / SSE.
+
+Implementers MUST identify, for every new always-on module they introduce, which side of the boundary it falls on, and structure the file boundary to match. A linter rule (or PR-review check) enforces: generic-runtime files don't import from Spren-specific files. The generic side could be physically packaged separately (`packages/marsys-runtime/`) at any future point; the rule today is the boundary lives in code, not in package shape.
+
+The decision about whether to extract a separate runtime package — and if so, whether to extract it standalone or as a rename / split of `packages/framework/` — is deferred to **end of v0.4 design**. See [BRAINDUMP §13](../../../BRAINDUMP.md) "Always-on runtime: generic vs Spren-specific boundary" for the reasoning, the three options on the table, and the conversation the architect agent surfaces at end-of-v0.4.
+
 ## The agent hierarchy
 
 Three agent kinds, from most to least durable. Two orthogonal concepts also in play: **Teams** (user-organizational units) and **Skills** (capability bundles). They are NOT the same thing.
