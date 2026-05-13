@@ -144,8 +144,7 @@ def test_equal_states_produce_empty_patch():
 
 def test_barrier_trimmed_schema():
     """v0.3 BarrierState must NOT carry arrived_count or resolver_branch."""
-    b = BarrierState(barrier_id="g1", status="OPEN")
-    fields = set(b.model_fields.keys())
+    fields = set(BarrierState.model_fields.keys())
     assert "arrived_count" not in fields
     assert "resolver_branch" not in fields
     # But these are present:
