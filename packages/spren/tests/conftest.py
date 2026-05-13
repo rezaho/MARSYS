@@ -1,6 +1,7 @@
 """Shared pytest fixtures for the Spren package."""
 from __future__ import annotations
 
+import importlib.util
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -9,6 +10,34 @@ from fastapi.testclient import TestClient
 
 from spren.auth import generate_token
 from spren.server import create_app
+
+
+def _aggui_available() -> bool:
+    """Runtime presence check for Framework Session 06."""
+    return importlib.util.find_spec("marsys.coordination.aggui") is not None
+
+
+def _cancel_session_available() -> bool:
+    """Runtime presence check for Framework Session 07."""
+    try:
+        from marsys.coordination.orchestra import Orchestra  # type: ignore[import-not-found]
+
+        return hasattr(Orchestra, "cancel_session")
+    except ImportError:  # pragma: no cover
+        return False
+
+
+# Skip markers per AC-204 / AC-205 — tests for framework-06 / framework-07
+# acceptance criteria attach these so they skip-pass during the parallel
+# implementation period and light up automatically on merge.
+requires_aggui = pytest.mark.skipif(
+    not _aggui_available(),
+    reason="blocked-on-framework-06: marsys.coordination.aggui not yet present",
+)
+requires_cancel_session = pytest.mark.skipif(
+    not _cancel_session_available(),
+    reason="blocked-on-framework-07: Orchestra.cancel_session not yet present",
+)
 
 
 @pytest.fixture

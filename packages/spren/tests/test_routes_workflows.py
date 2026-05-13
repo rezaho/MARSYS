@@ -110,20 +110,22 @@ def test_delete_returns_409_when_runs_reference(client, auth_headers, sample_def
     """DELETE returns 409 + WORKFLOW_HAS_RUNS when a run references the workflow."""
     wf_id = _create(client, auth_headers, sample_definition).json()["id"]
 
-    # Stub a `runs` table with a reference. The real `runs` table will be added
-    # when run execution is wired; the DELETE handler must already treat any
-    # present row as a block. Reach into the same Database the app uses so we
-    # share the connection.
+    # Insert a real run row referencing the workflow. The Session 04 migration
+    # created the real `runs` table; we use the DAL so the row is valid.
+    from spren.models import TaskInput
     from spren.storage import Database  # local import to avoid circular at module load
+    from spren.storage.runs import insert_run
 
-    # The app captured a Database instance during create_app; we reproduce its
-    # behavior by opening another handle to the same on-disk file.
-    data_dir = sample_definition  # placeholder; real data_dir is on the conftest fixture
-    # Use the test client to discover the data_dir via /v1/bootstrap.
+    # Reach into the same on-disk DB the app uses (discovered via /v1/bootstrap).
     boot = client.get("/v1/bootstrap", headers=auth_headers).json()
     db = Database(__import__("pathlib").Path(boot["data_dir"]))
-    db.connection.execute("CREATE TABLE IF NOT EXISTS runs (id TEXT PRIMARY KEY, workflow_id TEXT NOT NULL)")
-    db.connection.execute("INSERT INTO runs (id, workflow_id) VALUES (?, ?)", ("run_1", wf_id))
+    insert_run(
+        db.connection,
+        run_id="01J9X4ABCDEFGHJKMPRUN1",
+        workflow_id=wf_id,
+        task_input=TaskInput(),
+    )
+    db.connection.commit()
     db.close()
 
     r = client.delete(f"/v1/workflows/{wf_id}", headers=auth_headers)
