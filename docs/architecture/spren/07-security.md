@@ -1,6 +1,6 @@
 # 07 — Security
 
-Spren is a local-first single-user app distributed as a native installer. The security model has four surfaces: **installer / binary trust** (code signing + notarization + signed install scripts), **localhost API exposure** (per-launch token + 127.0.0.1 binding), **API key storage** (OS keychain + encrypted-SQLite fallback), and **external messenger channels** (allowlists + confirm-before-acting in later releases).
+Spren is a local-first single-user app distributed as a native installer. The security model has five surfaces: **installer / binary trust** (code signing + notarization + signed install scripts), **localhost API exposure** (per-launch token + 127.0.0.1 binding), **API key storage** (OS keychain + encrypted-SQLite fallback), **shell-execution sandbox** (OS-level outer envelope around every shell tool invocation), and **external messenger channels** (allowlists + confirm-before-acting in later releases).
 
 ## Threat model in scope
 
@@ -13,15 +13,18 @@ Spren is a local-first single-user app distributed as a native installer. The se
 | API keys leaked from disk or logs | OS keychain primary; encrypted SQLite fallback; never logged or written to traces |
 | Spren server reachable from network | Default bind 127.0.0.1; user must explicitly set `--bind` to expose |
 | Messenger bot misuse — anyone DMs the bot, gets meta-agent privileges | Per-channel allowlist; confirm-before-acting on write actions (later release) |
-| Workflow with shell tool runs malicious command | Document the risk; per-workflow tool capability scoping (later release) |
-| Trace files contain user secrets that leak to disk backups | Document; optional secret redaction filter (later release) |
+| Workflow with shell tool runs malicious command | OS-level sandbox envelope (`bubblewrap` / `sandbox-exec` / AppContainer) around every shell invocation; bind-mounts limited to the Spren sandbox path; network opt-in per call; time-bound execution; per-workflow tool capability scoping (v0.4) |
+| Meta-agent's `execute_shell` tool runs destructive command | Hard rail (confirm-before-execute) by default in v0.3; runs inside the same OS-level envelope as workflow shell; standing approvals per-scope only (e.g., `git` in `<repo>`), never blanket |
+| Prompt-injection from a tool result causes shell-execute hijack | Hard-rail confirmation flow shows the cmd to the user before execution; SP-015 untrusted-channel writes never live-touch memory (the injection has no path to the system from a tool-result alone) |
+| Trace files contain user secrets that leak to disk backups | `SecretRedactor` runs at framework fan-out boundary (Framework Session 02, shipped); spans + tool args scrubbed before NDJSON write |
 
 ## Threat model OUT of scope
 
 - Multi-user separation: single-user product. If someone has access to the user's machine, they have the user's data. (If multi-user is needed → MARSYS Studio.)
 - Network adversaries / TLS: localhost-only.
 - Supply-chain attacks on dependencies: we follow SemVer pinning + Renovate-bot updates, but we don't run our own audit.
-- Sandboxing of agent code execution beyond what marsys framework provides.
+- Per-tool microVM isolation (gVisor, Firecracker). The OS-level outer envelope (`bubblewrap` / `sandbox-exec` / AppContainer) is sufficient for v0.3-v0.4's local-single-user threat model. Stronger isolation is a v0.5+ concern if/when Spren ships multi-tenant deployments.
+- Sandboxing of agent code execution beyond what marsys framework provides at the agent-logic layer (the framework's own input/output validation; this doc covers the FILESYSTEM and process boundary, not the agent-reasoning boundary).
 
 ## Localhost API exposure
 
@@ -110,16 +113,29 @@ When the user connects an external channel (Telegram bot, Discord gateway, etc.)
 4. Per-channel scoping: the meta-agent has a reduced toolset when invoked via a channel — write tools require confirmation; read tools work directly
 5. Rate limit: per-channel-user max-1-action-per-2-seconds
 
-## Workflow security
+## Shell execution and the OS-level sandbox envelope
 
-A workflow can include agents with shell-execute tools. A workflow author who is also the spren user is trusted with the same shell access they have outside Spren, so this is not a privilege-escalation issue.
+Shell execution is in scope from v0.3, on two paths:
 
-A later release adds:
-- Per-workflow tool capability scoping (e.g., "this workflow may not use shell")
-- Confirmation prompt on first run if the workflow uses dangerous tools
-- Audit log of shell commands executed via workflows (in `<data-dir>/data/audit.log`)
+- **Meta-agent**: the `execute_shell(cmd, cwd?, timeout_s?, allow_network?)` tool, hard-railed by default (every call shows the cmd to the user for confirmation), with standing approvals available per-scope.
+- **Workflow agents**: marsys's CodeAgent ships shell as a built-in tool from day one. A user-defined workflow can include a CodeAgent and that agent can execute shell as part of its run.
 
-For now: documented user-facing risk; warning badge on workflows that use shell/file-write tools; workflows imported from Python files surface the same warning when they bring shell-tool agents.
+Both paths run their shell subprocess inside the **same OS-level outer envelope** that wraps the entire Spren process tree. The envelope is platform-specific:
+
+| Platform | Mechanism | What it does |
+|----------|-----------|--------------|
+| Linux | `bubblewrap` (bwrap) | namespace-isolated subprocess; bind-mounts only `<data-dir>/sandbox/` (rw) + system libraries (ro) + a tmpdir (rw); drops network unless `allow_network=true`; CPU + memory + time bounds |
+| macOS | `sandbox-exec` profile | sandbox profile restricting filesystem reads/writes to `<data-dir>/sandbox/`; network restricted unless opted in; same time/CPU bounds |
+| Windows | AppContainer + Job Object | restricted token; Job Object enforces filesystem + network ACL + time/memory bounds |
+| Docker | container runtime delegated | the container is itself the envelope; spren-inside-container runs each shell subprocess as a child of the spren process, no nested sandbox needed |
+
+Permissions inside the envelope are enforced by the **`SandboxFilesystem` application-layer wrapper** for typed tool calls (`read_file`, `grep`, `lookup_facts`, etc.) — see [`09-meta-agent.md`](./09-meta-agent.md) §"Sandbox and filesystem permissions". Application-layer wrapping does not protect against shell escape, hence the OS-level envelope is required.
+
+**Workflow shell tools are still confirmation-flagged** at workflow definition time: a workflow that includes a CodeAgent surfaces a `uses_shell: true` flag in the workflow row + the canvas. When the user clicks Run on such a workflow, the canvas shows a one-time confirmation ("This workflow can execute shell commands. Continue?") before the run starts. After the first confirmation per workflow_id, subsequent runs of the same workflow don't re-prompt — the user has reviewed the workflow.
+
+**Audit log:** every `execute_shell` invocation (meta-agent or workflow) is logged at `<data-dir>/logs/shell-audit.log` with `{ts, agent_id, workflow_id?, cmd, cwd, exit_code, duration_ms}`. No content of the shell's output is logged (could contain secrets); just the command and result code. The audit log is append-only, rotation at 10 MB, 5 backups.
+
+**Tool capability scoping** — per-workflow restrictions on which tools an embedded agent can use ("this workflow may not call `execute_shell`") — ships in v0.4. v0.3 ships the warning badge + first-run confirmation as the v0.3 mitigation.
 
 ## CORS
 

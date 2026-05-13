@@ -231,11 +231,12 @@ The meta-agent is **THE communication channel between the user and all sub-servi
 - **Trigger Marsys workflows** as a tool (calls `Orchestra.run()`)
 - **Read all observability data** — runs, traces, costs
 
-**Tool / skill creation tiered by version:**
+**Tool surface and tiered creation:**
 
-- **v0.3: configuration only.** The agent picks from curated built-in tools / workflow-templates and assigns them. It can assemble new agent personas, tool *bindings*, and workflow definitions using JSON / YAML config — no code generation. "apt-get install" model.
-- **v0.4: define new bindings.** The agent can assemble new "skills" (= bundles of prompts + tool selections + memory instructions) without writing code. Stored as YAML.
-- **v0.5: code generation.** The agent can write new Python tool functions. Each requires explicit user approval (review the code, click approve), runs in an isolated execution context, can be reverted.
+- **Shell execution ships in v0.3.** The meta-agent has an `execute_shell(cmd, cwd?, timeout_s?, allow_network?)` tool from v0.3 onward. Shell is the most fundamental tool — without it, the meta-agent cannot inspect log files outside its sandbox, run common dev commands, or compose with the user's existing tooling. Workflow agents (specifically the marsys CodeAgent) already execute shell from day one of v0.3, so the system runs shell whether or not the meta-agent does; the OS-level outer envelope (see "Sandbox and filesystem permissions" below) is what makes this safe. Every `execute_shell` call is a hard rail by default — confirmation prompt with the cmd shown — until the user grants standing approval per scope (e.g., "you can run `git` in `<repo>` without asking"). Output is captured and fed back to the agent; long-running output is tail-truncated to a token budget.
+- **v0.3: configuration creation.** Beyond the shipped tool catalog, the agent can assemble new agent personas, tool *bindings*, and workflow definitions using JSON / YAML config — no code generation. "apt-get install" model.
+- **v0.4: define new skills.** The agent can assemble new "skills" (= bundles of prompts + tool selections + memory instructions) without writing code. Stored as SKILL.md files (Anthropic Agent Skills spec, adopted by OpenAI Dec 2025) for ecosystem interop.
+- **v0.5: code generation.** The agent can write new Python tool functions and shell scripts. Each requires explicit user approval (review the code, click approve), runs inside the same OS-level envelope as every other shell invocation, can be reverted.
 
 **Self-modification limits:** the meta-agent CAN edit team manager personas and configurations. It CANNOT edit its own persona, its own tool list, or its own permissions without explicit user confirmation. Reason: the persona/policy is the user's safety boundary against the agent self-modifying into a less-aligned state.
 
@@ -314,7 +315,12 @@ This is the **planning surface** of the agent — without it, long-running task 
 
 ## Sandbox and filesystem permissions
 
-All agents — main, team managers, working instances, AND user-defined workflow agents — share a sandboxed filesystem under `~/.spren/sandbox/`. Permission tiers are enforced **at the application layer** (a `SandboxFilesystem` wrapper that all FS access goes through), not at the OS layer. This is concrete, auditable, cross-platform, and cheap to evolve.
+All agents — main, team managers, working instances, AND user-defined workflow agents — share **one sandbox**: a single OS-level boundary around the entire Spren execution environment, with internal application-layer permission tiers for which agent can read/write which subdirectory. Two layers, both required:
+
+1. **Outer envelope (OS-level).** The whole Spren process tree — meta-agent + sub-agents + workflow agents + every shell tool subprocess — runs with filesystem visibility scoped to `<data-dir>/sandbox/` (plus controlled paths for OS interaction: tmpdir, the sandbox's `bin/` for tools the agent invokes, the user's chosen working directories that they explicitly grant). Implemented per-platform: `bubblewrap` on Linux, `sandbox-exec` profile on macOS, AppContainer / Job objects on Windows. This is what protects the user's filesystem from a misbehaving shell command (whether invoked by the meta-agent's `execute_shell` tool or by a workflow agent's CodeAgent).
+2. **Inner permission tiers (application-layer).** A `SandboxFilesystem` Python wrapper that every typed tool call routes through — `read_file`, `grep`, `lookup_facts`, `write_active_context`, `add_run_note`, etc. The wrapper resolves the path, identifies the calling agent (main / team manager / working instance / workflow agent), and enforces per-tier read/write rules. This is where "main agent can write `shared/memory/`, working instance cannot" is enforced.
+
+The two layers protect different threats. The outer envelope protects against shell-side escape. The inner tiers protect against intra-Spren over-reach (a working instance editing the user's profile.md, an off-task team manager touching another team's memory).
 
 ```
 ~/.spren/sandbox/
@@ -363,9 +369,9 @@ Permission rules:
 - **User-defined workflow agents**: RW within their run's `artifacts/`; R on `shared/`
 - **User**: RW on everything via CLI (`spren memory edit ...`) and UI
 
-**On the word "sandbox":** Spren ships across multiple distribution channels (native installer, brew / winget / apt, npm, pipx, Docker) — the sandbox path resolves via `platformdirs` for native channels and is `<container>/data/sandbox/` in Docker mode. Permissions are enforced by the `SandboxFilesystem` wrapper at the application layer regardless of channel.
+**On the word "sandbox":** Spren ships across multiple distribution channels (native installer, brew / winget / apt, npm, pipx, Docker). The sandbox path resolves via `platformdirs` for native channels and is `<container>/data/sandbox/` in Docker mode. The OS-level outer envelope is implemented per-platform (`bubblewrap` on Linux, `sandbox-exec` profile on macOS, AppContainer on Windows); Docker mode delegates outer-envelope responsibility to the container runtime itself and runs the inner permission tiers as normal. The application-layer inner tiers are enforced by the `SandboxFilesystem` wrapper regardless of channel.
 
-All agents run in the same Spren process — no per-agent or per-workflow container isolation in v0.3 / v0.4. A later release (likely v0.5+) may introduce stronger isolation (e.g., per-tool-execution sandboxing) when the meta-agent gains shell-execute powers via code-generated tools. The single-process logical sandbox is sufficient for the cost / scope of v0.3 / v0.4.
+**All agents share one sandbox.** Not per-agent containers, not per-workflow VMs — one envelope around the whole Spren execution environment. Every shell-tool invocation (whether by the meta-agent's `execute_shell` or by a workflow agent's CodeAgent) runs as a subprocess inside that envelope; bind-mounts are restricted to the sandbox path, network access is opt-in per-call, time-bound execution. v0.3 ships this OS-level outer envelope from day one because shell execution is in v0.3 (see "Tool / skill creation tiered by version" above and SP-019's interaction with shell tools). v0.5+ may add stronger isolation (per-tool microVMs, gVisor) if multi-tenant deployment becomes a real use case; until then the single-envelope shape is sufficient and matches Spren's local-first single-user posture (SP-008).
 
 ## Cost ceiling enforcement at the runtime level
 
