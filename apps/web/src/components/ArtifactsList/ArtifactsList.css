@@ -1,0 +1,82 @@
+/* Artifacts list (mostly empty in v0.3 — kept for the v0.4 path). */
+
+.artifacts-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.artifacts-list-empty {
+  padding: 8px;
+  font-family: var(--font-mono);
+  color: var(--ink-soft);
+  font-size: 12px;
+}
+
+.artifact-row {
+  display: grid;
+  grid-template-columns: 24px 1fr auto;
+  gap: 12px;
+  align-items: center;
+  padding: 10px 12px;
+  border: 1px solid var(--rule);
+  border-radius: 6px;
+  background-color: var(--surface);
+}
+
+.artifact-row-icon {
+  font-size: 18px;
+  text-align: center;
+}
+
+.artifact-row-name {
+  font-weight: 500;
+  font-size: 14px;
+  color: var(--ink);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.artifact-row-meta {
+  font-family: var(--font-mono);
+  font-size: 11px;
+  color: var(--ink-soft);
+  margin-top: 2px;
+}
+
+.artifact-row-error {
+  font-family: var(--font-mono);
+  font-size: 11px;
+  color: var(--magenta-deep);
+  margin-top: 4px;
+}
+
+.artifact-download {
+  background-color: var(--rule);
+  color: var(--ink);
+  border: 0;
+  border-radius: 4px;
+  padding: 6px 12px;
+  font: inherit;
+  font-size: 12px;
+  font-weight: 500;
+  cursor: pointer;
+  transition: background-color 120ms ease-out;
+}
+.artifact-download:hover:not(:disabled) {
+  background-color: var(--magenta);
+  color: var(--surface);
+}
+.artifact-download:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+@media (prefers-reduced-motion: reduce) {
+  .artifact-download {
+    transition: none;
+  }
+}

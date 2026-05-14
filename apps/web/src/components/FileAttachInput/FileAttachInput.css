@@ -1,0 +1,192 @@
+/* Canvas-side 📎 attach affordance + popout list. */
+
+.file-attach-input {
+  position: relative;
+  display: inline-flex;
+}
+
+.file-attach-icon {
+  position: relative;
+  width: 32px;
+  height: 32px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  background: transparent;
+  border: 1px solid transparent;
+  border-radius: 6px;
+  cursor: pointer;
+  font-size: 16px;
+  color: var(--ink-soft);
+  transition: color 120ms ease-out, background-color 120ms ease-out;
+}
+.file-attach-icon:hover {
+  color: var(--magenta);
+  background-color: rgba(232, 33, 130, 0.05);
+}
+@media (prefers-reduced-motion: reduce) {
+  .file-attach-icon {
+    transition: none;
+  }
+}
+
+.file-attach-count {
+  position: absolute;
+  top: -2px;
+  right: -2px;
+  min-width: 16px;
+  height: 16px;
+  padding: 0 4px;
+  border-radius: 8px;
+  background-color: var(--magenta);
+  color: var(--surface);
+  font-family: var(--font-mono);
+  font-size: 9px;
+  font-weight: 600;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.file-attach-inflight-dot {
+  position: absolute;
+  bottom: 4px;
+  right: 4px;
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background-color: var(--magenta);
+  animation: file-attach-pulse 1.4s ease-in-out infinite;
+}
+@media (prefers-reduced-motion: reduce) {
+  .file-attach-inflight-dot {
+    animation: none;
+  }
+}
+@keyframes file-attach-pulse {
+  0%, 100% { opacity: 0.4; }
+  50% { opacity: 1; }
+}
+
+.file-attach-popout {
+  position: absolute;
+  top: calc(100% + 8px);
+  right: 0;
+  min-width: 280px;
+  max-width: 360px;
+  background-color: var(--surface);
+  border: 1px solid var(--rule);
+  border-radius: 6px;
+  box-shadow: 0 12px 32px rgba(0, 0, 0, 0.08);
+  padding: 8px;
+  z-index: 100;
+}
+
+.file-attach-empty {
+  margin: 0;
+  padding: 8px;
+  color: var(--ink-soft);
+  font-size: 13px;
+}
+
+.file-attach-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.file-attach-row {
+  display: grid;
+  grid-template-columns: 1fr auto auto;
+  gap: 8px;
+  align-items: center;
+  padding: 6px 8px;
+  border-radius: 4px;
+  font-size: 12px;
+}
+.file-attach-row:hover {
+  background-color: rgba(0, 0, 0, 0.03);
+}
+.file-attach-row--failed {
+  color: var(--magenta-deep);
+}
+
+.file-attach-row-name {
+  font-weight: 500;
+  color: var(--ink);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.file-attach-row-meta {
+  font-family: var(--font-mono);
+  font-size: 11px;
+  color: var(--ink-soft);
+  white-space: nowrap;
+}
+
+.file-attach-retry {
+  background: transparent;
+  border: 0;
+  color: var(--magenta-deep);
+  font: inherit;
+  cursor: pointer;
+  padding: 0;
+  text-decoration: underline;
+}
+
+.file-attach-remove {
+  background: transparent;
+  border: 0;
+  cursor: pointer;
+  width: 18px;
+  height: 18px;
+  border-radius: 3px;
+  color: var(--ink-soft);
+  font-size: 14px;
+  line-height: 1;
+}
+.file-attach-remove:hover {
+  background-color: rgba(0, 0, 0, 0.06);
+  color: var(--ink);
+}
+
+.file-attach-add-more {
+  display: block;
+  width: 100%;
+  background: transparent;
+  border: 0;
+  border-top: 1px solid var(--rule);
+  margin-top: 8px;
+  padding: 8px 0 4px 0;
+  font: inherit;
+  font-size: 12px;
+  color: var(--magenta);
+  cursor: pointer;
+  text-align: center;
+}
+.file-attach-add-more:hover {
+  text-decoration: underline;
+}
+
+/* Drag-and-drop overlay (canvas-wide). The parent renders this when
+ * dragOverlayActiveAtom is true. */
+.file-attach-drag-overlay {
+  position: absolute;
+  inset: 0;
+  background-color: rgba(255, 255, 255, 0.85);
+  border: 2px dashed var(--magenta);
+  border-radius: 8px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-family: var(--font-sans);
+  font-weight: 500;
+  font-size: 16px;
+  color: var(--ink);
+  pointer-events: none;
+  z-index: 90;
+}

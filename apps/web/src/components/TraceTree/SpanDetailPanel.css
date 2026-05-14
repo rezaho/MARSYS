@@ -1,0 +1,184 @@
+/* Span detail drawer surface — uses the SlideOver primitive's default
+   panel background; this file overlays the section/typography styling. */
+
+.span-detail-panel {
+  background-color: var(--surface);
+  border-left: 1px solid var(--rule);
+}
+
+.span-detail-body {
+  padding: 16px 20px;
+  overflow-y: auto;
+  height: 100%;
+}
+
+.span-detail-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.span-detail-kind {
+  display: inline-block;
+  padding: 2px 8px;
+  border-radius: 3px;
+  background-color: var(--rule);
+  color: var(--ink-soft);
+  font-family: var(--font-mono);
+  font-size: 11px;
+  text-transform: lowercase;
+}
+.span-detail-kind[data-kind="generation"] {
+  color: var(--magenta);
+  background-color: rgba(232, 33, 130, 0.10);
+}
+.span-detail-kind[data-kind="tool"] {
+  color: #5c8a3a;
+  background-color: rgba(92, 138, 58, 0.12);
+}
+
+.span-detail-close {
+  background: transparent;
+  border: 0;
+  cursor: pointer;
+  font-size: 14px;
+  color: var(--ink-soft);
+  padding: 4px 6px;
+  border-radius: 4px;
+}
+.span-detail-close:hover {
+  background-color: rgba(0, 0, 0, 0.04);
+  color: var(--ink);
+}
+
+.span-detail-title {
+  font-family: var(--font-sans);
+  font-size: 14px;
+  font-weight: 500;
+  margin: 8px 0;
+  color: var(--ink);
+}
+
+.span-detail-divider {
+  height: 1px;
+  background-color: var(--rule);
+  margin: 12px 0;
+}
+
+.attribute-list {
+  margin: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+.attribute-row {
+  display: grid;
+  grid-template-columns: 110px 1fr;
+  gap: 8px;
+  align-items: baseline;
+}
+.attribute-row dt {
+  font-size: 12px;
+  color: var(--ink-soft);
+}
+.attribute-row dd {
+  font-family: var(--font-mono);
+  font-size: 12px;
+  color: var(--ink);
+  margin: 0;
+  word-break: break-word;
+}
+
+.span-detail-content-section {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  margin-top: 12px;
+}
+
+.content-toggle {
+  border-top: 1px solid var(--rule);
+  padding-top: 8px;
+}
+.content-toggle-button {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  width: 100%;
+  background: transparent;
+  border: 0;
+  padding: 6px 0;
+  font: inherit;
+  color: var(--magenta);
+  font-size: 12px;
+  cursor: pointer;
+  text-align: left;
+}
+.content-toggle-button:hover:not(.is-disabled) {
+  text-decoration: underline;
+}
+.content-toggle-button.is-disabled,
+.content-toggle-button:disabled {
+  color: var(--ink-soft);
+  cursor: not-allowed;
+}
+.content-toggle-caret {
+  font-size: 10px;
+  color: var(--ink-soft);
+}
+.content-toggle-body {
+  background-color: rgba(0, 0, 0, 0.03);
+  border-radius: 4px;
+  padding: 8px 10px;
+  font-family: var(--font-mono);
+  font-size: 12px;
+  white-space: pre-wrap;
+  word-break: break-word;
+  margin-top: 6px;
+  max-height: 240px;
+  overflow-y: auto;
+}
+
+.span-detail-section {
+  margin-top: 12px;
+}
+.span-detail-section-label {
+  font-size: 11px;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  color: var(--ink-soft);
+  margin-bottom: 4px;
+}
+.span-detail-section-body {
+  font-size: 12px;
+}
+.span-detail-empty {
+  color: var(--ink-soft);
+  font-family: var(--font-mono);
+}
+.span-detail-event {
+  border: 1px solid var(--rule);
+  border-radius: 4px;
+  padding: 6px 8px;
+  margin-bottom: 6px;
+}
+.span-detail-event-name {
+  font-weight: 500;
+  font-size: 12px;
+  color: var(--ink);
+}
+.span-detail-event-attrs {
+  font-family: var(--font-mono);
+  font-size: 11px;
+  white-space: pre-wrap;
+  margin: 4px 0 0 0;
+  color: var(--ink-soft);
+}
+.span-detail-link {
+  display: flex;
+  gap: 8px;
+  font-family: var(--font-mono);
+  font-size: 12px;
+  color: var(--ink-soft);
+}
