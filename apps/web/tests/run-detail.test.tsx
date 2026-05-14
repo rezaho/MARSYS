@@ -109,7 +109,7 @@ describe("RunDetailView", () => {
     expect(main.textContent).toContain("Finished");
   });
 
-  it("renders the trace-viewer-coming-soon empty state (AC-112)", async () => {
+  it("renders the Trace section header for a succeeded run (Session 05)", async () => {
     (mockGetRun as ReturnType<typeof vi.fn>).mockResolvedValueOnce({
       schema_version: 1,
       id: "01J9X4ABCDEFGHJKMP",
@@ -132,12 +132,13 @@ describe("RunDetailView", () => {
 
     renderWithQueryClient(<RunDetailView runId="01J9X4ABCDEFGHJKMP" />);
 
-    await waitFor(() => screen.getByTestId("run-detail-trace-empty"));
-    const placeholder = screen.getByTestId("run-detail-trace-empty");
-    // Tag-markup typographic device
-    expect(placeholder.textContent).toContain("trace-viewer");
-    expect(placeholder.textContent).toContain("status");
-    expect(placeholder.textContent).toContain("coming_in_session_05");
+    await waitFor(() => screen.getByTestId("status-badge"));
+    const main = screen.getByTestId("run-detail-shell");
+    // Session 05 inspector renders a Trace section heading. The trace
+    // body itself either renders the tree (when fetched) or a loading /
+    // waiting placeholder; in this stub the trace fetch is unmocked so
+    // we just assert the section header is present.
+    expect(main.textContent).toContain("Trace");
   });
 
   it("renders the error row for a failed run (AC-187)", async () => {
