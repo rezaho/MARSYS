@@ -55,7 +55,14 @@ def stub_materialize(monkeypatch):
     """
     captured: dict[str, object] = {}
 
-    def fake_materialize(*, definition, secrets_lookup=None, enable_aggui=True):  # noqa: ARG001
+    def fake_materialize(  # noqa: ARG001
+        *,
+        definition,
+        secrets_lookup=None,
+        enable_aggui=True,
+        data_dir=None,
+        run_id=None,
+    ):
         from marsys.coordination.config import ExecutionConfig
         from marsys.coordination.topology.core import Topology
 
@@ -145,18 +152,21 @@ def test_post_runs_archived_workflow(client, auth_headers, sample_definition, mo
     assert r.json()["error"]["code"] == "WORKFLOW_ARCHIVED"
 
 
-def test_post_runs_attachments_rejected(client, auth_headers, sample_definition):
+def test_post_runs_unknown_attachment_rejected(client, auth_headers, sample_definition):
+    """Session 05: unknown file_id in task_input.attachments returns 400 ATTACHMENT_NOT_FOUND."""
     wf_id = _create_workflow(client, auth_headers, sample_definition)
     r = client.post(
         "/v1/runs",
         json={
             "workflow_id": wf_id,
-            "task_input": {"text": "", "attachments": ["file-1"]},
+            "task_input": {"text": "", "attachments": ["does-not-exist"]},
         },
         headers=auth_headers,
     )
     assert r.status_code == 400
-    assert r.json()["error"]["code"] == "ATTACHMENTS_NOT_YET_SUPPORTED"
+    body = r.json()
+    assert body["error"]["code"] == "ATTACHMENT_NOT_FOUND"
+    assert body["error"]["details"]["file_id"] == "does-not-exist"
 
 
 def test_post_runs_non_manual_trigger_rejected(client, auth_headers, sample_definition):
