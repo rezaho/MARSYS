@@ -25,9 +25,14 @@ import {
 } from "react";
 
 import { CompletionToast } from "../../components/CompletionToast";
+import { FileAttachInput, uploadFilesViaDrop } from "../../components/FileAttachInput";
 import { RunButton } from "../../components/RunButton";
 import { PresenceOrb, TopBar } from "../../components/TopBar";
 import { Button } from "../../components/ui";
+import {
+  canvasAttachmentsAtom,
+  dragOverlayActiveAtom,
+} from "../../stores/canvasAttachments";
 import { orbStateAtom } from "../../stores/run";
 import {
   getWorkflow,
@@ -269,20 +274,45 @@ function CanvasInner(): ReactElement {
     setDirty(true);
   }, [setDirty]);
 
-  // ---- Drop from palette ----
+  // ---- Drop from palette OR file drag ----
+  const setCanvasAttachments = useSetAtom(canvasAttachmentsAtom);
+  const [dragOverlay, setDragOverlay] = useAtom(dragOverlayActiveAtom);
+
   const onDragOver = useCallback((event: DragEvent<HTMLDivElement>) => {
     event.preventDefault();
-    event.dataTransfer.dropEffect = "move";
-  }, []);
+    const isFile = (event.dataTransfer.types || []).includes("Files");
+    if (isFile) {
+      event.dataTransfer.dropEffect = "copy";
+      if (!dragOverlay) setDragOverlay(true);
+    } else {
+      event.dataTransfer.dropEffect = "move";
+    }
+  }, [dragOverlay, setDragOverlay]);
+
+  const onDragLeave = useCallback((event: DragEvent<HTMLDivElement>) => {
+    // Only clear when leaving the canvas-stage entirely, not when crossing
+    // into a child element. Cast through unknown because xyflow's Node
+    // type shadows the DOM Node global.
+    const target = event.currentTarget as unknown as globalThis.Node;
+    const related = event.relatedTarget as unknown as globalThis.Node | null;
+    if (related && target.contains(related)) return;
+    setDragOverlay(false);
+  }, [setDragOverlay]);
 
   const onDrop = useCallback((event: DragEvent<HTMLDivElement>) => {
     event.preventDefault();
+    setDragOverlay(false);
+    const files = Array.from(event.dataTransfer.files ?? []);
+    if (files.length > 0) {
+      uploadFilesViaDrop(files, token, setCanvasAttachments);
+      return;
+    }
     const nodeType = event.dataTransfer.getData("application/spren-node-type") as NodeType;
     if (!nodeType) return;
     const position = flow.screenToFlowPosition({ x: event.clientX, y: event.clientY });
     addNode(nodeType, position);
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [flow]);
+  }, [flow, token, setCanvasAttachments, setDragOverlay]);
 
   function addNode(
     type: NodeType,
@@ -486,6 +516,7 @@ function CanvasInner(): ReactElement {
         >
           {saveMutation.isPending ? "Saving…" : "Save"}
         </Button>
+        <FileAttachInput testId="canvas-toolbar-attach" />
         <RunButton
           workflowId={workflowId}
           workflowName={name || workflowId}
@@ -505,7 +536,22 @@ function CanvasInner(): ReactElement {
           </span>
         ) : null}
       </div>
-      <div className="canvas-stage" onDragOver={onDragOver} onDrop={onDrop} data-testid="canvas-stage">
+      <div
+        className="canvas-stage"
+        onDragOver={onDragOver}
+        onDragLeave={onDragLeave}
+        onDrop={onDrop}
+        data-testid="canvas-stage"
+      >
+        {dragOverlay && (
+          <div
+            className="canvas-drag-overlay"
+            data-testid="canvas-drag-overlay"
+            aria-hidden="true"
+          >
+            Drop to attach
+          </div>
+        )}
         <ReactFlow
           nodes={nodes}
           edges={edges}

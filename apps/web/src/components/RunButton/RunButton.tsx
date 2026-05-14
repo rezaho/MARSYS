@@ -23,6 +23,11 @@ import {
 import { useRunSse } from "../../hooks/useRunSse";
 import { useCapabilities } from "../../providers/capabilities";
 import {
+  hasInflightUploadAtom,
+  resetCanvasAttachmentsAtom,
+  uploadedFileIdsAtom,
+} from "../../stores/canvasAttachments";
+import {
   activeRunIdAtom,
   completionToastAtom,
   elapsedMsAtom,
@@ -57,9 +62,12 @@ export function RunButton({
   const elapsedMs = useAtomValue(elapsedMsAtom);
   const totalCost = useAtomValue(totalCostAtom);
   const reconnecting = useAtomValue(reconnectingAtom);
+  const uploadedFileIds = useAtomValue(uploadedFileIdsAtom);
+  const hasInflightUpload = useAtomValue(hasInflightUploadAtom);
   const setStatus = useSetAtom(runStatusAtom);
   const setCompletionToast = useSetAtom(completionToastAtom);
   const resetRun = useSetAtom(resetRunAtom);
+  const resetCanvasAttachments = useSetAtom(resetCanvasAttachmentsAtom);
 
   const [submitting, setSubmitting] = useState(false);
   const [cancelConfirmOpen, setCancelConfirmOpen] = useState(false);
@@ -87,8 +95,12 @@ export function RunButton({
         durationMs: elapsedMs,
         costUsd: totalCost,
       });
-      // After a beat, reset to idle for the next run.
-      const timer = window.setTimeout(() => resetRun(), 400);
+      // After a beat, reset to idle for the next run + clear the
+      // canvas attachment list (plan §3 — atom resets on completion).
+      const timer = window.setTimeout(() => {
+        resetRun();
+        resetCanvasAttachments();
+      }, 400);
       return () => window.clearTimeout(timer);
     }
     return undefined;
@@ -97,11 +109,12 @@ export function RunButton({
 
   const handleRun = async (): Promise<void> => {
     if (!token || submitting || activeRunId) return;
+    if (hasInflightUpload) return;
     setSubmitting(true);
     try {
       const res = await apiCreateRun(token, {
         workflow_id: workflowId,
-        task_input: { text: "", attachments: [] },
+        task_input: { text: "", attachments: uploadedFileIds },
         trigger: "manual",
       });
       setActiveRunId(res.run_id);

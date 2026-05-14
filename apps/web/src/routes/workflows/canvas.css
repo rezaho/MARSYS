@@ -78,6 +78,23 @@
   background-blend-mode: normal;
 }
 
+.canvas-drag-overlay {
+  position: absolute;
+  inset: 8px;
+  background-color: rgba(255, 255, 255, 0.85);
+  border: 2px dashed var(--magenta);
+  border-radius: 8px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-family: var(--font-sans);
+  font-weight: 500;
+  font-size: 16px;
+  color: var(--ink);
+  pointer-events: none;
+  z-index: 50;
+}
+
 .canvas-rail {
   grid-area: rail;
   background: var(--surface);

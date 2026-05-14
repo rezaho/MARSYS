@@ -1,10 +1,17 @@
 import { useQuery } from "@tanstack/react-query";
-import { Link, createFileRoute, useNavigate } from "@tanstack/react-router";
+import { Link, createFileRoute, useNavigate, useSearch } from "@tanstack/react-router";
 import { useEffect, useMemo, useState, type ReactElement } from "react";
 
-import { listRuns, listWorkflows, resolveBaseUrl, type RunListItem, type RunStatus } from "../../lib/api";
+import {
+  listRuns,
+  listWorkflows,
+  resolveBaseUrl,
+  type RunListItem,
+  type RunStatus,
+} from "../../lib/api";
 import { openRunsListSse } from "../../lib/runs-list-sse";
 import { PresenceOrb } from "../../components/TopBar/PresenceOrb";
+import { RunHistoryFilters, type RunHistoryFiltersValue } from "../../components/RunHistoryFilters";
 import { StatusBadge } from "../../components/StatusBadge";
 import { TopBar } from "../../components/TopBar";
 import { Card, TagMarkup } from "../../components/ui";
@@ -13,30 +20,70 @@ import { useCommands } from "../../stores/useCommands";
 
 import "./runs.css";
 
+interface RunsSearch {
+  since?: string;
+  until?: string;
+  status?: string;
+  workflow_id?: string;
+}
+
 export const Route = createFileRoute("/runs/")({
   component: RunsRoute,
+  validateSearch: (search: Record<string, unknown>): RunsSearch => ({
+    since: typeof search.since === "string" ? search.since : undefined,
+    until: typeof search.until === "string" ? search.until : undefined,
+    status: typeof search.status === "string" ? search.status : undefined,
+    workflow_id: typeof search.workflow_id === "string" ? search.workflow_id : undefined,
+  }),
 });
-
-type Filter = "all" | RunStatus;
-
-const FILTERS: { id: Filter; label: string }[] = [
-  { id: "all", label: "All" },
-  { id: "running", label: "Running" },
-  { id: "cancelling", label: "Cancelling" },
-  { id: "succeeded", label: "Succeeded" },
-  { id: "failed", label: "Failed" },
-  { id: "cancelled", label: "Cancelled" },
-];
 
 function RunsRoute(): ReactElement {
   const navigate = useNavigate();
+  const search = useSearch({ from: "/runs/" });
   const { token } = useCapabilities();
-  const [filter, setFilter] = useState<Filter>("all");
   const [liveRuns, setLiveRuns] = useState<Map<string, RunListItem>>(new Map());
 
+  // Derive filter value from URL search params (URL is source of truth).
+  const filterValue: RunHistoryFiltersValue = useMemo(
+    () => ({
+      since: search.since ?? null,
+      until: search.until ?? null,
+      statuses: parseStatusList(search.status),
+      workflowId: search.workflow_id ?? null,
+    }),
+    [search.since, search.until, search.status, search.workflow_id],
+  );
+
+  const setFilters = (next: RunHistoryFiltersValue): void => {
+    navigate({
+      to: "/runs",
+      search: {
+        since: next.since ?? undefined,
+        until: next.until ?? undefined,
+        status: next.statuses.length > 0 ? next.statuses.join(",") : undefined,
+        workflow_id: next.workflowId ?? undefined,
+      },
+      replace: true,
+    });
+  };
+
   const query = useQuery({
-    queryKey: ["runs", "all"],
-    queryFn: () => listRuns(token ?? "", { limit: 100 }),
+    queryKey: [
+      "runs",
+      "filtered",
+      filterValue.since,
+      filterValue.until,
+      filterValue.statuses.join(","),
+      filterValue.workflowId,
+    ],
+    queryFn: () =>
+      listRuns(token ?? "", {
+        limit: 100,
+        since: filterValue.since ?? undefined,
+        until: filterValue.until ?? undefined,
+        statuses: filterValue.statuses.length > 0 ? filterValue.statuses : undefined,
+        workflow_id: filterValue.workflowId ?? undefined,
+      }),
     enabled: Boolean(token),
   });
 
@@ -52,22 +99,17 @@ function RunsRoute(): ReactElement {
     return map;
   }, [workflowsQuery.data]);
 
-  // Subscribe to aggregate SSE for live updates
+  // Subscribe to aggregate SSE for live updates. The SSE stream is
+  // unfiltered; the merged list is filtered client-side via the URL
+  // params (the SSE updates are also re-filtered by the same predicate
+  // before merging).
   useEffect(() => {
     if (!token) return;
     const handle = openRunsListSse(resolveBaseUrl(), token, {
-      onCreated: (run) => {
-        setLiveRuns((prev) => new Map(prev).set(run.id, run));
-      },
-      onUpdated: (run) => {
-        setLiveRuns((prev) => new Map(prev).set(run.id, run));
-      },
-      onFinished: (run) => {
-        setLiveRuns((prev) => new Map(prev).set(run.id, run));
-      },
-      onCancelled: (run) => {
-        setLiveRuns((prev) => new Map(prev).set(run.id, run));
-      },
+      onCreated: (run) => setLiveRuns((prev) => new Map(prev).set(run.id, run)),
+      onUpdated: (run) => setLiveRuns((prev) => new Map(prev).set(run.id, run)),
+      onFinished: (run) => setLiveRuns((prev) => new Map(prev).set(run.id, run)),
+      onCancelled: (run) => setLiveRuns((prev) => new Map(prev).set(run.id, run)),
     });
     return () => handle.close();
   }, [token]);
@@ -93,16 +135,19 @@ function RunsRoute(): ReactElement {
 
   const runs = useMemo(() => {
     const fromQuery = query.data?.items ?? [];
-    // Merge live updates over the initial fetch.
     const merged = new Map<string, RunListItem>();
     for (const r of fromQuery) merged.set(r.id, r);
-    for (const [id, r] of liveRuns) merged.set(id, r);
-    const list = Array.from(merged.values()).sort((a, b) =>
+    for (const [id, r] of liveRuns) {
+      // Apply filter predicate to live updates so a status-toggled item
+      // doesn't sneak in past the filter.
+      if (matchesFilter(r, filterValue)) merged.set(id, r);
+    }
+    return Array.from(merged.values()).sort((a, b) =>
       a.created_at < b.created_at ? 1 : a.created_at > b.created_at ? -1 : 0,
     );
-    if (filter === "all") return list;
-    return list.filter((r) => r.status === filter);
-  }, [query.data, liveRuns, filter]);
+  }, [query.data, liveRuns, filterValue]);
+
+  const totalKnown = query.data?.items.length ?? 0;
 
   return (
     <div className="runs-shell" data-testid="runs-shell">
@@ -120,23 +165,14 @@ function RunsRoute(): ReactElement {
         <header className="runs-header">
           <h1>Runs</h1>
           <span className="runs-count" data-testid="runs-count">
-            {runs.length} run{runs.length === 1 ? "" : "s"}
+            {runs.length} of {totalKnown} run{totalKnown === 1 ? "" : "s"}
           </span>
         </header>
-        <nav className="runs-filters" aria-label="Filter by status">
-          {FILTERS.map((f) => (
-            <button
-              key={f.id}
-              type="button"
-              className={`runs-filter${filter === f.id ? " is-active" : ""}`}
-              onClick={() => setFilter(f.id)}
-              data-testid={`runs-filter-${f.id}`}
-              aria-pressed={filter === f.id}
-            >
-              {f.label}
-            </button>
-          ))}
-        </nav>
+        <RunHistoryFilters
+          value={filterValue}
+          onChange={setFilters}
+          workflows={workflowsQuery.data?.items ?? []}
+        />
         {query.isError ? (
           <p className="runs-error" data-testid="runs-error">
             Couldn't load runs: {(query.error as Error).message}
@@ -146,12 +182,15 @@ function RunsRoute(): ReactElement {
             Loading runs…
           </p>
         ) : runs.length === 0 ? (
-          <RunsEmpty />
+          <RunsEmpty hasFilter={hasActiveFilter(filterValue)} />
         ) : (
           <ul className="runs-list" data-testid="runs-list">
             {runs.map((run) => (
               <li key={run.id}>
-                <RunCard run={run} workflowName={workflowNameById.get(run.workflow_id) ?? run.workflow_id} />
+                <RunCard
+                  run={run}
+                  workflowName={workflowNameById.get(run.workflow_id) ?? run.workflow_id}
+                />
               </li>
             ))}
           </ul>
@@ -161,14 +200,50 @@ function RunsRoute(): ReactElement {
   );
 }
 
-function RunsEmpty(): ReactElement {
+function parseStatusList(raw: string | undefined): RunStatus[] {
+  if (!raw) return [];
+  return raw
+    .split(",")
+    .map((s) => s.trim())
+    .filter((s) => s.length > 0) as RunStatus[];
+}
+
+function hasActiveFilter(v: RunHistoryFiltersValue): boolean {
+  return (
+    v.since !== null ||
+    v.until !== null ||
+    v.statuses.length > 0 ||
+    v.workflowId !== null
+  );
+}
+
+function matchesFilter(run: RunListItem, v: RunHistoryFiltersValue): boolean {
+  if (v.workflowId && run.workflow_id !== v.workflowId) return false;
+  if (v.statuses.length > 0 && !v.statuses.includes(run.status)) return false;
+  if (v.since && run.created_at < v.since) return false;
+  if (v.until && run.created_at > v.until) return false;
+  return true;
+}
+
+function RunsEmpty({ hasFilter }: { hasFilter: boolean }): ReactElement {
   return (
     <div className="runs-empty-state" data-testid="runs-empty">
-      <TagMarkup tag="runs" size="sm" block attrs={[["status", "empty"]]} />
-      <p>No runs yet. Build a workflow and click Run.</p>
-      <Link to="/workflows" className="runs-empty-link">
-        Go to workflows →
-      </Link>
+      <TagMarkup
+        tag="runs"
+        size="sm"
+        block
+        attrs={[["status", hasFilter ? "empty_after_filter" : "empty"]]}
+      />
+      <p>
+        {hasFilter
+          ? "No runs match the active filters."
+          : "No runs yet. Build a workflow and click Run."}
+      </p>
+      {!hasFilter && (
+        <Link to="/workflows" className="runs-empty-link">
+          Go to workflows →
+        </Link>
+      )}
     </div>
   );
 }
