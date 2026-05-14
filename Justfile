@@ -11,21 +11,46 @@ install:
     cargo fetch --manifest-path apps/desktop/Cargo.toml
     cargo install tauri-cli --version "^2"
 
-# Run dev: FastAPI sidecar + Vite dev server (no Tauri)
+# Run dev: FastAPI sidecar + Vite dev server (no Tauri).
+# Parses the sidecar's `spren-ready: port=N token=T` line and prints a
+# click-able URL (with the token in the URL fragment, never the query
+# string — the fragment is never sent over the wire) so the dev tab can
+# open straight to an authenticated state.
 [unix]
 dev:
     #!/usr/bin/env bash
     set -euo pipefail
-    (uv run --package spren python -m spren --port 8765 2>&1 | sed 's/^/[sidecar] /') &
+    UI_HOST="${SPREN_DEV_UI_HOST:-localhost}"
+    UI_PORT="${SPREN_DEV_UI_PORT:-5173}"
+    (uv run --package spren python -m spren --port 8765 2>&1 \
+        | awk -v host="$UI_HOST" -v port="$UI_PORT" '
+            /^spren-ready:/ {
+                tok = ""
+                for (i = 1; i <= NF; i++) if ($i ~ /^token=/) { tok = substr($i, 7); break }
+                printf "\n──────────────────────────────────────────────────────────────────────\n"
+                printf " Spren ready. Open in your browser:\n\n"
+                printf "   http://%s:%s/#token=%s\n\n", host, port, tok
+                printf " (the token lives in the URL fragment so it never crosses the wire)\n"
+                printf "──────────────────────────────────────────────────────────────────────\n\n"
+                fflush()
+            }
+            { print "[sidecar] " $0; fflush() }
+        ') &
     SIDECAR_PID=$!
     trap "kill $SIDECAR_PID 2>/dev/null || true" EXIT INT TERM
     VITE_SPREN_API_URL=http://127.0.0.1:8765 pnpm --filter @marsys/spren-web dev 2>&1 | sed 's/^/[vite] /'
 
-# Run dev: FastAPI sidecar + Vite dev server (no Tauri)
+# Run dev: FastAPI sidecar + Vite dev server (no Tauri).
+# Parses the sidecar's `spren-ready: port=N token=T` line and prints a
+# click-able URL (with the token in the URL fragment, never the query
+# string — the fragment is never sent over the wire) so the dev tab
+# can open straight to an authenticated state.
 [windows]
 [script]
 dev:
     $ErrorActionPreference = 'Stop'
+    $UiHost = if ($env:SPREN_DEV_UI_HOST) { $env:SPREN_DEV_UI_HOST } else { 'localhost' }
+    $UiPort = if ($env:SPREN_DEV_UI_PORT) { $env:SPREN_DEV_UI_PORT } else { '5173' }
     $sidecarJob = Start-Job -Name spren-sidecar -ScriptBlock {
         Set-Location $using:PWD
         cmd.exe /c "uv run --package spren python -m spren --port 8765 2>&1"
@@ -37,7 +62,22 @@ dev:
     }
     try {
         while (($sidecarJob.State -eq 'Running') -and ($viteJob.State -eq 'Running')) {
-            Receive-Job $sidecarJob | ForEach-Object { Write-Host "[sidecar] $_" }
+            Receive-Job $sidecarJob | ForEach-Object {
+                $line = $_
+                if ($line -match '^spren-ready:.*token=(\S+)') {
+                    $tok = $Matches[1]
+                    Write-Host ""
+                    Write-Host "──────────────────────────────────────────────────────────────────────"
+                    Write-Host " Spren ready. Open in your browser:"
+                    Write-Host ""
+                    Write-Host "   http://${UiHost}:${UiPort}/#token=$tok"
+                    Write-Host ""
+                    Write-Host " (the token lives in the URL fragment so it never crosses the wire)"
+                    Write-Host "──────────────────────────────────────────────────────────────────────"
+                    Write-Host ""
+                }
+                Write-Host "[sidecar] $line"
+            }
             Receive-Job $viteJob    | ForEach-Object { Write-Host "[vite] $_" }
             Start-Sleep -Milliseconds 200
         }
