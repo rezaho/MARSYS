@@ -334,14 +334,69 @@ The output is one long system-prompt string. Axis #6 (Memory — `read_file`, `g
 
 The persona section is rendered from `personas/main.yaml`'s 8 sub-axes. Each axis becomes a paragraph in the system prompt. The voice-drift warning layer's blacklisted phrases are surfaced explicitly: "Avoid: \[list of forbidden phrases from `voice.style_tells.avoid`\]."
 
-### 4.8 5-archetype onboarding picker
+### 4.8 Onboarding flow — three steps
 
-**Backend (`agent/onboarding.py` + `agent/api.py`):**
+First-run onboarding has three required steps in this order. The daemon stays in onboarding mode (agent loop NOT running) until all three complete; only `/v1/onboarding/*` routes are active. Each step writes settings + transitions to the next; the user cannot skip steps.
+
+**Step 1 — Provider authentication** (REQUIRED first). Without a configured LLM provider, no LLM call is possible; the agent loop cannot start. The picker shows the supported providers as cards:
+
+| Provider card | Auth method | Default selection |
+|---|---|---|
+| **Anthropic** | API key | (selected by default — Claude-friendly is our default lane) |
+| **Anthropic Claude.ai (OAuth)** | OAuth flow with the user's Claude.ai account | |
+| **AWS Bedrock** | AWS credentials (key + secret + region) | |
+| **OpenRouter** | API key | |
+| **OpenAI** | API key | |
+| **Azure OpenAI** | API key + endpoint + deployment | |
+| **Google AI** | API key | |
+| **DeepSeek** | API key (uses OpenAI-compatible adapter) | |
+
+The Anthropic API card is highlighted as default — most users we expect to onboard with v0.3 are Claude-friendly. The user can pick any other; the highlight is a starting point, not a forced choice.
+
+After provider pick, the user enters credentials. Step 1 completes when credentials are validated by an actual test call against the provider's lightest endpoint (e.g., `GET /v1/models` for OpenAI; `GET /messages` smoke for Anthropic). On failure: clear error + back to credential entry. On success: settings write `meta_agent.provider = <name>` + `meta_agent.credentials_path` (or keychain reference per Session 01's secrets pattern) + advance to Step 2.
+
+**Step 2 — Model selection (cheap + expensive)**. Once a provider is configured, the model picker shows the per-provider defaults pre-selected. User can change either; can't skip.
+
+Per-provider defaults (verify model identifiers at session start — implementer task — but these match the latest available as of session draft):
+
+| Provider | Cheap default | Expensive default |
+|---|---|---|
+| Anthropic API | `claude-haiku-4-5` | `claude-sonnet-4-6` |
+| Anthropic OAuth (Claude.ai) | `claude-haiku-4-5` | `claude-opus-4-6` |
+| AWS Bedrock | `claude-haiku-4-5` (Bedrock-routed) | `claude-sonnet-4-6` (Bedrock-routed) |
+| OpenRouter | `anthropic/claude-haiku-4-5` | `anthropic/claude-sonnet-4-6` |
+| OpenAI | `gpt-5.4-mini` | `gpt-5.4` (or `gpt-5.5` if available) |
+| Azure OpenAI | `gpt-5.4-mini` (Azure deployment) | `gpt-5.4` (Azure deployment) |
+| Google AI | `gemini-3.1-flash` | `gemini-3.1-pro` |
+| DeepSeek | `deepseek-v4-mini` | `deepseek-v4-pro` |
+
+The defaults are stored in `agent/data/provider_defaults.yaml`; the implementer verifies against current provider catalogs at implementation time and updates the file. The settings write `meta_agent.model.cheap = <id>` + `meta_agent.model.expensive = <id>`. User can change later via the settings UI.
+
+**Step 3 — Archetype picker** (the existing 5-card picker from Research 2). Same flow as before — Ember / Flint / Quill / Vesper / Kindle cards with their orb visual variants + 3-line voice descriptions. User clicks one; the chosen orb morphs into the home page's main orb.
+
+After Step 3 submission, daemon transitions to running mode (agent loop, watchers, heartbeat all start).
+
+**Backend routes (`agent/api.py`):**
 
 ```python
 # GET /v1/onboarding/state
-# Returns the onboarding state. Default: {"completed": false, "step": "archetype_picker"}.
-# After picker submission: {"completed": true, "archetype": "<name>", "completed_at": "<ts>"}.
+# Returns the onboarding state. Default: {"completed": false, "step": "provider_auth", "completed_steps": []}.
+# After step 1: {"completed": false, "step": "model_selection", "completed_steps": ["provider_auth"], "provider": "<name>"}.
+# After step 2: {"completed": false, "step": "archetype_picker", "completed_steps": ["provider_auth", "model_selection"], "provider": ..., "models": {...}}.
+# After step 3: {"completed": true, "archetype": "<name>", "completed_at": "<ts>"}.
+
+# POST /v1/onboarding/provider
+# Body: {"provider": "anthropic" | "anthropic_oauth" | "bedrock" | "openrouter" | "openai" | "azure_openai" | "google" | "deepseek", "credentials": <provider-specific>}
+# Validates credentials via a smoke call to the provider. On success: writes settings.meta_agent.provider + credentials.
+# Returns: {"success": true, "provider": "<name>"} or {"success": false, "error": "..."}.
+
+# GET /v1/onboarding/models
+# Returns the per-provider default model ids for the configured provider, plus a list of selectable alternatives.
+
+# POST /v1/onboarding/models
+# Body: {"cheap": "<model-id>", "expensive": "<model-id>"}
+# Validates that both models are available for the configured provider (uses framework's adapter SUPPORTED_MODELS list where present, OR a smoke call).
+# Writes settings.meta_agent.model.cheap + settings.meta_agent.model.expensive.
 
 # POST /v1/onboarding/archetype
 # Body: {"archetype": "ember" | "flint" | "quill" | "vesper" | "kindle"}
@@ -354,17 +409,15 @@ The persona section is rendered from `personas/main.yaml`'s 8 sub-axes. Each axi
 
 **Frontend (the picker UI):**
 
-The picker UI reuses Session 03's design system. Lives at `apps/web/src/routes/onboarding.tsx`. Presents the 5 archetypes as cards in a row (or 2x3 with the 5th centered, depending on viewport). Each card shows:
+The onboarding flow lives at `apps/web/src/routes/onboarding.tsx` with sub-routes `/onboarding/provider`, `/onboarding/models`, `/onboarding/archetype` for each step. A progress indicator at the top shows step 1 of 3 / 2 of 3 / 3 of 3.
 
-- The orb visual variant (Spren orb component from Session 03 with the archetype's gradient + breath cadence). The 5 orbs animate in deliberately incommensurate cadences (9s / 10s / 11.5s / 12s / 15s) so the row doesn't feel synchronized.
-- The archetype name (in Geist, large).
-- 3 lines of voice-sample-style description (per `05-five-archetypes.md` §"User-facing onboarding card" for each archetype).
+Each step's UI reuses Session 03's design system. Step 1 (provider): a 2-row grid of provider cards; click → expand to credential entry inline (no separate screen). Step 2 (models): two dropdowns side-by-side (Cheap / Expensive) pre-populated with the provider's defaults; "Use defaults" button skips manual selection. Step 3 (archetype): the 5-card picker per Research 2 (5 cards in a row at desktop, with their orb variants animating in incommensurate cadences).
 
-User clicks a card → fires `POST /v1/onboarding/archetype` → on success, the chosen orb scales up + morphs into the home page's main orb.
+After the archetype is picked → the chosen orb scales up + transitions to the home page; the daemon agent loop has started.
 
 Routing logic:
-- On daemon-running, the web client calls `GET /v1/onboarding/state`. If `completed: false`, route to `/onboarding`. Else route to home (`/`).
-- The picker is non-skippable in v0.3. The user picks one. CLI override: `spren onboarding pick <archetype>` for headless / scripted setups (e.g., demo videos).
+- On daemon-running, the web client calls `GET /v1/onboarding/state`. If `completed: false`, route to `/onboarding/<current_step>`. Else route to home (`/`).
+- The picker is non-skippable in v0.3 for the GUI flow. CLI override: `spren onboarding pick --provider <name> --cheap <model> --expensive <model> --archetype <name>` for headless / scripted setups (e.g., demo videos, test fixtures).
 
 ### 4.9 `execute_shell` tool
 
@@ -555,17 +608,26 @@ dependencies = [
 | `packages/spren/src/spren/agent/data/global_voice_floor.yaml` | Global voice-tells blacklist (applies regardless of archetype). |
 | `packages/spren/src/spren/agent/data/rules_default.md` | Default doctrine. |
 | `packages/spren/src/spren/agent/data/active_context_template.md` | Seed for first-launch active_context.md. |
+| `packages/spren/src/spren/agent/data/provider_defaults.yaml` | Per-provider cheap/expensive default model identifiers (verified at session start). |
+| `packages/spren/src/spren/agent/onboarding_provider.py` | Provider auth step (validates credentials via smoke call to the provider's API). |
+| `packages/spren/src/spren/agent/onboarding_models.py` | Model selection step (loads provider_defaults.yaml; validates against framework's SUPPORTED_MODELS where applicable). |
+| `packages/spren/src/spren/agent/credentials_store.py` | Wraps Session 01's secrets storage; provider-credentials read/write/validate API. |
 
 ### To CREATE — frontend
 
 | Path | Purpose |
 |---|---|
-| `apps/web/src/routes/onboarding.tsx` | Archetype picker route. |
+| `apps/web/src/routes/onboarding.tsx` | Onboarding parent route + progress indicator. |
+| `apps/web/src/routes/onboarding/provider.tsx` | Step 1 — provider auth picker. |
+| `apps/web/src/routes/onboarding/models.tsx` | Step 2 — cheap + expensive model selection. |
+| `apps/web/src/routes/onboarding/archetype.tsx` | Step 3 — 5-archetype picker. |
+| `apps/web/src/components/ProviderCard/ProviderCard.tsx` | One provider card with credential entry inline-expand. |
+| `apps/web/src/components/ProviderCard/ProviderCard.css` | Provider card styling. |
 | `apps/web/src/components/ArchetypeCard/ArchetypeCard.tsx` | One archetype card with embedded orb variant. |
 | `apps/web/src/components/ArchetypeCard/ArchetypeCard.css` | Card styling. |
 | `apps/web/src/components/Spren/Variants.ts` | Per-archetype orb visual variants (gradient stops, breath period, grain density). |
-| `apps/web/src/lib/onboarding.ts` | Onboarding API client. |
-| `apps/web/src/main.tsx` | (modify) onboarding-state check on mount; route to `/onboarding` if not completed. |
+| `apps/web/src/lib/onboarding.ts` | Onboarding API client (provider + models + archetype). |
+| `apps/web/src/main.tsx` | (modify) onboarding-state check on mount; route to `/onboarding/<current_step>` if not completed. |
 | `apps/web/src/routes/__root.tsx` | (modify) load onboarding state in the root loader. |
 
 ### To CREATE — tests
@@ -580,7 +642,10 @@ dependencies = [
 | `packages/spren/tests/runtime/agent/test_sandbox_exec.py` | (extends Session 06's runtime/sandbox tests) ExecuteShell primitive. |
 | `packages/spren/tests/agent/test_persona.py` | PersonaReader + voice-drift detector. |
 | `packages/spren/tests/agent/test_archetypes.py` | Archetype YAML load + write to personas/main.yaml. |
-| `packages/spren/tests/agent/test_onboarding.py` | First-run state machine. |
+| `packages/spren/tests/agent/test_onboarding.py` | First-run state machine across 3 steps. |
+| `packages/spren/tests/agent/test_onboarding_provider.py` | Per-provider auth smoke (mocked provider responses). |
+| `packages/spren/tests/agent/test_onboarding_models.py` | Per-provider default model selection + custom override validation. |
+| `packages/spren/tests/agent/test_credentials_store.py` | Read/write/validate flow against the secrets storage. |
 | `packages/spren/tests/agent/test_system_prompt.py` | Six-axis assembly stability. |
 | `packages/spren/tests/agent/test_main_agent.py` | Main agent loop end-to-end (with mocked LLM). |
 | `packages/spren/tests/agent/test_orb_state.py` | Reactive-state derivation. |
@@ -610,19 +675,24 @@ The Vesper placeholder persona seeded in Session 06 (`memory/bootstrap.py:write_
 
 ## 7. User journeys (anchor for Bundle 03 demo gate)
 
-### J-4 — First-run archetype picker
+### J-4 — First-run onboarding flow (3 steps)
 
 State: fresh data dir; daemon launched.
 
 | # | Action | Surface | Feedback |
 |---|---|---|---|
-| 1 | User runs `just dev-desktop`. | Tauri shell + sidecar | Daemon starts in onboarding mode (memory bootstrap runs; agent loop NOT started). Tauri webview loads. |
-| 2 | App detects `onboarding.completed: false`; routes to `/onboarding`. | Onboarding page | 5 archetype cards visible: Ember, Flint, Quill, Vesper, Kindle. Each shows its orb variant (different gradient + breath cadence) + 3-line description. The orbs animate in incommensurate cadences (9s/10s/11.5s/12s/15s). |
-| 3 | User hovers each card. | Card hover state | Each card lifts slightly; the orb's breath subtly accelerates on hover. |
-| 4 | User clicks "Quill". | Card click | The chosen orb scales up; the others fade out. `POST /v1/onboarding/archetype` fires with `{"archetype": "quill"}`. |
-| 5 | Backend writes `personas/main.yaml` with Quill's 8-axis defaults + `archetype: quill, archetype_chosen_at: <ts>, evolved_axes: []`. Sets `settings.meta_agent.archetype = "quill"`. Transitions daemon from onboarding mode to running mode (starts agent loop, watchers, heartbeat). | (server-side) | — |
-| 6 | Frontend receives the success response. | Redirect to `/` | Home page loads with the chosen Quill orb at center. The orb breathes in Quill's cadence. |
-| 7 | Spren's first message (the welcome from Quill's voice samples in `05-five-archetypes.md` §Quill §Voice samples §"First-run welcome"). | Home page | Greeting in Quill's voice. |
+| 1 | User runs `just dev-desktop`. | Tauri shell + sidecar | Daemon starts in onboarding mode (memory bootstrap from Session 06 runs; agent loop NOT started). Tauri webview loads. |
+| 2 | App detects `onboarding.completed: false`; routes to `/onboarding/provider`. | Onboarding step 1 | Provider cards visible: Anthropic, Anthropic OAuth, AWS Bedrock, OpenRouter, OpenAI, Azure OpenAI, Google AI, DeepSeek. Anthropic API is highlighted as default. |
+| 3 | User clicks Anthropic API. | Card expands inline | API-key entry field appears in the card; "Save" button. |
+| 4 | User pastes API key, clicks Save. | `POST /v1/onboarding/provider` | Backend smoke-tests the key with a lightweight Anthropic API call (e.g., `GET /v1/models`). On success: settings write `meta_agent.provider = "anthropic"` + credentials stored via Session 01's secrets store. Advance to step 2. |
+| 5 | App routes to `/onboarding/models`. | Onboarding step 2 | Two dropdowns visible: Cheap (default `claude-haiku-4-5`) + Expensive (default `claude-sonnet-4-6`). User can change either. "Use defaults" button accepts both. |
+| 6 | User clicks "Use defaults". | `POST /v1/onboarding/models` | Settings write `meta_agent.model.cheap = "claude-haiku-4-5"` + `meta_agent.model.expensive = "claude-sonnet-4-6"`. Advance to step 3. |
+| 7 | App routes to `/onboarding/archetype`. | Onboarding step 3 | 5 archetype cards visible: Ember, Flint, Quill, Vesper, Kindle. Each shows its orb variant + 3-line description. Orbs animate in incommensurate cadences (9s/10s/11.5s/12s/15s). |
+| 8 | User hovers each card. | Card hover state | Each card lifts slightly; the orb's breath subtly accelerates on hover. |
+| 9 | User clicks "Quill". | Card click | The chosen orb scales up; the others fade out. `POST /v1/onboarding/archetype` fires with `{"archetype": "quill"}`. |
+| 10 | Backend writes `personas/main.yaml` with Quill's 8-axis defaults + `archetype: quill, archetype_chosen_at: <ts>, evolved_axes: []`. Sets `settings.meta_agent.archetype = "quill"`. Transitions daemon from onboarding mode to running mode (starts agent loop, watchers, heartbeat). | (server-side) | — |
+| 11 | Frontend receives the success response. | Redirect to `/` | Home page loads with the chosen Quill orb at center. The orb breathes in Quill's cadence. |
+| 12 | Spren's first message (the welcome from Quill's voice samples in `05-five-archetypes.md` §Quill §Voice samples §"First-run welcome"). | Home page | Greeting in Quill's voice. |
 
 ### J-5 — Heartbeat tick
 
@@ -668,15 +738,23 @@ State: Spren running (any archetype); user is in a chat conversation; user asks 
 
 8. **Cost meter check happens before each agent turn, not per LLM call within a turn.** A turn might make multiple LLM calls (extraction classifier + main reasoner + tool result analyzer); the cost meter accumulates. The check is "do I have budget for at least the cheapest reasonable turn?" before dequeueing the event.
 
-9. **Cheap vs expensive model selection.** Settings `meta_agent.model.cheap` defaults to `openai/gpt-4o-mini` (or equivalent at session start). `meta_agent.model.expensive` defaults to `anthropic/claude-opus-4-7`. Selection per turn: routine events (workflow status, heartbeat, simple confirmations) use cheap; complex reasoning (consolidation, multi-step planning, hard-rail decisions) use expensive. The selection logic (`agent/model_selection.py`) is a simple mapping of event kind → model tier; refined organically.
+9. **Provider-aware model defaults.** Settings `meta_agent.model.cheap` and `meta_agent.model.expensive` defaults are per-provider, picked at onboarding Step 2 from `agent/data/provider_defaults.yaml`. Implementer verifies model identifiers against the framework's adapter `SUPPORTED_MODELS` lists at session start; updates the defaults file. The starter table (Anthropic API: haiku-4-5 / sonnet-4-6; Anthropic OAuth: haiku-4-5 / opus-4-6; Bedrock: haiku-4-5 / sonnet-4-6 routed; OpenRouter: anthropic/haiku-4-5 / anthropic/sonnet-4-6; OpenAI: gpt-5.4-mini / gpt-5.4; Azure: same as OpenAI Azure-routed; Google: gemini-3.1-flash / gemini-3.1-pro; DeepSeek: deepseek-v4-mini / deepseek-v4-pro). Selection per turn: routine events (workflow status, heartbeat, simple confirmations) use cheap; complex reasoning (consolidation, multi-step planning, hard-rail decisions) use expensive. The selection logic (`agent/model_selection.py`) is a simple mapping of event kind → model tier; refined organically.
 
-10. **Onboarding is non-skippable in v0.3.** The user picks one archetype before the daemon enters running mode. CLI override (`spren onboarding pick <name>`) exists for headless / scripted setups but the GUI doesn't have a "skip" button.
+10. **Onboarding is 3 steps in v0.3, all required.** Step 1 provider auth → Step 2 model selection (with provider defaults) → Step 3 archetype picker. The user picks an LLM provider, validates credentials via a real smoke call to the provider, picks cheap + expensive models (or accepts the per-provider defaults), then picks an archetype before the daemon enters running mode. The GUI flow doesn't have skip buttons. CLI override (`spren onboarding pick --provider <name> --cheap <model> --expensive <model> --archetype <name>`) exists for headless / scripted setups (demo videos, test fixtures, scripted installs).
+
+11. **Default provider for first-time users: Anthropic API (Claude-friendly).** The provider picker highlights Anthropic API as the default selection. Reasoning: most v0.3 early users are Claude-friendly (the product team's dogfood + early-adopter audience). The user can pick any other provider; the default is just a starting point. v0.4 may revisit the default once we have onboarding telemetry.
+
+12. **Provider-credentials live in the existing secrets store from Session 01.** OS keychain primary; encrypted SQLite fallback. The credentials_store module wraps Session 01's pattern + adds per-provider validation. No new credential storage mechanism.
 
 11. **`active_context.md` does double duty per M18 from synthesis.** Current focus state + active-session adjustments to behavior. Re-read every turn. Cleared / condensed by the consolidation pass (Session 08). Soft cap on size (default 2K tokens); on overflow, agent compresses older entries into a summary line.
 
 ## 9. Polish items to address inside Session 07
 
-1. **Onboarding picker layout responsiveness.** 5 cards in a row at desktop (1280+); 2x2 + 1 at tablet; vertical scroll at mobile. The orbs maintain their incommensurate-cadence animation regardless of layout.
+1. **Onboarding picker layout responsiveness.** Step 1 provider cards: 4 cards per row at desktop (1280+); 2 per row at tablet; vertical at mobile. Step 3 archetype cards: 5 in a row at desktop, 2x2 + 1 at tablet, vertical at mobile. The orbs maintain their incommensurate-cadence animation regardless of layout.
+
+1a. **Provider credential validation UX.** When the credential smoke call fails (bad API key, network issue, model access not granted on Bedrock), the error needs to be specific. Implementer wires per-provider error mapping from the framework adapter's exceptions into actionable user-facing messages. Generic "auth failed" is not acceptable.
+
+1b. **Anthropic OAuth flow.** The OAuth callback needs to land on a localhost URL the daemon listens on temporarily during onboarding. Implementer uses a one-shot HTTP listener at a free port; verifies the OAuth token; closes the listener. The token (or refresh token) goes into the secrets store. v0.3 implementer: confirm whether the framework's existing `anthropic_oauth.py` adapter handles the OAuth flow internally OR expects Spren to drive the OAuth interaction.
 
 2. **Inbox replay on crash recovery.** Verify that if the daemon crashes mid-event-processing, the replay doesn't double-process the in-flight event. Use a lockfile (`<sandbox-root>/inbox/processing/<event-id>.lock`) that's created when the event is dequeued and removed when processing completes. On restart, any event in the `processing/` dir is moved back to `pending/<priority>/` for replay.
 
@@ -698,7 +776,8 @@ State: Spren running (any archetype); user is in a chat conversation; user asks 
 
 ## 10. Success criteria
 
-- **G-24** (onboarding flow): fresh data dir → daemon launches → picker visible → user picks Ember → home loads with the Ember orb breathing at 12s cadence; `personas/main.yaml` matches Ember's defaults.
+- **G-24** (onboarding flow): fresh data dir → daemon launches → step 1 (provider Anthropic API + key) → step 2 (default models accepted) → step 3 (user picks Ember) → home loads with the Ember orb breathing at 12s cadence; `personas/main.yaml` matches Ember's defaults; settings has `meta_agent.provider = anthropic`, `meta_agent.model.cheap`, `meta_agent.model.expensive`, `meta_agent.archetype = ember`.
+- **G-24a** (per-provider onboarding): fresh data dir → user picks each provider in turn (across separate test runs) → each completes its auth flow → defaults pre-populate per the provider table → user accepts defaults → onboarding completes.
 - **G-25** (each archetype loads correctly): repeat G-24 for each of the 5 archetypes; each produces a distinct orb visual + a distinct persona YAML.
 - **G-26** (heartbeat tick): with daemon running and 30-min cadence configured, a heartbeat fires within the expected window; main agent processes it; activity log records `heartbeat_completed`.
 - **G-27** (watcher fires): synthetic state simulating "spend reaches 100% of daily cap" → `BudgetWatcher` emits `BudgetThresholdCrossed` event at P0; main agent dequeues it; surfaces a notification to the user.
@@ -713,7 +792,10 @@ State: Spren running (any archetype); user is in a chat conversation; user asks 
 ## 11. Open research items the implementer resolves in-flight
 
 - APScheduler 4.x version + the SQLAlchemy job-store schema. Verify against current major version at session start.
-- LLM model identifiers: `openai/gpt-4o-mini` and `anthropic/claude-opus-4-7` are the working defaults; verify availability + pricing at session start; update settings defaults if the model lineup has shifted.
+- **LLM model identifiers per provider — VERIFY AT IMPLEMENTATION TIME.** The defaults in `provider_defaults.yaml` (haiku-4-5, sonnet-4-6, opus-4-6, gpt-5.4-mini, gemini-3.1-pro, etc.) are draft-time best-guesses. Implementer cross-checks each against:
+  1. The framework's per-adapter `SUPPORTED_MODELS` lists where present (`packages/framework/src/marsys/models/adapters/anthropic_oauth.py` lists Claude variants explicitly; `openai_oauth.py` lists GPT-5+ variants; verify the Anthropic API + OpenAI + Google + Bedrock + OpenRouter + DeepSeek adapters' supported lineup).
+  2. Each provider's current public model catalog at the time of implementation. Update `provider_defaults.yaml` accordingly. Pricing at the time of implementation determines what counts as "cheap" vs "expensive" for that provider — the cheap default should be ≤ $0.50/M tokens input; the expensive default should be the strongest reasoning model in the provider's lineup.
+  3. The framework adapter's model-name normalization (some adapters accept aliases like `claude-sonnet-4.6` AND `claude-sonnet-4-6`; pick the canonical form for settings storage).
 - Voice-tests-as-CI: how to record + replay LLM responses for deterministic test assertions. VCR-style cassettes via `vcrpy` or `litellm` cassette mode; the implementer picks. The fixture flow: real LLM call once during cassette generation; recorded response replays in CI.
 - Inbox lockfile semantics on Windows. UNIX `flock` doesn't have a direct Windows equivalent; pick a portable mechanism (e.g., `portalocker` library or atomic-rename-pattern lockfiles).
 - The `voice.style_tells.avoid` regex compilation strategy at 30+ phrases — benchmark loop-per-phrase vs compiled-alternation; pick the faster.
@@ -736,6 +818,8 @@ State: Spren running (any archetype); user is in a chat conversation; user asks 
 
 ## 13. Open questions for user input
 
-1. **Default `meta_agent.model.cheap` and `meta_agent.model.expensive`.** I've defaulted to `openai/gpt-4o-mini` and `anthropic/claude-opus-4-7` — verify these match what you actually want as v0.3 defaults? (User can change in settings; the question is the shipped default.)
+1. **Provider auth UX details.** Anthropic OAuth flow needs an OS-level browser handoff (Spren opens the user's browser to the Claude.ai OAuth page; the OAuth callback returns to the daemon's localhost). Is this acceptable, or should v0.3 ship with API-key-only flows (defer OAuth to v0.4)? **My pick: ship Anthropic OAuth in v0.3** — the framework already has the `anthropic_oauth.py` adapter; the OAuth flow is a known pattern (`gh auth login` does similar). v0.4 may add OpenAI OAuth (the framework's `openai_oauth.py` adapter is already present).
 
-2. **Onboarding skip via CLI for demo / scripted setups.** I've included `spren onboarding pick <archetype>` as a CLI override. Acceptable, or should we require manual GUI picking in all cases (and document that demo recordings start after manual pick)?
+2. **AWS Bedrock complexity.** Bedrock requires AWS credentials (key + secret + region) AND the user has to have requested model access in their AWS account for the specific Claude variants. The credential-validation smoke call needs to handle "model access not granted" gracefully. Is this enough of a friction point that we should defer Bedrock to v0.4? **My pick: include Bedrock in v0.3 with clear error messaging.** Users on Bedrock are sophisticated enough to navigate the model-access request; we shouldn't lock them out.
+
+3. **Default models when the framework adapter's catalog drifts mid-v0.3.** If between session draft and implementation, e.g., Anthropic ships claude-opus-4-7 (which the user mentioned), should the defaults update automatically (implementer picks the latest), or should the brief lock specific identifiers? **My pick: implementer picks latest** — the brief specifies the *tier* (cheap = haiku-class, expensive = opus-or-sonnet-class for Anthropic OAuth) and the implementer picks the latest model in that tier at session start. Settings tracks the chosen identifier so user knows what's running.

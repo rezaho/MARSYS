@@ -531,6 +531,8 @@ These are the calls I'm making in this brief; the implementer doesn't re-litigat
 9. **Format errors at write boundary log to `consolidation_errors.md` and don't commit.** This is M4 from the synthesis; it ships in v0.3 because format errors at 1.2-30.4% rates would silently corrupt the KB if uncaught.
 10. **Per-platform tests gated by marker.** `@pytest.mark.platform_linux`, `_macos`, `_windows`. CI matrix runs all three; local dev runs whichever matches.
 
+11. **CLI bridge: TCP-localhost-with-token across all platforms.** The `spren memory` CLI talks to the running daemon over `http://127.0.0.1:<port>` using the per-launch auth token from Session 01 — same pattern as the FastAPI clients (Tauri webview, browser tab, future TUI). Rejected: per-platform IPC (Unix sockets on macOS/Linux + named pipes on Windows). Reasoning: the CLI runs a few commands per minute, not thousands per second; localhost-TCP overhead is microseconds (irrelevant); IPC's marginal correctness isn't worth maintaining two platform-specific code paths. The CLI just becomes another HTTP client. Auth flow: CLI reads the token from `<data-dir>/runtime/auth-token` (mode 0600 — same file Session 01 writes) and passes it as `Authorization: Bearer <token>`. Refuses with a clear error if the daemon isn't running OR if the token file is missing/unreadable.
+
 ## 9. Polish items to address inside Session 06
 
 Gaps the architect-stage draft surfaced that the implementer addresses in-session, not as nice-to-haves.
@@ -594,8 +596,6 @@ If any of these surface a conflict with the locked decisions in §8, the impleme
 
 ## 13. Open questions for user input
 
-Two questions before the implementer starts. Most architect-stage decisions are made in this brief; these two depend on user judgment.
+One remaining; the prior question on the CLI bridge transport (Q1) was resolved in §8 decision 11 (TCP-localhost-with-token across all platforms).
 
-1. **Daemon CLI bridge transport on Windows.** UNIX socket native on macOS / Linux. Windows: named pipe or TCP-on-localhost-with-token. Both work; named pipe is more idiomatic Windows but adds platform-specific code; TCP-localhost is simpler and reuses the auth-token pattern from Session 01 but slightly less elegant. **My pick: TCP-localhost-with-token.** Reuses Session 01's auth pattern; one less per-platform branch; same security posture (localhost-only, token-required). Want your call before locking.
-
-2. **Format validator strictness — silent rejection vs surfaced error?** When a fact-block fails parsing, it's logged to `consolidation_errors.md`. But should the *user* see this immediately (e.g., a notification, a banner in the daemon log), or is the log file enough? **My pick: log file is enough for v0.3.** A user editing markdown via vim doesn't want a popup; a malformed save shows up the next time they `spren memory verify-index`. v0.4 might add a watcher that surfaces the error. Want your call.
+1. **Format validator strictness — silent rejection vs surfaced error?** When a fact-block fails parsing, it's logged to `consolidation_errors.md`. But should the *user* see this immediately (e.g., a notification, a banner in the daemon log), or is the log file enough? **My pick: log file is enough for v0.3.** A user editing markdown via vim doesn't want a popup; a malformed save shows up the next time they `spren memory verify-index`. v0.4 might add a watcher that surfaces the error. Want your call.
