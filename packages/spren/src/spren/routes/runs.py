@@ -22,12 +22,14 @@ from pathlib import Path
 from typing import Any, AsyncIterator, Callable
 
 from fastapi import APIRouter, Depends, Header, Query, Request, Response, status
-from fastapi.responses import JSONResponse
+from fastapi.responses import FileResponse, JSONResponse
 from pydantic import BaseModel
 from sse_starlette.sse import EventSourceResponse
 from ulid import ULID
 
 from spren.models import (
+    ArtifactInfo,
+    ArtifactListResponse,
     ErrorCode,
     ErrorEnvelope,
     ErrorPayload,
@@ -39,9 +41,12 @@ from spren.models import (
     RunListResponse,
     RunRead,
     RunStatus,
+    RunTrace,
     RunUpdatedEvent,
     TERMINAL_STATUSES,
+    WorkflowDefinition,
 )
+from spren.files.lookup import fetch_file_metadata
 from spren.runs import lifecycle as lifecycle_module
 from spren.runs.broker import RunsBroker, StreamLaggedMarker
 from spren.runs.lifecycle import (
@@ -52,8 +57,15 @@ from spren.runs.lifecycle import (
     _freeze_workflow_snapshot,
     _to_list_item,
 )
+from spren.runs.artifacts import (
+    ArtifactNotFoundError,
+    InvalidArtifactNameError,
+    list_artifacts,
+    resolve_artifact_path,
+)
 from spren.runs.materialize import MaterializationError, materialize_run
 from spren.runs.sse import stream_run_events
+from spren.runs.trace import TraceNotAvailableError, build_run_trace
 from spren.storage import workflows as workflows_store
 from spren.storage.runs import fetch_run, insert_run, list_runs
 
@@ -108,13 +120,19 @@ def make_runs_router(
                 f"trigger={payload.trigger!r} not supported in v0.3 (manual only)",
                 status.HTTP_400_BAD_REQUEST,
             )
-        # Validate attachments
+        # Synchronously validate task_input.attachments — Session 05 enables
+        # non-empty arrays; each file_id must exist before the 201 returns
+        # so an unknown id surfaces as 400 here, not as RUN_FAILED 100ms
+        # later. Plan §3 + decision §19.
         if payload.task_input.attachments:
-            return _error(
-                "ATTACHMENTS_NOT_YET_SUPPORTED",
-                "task_input.attachments not supported in v0.3; ships in Session 05",
-                status.HTTP_400_BAD_REQUEST,
-            )
+            for fid in payload.task_input.attachments:
+                if fetch_file_metadata(conn, fid) is None:
+                    return _error(
+                        "ATTACHMENT_NOT_FOUND",
+                        f"attached file {fid!r} does not exist",
+                        status.HTTP_400_BAD_REQUEST,
+                        details={"file_id": fid},
+                    )
 
         workflow = workflows_store.fetch_workflow(conn, payload.workflow_id)
         if workflow is None:
@@ -130,10 +148,18 @@ def make_runs_router(
                 status.HTTP_400_BAD_REQUEST,
             )
 
+        # Generate run_id first so materialize_run can wire per-run tracing
+        # (TracingConfig.output_dir = <data-dir>/data/runs/{run_id}).
+        run_id = str(ULID())
+
         # Materialize before inserting so a materialization error doesn't leave
         # an orphan queued row.
         try:
-            bundle = materialize_run(definition=workflow.definition)
+            bundle = materialize_run(
+                definition=workflow.definition,
+                data_dir=data_dir,
+                run_id=run_id,
+            )
         except MaterializationError as exc:
             return _error(
                 "VALIDATION_FAILED",
@@ -141,7 +167,6 @@ def make_runs_router(
                 status.HTTP_400_BAD_REQUEST,
             )
 
-        run_id = str(ULID())
         # Freeze workflow snapshot to disk (SP-009)
         _freeze_workflow_snapshot(
             run_id=run_id,
@@ -196,16 +221,53 @@ def make_runs_router(
         cursor: str | None = Query(default=None),
         limit: int = Query(default=20, ge=1, le=100),
         workflow_id: str | None = Query(default=None),
-        run_status: RunStatus | None = Query(default=None, alias="status"),
+        run_status: str | None = Query(default=None, alias="status"),
         since: datetime | None = Query(default=None),
+        until: datetime | None = Query(default=None),
     ) -> Response:
+        # Session 05 multi-value semantics: ``workflow_id`` and ``status``
+        # accept comma-separated lists. Backward-compat with Session 04 —
+        # a value without a comma is treated as a single-element list and
+        # routed through the original single-value path.
+        wf_ids: list[str] | None = None
+        wf_id_single: str | None = None
+        if workflow_id is not None:
+            parts = [s.strip() for s in workflow_id.split(",") if s.strip()]
+            if not parts:
+                pass
+            elif len(parts) == 1:
+                wf_id_single = parts[0]
+            else:
+                wf_ids = parts
+
+        statuses_multi: list[RunStatus] | None = None
+        status_single: RunStatus | None = None
+        if run_status is not None:
+            try:
+                parts = [s.strip() for s in run_status.split(",") if s.strip()]
+                if not parts:
+                    pass
+                elif len(parts) == 1:
+                    status_single = RunStatus(parts[0])
+                else:
+                    statuses_multi = [RunStatus(p) for p in parts]
+            except ValueError as exc:
+                return _error(
+                    "VALIDATION_FAILED",
+                    f"invalid status value: {exc}",
+                    status.HTTP_400_BAD_REQUEST,
+                )
+
         items, has_more = list_runs(
             conn,
             cursor=cursor,
             limit=limit,
-            workflow_id=workflow_id,
-            status=run_status,
+            workflow_id=wf_id_single,
+            workflow_ids=wf_ids,
+            status=status_single,
+            statuses=statuses_multi,
             since=since,
+            until=until,
         )
         next_cursor = items[-1].id if has_more and items else None
         body = RunListResponse(
@@ -276,6 +338,129 @@ def make_runs_router(
                 status.HTTP_404_NOT_FOUND,
             )
         return JSONResponse(content=run.model_dump(mode="json"))
+
+    # ---- Run trace ----
+
+    @router.get(
+        "/{run_id}/trace",
+        response_model=RunTrace,
+        responses={404: {"model": ErrorEnvelope}},
+    )
+    def read_trace(run_id: str, conn: sqlite3.Connection = Depends(get_conn)) -> Response:
+        run = fetch_run(conn, run_id)
+        if run is None:
+            return _error(
+                "RUN_NOT_FOUND",
+                f"run {run_id} does not exist",
+                status.HTTP_404_NOT_FOUND,
+            )
+        try:
+            trace = build_run_trace(data_dir=data_dir, run_id=run_id)
+        except TraceNotAvailableError:
+            return _error(
+                "TRACE_NOT_AVAILABLE",
+                f"no trace available for run {run_id} yet",
+                status.HTTP_404_NOT_FOUND,
+            )
+        return JSONResponse(content=trace.model_dump(mode="json"))
+
+    # ---- Run workflow snapshot (frozen at run start, SP-009) ----
+
+    @router.get(
+        "/{run_id}/workflow",
+        response_model=WorkflowDefinition,
+        responses={404: {"model": ErrorEnvelope}},
+    )
+    def read_workflow_snapshot(
+        run_id: str, conn: sqlite3.Connection = Depends(get_conn)
+    ) -> Response:
+        run = fetch_run(conn, run_id)
+        if run is None:
+            return _error(
+                "RUN_NOT_FOUND",
+                f"run {run_id} does not exist",
+                status.HTTP_404_NOT_FOUND,
+            )
+        snapshot_path = data_dir / "data" / "runs" / run_id / "workflow.json"
+        if not snapshot_path.is_file():
+            return _error(
+                "RUN_NOT_FOUND",
+                f"workflow snapshot for run {run_id} not on disk",
+                status.HTTP_404_NOT_FOUND,
+            )
+        try:
+            definition = WorkflowDefinition.model_validate_json(
+                snapshot_path.read_text(encoding="utf-8")
+            )
+        except Exception as exc:  # noqa: BLE001
+            return _error(
+                "INTERNAL_ERROR",
+                f"failed to parse workflow snapshot: {exc}",
+                status.HTTP_500_INTERNAL_SERVER_ERROR,
+            )
+        return JSONResponse(content=definition.model_dump(mode="json"))
+
+    # ---- Run artifacts ----
+
+    @router.get(
+        "/{run_id}/artifacts",
+        response_model=ArtifactListResponse,
+        responses={404: {"model": ErrorEnvelope}},
+    )
+    def read_artifacts(
+        run_id: str, conn: sqlite3.Connection = Depends(get_conn)
+    ) -> Response:
+        run = fetch_run(conn, run_id)
+        if run is None:
+            return _error(
+                "RUN_NOT_FOUND",
+                f"run {run_id} does not exist",
+                status.HTTP_404_NOT_FOUND,
+            )
+        items = list_artifacts(data_dir=data_dir, run_id=run_id)
+        body = ArtifactListResponse(items=items).model_dump(mode="json")
+        return JSONResponse(content=body)
+
+    @router.get(
+        "/{run_id}/artifacts/{name}",
+        response_class=FileResponse,
+        responses={
+            400: {"model": ErrorEnvelope},
+            404: {"model": ErrorEnvelope},
+        },
+    )
+    def download_artifact(
+        run_id: str, name: str, conn: sqlite3.Connection = Depends(get_conn)
+    ) -> Response:
+        run = fetch_run(conn, run_id)
+        if run is None:
+            return _error(
+                "RUN_NOT_FOUND",
+                f"run {run_id} does not exist",
+                status.HTTP_404_NOT_FOUND,
+            )
+        try:
+            path = resolve_artifact_path(data_dir=data_dir, run_id=run_id, name=name)
+        except InvalidArtifactNameError as exc:
+            return _error(
+                "INVALID_FILENAME",
+                str(exc),
+                status.HTTP_400_BAD_REQUEST,
+            )
+        except ArtifactNotFoundError as exc:
+            return _error(
+                "ARTIFACT_NOT_FOUND",
+                str(exc),
+                status.HTTP_404_NOT_FOUND,
+            )
+        import mimetypes
+
+        mime, _ = mimetypes.guess_type(name)
+        return FileResponse(
+            path=path,
+            media_type=mime or "application/octet-stream",
+            filename=name,
+        )
 
     # ---- Cancel run ----
 

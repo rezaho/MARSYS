@@ -34,6 +34,7 @@ from . import __version__ as spren_version
 from .auth import make_auth_dependency
 from .models import ErrorEnvelope, ErrorPayload
 from .cost import warn_if_rates_stale
+from .routes.files import make_files_router
 from .routes.lint import make_lint_router
 from .routes.runs import make_runs_router
 from .routes.tools import make_tools_router
@@ -147,6 +148,7 @@ def create_app(
                 "tools": "/v1/tools",
                 "lint": "/v1/workflows/{id}/lint",
                 "runs": "/v1/runs",
+                "files": "/v1/files",
             },
             started_at=boot_time,
             data_dir=str(data_dir),
@@ -188,6 +190,13 @@ def create_app(
             require_auth,
             db_factory=lambda: db.connection,
             broker=runs_broker,
+            data_dir=data_dir,
+        ),
+    )
+    app.include_router(
+        make_files_router(
+            require_auth,
+            db_factory=lambda: db.connection,
             data_dir=data_dir,
         ),
     )

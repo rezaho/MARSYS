@@ -92,29 +92,55 @@ def list_runs(
     cursor: str | None,
     limit: int,
     workflow_id: str | None = None,
+    workflow_ids: list[str] | None = None,
     status: RunStatus | None = None,
+    statuses: list[RunStatus] | None = None,
     since: datetime | None = None,
+    until: datetime | None = None,
 ) -> tuple[list[RunListItem], bool]:
     """Returns (items, has_more). Newest-first ordering.
 
     Cursor is the ULID of the last returned row. ULIDs are monotonic
     (k-sortable by creation time within a process), so ``id DESC`` is
     equivalent to ``created_at DESC``; cursor walks backwards in time.
+
+    Filter params:
+    - ``workflow_id`` / ``workflow_ids`` — single OR multi (OR-match).
+      The two are mutually exclusive at the route layer; backend honors
+      whichever is supplied.
+    - ``status`` / ``statuses`` — single OR multi (OR-match within rail,
+      AND-match across rails per plan §8.10).
+    - ``since`` / ``until`` — paired ISO 8601 absolute timestamps for
+      date-range filtering (Session 04's relative ``since=24h`` shorthand
+      is parsed at the route layer; this DAL accepts datetimes only).
     """
     sql = "SELECT * FROM runs WHERE 1=1"
     params: list[Any] = []
     if cursor is not None:
         sql += " AND id < ?"
         params.append(cursor)
-    if workflow_id is not None:
+    # Multi-value workflow filter takes precedence; falls back to single.
+    if workflow_ids:
+        placeholders = ", ".join(["?"] * len(workflow_ids))
+        sql += f" AND workflow_id IN ({placeholders})"
+        params.extend(workflow_ids)
+    elif workflow_id is not None:
         sql += " AND workflow_id = ?"
         params.append(workflow_id)
-    if status is not None:
+    # Multi-value status filter takes precedence; falls back to single.
+    if statuses:
+        placeholders = ", ".join(["?"] * len(statuses))
+        sql += f" AND status IN ({placeholders})"
+        params.extend([s.value for s in statuses])
+    elif status is not None:
         sql += " AND status = ?"
         params.append(status.value)
     if since is not None:
         sql += " AND created_at >= ?"
         params.append(since.isoformat())
+    if until is not None:
+        sql += " AND created_at <= ?"
+        params.append(until.isoformat())
     sql += " ORDER BY id DESC LIMIT ?"
     params.append(limit + 1)
     rows = conn.execute(sql, params).fetchall()

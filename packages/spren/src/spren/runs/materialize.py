@@ -24,6 +24,7 @@ from __future__ import annotations
 import logging
 import os
 from dataclasses import dataclass, field
+from pathlib import Path
 from typing import Any, Callable, Optional
 
 from marsys.agents.agents import Agent
@@ -36,6 +37,7 @@ from marsys.coordination.topology.core import (
     NodeType,
     Topology,
 )
+from marsys.coordination.tracing.config import TracingConfig
 from marsys.environment.tools import AVAILABLE_TOOLS
 from marsys.models.models import ModelConfig
 
@@ -179,10 +181,15 @@ def _build_execution_config(
     *,
     spec_execution_config: Any,
     enable_aggui: bool,
+    tracing_output_dir: Path | None = None,
 ) -> ExecutionConfig:
     """Assemble the framework ``ExecutionConfig`` for a run.
 
     - mirrors the spec's execution-config fields where they're stable
+    - **Always enables tracing** with ``output_dir = tracing_output_dir``
+      (when provided) so the NDJSON writer drops the per-run trace file.
+      Without this, ``trace.ndjson`` is never written and Session 05's
+      trace endpoint reads an empty path. Plan §8.16.
     - opts into AG-UI translator construction when Framework 06 is
       available (gated by a runtime presence check; falls back to a
       plain ``ExecutionConfig`` otherwise so Spren can run without
@@ -196,8 +203,23 @@ def _build_execution_config(
         ExecutionConfig, "__dataclass_fields__"
     ) else set()
     filtered = {k: v for k, v in spec_dump.items() if k in framework_fields}
+    # ``tracing`` is constructed below with per-run output_dir; drop any
+    # spec-side tracing payload (the spec-mirror's tracing shape isn't
+    # the framework's TracingConfig, and we want the per-run output_dir
+    # regardless).
+    filtered.pop("tracing", None)
 
     config = ExecutionConfig(**filtered) if filtered else ExecutionConfig()
+
+    # Per-run tracing wiring. Plan §8.16 — without this, no NDJSON file
+    # exists for the trace endpoint to read.
+    if tracing_output_dir is not None:
+        tracing_output_dir.mkdir(parents=True, exist_ok=True)
+        config.tracing = TracingConfig(
+            enabled=True,
+            output_dir=str(tracing_output_dir),
+            include_message_content=True,  # framework default; preserved per plan §8.17
+        )
 
     if enable_aggui:
         try:
@@ -225,6 +247,8 @@ def materialize_run(
     definition: WorkflowDefinition,
     secrets_lookup: SecretsLookup | None = None,
     enable_aggui: bool = True,
+    data_dir: Path | None = None,
+    run_id: str | None = None,
 ) -> RuntimeBundle:
     """Convert one ``WorkflowDefinition`` to a runnable bundle.
 
@@ -233,6 +257,11 @@ def materialize_run(
     ``enable_aggui=True`` opts into AG-UI translator construction at
     Orchestra wiring time when Framework 06 is present (no-op when
     absent).
+    ``data_dir`` + ``run_id`` together set the per-run tracing
+    ``output_dir`` to ``<data_dir>/data/runs/{run_id}``. Both are
+    required to enable tracing; if either is ``None``, tracing is left
+    at the framework default (``enabled=False``) — useful in unit tests
+    that don't exercise the trace path.
     """
     secrets_lookup = secrets_lookup or _env_secrets_lookup
 
@@ -242,9 +271,14 @@ def materialize_run(
     for name, agent_spec in definition.agents.items():
         agents.append(_materialize_agent(name, agent_spec, secrets_lookup=secrets_lookup))
 
+    tracing_output_dir: Path | None = None
+    if data_dir is not None and run_id is not None:
+        tracing_output_dir = data_dir / "data" / "runs" / run_id
+
     execution_config = _build_execution_config(
         spec_execution_config=definition.execution_config,
         enable_aggui=enable_aggui,
+        tracing_output_dir=tracing_output_dir,
     )
 
     return RuntimeBundle(

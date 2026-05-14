@@ -30,6 +30,7 @@ from marsys.coordination.orchestra import Orchestra
 from marsys.coordination.state.storage import FileStorageBackend
 
 from spren.cost import GenerationCost, apply_to_run as apply_cost_to_run, calculate_cost
+from spren.files.lookup import format_attachments_block, resolve_attachments
 from spren.models import (
     RunCancelledEvent,
     RunCreatedEvent,
@@ -270,7 +271,10 @@ async def _run_lifecycle(
     """Drive the run from queued → terminal."""
     started_at = _utc_now()
     try:
-        # Transition queued → running
+        # Transition queued → running. Re-resolve attachments to disk
+        # paths in the same DB context so the system-context block lands
+        # before Orchestra.execute() runs.
+        task_text = task_input.text
         with db_factory() as conn:
             row = update_run_status(
                 conn,
@@ -278,13 +282,26 @@ async def _run_lifecycle(
                 status=RunStatus.RUNNING,
                 started_at=started_at,
             )
+            if task_input.attachments:
+                resolved, missing = resolve_attachments(conn, task_input.attachments)
+                if missing:
+                    # The POST handler validated these; if they vanished
+                    # between then and now (e.g., concurrent DELETE), log
+                    # but proceed with the survivors. The agents see only
+                    # the resolved files.
+                    logger.warning(
+                        "lifecycle: attachments missing for run %s: %s",
+                        active.run_id,
+                        missing,
+                    )
+                task_text = task_text + format_attachments_block(resolved)
             conn.commit()
             _publish_event(broker, row, "updated")
         active.started.set()
 
         # Run the orchestration
         result = await active.orchestra.execute(
-            task=task_input.text,
+            task=task_text,
             topology=active.bundle.topology,
             context={"session_id": active.run_id},
         )
