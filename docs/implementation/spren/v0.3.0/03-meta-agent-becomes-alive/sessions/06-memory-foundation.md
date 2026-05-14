@@ -594,8 +594,8 @@ If any of these surface a conflict with the locked decisions in §8, the impleme
 
 **Next step:** acceptance-criteria-extractor freezes `./06-memory-foundation/acceptance.md` on the first implementation turn. Implementer begins. Sessions 07 + 08 build on top of this foundation; their architect drafts begin once Session 06 is in implementation (parallel architect work + sequential implementation).
 
-## 13. Open questions for user input
+## 13. Open questions — resolved
 
-One remaining; the prior question on the CLI bridge transport (Q1) was resolved in §8 decision 11 (TCP-localhost-with-token across all platforms).
+All Session 06 questions are resolved.
 
-1. **Format validator strictness — silent rejection vs surfaced error?** When a fact-block fails parsing, it's logged to `consolidation_errors.md`. But should the *user* see this immediately (e.g., a notification, a banner in the daemon log), or is the log file enough? **My pick: log file is enough for v0.3.** A user editing markdown via vim doesn't want a popup; a malformed save shows up the next time they `spren memory verify-index`. v0.4 might add a watcher that surfaces the error. Want your call.
+1. **Format validator strictness.** **Locked: log file only.** Malformed fact-blocks log to `consolidation_errors.md`; no notification, no banner. User sees them on next `spren memory verify-index`. v0.4 may add a watcher that surfaces errors actively if dogfood shows the silent path is too quiet.

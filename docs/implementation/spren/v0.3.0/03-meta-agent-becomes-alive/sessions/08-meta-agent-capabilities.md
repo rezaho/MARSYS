@@ -39,16 +39,20 @@ Session 08 does NOT touch any TRUNK-CRITICAL framework file (SP-001, SP-018). Ad
 ## 3. SP-023 boundary — what goes where
 
 **Generic always-on runtime additions — `spren/runtime/memory/`:**
+
+> **Pipeline shape locked at user redirect (2026-05-14)**: every adjudication step is a cheap LLM call. No specialized ML rerankers, no local NLI cross-encoders. Embedding model (FastEmbed BGE-small) is permitted *only for retrieval*, not for relevance scoring. Concrete file list below revised; the precise rerank+adjudicate pipeline is the subject of [`tmp/spren/research/06-memory-foundations/07-agentic-memory-update-no-deberta.md`](../../../../../tmp/spren/research/06-memory-foundations/07-agentic-memory-update-no-deberta.md) which the implementer reads as primary source.
+
 - `runtime/memory/supersession.py` — `SupersessionEngine` ABC + the deterministic algorithm. Takes a fact + a fact store + predicate metadata; returns `[Mutation]`. Generic shape — the algorithm in `10-memory-architecture.md` §5 doesn't depend on Spren-specific event types.
-- `runtime/memory/nli.py` — `NLICrossEncoder` ABC. Default implementation wraps DeBERTa-v3-large MNLI/FEVER/ANLI cross-encoder ([MoritzLaurer/DeBERTa-v3-large-mnli-fever-anli-ling-wanli](https://huggingface.co/MoritzLaurer/DeBERTa-v3-large-mnli-fever-anli-ling-wanli)). API: `score(premise, hypothesis) -> {entailment, contradiction, neutral}`. Used by both the TMS gate and the retrieval reranker. ~390M params, ~70MB on disk; CPU-runnable at ~100ms/pair, GPU at ~25ms.
-- `runtime/memory/tms_gate.py` — `TMSGate.check(candidate_fact, core_facts) -> Decision`. Cross-encoder NLI wrapper; takes any `Fact` with text content. Returns DISPUTE-with-kind=tms when `P(contradiction) > 0.7` against any core fact.
+- `runtime/memory/tms_gate.py` — `TMSGate.check(candidate_fact, core_facts) -> Decision`. **Implementation: cheap-LLM call** (Haiku 4.5 / GPT-5.4-mini class) per (candidate, core_fact) pair OR a single batched call over all core_facts; the research output picks. Returns DISPUTE-with-kind=tms when the LLM classifies a contradiction against any core fact above threshold.
 - `runtime/memory/retrieval/__init__.py` — `MemoryRetriever` interface (the four-query hybrid). Generic shape; concrete Spren implementation in `agent/capabilities/`.
 - `runtime/memory/retrieval/rrf.py` — Reciprocal Rank Fusion (Cormack 2009). Pure code; ~30 lines. `rrf_fuse(ranked_lists, k=60) -> ranked_list`.
 - `runtime/memory/retrieval/hyde.py` — `HyDEExpander.expand(candidate, llm) -> list[str]`. Generic; one LLM call returns 3 hypothetical contradiction sentences for embedding. The prompt template is parameterized.
+- `runtime/memory/retrieval/llm_rerank.py` — `LLMReranker.rerank(candidate, retrieved_facts, llm) -> ranked_list`. **Replaces the prior NLI cross-encoder rerank.** Listwise rerank prompt: one LLM call ranks N retrieved facts by relevance + relation-type to the candidate. Implementation pattern (listwise vs pairwise vs pointwise) decided by the research output.
 - `runtime/memory/budget.py` — `BudgetEnforcer`. Generic; consumes `CostMeter` from Session 07 and the agent's tool registry.
-- `runtime/memory/agent.py` — `MemoryUpdateAgent` ABC. The per-candidate agentic loop (extract → TMS → retrieve → adjudicate → CoVe → apply). Generic shape; subclassed in Spren-specific code with concrete prompts + retrieval implementation.
-- `runtime/memory/cove.py` — `CoVeVerifier` (Chain-of-Verification, [Dhuliawala et al. 2023, arXiv:2309.11495](https://arxiv.org/abs/2309.11495)). Triggered conditionally on LLM-NLI disagreement; one extra LLM call. Generic prompt template.
+- `runtime/memory/agent.py` — `MemoryUpdateAgent` ABC. The per-candidate agentic loop (extract → TMS → retrieve → llm-rerank → adjudicate → apply). Generic shape; subclassed in Spren-specific code with concrete prompts + retrieval implementation.
 - `runtime/memory/consolidation.py` — `ConsolidationPipeline` ABC. The 6-stage pipeline shape (inventory → extract → memory-update-agent-loop → routing → commit → reindex) is generic; concrete Spren stages subclass.
+
+**Files explicitly removed from earlier draft (2026-05-14 redirect): `runtime/memory/nli.py` (DeBERTa wrapper), `runtime/memory/cove.py` (CoVe primitive depended on NLI-disagreement trigger which no longer exists). The fully-LLM pipeline replaces both.**
 
 **Spren-specific layer — `spren/agent/capabilities/`:**
 - `capabilities/__init__.py` — module init.
@@ -65,7 +69,7 @@ Session 08 does NOT touch any TRUNK-CRITICAL framework file (SP-001, SP-018). Ad
 - `capabilities/consolidation/pipeline.py` — Spren's concrete `ConsolidationPipeline` (subclass of generic). Wires the stages.
 - `capabilities/consolidation/stages/inventory.py` — Stage 1: hash files, load `pending_facts`, load `BranchSummary.procedural_lessons`, load `PersonaFeedback`.
 - `capabilities/consolidation/stages/extract.py` — Stage 2: per-turn-pair extraction LLM call (Mem0-style `FACT_RETRIEVAL_PROMPT` adapted). Returns list of `CandidateFact`.
-- `capabilities/consolidation/stages/agentic_loop.py` — Stage 3: the per-candidate Memory Update Agent loop. For each candidate: TMS gate → retrieve (4-query hybrid + RRF + NLI rerank) → adjudicate (1 LLM call with per-fact classification + aggregate operation) → conditional CoVe → supersession.
+- `capabilities/consolidation/stages/agentic_loop.py` — Stage 3: the per-candidate Memory Update Agent loop. For each candidate: TMS gate (cheap-LLM) → retrieve (4-query hybrid + RRF + cheap-LLM rerank) → adjudicate (1 LLM call with per-fact classification + aggregate operation) → supersession.
 - `capabilities/consolidation/stages/routing.py` — Stage 4: bubble-up routing rules table application.
 - `capabilities/consolidation/stages/commit.py` — Stage 5: git commit + content_hash + format-validate + `ConsolidationCompleted` event emission.
 - `capabilities/consolidation/stages/reindex.py` — Stage 6: incremental MarkdownIndexer + Tier 4 update.
@@ -75,7 +79,9 @@ Session 08 does NOT touch any TRUNK-CRITICAL framework file (SP-001, SP-018). Ad
 - `capabilities/data/extraction_prompt.txt` — Mem0-style `FACT_RETRIEVAL_PROMPT` adapted for our schema (per-fact entity_id + predicate + value + asserted_at).
 - `capabilities/data/memory_update_agent_prompt.txt` — the adjudicator prompt with per-fact classification + aggregate operation output.
 - `capabilities/data/hyde_prompt.txt` — the HyDE expander prompt (3 hypothetical contradiction sentences per candidate).
-- `capabilities/data/cove_prompt.txt` — the Chain-of-Verification prompt for LLM-NLI disagreement cases.
+- `capabilities/data/llm_rerank_prompt.txt` — the cheap-LLM listwise rerank prompt.
+- `capabilities/data/tms_gate_prompt.txt` — the cheap-LLM TMS-gate prompt (structured output: `{contradicts, contradicting_fact_id, confidence}`).
+- `capabilities/data/persona_judge_prompt.txt` — the LLM-as-judge bond-integrity rubric for persona-evolution proposals.
 - `capabilities/consolidation/persona_reflection.py` — the PersonaReflection stage that runs alongside the consolidation pipeline. Two-prompt reflection (salient questions → minimal-diff proposals). Outputs go to `pending_persona_changes/`.
 - `capabilities/consolidation/scheduler.py` — wires consolidation triggering: `(24h ∧ ≥5 sessions) OR (≥1 PersonaFeedback queued ∧ ≥1h delay)`. Subscribes to inbox events to track session count + feedback queue.
 - `capabilities/cli/persona.py` — `spren persona` CLI (log, why, diff, approve, reject, revert).
@@ -316,39 +322,84 @@ hard_rails:
 
 The agent can NEVER bypass hard rails by editing this file directly — the hard rails list is hardcoded in `capabilities/tools/hard_rails.py` and the policy reader merges it with the user-editable section. Standing approvals can be revoked at any time by editing `main.policy.yaml`.
 
-### 4.4 Budget enforcement (SP-013)
+### 4.4 Budget enforcement + Cost Center (SP-013)
+
+**Direction (2026-05-14 user redirect)**: drop the per-action hard cap. The right primitive is a transparent **Cost Center** — a single page where users see every cost-incurring artifact (past sessions / live agents / scheduled jobs / their estimates) and can act on them. Daily budget remains the only hard limit. Removing the per-action cap removes the failure mode where users hit cryptic "blocked by per-action cap" errors and have to dig through settings to understand which knob to turn.
+
+The agent never blocks itself with a per-action cap — only the daily budget acts as a guardrail. Within-day, every spend is auditable in the Cost Center. The user can see what's running, what's queued, what's already cost them money — and cancel anything from one place.
+
+**Cost Center data model + endpoints (Session 08 ships):**
+
+```python
+# capabilities/cost_center.py — Spren-specific cost-center aggregator.
+@dataclass
+class CostEntry:
+    id: str                      # ULID
+    kind: Literal["agent_session", "workflow_run", "scheduled_job", "consolidation_pass", "channel_event"]
+    label: str                   # human-readable: "Quill main session — May 14, morning", "research-pipeline (run-abc123)", etc.
+    status: Literal["completed", "running", "scheduled", "deferred"]
+    cost_usd: float | None       # actual for completed/running; estimate for scheduled
+    started_at: datetime | None
+    ended_at: datetime | None
+    next_run_at: datetime | None # for scheduled
+    source_id: str | None        # FK to source artifact (run_id, schedule_job_id, etc.)
+    source_route: str | None     # the page where this artifact is edited (e.g., "/scheduled-jobs/{id}")
+
+class CostCenter:
+    """Aggregates costs across all sources for a unified view.
+    Read-only aggregation; mutations go through source pages (SP-019)."""
+
+    def list_entries(
+        self,
+        status: list[CostEntryStatus] | None = None,
+        kind: list[CostEntryKind] | None = None,
+        time_range: tuple[datetime, datetime] | None = None,
+    ) -> list[CostEntry]: ...
+
+    def daily_summary(self, date: date) -> DailySummary:
+        """Returns: total spent, total estimated for remaining today, by-kind breakdown."""
+
+    def cancel(self, entry_id: str) -> None:
+        """Cancel a running or scheduled entry. Routes to the source's cancel mechanism;
+        the cost-center surface only orchestrates."""
+```
+
+**API routes:**
+- `GET /v1/cost/entries` — list with filters (status, kind, time range)
+- `GET /v1/cost/summary/today` — today's spend + estimate + by-kind breakdown
+- `POST /v1/cost/entries/{id}/cancel` — cancel a running/scheduled entry (delegates to source)
+- `GET /v1/cost/limits` — daily budget cap
+
+Note: edits to schedules, workflows, etc. happen on their respective pages (e.g., `/scheduled-jobs/{id}/edit`). The cost center page provides the `source_route` link for each entry; clicking takes the user there. This keeps single-source-of-truth: each artifact has one canonical edit surface (SP-019).
+
+**The agent-session aggregation question** (one practical issue to resolve in implementation): the main agent runs continuously. Defining "a session" for cost-center display: the implementer batches agent activity into "sessions" by inactivity gap (default: 30-minute idle = session boundary). Each session is one Cost Center entry with its tokens-in/out + cost. Heartbeat-only intervals don't create new sessions; user-direct events do.
+
+**Budget enforcement (simplified):**
 
 ```python
 # capabilities/budget.py
 class SprenBudgetEnforcer:
-    """Per-day budget cap + per-think token cap. Composes runtime/memory/budget."""
+    """Daily budget hard limit only. No per-action cap. Per-think token cap remains."""
 
     def __init__(self, settings: SettingsStore, cost_meter: CostMeter):
         self._settings = settings
         self._cost_meter = cost_meter
 
     def check_pre_turn(self, event: Event) -> BudgetDecision:
-        """Called before each agent turn. Returns DEFER, ALLOW, or REFUSE."""
+        """Called before each agent turn. Returns DEFER, ALLOW."""
         daily_cap = self._settings.get("cost.daily_budget_usd", 10.0)
         spent = self._cost_meter.daily_total_usd()
         if spent >= daily_cap:
             if event.priority == Priority.P0:
                 return BudgetDecision.ALLOW  # P0 user-direct + critical workflow failures still process
             return BudgetDecision.DEFER  # schedule re-attempt at next budget window
-
-        per_action_cap = self._settings.get("cost.per_action_budget_usd", 0.50)
-        # Per-think token cap is enforced at LLM call time.
         return BudgetDecision.ALLOW
 
-    def check_pre_tool_call(self, tool_name: str, estimated_cost: float) -> BudgetDecision:
-        """Called before a tool call that has a known cost (e.g., run_workflow).
-        Cost over per-action cap → upgrades to hard rail (additional confirmation)."""
-        if estimated_cost > self._settings.get("cost.per_action_budget_usd", 0.50):
-            return BudgetDecision.ELEVATE_TO_HARDRAIL
-        return BudgetDecision.ALLOW
+    # No check_pre_tool_call — per-action cap is removed. Tool costs aggregate into daily total
+    # and surface in the Cost Center; user retains visibility, no surprise blocks.
 ```
 
-When budget is exhausted, an inbox notification fires: "Daily budget exhausted ($10.00 / $10.00). I'll resume normal processing tomorrow at <date>. Critical events (user-direct, workflow failures) still go through. To increase the cap, edit `cost.daily_budget_usd` in settings."
+When the daily budget is exhausted, an inbox notification fires: "Daily budget exhausted ($10.00 / $10.00). Critical events (user-direct, workflow failures) still go through. Other work resumes tomorrow at <next budget window>. View what spent the budget at the Cost Center."
 
 ### 4.5 Supersession algorithm (memory write path)
 
@@ -400,7 +451,9 @@ Mutations apply atomically against the markdown file (the indexer ingests the ne
 
 ### 4.6 Consolidation pipeline — Memory Update Agent inside per-candidate agentic loop
 
-The consolidation pass is a 6-stage outer pipeline; Stage 3 is the per-candidate Memory Update Agent loop (the agentic redesign). Replaces the previous batch TMS + CUPMem-4-state design from earlier draft. Full design at [`../../../../../tmp/spren/research/06-memory-foundations/06-agentic-memory-update.md`](../../../../../tmp/spren/research/06-memory-foundations/06-agentic-memory-update.md).
+> **Source-of-truth note (2026-05-14)**: the canonical pipeline spec lives at [`tmp/spren/research/06-memory-foundations/07-agentic-memory-update-no-deberta.md`](../../../../../tmp/spren/research/06-memory-foundations/07-agentic-memory-update-no-deberta.md) (the fully-LLM-driven design replacing the prior DeBERTa-rerank version). The summary below captures the shape; the research doc carries the prompt templates, exact retrieval pool sizes, and cost-stage breakdown. The earlier doc at `06-agentic-memory-update.md` is **superseded** as of 2026-05-14 — its rerank stage uses DeBERTa which the user redirected away from.
+
+The consolidation pass is a 6-stage outer pipeline; Stage 3 is the per-candidate Memory Update Agent loop. Every stage is either deterministic code or a cheap LLM call.
 
 **Stage 1 — Inventory** (`stages/inventory.py`):
 - List all current markdown files; hash them.
@@ -416,26 +469,28 @@ The consolidation pass is a 6-stage outer pipeline; Stage 3 is the per-candidate
 
 **Stage 3 — Memory Update Agent (the agentic loop, runs per candidate)** (`stages/agentic_loop.py`):
 
-For each candidate fact from Stage 2, run the four-step loop:
+> Pipeline detail is locked in research doc 07 (post-redirect). Summary below; implementer reads research 07 as primary source.
 
-**3a — TMS gate** (cheap, fast, early-out): NLI cross-encoder against `core_facts` (facts in `profile/` with `volatility=stable` AND `source=user_direct`, ~50 facts at typical scale). For each `(candidate, core_fact)` pair, score `P(contradiction)`. If any pair scores `P(contradiction) > 0.7`, mark candidate as `disputed` with `kind=tms`; enqueue user decision; **skip the rest of the loop for this candidate** (early-out). Cost: ~50 NLI calls × 100ms = 5s/candidate on CPU; $0 (local model). SP-020.
+For each candidate fact from Stage 2, the loop is fully LLM-driven (no DeBERTa, no specialized ML rerankers):
 
-**3b — Retrieve (four-query hybrid + RRF + rerank)**: build the candidate's retrieval pool from four parallel queries:
+**3a — TMS gate** (cheap-LLM, fast, early-out): one LLM call (Haiku 4.5 / GPT-5.4-mini class) classifies the candidate against the `core_facts` set (facts in `profile/` with `volatility=stable` AND `source=user_direct`, ~50 facts at typical scale). The LLM is shown the candidate + the core_facts list and asked: "does this candidate contradict any core fact?" Returns a structured verdict: `{contradicts: bool, contradicting_fact_id: str | null, confidence: float}`. If contradicts AND confidence > 0.7, mark candidate as `disputed` with `kind=tms`; enqueue user decision; skip the rest of the loop. Cost: ~$0.0005 per candidate. SP-020.
 
-- **Q1 — Structured by entity + predicate-cluster.** SQL `SELECT * FROM facts WHERE entity_id = ? AND status = 'active' AND (predicate = ? OR predicate IN <cluster>)`. Uses `predicate_clusters.yaml` for cluster expansion (e.g., `lives_in` clusters with `current_city`, `time_zone`, `current_employer`). Cost: <1ms; $0.
+**3b — Retrieve (four-query hybrid + RRF + LLM rerank)**: build the candidate's retrieval pool from four parallel queries:
+
+- **Q1 — Structured by entity + predicate-cluster.** SQL `SELECT * FROM facts WHERE entity_id = ? AND status = 'active' AND (predicate = ? OR predicate IN <cluster>)`. Uses `predicate_clusters.yaml` for cluster expansion. Cost: <1ms; $0.
 - **Q2 — BM25 / FTS5.** Lexical search over fact-text + entity-name strings. Catches alternate phrasings, name variants, vocabulary mismatches. k=20. Cost: ~5ms; $0.
-- **Q3 — Dense vector.** sqlite-vec single-vector search using BGE-small-en-v1.5 (384-dim, ~70MB local model) over fact-text. Catches paraphrases, semantic similarity. k=20. Cost: ~1ms local; $0.
-- **Q4 — HyDE expansion.** One small-LLM call generates 3 hypothetical contradiction sentences (e.g., for `lives_in: Paris` candidate → "User lives in Berlin", "User's current city is Hamburg", "User has been based in Munich since 2024"). Each is embedded and dense-retrieved. **This is the key to finding contradictions that don't share vocabulary** (the Berlin/Paris case). Cost: ~$0.0001 per candidate, ~500ms latency; trivial.
+- **Q3 — Dense vector.** sqlite-vec single-vector search using a local embedding model (FastEmbed / BGE-small, ~50MB local) over fact-text. Catches paraphrases, semantic similarity. k=20. Cost: ~1ms local; $0.
+- **Q4 — HyDE expansion.** One small-LLM call generates 3 hypothetical contradiction sentences (e.g., for `lives_in: Paris` candidate → "User lives in Berlin", "User's current city is Hamburg"). Each is embedded and dense-retrieved. **Key to finding contradictions that don't share vocabulary** (the Berlin/Paris case). Cost: ~$0.0001 per candidate.
 
-**Reciprocal Rank Fusion** ([Cormack 2009; Microsoft Azure docs cite the formula and k=60 default](https://learn.microsoft.com/en-us/azure/search/hybrid-search-ranking)) merges the four ranked lists: `RRF_score(d) = Σ_q 1 / (60 + rank_q(d))`. Top 20 → next stage.
+**Reciprocal Rank Fusion** (Cormack 2009, k=60) merges the four ranked lists. Top N (research-locked) → LLM rerank.
 
-**NLI cross-encoder reranker**: DeBERTa-v3-large MNLI/FEVER/ANLI scores each `(candidate, retrieved_fact)` pair for `{entailment, contradiction, neutral}` probabilities. Filter: keep facts where `P(contradiction) > 0.5` OR `P(entailment) > 0.7`, plus top-5 of fusion regardless. Top 8 → adjudicator. Cost: 20 NLI calls × 100ms = 2s/candidate.
+**LLM rerank**: one cheap-LLM listwise call ranks the fused candidates by relevance + relation-type to the candidate. Replaces the NLI cross-encoder rerank from earlier draft. Pattern (listwise vs pointwise vs pairwise) and prompt template locked in research 07. Cost: ~$0.001 per candidate.
 
-**3c — Adjudicate** (one LLM call per candidate): the Memory Update Agent prompt. For each retrieved fact, the LLM classifies the relation: **SAME / RELEVANT_DIFFERENT / CONTRADICTS / UNRELATED**. Then outputs an aggregate operation recommendation: **ADD / UPDATE / DELETE / NOOP / DISPUTE**. The prompt shows the LLM the NLI scores per fact as evidence (the LLM sees a calibrated entailment/contradiction prior, not just text). Cost: ~$0.0005 per candidate; ~1s.
+**3c — Adjudicate** (one LLM call per candidate): the Memory Update Agent prompt. For each retrieved fact, the LLM classifies the relation: **SAME / RELEVANT_DIFFERENT / CONTRADICTS / UNRELATED**. Then outputs an aggregate operation recommendation: **ADD / UPDATE / DELETE / NOOP / DISPUTE**. Cost: ~$0.001 per candidate.
 
-**3d — Self-verify on disagreement** (conditional, [CoVe — Chain-of-Verification, Dhuliawala et al. 2023](https://arxiv.org/abs/2309.11495)): when the LLM's classification disagrees with the NLI reranker (e.g., LLM says CONTRADICTS, NLI scored low contradiction; OR LLM says SAME, NLI scored low entailment), trigger one extra LLM call that plans verification questions, answers each, then re-classifies. Catches one component being confidently wrong. Triggers ~2 times per pass typical. Cost: ~$0.0005 per disagreement.
+**3d — Apply via supersession algorithm** (deterministic): the LLM's `operation` field is **a recommendation**, not authoritative. Run `commit_fact(candidate, recommended_op, classifications)` from `10-memory-architecture.md` §5: cardinality dispatch (`has_dog: multi_valued` → ADD even if LLM says UPDATE — fixes Buddy/Scout); confidence floor (low-confidence candidates can't auto-supersede); stable-source check (non-user_direct can't auto-supersede stable facts); trust-level check. Mutation applied to markdown.
 
-**3e — Apply via supersession algorithm** (deterministic): the LLM's `operation` field is **a recommendation**, not authoritative. Run `commit_fact(candidate, recommended_op, classifications)` from `10-memory-architecture.md` §5: cardinality dispatch (`has_dog: multi_valued` → ADD even if LLM says UPDATE — fixes Buddy/Scout); confidence floor (low-confidence candidates can't auto-supersede); stable-source check (non-user_direct can't auto-supersede stable facts); trust-level check. Mutation applied to markdown.
+**Stage 3d (CoVe) is removed.** The earlier draft used CoVe as a tiebreaker on LLM-NLI disagreement; with no NLI signal, the trigger condition no longer exists. If the rerank or adjudicate calls are uncertain (low confidence), the supersession algorithm routes to DISPUTE — that's the existing safety net.
 
 **Stage 4 — Routing** (`stages/routing.py`):
 - For each fact about to be applied, the routing table from `10-memory-architecture.md` §8.2 determines the target file. Lookup table; no LLM.
@@ -460,20 +515,20 @@ For each candidate fact from Stage 2, run the four-step loop:
 
 ### 4.6.1 Cost + latency budget
 
-Per consolidation pass at ~10 candidates:
+Per consolidation pass at ~10 candidates (final numbers locked in research 07; estimates below):
 
-| Stage | LLM calls | NLI calls | $ approx | Latency |
-|---|---|---|---|---|
-| Stage 2 — Extract | 5 | 0 | $0.003 | ~15s |
-| Stage 3a — TMS gate | 0 | 500 | $0 (local) | ~50s CPU / ~12s GPU |
-| Stage 3b — Retrieve | 10 (HyDE) | 200 (rerank) | $0.001 | ~30s CPU / ~7s GPU |
-| Stage 3c — Adjudicate | 10 | 0 | $0.005 | ~10s |
-| Stage 3d — Self-verify | ~2 (conditional) | 0 | $0.001 | ~2s |
-| Stage 3e — Apply | 0 | 0 | $0 | <1s |
-| Stages 4-6 | 0 | 0 | $0 | <2s |
-| **Total** | ~27 | ~700 | **~$0.010** | **~90s CPU / ~30s GPU** |
+| Stage | LLM calls | $ approx | Latency |
+|---|---|---|---|
+| Stage 2 — Extract | 5 | $0.003 | ~15s |
+| Stage 3a — TMS gate | 10 | $0.005 | ~10s |
+| Stage 3b — Retrieve (HyDE) | 10 | $0.001 | ~5s |
+| Stage 3b — LLM rerank | 10 | $0.010 | ~10s |
+| Stage 3c — Adjudicate | 10 | $0.010 | ~10s |
+| Stage 3d — Apply | 0 | $0 | <1s |
+| Stages 4-6 | 0 | $0 | <2s |
+| **Total** | ~45 | **~$0.030** | **~50s** |
 
-The previous batched TMS-everywhere design projected ~$0.05-$0.50/pass. The agentic redesign lands at ~$0.01/pass. **An order of magnitude under the budget ceiling**, leaving headroom for telemetry, retries, and cadence increases.
+The fully-LLM design lands at ~$0.03/pass — slightly more than the earlier hybrid ($0.01) but well under any practical ceiling ($1+/pass would be a problem; $0.03 is fine). The latency is faster (no GPU/CPU NLI inference). Headroom remains for telemetry, retries, and cadence increases. Final numbers locked when research 07 ships.
 
 ### 4.6.2 Naming convention
 
@@ -567,20 +622,12 @@ The agent's next heartbeat may raise this conversationally ("Hey — I noticed y
 [project]
 dependencies = [
     # ... existing ...
-    "sentence-transformers ~= 3.x",  # for local DeBERTa NLI cross-encoder + BGE-small embedding
-    "transformers ~= 4.x",           # backbone for sentence-transformers
-    "torch ~= 2.x",                  # CPU-only by default; GPU if available via Tauri+Metal/CUDA/DirectML
-    "sqlite-vec ~= 0.1.9",           # local vector index in SQLite (already in our Tier 4 plan)
-]
-
-[project.optional-dependencies]
-gpu = [
-    # GPU-accelerated NLI: pin nvidia-cuda or torch-rocm at install time depending on platform.
-    # User opts in via `pip install spren[gpu]`.
+    "fastembed ~= 0.4",        # lightweight ONNX embedding (BGE-small, ~50MB) for retrieval Q3 + Q4
+    "sqlite-vec ~= 0.1.9",     # local vector index in SQLite (already in our Tier 4 plan)
 ]
 ```
 
-The torch + transformers combination is heavy (~500MB on disk for CPU-only). Implementer benchmarks the install footprint impact; if it pushes the bundle past acceptable thresholds, the alternative is `fastembed` (lightweight ONNX-only embedding library, no torch dependency, ~50MB) — but `fastembed` doesn't support cross-encoder NLI inference, so we'd need the torch path for that even if BGE-small comes from `fastembed`. Decision lives in the open-question §13.2 above.
+No torch / transformers / sentence-transformers dependency. The 2026-05-14 redirect drops the local NLI cross-encoder; rerank is a cheap-LLM call via the existing provider client. The only local model is the embedding model (FastEmbed BGE-small at ~50MB) used purely for retrieval (Q3 dense + Q4 HyDE), not relevance scoring.
 
 Optional system tooling: `ripgrep` for the `grep` tool's fast path; falls back to Python `re` if unavailable.
 
@@ -619,15 +666,15 @@ Optional system tooling: `ripgrep` for the `grep` tool's fast path; falls back t
 |---|---|
 | `packages/spren/src/spren/runtime/memory/__init__.py` | Re-exports public runtime/memory API. |
 | `packages/spren/src/spren/runtime/memory/supersession.py` | `SupersessionEngine` ABC + Mutation types. |
-| `packages/spren/src/spren/runtime/memory/nli.py` | `NLICrossEncoder` ABC + `DeBERTaNLICrossEncoder` default impl. |
-| `packages/spren/src/spren/runtime/memory/tms_gate.py` | TMS gate wrapping NLI cross-encoder. |
+| `packages/spren/src/spren/runtime/memory/tms_gate.py` | TMS gate via cheap-LLM call (no specialized ML model). |
 | `packages/spren/src/spren/runtime/memory/retrieval/__init__.py` | `MemoryRetriever` interface + four-query design. |
 | `packages/spren/src/spren/runtime/memory/retrieval/rrf.py` | Reciprocal Rank Fusion (Cormack 2009). |
 | `packages/spren/src/spren/runtime/memory/retrieval/hyde.py` | `HyDEExpander` — generic primitive; one LLM call returns 3 hypotheticals. |
+| `packages/spren/src/spren/runtime/memory/retrieval/llm_rerank.py` | `LLMReranker` — listwise/pointwise/pairwise (locked in research 07). |
 | `packages/spren/src/spren/runtime/memory/agent.py` | `MemoryUpdateAgent` ABC — the per-candidate agentic loop. |
-| `packages/spren/src/spren/runtime/memory/cove.py` | `CoVeVerifier` Chain-of-Verification primitive. |
 | `packages/spren/src/spren/runtime/memory/budget.py` | Generic `BudgetEnforcer`. |
 | `packages/spren/src/spren/runtime/memory/consolidation.py` | `ConsolidationPipeline` ABC + stage interfaces. |
+| `packages/spren/src/spren/runtime/memory/cost_center.py` | Generic `CostCenter` aggregator. |
 
 ### To CREATE — `spren/agent/capabilities/` (Spren-specific)
 
@@ -658,7 +705,7 @@ Optional system tooling: `ripgrep` for the `grep` tool's fast path; falls back t
 | `packages/spren/src/spren/agent/capabilities/consolidation/scheduler.py` | Trigger logic. |
 | `packages/spren/src/spren/agent/capabilities/consolidation/stages/inventory.py` | Stage 1. |
 | `packages/spren/src/spren/agent/capabilities/consolidation/stages/extract.py` | Stage 2 — Mem0-style FACT_RETRIEVAL_PROMPT. |
-| `packages/spren/src/spren/agent/capabilities/consolidation/stages/agentic_loop.py` | Stage 3 — per-candidate Memory Update Agent loop (TMS → retrieve → adjudicate → CoVe → apply). |
+| `packages/spren/src/spren/agent/capabilities/consolidation/stages/agentic_loop.py` | Stage 3 — per-candidate Memory Update Agent loop (TMS → retrieve → LLM-rerank → adjudicate → apply). |
 | `packages/spren/src/spren/agent/capabilities/consolidation/stages/routing.py` | Stage 4 — bubble-up routing rules. |
 | `packages/spren/src/spren/agent/capabilities/consolidation/stages/commit.py` | Stage 5 — git commit + content_hash + format-validate + ConsolidationCompleted event. |
 | `packages/spren/src/spren/agent/capabilities/consolidation/stages/reindex.py` | Stage 6 — incremental index update. |
@@ -669,7 +716,10 @@ Optional system tooling: `ripgrep` for the `grep` tool's fast path; falls back t
 | `packages/spren/src/spren/agent/capabilities/data/extraction_prompt.txt` | Mem0-style FACT_RETRIEVAL_PROMPT adapted. |
 | `packages/spren/src/spren/agent/capabilities/data/memory_update_agent_prompt.txt` | Adjudicator prompt with per-fact classification + aggregate operation. |
 | `packages/spren/src/spren/agent/capabilities/data/hyde_prompt.txt` | HyDE expander prompt (3 hypothetical contradiction sentences). |
-| `packages/spren/src/spren/agent/capabilities/data/cove_prompt.txt` | Chain-of-Verification prompt. |
+| `packages/spren/src/spren/agent/capabilities/data/llm_rerank_prompt.txt` | Listwise rerank prompt. |
+| `packages/spren/src/spren/agent/capabilities/data/tms_gate_prompt.txt` | TMS gate cheap-LLM prompt. |
+| `packages/spren/src/spren/agent/capabilities/data/persona_judge_prompt.txt` | LLM-as-judge final-approval gate for persona proposals. |
+| `packages/spren/src/spren/agent/capabilities/cost_center.py` | Spren-specific Cost Center (aggregates all cost-incurring artifacts; routes edits to source pages). |
 | `packages/spren/src/spren/agent/capabilities/cli/persona.py` | spren persona CLI. |
 | `packages/spren/src/spren/agent/capabilities/cli/bond.py` | spren bond reset + status. |
 | `packages/spren/src/spren/agent/capabilities/api.py` | new FastAPI routes for persona-evolution + bond. |
@@ -681,20 +731,22 @@ Optional system tooling: `ripgrep` for the `grep` tool's fast path; falls back t
 | Path | Purpose |
 |---|---|
 | `packages/spren/tests/runtime/memory/test_supersession.py` | Generic engine decision matrix. |
-| `packages/spren/tests/runtime/memory/test_nli.py` | NLI cross-encoder against fixture entailment / contradiction / neutral pairs. |
-| `packages/spren/tests/runtime/memory/test_tms_gate.py` | TMS gate against fixture core_facts; threshold check at P(contradiction) > 0.7. |
+| `packages/spren/tests/runtime/memory/test_tms_gate.py` | TMS gate against fixture core_facts via mocked-LLM; verdict structure + confidence threshold. |
 | `packages/spren/tests/runtime/memory/retrieval/test_rrf.py` | Reciprocal Rank Fusion algorithm against Cormack 2009 expected outputs. |
 | `packages/spren/tests/runtime/memory/retrieval/test_hyde.py` | HyDE expander returns 3 sentences; structured output mode. |
+| `packages/spren/tests/runtime/memory/retrieval/test_llm_rerank.py` | LLM listwise rerank against fixture candidate + retrieved-facts pool. |
 | `packages/spren/tests/runtime/memory/test_agent.py` | MemoryUpdateAgent ABC + per-candidate loop wiring. |
-| `packages/spren/tests/runtime/memory/test_cove.py` | CoVe verifier triggers on fixture disagreement cases. |
 | `packages/spren/tests/runtime/memory/test_budget.py` | Budget enforcer. |
+| `packages/spren/tests/runtime/memory/test_cost_center.py` | Cost Center aggregator: list, summary, cancel routing. |
 | `packages/spren/tests/runtime/memory/test_consolidation_pipeline.py` | ABC pipeline + stage interfaces. |
 | `packages/spren/tests/agent/capabilities/test_tools_<each>.py` | One per tool. |
 | `packages/spren/tests/agent/capabilities/test_hard_rails.py` | Hard-rail enforcement matrix. |
 | `packages/spren/tests/agent/capabilities/test_suggest_with_confirm.py` | Flow end-to-end. |
 | `packages/spren/tests/agent/capabilities/test_supersession.py` | Spren concrete supersession integration. |
 | `packages/spren/tests/agent/capabilities/test_consolidation_e2e.py` | Full 6-stage consolidation pass against fixture session log + fixture KB → expected git commit. |
-| `packages/spren/tests/agent/capabilities/test_memory_agent_e2e.py` | Memory Update Agent end-to-end: candidate fact → TMS gate → retrieve (Q1-Q4 + RRF + rerank) → adjudicate → CoVe → apply. Berlin/Paris semantic-contradiction case. Buddy/Scout cardinality-dispatch case. |
+| `packages/spren/tests/agent/capabilities/test_memory_agent_e2e.py` | Memory Update Agent end-to-end: candidate fact → TMS gate → retrieve (Q1-Q4 + RRF + LLM-rerank) → adjudicate → apply. Berlin/Paris semantic-contradiction case. Buddy/Scout cardinality-dispatch case. |
+| `packages/spren/tests/agent/capabilities/test_persona_judge.py` | LLM-as-judge auto-approval gate: synthetic proposals, mocked judge responses; verify approve→diff applies, reject→journal, manual mode skips judge. |
+| `packages/spren/tests/agent/capabilities/test_cost_center.py` | Spren CostCenter aggregator: list filtering, daily summary, cancel-routing to source. |
 | `packages/spren/tests/agent/capabilities/test_retrieval.py` | Four-query hybrid retrieval against fixture KB with seeded entities + facts. |
 | `packages/spren/tests/agent/capabilities/test_persona_reflection.py` | PersonaReflection deterministic filter + proposal generation. |
 | `packages/spren/tests/agent/capabilities/cli/test_persona_cli.py` | Click CLI for persona. |
@@ -754,16 +806,18 @@ State: from J-7, several persona evolutions have been approved.
 | 3 | User confirms. | CLI | `personas/main.yaml` → `personas/journal/bond-2026-05-14T10:32:00Z.yaml`. `bond_ended` event in session log. Daemon transitions to onboarding mode. |
 | 4 | User refreshes the web app. | Frontend | Re-routes to `/onboarding` (since `meta_agent.archetype` is null again). User picks a different archetype — say Vesper. New bond starts. Memory + workflows preserved. |
 
-### J-9 — Budget exhaustion
+### J-9 — Cost Center + budget exhaustion
 
-State: daily budget cap = $10; current spend = $9.95.
+State: daily budget cap = $10; current spend = $9.95; user opens the Cost Center to see what spent the budget.
 
 | # | Action | Surface | Feedback |
 |---|---|---|---|
-| 1 | User: "run research-pipeline." | Home page chat | Agent's pre-turn budget check: $9.95 + estimated $0.20 = $10.15 > $10. |
-| 2 | Pre-tool-call check fires: cost over per-action cap → ELEVATE_TO_HARDRAIL. Confirmation prompt elevates: "This will push you over today's budget cap ($10.15 vs $10.00). Confirm to proceed anyway?" | Home page chat | (Voice register stays archetype-correct.) |
-| 3 | User declines. | Web UI | `POST /v1/agent/confirm/<id>` with `accept: false`. Tool call cancelled. Agent: "Got it. Want me to schedule it for tomorrow?" |
-| 4 | User: "yes." | Home page chat | Agent schedules the run via `schedule_event` for next budget window (00:00 next day). |
+| 1 | User opens Cost Center page. | `/cost-center` (Session 09 surface; Session 08 ships the data + endpoints) | Sees today's entries: 3 past agent sessions ($1.50 each), 1 running workflow ($2.20), 4 scheduled jobs (estimated $0.80 each), 1 consolidation pass ($0.03). Total spent: $9.95. Total estimated remaining: $3.20. |
+| 2 | User clicks one of the scheduled jobs to edit cadence. | `source_route` link → `/scheduled-jobs/{id}` | Routed to the scheduled-jobs page (the canonical edit surface). Cancels job there. |
+| 3 | User returns to Cost Center; spend is still $9.95 (cancelled job's estimate is reflected immediately as removed). | Cost Center | List updates. |
+| 4 | User: "run research-pipeline." | Home page chat | Agent's pre-turn budget check: $9.95 < $10.00 daily cap; allowed. The workflow runs with cost $0.20. New daily total: $10.15. |
+| 5 | Daily total now exceeds cap. | Inbox | Notification fires: "Daily budget exhausted ($10.15 / $10.00). Critical events still go through. Open Cost Center to see what spent the budget. Other work resumes tomorrow." |
+| 6 | User: "schedule another run for tomorrow." | Home page chat | Agent schedules via `schedule_event` for next budget window (00:00 next day); the new entry surfaces in Cost Center under "Scheduled". |
 
 ## 8. Decisions locked
 
@@ -771,9 +825,9 @@ State: daily budget cap = $10; current spend = $9.95.
 
 2. **Hard-rail tool list is hardcoded; user-editable standing approvals merge with it.** The hardcoded list cannot be edited by the agent. The standing-approvals section of `main.policy.yaml` is user-editable; the agent can suggest standing approvals (during a confirmation flow with "don't ask again for this scope") but cannot grant them itself.
 
-3. **Per-action cost cap.** Default $0.50 per tool call. Tools whose estimated cost exceeds this are elevated to hard rails for that invocation, regardless of the underlying tool's hard-rail status. So a `read_file` (~$0.0001) doesn't elevate; a `run_workflow` with estimated cost above $0.50 does, even if the user has standing approval for run_workflow on that workflow_id.
+3. **Cost Center surface replaces per-action hard cap.** Per the 2026-05-14 user redirect: no per-action cost cap. The Cost Center page shows every cost-incurring artifact (past sessions / live agents / scheduled jobs / their estimates) with one-click cancel. Daily budget remains the only hard limit. Edits to underlying artifacts route to their source pages (SP-019: each artifact has one canonical edit surface).
 
-4. **Daily budget enforcement at pre-turn.** Cost check happens once per turn before the LLM call; per-tool checks happen during tool dispatch. Within-turn LLM calls aggregate against the per-think token cap (default 50K).
+4. **Daily budget enforcement at pre-turn.** Cost check happens once per turn before the LLM call. Within-turn LLM calls aggregate against the per-think token cap (default 50K). When daily budget exhausts: P0 events still process; P1-P3 defer with a Cost Center notification.
 
 5. **Cheap vs expensive model selection.** Routine (heartbeat, low-stakes responses, classifier-style extractions): cheap. Complex (consolidation pipeline's extract+adjudicate stage, PersonaReflection, hard-rail decisions): expensive. The mapping in `agent/model_selection.py`.
 
@@ -781,7 +835,11 @@ State: daily budget cap = $10; current spend = $9.95.
 
 7. **CUPMem 4-state output is a prompt-engineering rule, not a separate LLM stage.** The Stage 2 (extract+adjudicate) prompt requires the LLM to output a verdict per candidate fact. Cheaper than two prompts; same effect; one prompt change.
 
-8. **The PersonaReflection stage runs once per consolidation pass.** It outputs 0-3 proposals (or none if no salient questions surface). Confidence floor 0.6; bond-age ≥ 7 days; doctrine boundary; identity boundary — all enforced by deterministic filter before proposals reach the user.
+8. **The PersonaReflection stage runs once per consolidation pass.** It outputs 0-3 proposals (or none if no salient questions surface). Confidence floor 0.6; bond-age ≥ 7 days; doctrine boundary; identity boundary — all enforced by deterministic filter before proposals reach the auto-approval gate.
+
+8a. **Auto-approval is the default for persona proposals; LLM-as-judge gates final approval.** Per 2026-05-14 user redirect: the PersonaReflection stage emits proposals → deterministic filter (confidence/bond-age/doctrine/identity) → **LLM-as-judge** (one expensive-model call evaluates each surviving proposal against the bond integrity rubric: "would this evolution preserve identity / strengthen the bond / honor the user's stated values?") → if judge approves, the diff applies automatically + user gets an inbox notification with the diff + approval reasoning + a one-click `revert` link. If judge rejects, the proposal moves to journal with the judge's reasoning. Manual mode is opt-in via `settings.meta_agent.persona_evolution_mode = "manual"`; default is `"auto"`. The CLI commands (`spren persona approve <id>`, `spren persona reject <id>`) remain — they're the user's explicit override path.
+
+8b. **LLM-as-judge for personas is the right framing.** Per research 06's terminology: "LLM-as-judge" applies to evaluation tasks (Mem0 uses it for scoring answer quality on LoCoMo). Persona-proposal approval IS evaluation — the judge scores whether the proposal serves the bond. This is consistent with 2026 production literature; we use the term correctly here (as opposed to write-side memory adjudication, which research 06 + 07 call "Memory Update Agent" — different mechanism, different name).
 
 9. **Standing approvals scoped per-tool + per-arg-prefix.** E.g., `execute_shell` with `cwd_prefix=<repo>` and `cmd_prefix=["git"]` allows `git status` but not `git push --force`. The matching algorithm: longest-prefix match wins; ambiguity → confirmation required.
 
@@ -791,31 +849,35 @@ State: daily budget cap = $10; current spend = $9.95.
 
 12. **Bond reset preserves memory + workflows.** Only `personas/main.yaml` is archived. The user's facts about themselves, projects, etc. all survive. The new Spren reads them on first turn.
 
-13. **Memory Update Agent — per-candidate agentic loop, not batch.** Replaces the prior batched TMS+CUPMem design. For each candidate fact: TMS gate (cheap, early-out) → four-query hybrid retrieval (Q1 structured by entity + predicate cluster; Q2 BM25/FTS5; Q3 dense vector; Q4 HyDE expansion) fused via Reciprocal Rank Fusion (k=60) → DeBERTa-v3-large NLI cross-encoder rerank → adjudicator LLM call (per-fact classification + aggregate operation) → conditional CoVe self-verification on LLM-NLI disagreement → deterministic supersession algorithm. The supersession algorithm OWNS the final mutation decision; the LLM's operation field is advisory. Cost: ~$0.01 per pass at 10 candidates. Full design at [`tmp/spren/research/06-memory-foundations/06-agentic-memory-update.md`](../../../../../tmp/spren/research/06-memory-foundations/06-agentic-memory-update.md).
+13. **Memory Update Agent — per-candidate agentic loop, fully LLM-driven (no specialized ML rerankers).** Per 2026-05-14 user redirect, the prior DeBERTa-rerank path is replaced. For each candidate fact: TMS gate (cheap-LLM, early-out) → four-query hybrid retrieval (Q1 structured by entity + predicate cluster; Q2 BM25/FTS5; Q3 dense vector via local embedding; Q4 HyDE expansion) fused via Reciprocal Rank Fusion (k=60) → **cheap-LLM rerank (listwise / pointwise / pairwise — pattern locked in research 07)** → adjudicator LLM call (per-fact classification + aggregate operation) → deterministic supersession algorithm. Supersession owns the final mutation decision; the LLM's operation field is advisory. Cost: ~$0.03 per pass at 10 candidates. Canonical spec: [`tmp/spren/research/06-memory-foundations/07-agentic-memory-update-no-deberta.md`](../../../../../tmp/spren/research/06-memory-foundations/07-agentic-memory-update-no-deberta.md). The earlier `06-agentic-memory-update.md` is **superseded** as of 2026-05-14.
 
-14. **NLI cross-encoder = DeBERTa-v3-large.** [MoritzLaurer/DeBERTa-v3-large-mnli-fever-anli-ling-wanli](https://huggingface.co/MoritzLaurer/DeBERTa-v3-large-mnli-fever-anli-ling-wanli). 91.2% MNLI-matched, 70.2% ANLI-all, ~390M params, ~70MB on disk. CPU-runnable at ~100ms/pair, GPU at ~25ms. Used by both the TMS gate (Stage 3a) and the retrieval reranker (Stage 3b). Same model for both = one model load, one inference path.
+14. **No local NLI cross-encoder, no DeBERTa.** Removed entirely from the design. The TMS gate is a cheap-LLM call with structured output (`{contradicts: bool, contradicting_fact_id: str | null, confidence: float}`). The rerank is a cheap-LLM call returning a relevance ranking with structured output. No torch / transformers / sentence-transformers dependency. No bundled-or-downloaded specialized ML model.
 
-15. **Embedding model for Q3 dense + Q4 HyDE = BGE-small-en-v1.5.** 384-dim, ~70MB on disk, runs locally via FastEmbed or sentence-transformers. Optional cloud fallback to text-embedding-3-small (OpenAI) behind a config flag. Every embedded chunk carries `embedding_model_id` for v0.4-v0.5 rotation (M16).
+15. **Embedding model for Q3 dense + Q4 HyDE = BGE-small via FastEmbed.** 384-dim, ~50MB on disk, runs locally via FastEmbed (ONNX-only, no torch dependency). Used purely for retrieval (vector search), not for relevance scoring. Optional cloud fallback to `text-embedding-3-small` (OpenAI) behind a config flag. Every embedded chunk carries `embedding_model_id` for v0.4-v0.5 rotation (M16).
 
 16. **HyDE generates 3 hypothetical contradiction sentences per candidate.** Fixed count (not variable). Trade-off: predictable cost; covers ≥3 phrasings of "what would a contradicting fact look like"; 3 is the cheapest credible diversity. Per the [HyDE paper](https://arxiv.org/abs/2212.10496), one hypothetical works for long documents; for short fact-text we use 3 to span the contradiction space.
 
-17. **Retrieval pool sizing: 20 fused → 8 reranked.** Memory-R1 retrieves "top-K"; Mem0 uses 10; we use 20 fused down to 8 to give the adjudicator more semantic context without inflating prompt cost.
+17. **Retrieval pool sizing: 20 fused → N reranked → 8 to adjudicator.** N locked in research 07. Memory-R1 retrieves "top-K"; Mem0 uses 10; we use 20 fused to give the adjudicator more semantic context without inflating prompt cost.
 
-18. **Decoupled relation classification from operation choice.** The LLM classifies relations (SAME / RELEVANT_DIFFERENT / CONTRADICTS / UNRELATED); the supersession algorithm decides operations (ADD / UPDATE / DELETE / NOOP / DISPUTE) based on the relations + cardinality + confidence + trust gates. This is the Buddy/Scout fix: the LLM correctly identifies "Scout is a different dog from Buddy" (RELEVANT_DIFFERENT); supersession sees `has_dog: multi_valued` and adds rather than supersedes — even if the LLM gets the operation field wrong, cardinality dispatch overrides. Each component is wrong about a smaller surface.
+18. **Decoupled relation classification from operation choice.** The LLM classifies relations (SAME / RELEVANT_DIFFERENT / CONTRADICTS / UNRELATED); the supersession algorithm decides operations (ADD / UPDATE / DELETE / NOOP / DISPUTE) based on the relations + cardinality + confidence + trust gates. This is the Buddy/Scout fix: the LLM correctly identifies "Scout is a different dog from Buddy" (RELEVANT_DIFFERENT); supersession sees `has_dog: multi_valued` and adds rather than supersedes — even if the LLM gets the operation field wrong, cardinality dispatch overrides.
 
 19. **One adjudicator prompt for both classification AND operation.** Single LLM call returns per-fact classifications + aggregate operation. Cheaper (one call vs two); the operation field is advisory anyway (supersession owns the final decision). Mitigation against contamination: prompt instructs the LLM to do classifications first, operation second.
 
-20. **Confidence thresholds (initial; tune from telemetry).** NLI reranker contradiction filter: `P(contradiction) > 0.5` keeps fact for adjudication. TMS gate fires at `P(contradiction) > 0.7` against any core_fact. Adjudicator classification confidence: `< 0.7` on a CONTRADICTS classification routes to DISPUTE rather than UPDATE. Auto-commit threshold: all per-fact classifications above 0.7 confidence + supersession passes all gates.
+20. **Confidence thresholds (initial; tune from telemetry).** TMS gate fires at LLM `confidence > 0.7`. Adjudicator classification confidence below 0.7 on CONTRADICTS routes to DISPUTE rather than UPDATE. Final values locked when research 07 ships and tuned from real-world telemetry in v0.4.
 
-21. **DeBERTa-v3-large bundled or download-on-first-launch?** Implementer benchmarks PyInstaller bundle size impact; if adding the 70MB model bumps the installer past acceptable thresholds (e.g., from 200MB to 270MB), defer to download-on-first-launch (~10s one-time download to `<data-dir>/models/`, cached). Documented as a config option either way; default decision in implementation. Does NOT affect the design — both paths produce the same behavior at runtime.
+21. **CoVe step removed.** The earlier draft used CoVe as a tiebreaker on LLM-NLI disagreement; with no NLI signal, the trigger condition no longer exists. If the rerank or adjudicate calls produce low confidence, the supersession algorithm routes to DISPUTE — that's the existing safety net. No specialized "self-verification" sub-stage.
+
+22. **Cost Center as the cost-control surface.** Per 2026-05-14 user redirect, the per-action hard cap is removed. The Cost Center surface (Session 08 backend, Session 09 frontend) shows every cost-incurring artifact in one place: past agent sessions, running workflows, scheduled jobs, consolidation passes — each with their cost, status, and link to the source page where they can be edited. Daily budget remains the only hard limit. Single source of truth: edits route to source pages (scheduled-jobs page edits scheduled jobs; runs page edits runs); the Cost Center is read-only aggregation + cancel.
+
+23. **Persona-evolution auto-approval default; LLM-as-judge gates.** Per 2026-05-14 user redirect, the PersonaReflection pipeline emits proposals → deterministic filter (confidence/bond-age/doctrine/identity) → LLM-as-judge (one expensive-model evaluation against bond integrity rubric) → if approved: diff applies automatically, user notified via inbox with one-click revert; if rejected: proposal goes to journal with judge reasoning. Manual mode (`spren persona approve/reject`) becomes opt-in via `settings.meta_agent.persona_evolution_mode = "manual"`. Default is `"auto"`. CLI commands remain as override paths in either mode.
 
 ## 9. Polish items to address inside Session 08
 
-1. **CUPMem prompt template stability.** The Stage 2 prompt asks the LLM to output structured JSON: `{candidate_id, verdict, related_existing_fact_ids, reasoning}`. Use OpenAI / Anthropic tool-calling JSON mode (or equivalent) for reliable parsing. Implementer benchmarks JSON-mode reliability across the cheap model lineup; falls back to regex parsing of structured-text output if JSON mode flakes.
+1. **Adjudicator prompt template stability.** The Stage 3c prompt asks the LLM to output structured JSON: `{candidate_id, verdict, classifications, recommended_operation, reasoning}`. Use OpenAI / Anthropic tool-calling JSON mode (or equivalent) for reliable parsing. Implementer benchmarks JSON-mode reliability across the cheap model lineup; falls back to regex parsing of structured-text output if JSON mode flakes.
 
-2. **TMS gate latency.** NLI classifier runs once per candidate fact during consolidation. At ~50 candidates per pass and ~50 core_facts, that's ~2500 NLI checks per pass. Use a small dedicated NLI model (DeBERTa-v3-large or equivalent local model) for the classifier — fast, cheap, deterministic. If a local model is too heavy for shipping, fall back to LLM-as-judge with the cheap model + structured JSON output.
+2. **TMS gate cost batching.** TMS-gate runs once per candidate fact during consolidation as a cheap-LLM call. At ~50 candidates per pass × ~50 core_facts, naive prompt-per-pair would be ~2500 calls. The actual implementation batches: each TMS-gate call sees the candidate + the full core_facts list and asks the LLM to flag any contradictions (one call per candidate). Cost ~$0.0005 per candidate × 50 candidates = $0.025 per pass — same order as the rerank stage. Implementer verifies the per-candidate batched prompt classifies correctly across the cheap-model lineup.
 
-3. **Consolidation pipeline concurrency.** The 6 stages run sequentially per candidate but the candidates within a stage can parallelize (especially Stage 2 LLM calls and Stage 3 NLI checks). Implementer benchmarks; if a pass takes >2 min wall-clock at 100 candidates, parallelize at the candidate level within each stage.
+3. **Consolidation pipeline concurrency.** The 6 stages run sequentially per candidate but candidates within a stage can parallelize (especially Stage 2 extract + Stage 3 LLM calls). Implementer benchmarks; if a pass takes >2 min wall-clock at 100 candidates, parallelize at the candidate level within each stage.
 
 4. **Persona-evolution proposal expiration.** Proposals expire 14 days after creation if neither approved nor rejected. The expiry check happens at consolidation pass time (no separate timer). On expiry: move to journal with `expired_at`; counts as soft no for re-proposal.
 
@@ -838,18 +900,22 @@ State: daily budget cap = $10; current spend = $9.95.
 - **G-34** (workflow dispatch): `run_workflow` triggers confirmation; user approves; run starts; agent receives lifecycle events.
 - **G-35** (suggest-with-confirm standing approval): user grants standing approval on `execute_shell git in <repo>`; subsequent `git status` invocations don't re-prompt.
 - **G-36** (consolidation end-to-end): fixture session log + 5+ pending facts → consolidation pass produces git commit + ConsolidationCompleted event with correct counts.
-- **G-37** (TMS gate triggers): a candidate fact contradicts a core fact → DeBERTa NLI scores `P(contradiction) > 0.7` → disputed state with kind=tms; user-decision item enqueued; rest of agentic loop skipped (early-out).
-- **G-38** (Memory Update Agent — semantic contradiction case): the Berlin/Paris case end-to-end. Existing `(user, lives_in, Berlin)` fact in memory; candidate `(user, lives_in, Paris)` from session-log. HyDE Q4 generates "User lives in Berlin" hypothetical → dense-retrieves the existing Berlin fact (which Q3 vector search alone misses because Paris-token is far from Berlin-token). NLI rerank scores high contradiction. LLM adjudicator classifies CONTRADICTS. Supersession algorithm: stable+user_direct → DISPUTE state; user-decision item enqueued. Verifies the four-query hybrid catches contradictions that don't share vocabulary.
+- **G-37** (TMS gate triggers): a candidate fact contradicts a core fact → cheap-LLM TMS-gate call returns `{contradicts: true, contradicting_fact_id: <id>, confidence: > 0.7}` → disputed state with kind=tms; user-decision item enqueued; rest of agentic loop skipped (early-out). Test with mocked-LLM fixture responses.
+- **G-38** (Memory Update Agent — semantic contradiction case): the Berlin/Paris case end-to-end. Existing `(user, lives_in, Berlin)` fact in memory; candidate `(user, lives_in, Paris)` from session-log. HyDE Q4 generates "User lives in Berlin" hypothetical → dense-retrieves the existing Berlin fact (which Q3 vector search alone misses because Paris-token is far from Berlin-token). LLM rerank flags it as relevant + contradicting. LLM adjudicator classifies CONTRADICTS. Supersession algorithm: stable+user_direct → DISPUTE state; user-decision item enqueued. Verifies the four-query hybrid catches contradictions that don't share vocabulary.
 - **G-38a** (RRF fusion): synthetic four-query result lists with overlapping documents → RRF ranks correctly per Cormack 2009 formula with k=60.
 - **G-38b** (HyDE expansion produces 3 sentences): for each fixture candidate, HyDE returns a JSON list of exactly 3 hypothetical contradiction sentences.
-- **G-38c** (NLI cross-encoder rerank filter): top-20 fused → reranker keeps facts where `P(contradiction) > 0.5` OR `P(entailment) > 0.7`, plus top-5 of fusion regardless. Verify pruning math against fixture inputs.
+- **G-38c** (LLM rerank): top-20 fused → LLM listwise rerank returns ordered top-N (N from research 07) with relevance + relation-type per fact. Verify against fixture candidate + retrieved-facts pool with mocked-LLM responses.
 - **G-38d** (Memory Update Agent — Buddy/Scout case): existing `(user, has_dog, Buddy)` fact, candidate `(user, has_dog, Scout)`. LLM classifies RELEVANT_DIFFERENT. Even if LLM's operation field says UPDATE, supersession sees `has_dog: multi_valued` per `predicate_metadata.py` and emits ADD. Both Buddy and Scout end up `active`. Verifies cardinality dispatch overrides LLM operation field.
-- **G-38e** (CoVe pass triggers on disagreement): LLM classifies CONTRADICTS but NLI scores `P(contradiction) < 0.3` → CoVe pass fires; one extra LLM call plans verification questions; re-classification with confidence above threshold.
 - **G-39** (supersession decision matrix): all 8 decision branches in the algorithm produce expected outputs against fixture inputs (cardinality, confidence floor, stable+non-user, trust-level, plus standard supersession).
-- **G-40** (PersonaReflection): synthetic observed-signals state generates a proposal; deterministic filter blocks low-confidence and bond-age-too-young proposals; proposal lands in `pending_persona_changes/`.
-- **G-41** (persona approve roundtrip): CLI approve → diff applied to personas/main.yaml → git commit → `evolved_axes` updated.
+- **G-40** (PersonaReflection): synthetic observed-signals state generates a proposal; deterministic filter blocks low-confidence and bond-age-too-young proposals; proposal reaches the LLM-as-judge gate.
+- **G-40a** (LLM-as-judge auto-approval): proposal passes deterministic filter → LLM-as-judge approves → diff auto-applies; commit lands; user receives inbox notification with the diff + reasoning + revert link. Verify with mocked judge response.
+- **G-40b** (LLM-as-judge rejection): proposal passes deterministic filter → LLM-as-judge rejects → proposal moves to journal with reasoning; no diff applied; user notified.
+- **G-40c** (manual mode override): set `settings.meta_agent.persona_evolution_mode = "manual"` → judge step is skipped; proposal lands in `pending_persona_changes/` for CLI approve/reject as before.
+- **G-41** (persona CLI override roundtrip): in either auto or manual mode, CLI approve / reject is the explicit override path → diff applied / proposal journaled → git commit → `evolved_axes` updated.
 - **G-42** (bond reset): CLI reset → persona archived to journal → daemon onboarding-mode → frontend routes to /onboarding → re-pick → new bond.
-- **G-43** (budget exhaustion): synthetic spend = $10 → P0 events still process; P3 events deferred; user notified.
+- **G-43** (budget exhaustion): synthetic spend ≥ daily cap → P0 events still process; P1-P3 events deferred; user notified via Cost Center notification.
+- **G-43a** (Cost Center aggregation): seed fixture with 3 past sessions, 1 running workflow, 4 scheduled jobs, 1 consolidation pass → `GET /v1/cost/entries` returns all with correct status + cost + source_route; `GET /v1/cost/summary/today` returns spent + estimated + by-kind breakdown.
+- **G-43b** (Cost Center cancel routing): cancel a running entry → `POST /v1/cost/entries/{id}/cancel` delegates to source's cancel mechanism (e.g., `POST /v1/runs/{id}/cancel` for runs); aggregation reflects status update.
 - **G-44** (stated-vs-observed surfacing): synthetic observed-state showing 4+ rescheduled morning meetings against stated preference → consolidation surfaces an `active_context.md` note → agent's heartbeat raises it.
 - **C-11** (no SP-023 violation): SP-023 boundary test extended for new files.
 - **C-12** (per-archetype tool selection coherence): for each archetype, run a fixture conversation; verify the tools the agent picks match the archetype's profile (e.g., Flint reaches for `execute_shell` more readily; Vesper waits longer; Quill calls `verify_fact` more often).
@@ -857,15 +923,17 @@ State: daily budget cap = $10; current spend = $9.95.
 
 ## 11. Open research items the implementer resolves in-flight
 
-- **DeBERTa-v3-large delivery mechanism**: bundled with installer vs download-on-first-launch. Implementer benchmarks installer size impact; picks per §13.2 (default: download-on-first-launch).
-- **Adjudicator prompt template wording**. The reference template from research 06 §Part 2 is the starting point; implementer iterates against fixture cases until classification accuracy is >90% on a hand-labeled validation set of 50 candidate-vs-existing pairs across our 8 supported providers' cheap models.
-- **HyDE prompt phrasing**. The 3-sentence generation prompt from research 06 §Part 3 Q4. Implementer verifies the LLM consistently produces 3 distinct hypothetical contradictions across cheap models. Failure mode: the LLM sometimes returns 1 long sentence instead of 3. Mitigation: structured JSON output mode where supported.
+- **Adjudicator prompt template wording**. Starting point: research 07 §Recommended config for Spren. Implementer iterates against fixture cases until classification accuracy is >90% on a hand-labeled validation set of 50 candidate-vs-existing pairs across the 8 supported providers' cheap models.
+- **TMS-gate prompt template wording**. Same iteration approach. Validation: 30 hand-labeled candidate-vs-core-facts pairs spanning contradiction / no-contradiction / ambiguous; target >95% recall on contradictions (false negatives are dangerous; false positives are recoverable via DISPUTE).
+- **LLM rerank prompt pattern**. Research 07 picks listwise vs pointwise vs pairwise; implementer verifies the chosen pattern's output is reliably parseable across cheap-model lineup.
+- **LLM-as-judge for personas — rubric prompt template**. Implementer drafts the bond-integrity rubric; iterates against fixture proposal cases (some clearly-good, some clearly-bad, some ambiguous) until human-judge agreement is >90%.
+- **HyDE prompt phrasing**. The 3-sentence generation prompt from research 07. Implementer verifies the LLM consistently produces 3 distinct hypothetical contradictions across cheap models. Failure mode: the LLM sometimes returns 1 long sentence instead of 3. Mitigation: structured JSON output mode where supported.
 - **predicate_clusters.yaml starter table**. ~10 clusters seeded based on the user's expected dogfood patterns. Implementer reviews + refines; v0.4 may add more.
 - **ripgrep availability detection**. The `grep` tool prefers `rg` (faster); falls back to Python `re` if not installed. Document the install hint in the manual smoke section.
 - **Standing approvals scope-matching algorithm details**. The longest-prefix match seems right; verify against edge cases like nested cwd_prefixes.
 - **Bond reset's orphan-check semantics**. Are there any in-flight uses of the persona that would be affected? Sub-agents (v0.4) inherit persona at spawn — for v0.3 only the main agent uses it; the orphan check is essentially "any in-flight workflow runs that the main agent dispatched and is still observing."
 - **`spren persona why` performance at year+ scale**. Benchmark; add pagination if needed.
-- **DeBERTa CPU vs GPU latency**. CPU at 100ms/pair × 700 pairs = 70s of pure NLI. GPU shrinks to ~20s. Implementer benchmarks against typical consumer hardware; if CPU latency is intolerable, the consolidation pass is recommended to schedule on GPU-capable instances when available (Tauri + GPU access via Metal/CUDA/DirectML).
+- **Cost Center entry batching policy for agent sessions**. Default: 30-minute idle gap defines a session boundary; heartbeat-only intervals don't create new sessions; user-direct events do. Implementer benchmarks against real dogfood data; refines.
 
 ## 12. Status
 
@@ -883,12 +951,14 @@ State: daily budget cap = $10; current spend = $9.95.
 - [ ] Bundle 03 testing scenarios + agent brief drafted at [`../testing/test-scenarios.md`](../testing/test-scenarios.md), [`../testing/test-session.md`](../testing/test-session.md).
 - [ ] Session implementation complete.
 
-## 13. Open questions for user input
+## 13. Open questions — resolved
 
-1. **Per-action cost cap default.** $0.50 feels right for a single tool call (a typical workflow run is $0.05-$0.30). Should the default be $0.50, $1.00, $0.25? My pick: $0.50. Want your call.
+All Session 08 questions are resolved per the 2026-05-14 user redirect.
 
-2. **NLI model: bundled (~70MB at install) vs download-on-first-launch?** DeBERTa-v3-large is locked (decision §8.14); the question is delivery. Bundled = predictable, no first-launch wait, but bumps installer ~70MB. Download-on-first-launch = smaller installer, ~10s one-time first-launch wait, requires network on first run, cache in `<data-dir>/models/`. My pick: download-on-first-launch (smaller installer matters more than 10s one-time wait; users are online during install anyway). Want your call.
+1. **Per-action cost cap.** **Locked: removed.** Replaced with the Cost Center surface (decision §22). Daily budget remains the only hard limit; users see and control all cost-incurring artifacts in one place. Per-action caps were creating "blocked job" surprises that forced users to dig through settings to understand which knob to turn — the wrong UX direction.
 
-3. **`spren persona reject` reason field.** Required or optional? If required, the user has to think about why; useful for the next consolidation's "don't re-propose" logic. If optional, easier UX. My pick: optional, but if provided, it's fed back as evidence to the next consolidation's salient-questions prompt. Want your call.
+2. **NLI model bundled vs download.** **Locked: irrelevant — DeBERTa removed entirely.** No specialized ML rerankers in the design. TMS gate + rerank are cheap-LLM calls. Embedding model (BGE-small via FastEmbed, ~50MB) ships bundled because it's small and used purely for retrieval, not relevance scoring.
 
-4. **CoVe self-verification trigger threshold.** Currently triggers when LLM-NLI disagree (LLM says CONTRADICTS but `P(contradiction) < 0.3`, etc.). Tighter threshold = more CoVe calls = higher accuracy + cost; looser = fewer calls + cheaper. My pick: trigger at the strict disagreement defined in research §4 (LLM-classification vs NLI-score class mismatch). v0.4 may tune from telemetry. Want your call.
+3. **`spren persona reject` reason field.** **Locked: optional but encouraged.** Reason field is fed back to the next consolidation's salient-questions prompt as evidence when provided. Note: in default auto mode, the LLM-as-judge handles approve/reject; CLI is the explicit override path (decision §23) where the reason field is most useful for the rare manual override.
+
+4. **CoVe self-verification trigger.** **Locked: removed.** CoVe was a tiebreaker on LLM-NLI disagreement; with no NLI signal, the trigger condition no longer exists. Low-confidence LLM rerank or adjudicate routes to DISPUTE — that's the existing safety net.

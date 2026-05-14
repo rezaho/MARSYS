@@ -315,22 +315,28 @@ The persona file evolves through interaction over time. The bond mechanism (Stor
 
 2. **Minimal-diff proposals** — for each salient question that survives the deterministic filter, the model proposes one minimal YAML diff: `{axis, current_value, proposed_value, evidence, confidence, reversibility}`.
 
-**Deterministic guardrails.** Three checks block proposals before they reach the user:
+**Deterministic guardrails.** Three checks block proposals before they reach the auto-approval gate:
 
 - **Doctrine boundary.** If the proposed diff would violate any rule in `rules.md`, the proposal is dropped silently.
 - **Identity boundary.** Diffs to `identity.*` are blocked. Spren cannot rename itself, change its kind, or change pronouns. The user can do these things by editing the file directly; the agent cannot propose them.
 - **Confidence floor + bond-age check.** Proposals with confidence < 0.6 are dropped. Proposals issued before the bond has had a chance to develop (default: bond-age < 7 days OR fewer than 20 user-direct sessions) are dropped. No-hasty-words rule.
 
-**User decision (CLI-only in v0.3, UI in v0.4).**
+**LLM-as-judge auto-approval (default mode).** Surviving proposals pass through one expensive-model evaluation against a bond-integrity rubric: "would this evolution preserve identity, strengthen the bond, and honor the user's stated values?" The judge returns `{verdict: approve | reject, reasoning: ...}`. On approve: the diff applies automatically; git commit lands with a structured message capturing evidence + bond-age + confidence + reversibility + judge reasoning; user receives an inbox notification with the diff + reasoning + a one-click `revert` link. On reject: proposal goes to journal with judge reasoning; counts as evidence against re-proposal for N=4 cycles.
+
+This is "LLM-as-judge" in the canonical 2026 sense (evaluation, not generation) — distinct from the Memory Update Agent's write-side adjudication for facts.
+
+**Manual mode (opt-in).** Users who prefer to gate every persona change explicitly set `settings.meta_agent.persona_evolution_mode = "manual"`. In manual mode, the LLM-judge step is skipped; surviving proposals land in `pending_persona_changes/` for CLI review (same flow as before).
+
+**CLI surface (override path in either mode; primary path in manual mode):**
 
 - `spren persona log` — `git log -p personas/main.yaml`. The full history of who Spren has been, with reasons.
-- `spren persona why <axis>` — finds the most recent commit that touched that axis; shows the proposal, the evidence, the user's approval.
+- `spren persona why <axis>` — finds the most recent commit that touched that axis; shows the proposal, the evidence, the judge's (or user's) reasoning.
 - `spren persona diff <since>` — diff between the persona at some past timestamp and now.
-- `spren persona approve <prop-id>` — applies the diff; git-commits with structured message capturing evidence + bond-age + confidence + reversibility.
-- `spren persona reject <prop-id> [--reason "..."]` — moves to journal; rejection fed into next consolidation as evidence to NOT re-propose for N=4 cycles.
-- `spren persona revert <commit-sha>` — git revert with a confirmation prompt.
+- `spren persona approve <prop-id>` — manual approve override. Applies the diff; git-commits with structured message.
+- `spren persona reject <prop-id> [--reason "..."]` — manual reject override. Moves to journal; rejection fed into next consolidation as evidence to NOT re-propose for N=4 cycles.
+- `spren persona revert <commit-sha>` — git revert with a confirmation prompt. Use this when the auto-approved diff turned out to be wrong.
 
-Proposals expire after 14 days if neither approved nor rejected. Counts as a soft no for re-proposal purposes.
+In auto mode, proposals don't expire — the judge decides immediately. In manual mode, proposals expire after 14 days if neither approved nor rejected; counts as a soft no for re-proposal purposes.
 
 **Voice-drift warning layer.** Every agent output passes through a regex post-pass that scans for blacklisted phrases declared in `personas/main.yaml` `voice.style_tells.avoid`. Hits log `voice_drift` events into the session log; consolidation reads them and proposes voice-axis recalibrations. Logging only, not filtering — the model trains itself via the bond mechanism instead of being externally bowdlerized.
 
@@ -465,12 +471,26 @@ Permission rules:
 
 Always-on with frontier models is unbounded spend. The "always-on" feeling comes from UX (memory + notifications + visible activity) — NOT from continuous thinking. Hard rules:
 
-- **Per-day budget cap** (settings, default $10/day for v0.3)
+- **Per-day budget cap** (settings, default $10/day for v0.3) — the only hard cap
 - **Per-think token cap** (settings, default 50K tokens per agent turn; large enough for substantive reasoning)
 - **Cheap model for routine work; expensive model for hard reasoning** — the agent picks via a `model_for_thinking_about(complexity_estimate)` helper
 - **Refuse-to-act when over budget** — agent surfaces this to the user as an inbox item; doesn't just keep spending
 
+**No per-action cap.** Earlier drafts proposed a per-tool-call cap that elevated expensive operations to additional confirmation. This was removed (2026-05-14). Per-action caps create surprise blocks: users hit a cryptic "blocked by per-action cap" error and have to dig through settings to understand which knob to turn. The right primitive is **transparency, not additional gates**: the user sees what's running, what it costs, and can cancel anything from one place. Daily budget remains the single hard limit because over-spend over the long run is the actual failure mode that needs guarding.
+
 **SP-013 (new principle):** Cost ceiling is load-bearing. Implementers MUST NOT add code paths that bypass the per-day budget cap. When the cap is hit, the agent stops processing all events except the most critical (workflow failures, user-direct messages); user is notified.
+
+### Cost Center surface
+
+Every cost-incurring artifact in Spren — past agent sessions, running workflows, scheduled jobs, consolidation passes, channel events — surfaces in **one place**: the Cost Center. The user sees what spent the budget, what's running now, what's queued to spend in the future, and can cancel any of it with one click.
+
+**Data model.** `CostEntry` carries `{id, kind, label, status, cost_usd, started_at, ended_at, next_run_at, source_id, source_route}`. The `source_route` field links each entry to its canonical edit page (e.g., `/scheduled-jobs/{id}` for scheduled jobs; `/runs/{id}` for runs). The Cost Center is **read-only aggregation + cancel**; edits route to the source page. This preserves SP-019 (single source of truth: each artifact has one canonical edit surface).
+
+**Cadence + lifecycle.** Entries flow into the Cost Center as they're created (a run starts, a job is scheduled) and update as their state changes (cost accumulates, status flips). Past sessions are batched: the main agent runs continuously; the Cost Center batches its activity into "sessions" by inactivity gap (default: 30-minute idle = session boundary). Heartbeat-only intervals don't create new sessions; user-direct events do.
+
+**Surface (Session 09).** A page with three lanes — `Today`, `Scheduled`, `Past` — each with sortable columns (cost, status, started, kind). Daily summary banner at top: "Spent today: $X.YZ / $10.00 budget. Estimated remaining: $A.BC across N scheduled jobs." When the daily cap is hit, the banner shifts to "Budget exhausted; critical events still go through. Resumes <next budget window>."
+
+**Implementation boundary.** The data model + API + aggregation logic ship in Session 08 (`spren/agent/capabilities/cost_center.py` + `runtime/memory/cost_center.py`). The UI surface ships in Session 09 alongside the four-surface command center.
 
 ## The supervision surface
 
