@@ -203,6 +203,74 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/v1/runs/{run_id}/trace": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Read Trace */
+        get: operations["read_trace_v1_runs__run_id__trace_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/v1/runs/{run_id}/workflow": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Read Workflow Snapshot */
+        get: operations["read_workflow_snapshot_v1_runs__run_id__workflow_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/v1/runs/{run_id}/artifacts": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Read Artifacts */
+        get: operations["read_artifacts_v1_runs__run_id__artifacts_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/v1/runs/{run_id}/artifacts/{name}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Download Artifact */
+        get: operations["download_artifact_v1_runs__run_id__artifacts__name__get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/v1/runs/{run_id}/cancel": {
         parameters: {
             query?: never;
@@ -237,6 +305,58 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/v1/files": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Upload */
+        post: operations["upload_v1_files_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/v1/files/{file_id}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Get Metadata */
+        get: operations["get_metadata_v1_files__file_id__get"];
+        put?: never;
+        post?: never;
+        /** Delete Handler */
+        delete: operations["delete_handler_v1_files__file_id__delete"];
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/v1/files/{file_id}/download": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Download */
+        get: operations["download_v1_files__file_id__download_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
 }
 export type webhooks = Record<string, never>;
 export interface components {
@@ -261,8 +381,32 @@ export interface components {
             /** Allowed Peers */
             allowed_peers?: string[];
         };
+        /** ArtifactInfo */
+        ArtifactInfo: {
+            /** Name */
+            name: string;
+            /** Size Bytes */
+            size_bytes: number;
+            /** Mime Type */
+            mime_type: string;
+            /**
+             * Created At
+             * Format: date-time
+             */
+            created_at: string;
+        };
+        /** ArtifactListResponse */
+        ArtifactListResponse: {
+            /** Items */
+            items: components["schemas"]["ArtifactInfo"][];
+        };
         /** Body_import_python_workflow_v1_workflows_import_python_post */
         Body_import_python_workflow_v1_workflows_import_python_post: {
+            /** File */
+            file: string;
+        };
+        /** Body_upload_v1_files_post */
+        Body_upload_v1_files_post: {
             /** File */
             file: string;
         };
@@ -352,7 +496,7 @@ export interface components {
              * Code
              * @enum {string}
              */
-            code: "WORKFLOW_NOT_FOUND" | "WORKFLOW_HAS_RUNS" | "WORKFLOW_ARCHIVED" | "PYTHON_IMPORT_REJECTED" | "MIGRATION_FAILED" | "VALIDATION_FAILED" | "INVALID_CURSOR" | "INTERNAL_ERROR" | "RUN_NOT_FOUND" | "RUN_NOT_CANCELLABLE" | "ATTACHMENTS_NOT_YET_SUPPORTED" | "TRIGGER_NOT_YET_SUPPORTED" | "INVALID_TASK_INPUT";
+            code: "WORKFLOW_NOT_FOUND" | "WORKFLOW_HAS_RUNS" | "WORKFLOW_ARCHIVED" | "PYTHON_IMPORT_REJECTED" | "MIGRATION_FAILED" | "VALIDATION_FAILED" | "INVALID_CURSOR" | "INTERNAL_ERROR" | "RUN_NOT_FOUND" | "RUN_NOT_CANCELLABLE" | "TRIGGER_NOT_YET_SUPPORTED" | "INVALID_TASK_INPUT" | "FILE_NOT_FOUND" | "FILE_TOO_LARGE" | "STORAGE_CAP_EXCEEDED" | "FILE_REFERENCED_BY_RUNS" | "ATTACHMENT_NOT_FOUND" | "ARTIFACT_NOT_FOUND" | "INVALID_FILENAME" | "TRACE_NOT_AVAILABLE";
             /** Message */
             message: string;
             /** Details */
@@ -458,6 +602,47 @@ export interface components {
              * @default 10
              */
             content_only_hard_limit?: number;
+        };
+        /** FileMetadata */
+        FileMetadata: {
+            /**
+             * Schema Version
+             * @default 1
+             */
+            schema_version?: number;
+            /** Id */
+            id: string;
+            /** Original Name */
+            original_name: string;
+            /** Mime Type */
+            mime_type: string;
+            /** Size Bytes */
+            size_bytes: number;
+            /** Sha256 */
+            sha256: string;
+            /**
+             * Created At
+             * Format: date-time
+             */
+            created_at: string;
+        };
+        /** FileUploadResponse */
+        FileUploadResponse: {
+            /**
+             * Schema Version
+             * @default 1
+             */
+            schema_version?: number;
+            /** File Id */
+            file_id: string;
+            /** Original Name */
+            original_name: string;
+            /** Mime Type */
+            mime_type: string;
+            /** Size Bytes */
+            size_bytes: number;
+            /** Sha256 */
+            sha256: string;
         };
         /** FrameworkInfo */
         FrameworkInfo: {
@@ -782,6 +967,42 @@ export interface components {
          * @enum {string}
          */
         RunStatus: "queued" | "running" | "cancelling" | "succeeded" | "failed" | "cancelled";
+        /**
+         * RunTrace
+         * @description Hierarchical trace JSON returned by ``GET /v1/runs/{id}/trace``.
+         */
+        RunTrace: {
+            /**
+             * Schema Version
+             * @default 1
+             */
+            schema_version?: number;
+            /** Run Id */
+            run_id: string;
+            completion_status: components["schemas"]["RunTraceCompletionStatus"];
+            /**
+             * Truncated Line Count
+             * @default 0
+             */
+            truncated_line_count?: number;
+            /** Total Spans */
+            total_spans: number;
+            /** Spans */
+            spans: components["schemas"]["SpanNode"][];
+            /**
+             * Truncated
+             * @default false
+             */
+            truncated?: boolean;
+            /** Truncation Reason */
+            truncation_reason?: string | null;
+        };
+        /**
+         * RunTraceCompletionStatus
+         * @description Mirrors ``NDJSONTraceReader.completion_status`` verbatim.
+         * @enum {string}
+         */
+        RunTraceCompletionStatus: "complete" | "truncated" | "crashed";
         /** RunUpdatedEvent */
         RunUpdatedEvent: {
             /**
@@ -796,6 +1017,50 @@ export interface components {
              */
             type?: "RunUpdated";
             run: components["schemas"]["RunListItem"];
+        };
+        /**
+         * SpanNode
+         * @description One node in the hierarchical trace tree.
+         */
+        SpanNode: {
+            /** Span Id */
+            span_id: string;
+            /** Parent Span Id */
+            parent_span_id?: string | null;
+            /** Trace Id */
+            trace_id: string;
+            /** Name */
+            name: string;
+            /**
+             * Kind
+             * @enum {string}
+             */
+            kind: "execution" | "branch" | "step" | "generation" | "tool";
+            /** Start Time */
+            start_time: number;
+            /** End Time */
+            end_time?: number | null;
+            /** Duration Ms */
+            duration_ms?: number | null;
+            /**
+             * Status
+             * @default ok
+             */
+            status?: string;
+            /** Attributes */
+            attributes?: {
+                [key: string]: unknown;
+            };
+            /** Events */
+            events?: {
+                [key: string]: unknown;
+            }[];
+            /** Links */
+            links?: {
+                [key: string]: unknown;
+            }[];
+            /** Children */
+            children?: components["schemas"]["SpanNode"][];
         };
         /** SprenInfo */
         SprenInfo: {
@@ -1441,8 +1706,9 @@ export interface operations {
                 cursor?: string | null;
                 limit?: number;
                 workflow_id?: string | null;
-                status?: components["schemas"]["RunStatus"] | null;
+                status?: string | null;
                 since?: string | null;
+                until?: string | null;
             };
             header?: {
                 authorization?: string | null;
@@ -1638,6 +1904,182 @@ export interface operations {
             };
         };
     };
+    read_trace_v1_runs__run_id__trace_get: {
+        parameters: {
+            query?: never;
+            header?: {
+                authorization?: string | null;
+            };
+            path: {
+                run_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["RunTrace"];
+                };
+            };
+            /** @description Not Found */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    read_workflow_snapshot_v1_runs__run_id__workflow_get: {
+        parameters: {
+            query?: never;
+            header?: {
+                authorization?: string | null;
+            };
+            path: {
+                run_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["WorkflowDefinition"];
+                };
+            };
+            /** @description Not Found */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    read_artifacts_v1_runs__run_id__artifacts_get: {
+        parameters: {
+            query?: never;
+            header?: {
+                authorization?: string | null;
+            };
+            path: {
+                run_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ArtifactListResponse"];
+                };
+            };
+            /** @description Not Found */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    download_artifact_v1_runs__run_id__artifacts__name__get: {
+        parameters: {
+            query?: never;
+            header?: {
+                authorization?: string | null;
+            };
+            path: {
+                run_id: string;
+                name: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Bad Request */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+            /** @description Not Found */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
     cancel_run_handler_v1_runs__run_id__cancel_post: {
         parameters: {
             query?: never;
@@ -1710,6 +2152,199 @@ export interface operations {
                 };
                 content: {
                     "application/json": unknown;
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    upload_v1_files_post: {
+        parameters: {
+            query?: never;
+            header?: {
+                authorization?: string | null;
+            };
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "multipart/form-data": components["schemas"]["Body_upload_v1_files_post"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            201: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["FileUploadResponse"];
+                };
+            };
+            /** @description Bad Request */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+            /** @description Request Entity Too Large */
+            413: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    get_metadata_v1_files__file_id__get: {
+        parameters: {
+            query?: never;
+            header?: {
+                authorization?: string | null;
+            };
+            path: {
+                file_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["FileMetadata"];
+                };
+            };
+            /** @description Not Found */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    delete_handler_v1_files__file_id__delete: {
+        parameters: {
+            query?: never;
+            header?: {
+                authorization?: string | null;
+            };
+            path: {
+                file_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": unknown;
+                };
+            };
+            /** @description Deleted */
+            204: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Not Found */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+            /** @description Conflict */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    download_v1_files__file_id__download_get: {
+        parameters: {
+            query?: never;
+            header?: {
+                authorization?: string | null;
+            };
+            path: {
+                file_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Not Found */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
                 };
             };
             /** @description Validation Error */

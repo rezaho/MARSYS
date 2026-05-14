@@ -55,6 +55,16 @@ export type RunsListEvent =
   | RunFinishedEvent
   | RunCancelledEvent;
 
+// Session 05 — trace + files + artifacts types
+export type RunTrace = components["schemas"]["RunTrace"];
+export type SpanNode = components["schemas"]["SpanNode"];
+export type SpanKind = SpanNode["kind"];
+export type RunTraceCompletionStatus = components["schemas"]["RunTraceCompletionStatus"];
+export type FileMetadata = components["schemas"]["FileMetadata"];
+export type FileUploadResponse = components["schemas"]["FileUploadResponse"];
+export type ArtifactInfo = components["schemas"]["ArtifactInfo"];
+export type ArtifactListResponse = components["schemas"]["ArtifactListResponse"];
+
 export type { paths };
 
 export function isTerminalStatus(status: RunStatus): boolean {
@@ -215,8 +225,18 @@ export async function getRun(token: string, id: string): Promise<RunRead> {
 }
 
 export interface ListRunsOptions {
+  /** Single workflow id; mutually exclusive with ``workflow_ids``. */
   workflow_id?: string;
+  /** Multi workflow id (comma-joined on the wire). */
+  workflow_ids?: string[];
+  /** Single status; mutually exclusive with ``statuses``. */
   status?: RunStatus;
+  /** Multi status (comma-joined on the wire). */
+  statuses?: RunStatus[];
+  /** ISO 8601 absolute or Session 04's relative shorthand (e.g., ``"24h"``). */
+  since?: string;
+  /** ISO 8601 absolute upper bound. */
+  until?: string;
   cursor?: string;
   limit?: number;
 }
@@ -226,8 +246,18 @@ export async function listRuns(
   options: ListRunsOptions = {},
 ): Promise<RunListResponse> {
   const url = new URL("/v1/runs", resolveBaseUrl() || window.location.origin);
-  if (options.workflow_id) url.searchParams.set("workflow_id", options.workflow_id);
-  if (options.status) url.searchParams.set("status", options.status);
+  if (options.workflow_ids && options.workflow_ids.length > 0) {
+    url.searchParams.set("workflow_id", options.workflow_ids.join(","));
+  } else if (options.workflow_id) {
+    url.searchParams.set("workflow_id", options.workflow_id);
+  }
+  if (options.statuses && options.statuses.length > 0) {
+    url.searchParams.set("status", options.statuses.join(","));
+  } else if (options.status) {
+    url.searchParams.set("status", options.status);
+  }
+  if (options.since) url.searchParams.set("since", options.since);
+  if (options.until) url.searchParams.set("until", options.until);
   if (options.cursor) url.searchParams.set("cursor", options.cursor);
   if (options.limit) url.searchParams.set("limit", String(options.limit));
   const res = await fetch(url.toString(), { headers: authHeader(token) });

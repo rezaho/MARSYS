@@ -43,6 +43,13 @@ export interface SlideOverProps {
   /** Test id forwarded to the backdrop. */
   backdropTestId?: string;
   /**
+   * When false, clicking the backdrop does NOT dismiss the panel
+   * (Esc-only dismiss). Defaults to true. The trace inspector's span
+   * detail drawer uses ``false`` so accidental clicks while reading
+   * attributes don't dismiss the drawer.
+   */
+  dismissOnBackdrop?: boolean;
+  /**
    * Element to receive initial focus when the slide-over opens. If
    * omitted, the first focusable descendant of the panel is used.
    */
@@ -60,6 +67,7 @@ export function SlideOver({
   testId,
   backdropTestId,
   initialFocusRef,
+  dismissOnBackdrop = true,
   children,
 }: SlideOverProps): ReactElement | null {
   const panelRef = useRef<HTMLDivElement>(null);
@@ -98,7 +106,7 @@ export function SlideOver({
     <>
       <div
         className="ui-slide-over-backdrop"
-        onMouseDown={onClose}
+        onMouseDown={dismissOnBackdrop ? onClose : undefined}
         data-testid={backdropTestId}
       />
       <aside
