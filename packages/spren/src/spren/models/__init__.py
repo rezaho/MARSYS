@@ -8,12 +8,14 @@ secrets store) happens at execution time in Session 04+.
 from __future__ import annotations
 
 from .agent import AgentSpec, MemoryRetention
+from .artifact import ArtifactInfo, ArtifactListResponse
 from .errors import ErrorCode, ErrorEnvelope, ErrorPayload
 from .execution_config import (
     ConvergencePolicyConfigSpec,
     ExecutionConfigSpec,
     StatusConfigSpec,
 )
+from .file import FileMetadata, FileUploadResponse
 from .lint import LintCode, LintFinding, LintResponse, LintSeverity
 from .model_config import ApiProvider, ModelConfigSpec, ModelType
 from .run import (
@@ -31,6 +33,7 @@ from .run import (
     TERMINAL_STATUSES,
     TaskInput,
 )
+from .trace import RunTrace, RunTraceCompletionStatus, SpanKind, SpanNode
 from .tools import (
     ImportWarningCode,
     ImportWarningPayload,
@@ -52,6 +55,8 @@ from .workflow import (
 __all__ = [
     "AgentSpec",
     "ApiProvider",
+    "ArtifactInfo",
+    "ArtifactListResponse",
     "ConvergencePolicyConfigSpec",
     "EdgePattern",
     "EdgeSpec",
@@ -60,6 +65,8 @@ __all__ = [
     "ErrorEnvelope",
     "ErrorPayload",
     "ExecutionConfigSpec",
+    "FileMetadata",
+    "FileUploadResponse",
     "ImportWarningCode",
     "ImportWarningPayload",
     "LintCode",
@@ -80,8 +87,12 @@ __all__ = [
     "RunListResponse",
     "RunRead",
     "RunStatus",
+    "RunTrace",
+    "RunTraceCompletionStatus",
     "RunUpdatedEvent",
     "RunsListEvent",
+    "SpanKind",
+    "SpanNode",
     "StatusConfigSpec",
     "TERMINAL_STATUSES",
     "TaskInput",
