@@ -42,7 +42,15 @@ from .tools import (
     ToolSource,
     WorkflowImportResponse,
 )
-from .topology import EdgePattern, EdgeSpec, EdgeType, NodeSpec, NodeType, TopologySpec
+from .topology import (
+    EdgePattern,
+    EdgeSpec,
+    EdgeType,
+    NodeCategory,
+    NodeSpec,
+    NodeType,
+    TopologySpec,
+)
 from .workflow import (
     Workflow,
     WorkflowCreateRequest,
@@ -76,6 +84,7 @@ __all__ = [
     "MemoryRetention",
     "ModelConfigSpec",
     "ModelType",
+    "NodeCategory",
     "NodeSpec",
     "NodeType",
     "RunCancelledEvent",
