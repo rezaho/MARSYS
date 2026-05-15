@@ -81,7 +81,7 @@ All tables include `created_at` and `updated_at` (UTC, microsecond precision). A
 }
 ```
 
-`node_type`, `edge_type`, and `edge.pattern` values are lowercase strings matching `marsys.coordination.topology.core.NodeType` / `EdgeType` / `EdgePattern`: `node_type ∈ {user, agent, system, tool}`, `edge_type ∈ {invoke, notify, query, stream}`, `pattern ∈ {alternating, symmetric}` (or null). The agent's model-config field is named `agent_model` rather than `model` because Pydantic v2 reserves the attribute name `model_config`; storage JSON shape mirrors the Pydantic mirror.
+`edge_type` and `edge.pattern` are lowercase strings faithfully mirroring `marsys.coordination.topology.core.EdgeType` / `EdgePattern`: `edge_type ∈ {invoke, notify, query, stream}`, `pattern ∈ {alternating, symmetric}` (or null). **`node_type` is NOT a faithful framework mirror** — the node taxonomy is Spren's own UX-layer model with a materialization contract; see [`11-node-model.md`](./11-node-model.md). (The old `{user, agent, system, tool}` set copied two vestigial framework enum members — `SYSTEM`/`TOOL` have zero usages in marsys — and mistook the string-DSL name sugar for the canonical model. Corrected 2026-05-15.) The agent's model-config field is named `agent_model` rather than `model` because Pydantic v2 reserves the attribute name `model_config`; storage JSON shape mirrors the Pydantic mirror.
 
 ### `runs`
 
