@@ -170,14 +170,20 @@ class AnthropicAdapter(APIProviderAdapter):
                     "content": content_blocks if content_blocks else [{"type": "text", "text": ""}]
                 })
             else:
-                # Regular message - convert None content to empty string for compatibility
-                cleaned_msg = msg.copy()
-                if cleaned_msg.get("content") is None:
-                    cleaned_msg["content"] = ""
+                # Regular message. Rebuild with ONLY the wire-legal keys
+                # (role, content). The OpenAI-shaped message carries a
+                # message-level `name` (agent identity, set by
+                # memory.to_llm_dict) and other OpenAI-only keys; Anthropic's
+                # Messages API rejects anything beyond role/content
+                # ("messages.N.name: Extra inputs are not permitted" -> 400).
+                # Mirrors the oauth twin (anthropic_oauth.py regular-message
+                # branch); do NOT shallow-copy the whole message through.
+                content = msg.get("content")
+                if content is None:
+                    content = ""
                 else:
-                    # Convert OpenAI image format to Anthropic format
-                    cleaned_msg["content"] = self._convert_content_to_anthropic_format(cleaned_msg.get("content"))
-                user_messages.append(cleaned_msg)
+                    content = self._convert_content_to_anthropic_format(content)
+                user_messages.append({"role": msg.get("role"), "content": content})
 
         # Build base payload with required fields
         payload = {
@@ -296,7 +302,11 @@ class AnthropicAdapter(APIProviderAdapter):
                         type="function",
                         function={
                             "name": block.get("name", ""),
-                            "arguments": block.get("input", {}),
+                            # ToolCallMsg requires `arguments` as a JSON string
+                            # (memory.py:191-192); every other adapter
+                            # harmonizes to a string here. Anthropic returns
+                            # tool_use.input as an object — serialize it.
+                            "arguments": json.dumps(block.get("input", {})),
                         },
                     )
                 )
