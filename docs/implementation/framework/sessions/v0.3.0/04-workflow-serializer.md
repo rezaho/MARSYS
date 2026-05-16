@@ -37,7 +37,7 @@ If only one consumer can use this shape, the design is wrong — escalate.
 
 ## What came before this session
 
-**Previous framework PRs from this dir:** Session 02 (`TelemetrySink` protocol) and Session 03 (pause/resume completion) are independent of this PR. Session 01 (NDJSON streaming tracing writer) is independent.
+**Previous framework PRs from this dir:** Session 02 (`TelemetrySink` protocol) is independent of this PR. Session 01 (NDJSON streaming tracing writer) is independent. **Session 03 (pause/resume completion) has already shipped on the sibling worktree `marsys-spren-work` branch `feature/spren-umbrella`** (commits `88eb0e4`, `88e6ddf`, `6df30ab`, `210f3d2`, `83d89c4`, `6805c9b`). Functional surfaces this PR reads from (`Orchestra.agent_registry`, `Orchestra._execution_config`) survive Session 03's `Orchestra.__init__` rewrite intact, so no semantic dependency. **Mechanical merge conflicts expected** on (a) `CHANGELOG.md` `## [Unreleased]` block (both PRs add entries), (b) `coordination/orchestra.py` lines 124-160 (both touch construction code). Resolve at merge time by concatenating the `[Unreleased]` entry bodies and re-applying this PR's no-op edits (this PR does not edit `orchestra.py`).
 
 **State at start of this session:**
 
@@ -79,9 +79,9 @@ The merged PR exposes:
   - `def workflow_to_pydantic(orchestra: Orchestra, topology: Topology) -> WorkflowDefinition`
   - `def pydantic_to_topology(spec: WorkflowDefinition, tool_registry: Dict[str, Callable]) -> Topology`
 - `agents/serialize.py`:
-  - `class AgentSpec(BaseModel)` — Pydantic mirror of the framework's agent constructor surface; `tools` is `list[str]` of names, not callables
-  - `def agent_to_pydantic(agent: BaseAgent) -> AgentSpec`
-  - `def pydantic_to_agents(spec: WorkflowDefinition, tool_registry: Dict[str, Callable]) -> list[BaseAgent]`
+  - `class AgentSpec(BaseModel)` — Pydantic mirror of the framework's agent constructor surface; `tools` is `list[str]` of names, not callables; `agent_model: ModelConfigSpec`
+  - `def agent_to_pydantic(agent: Agent) -> AgentSpec` — concrete `Agent` (not `BaseAgent`) because only `Agent._model_config` retains the source `ModelConfig`. `BaseAgent` takes a pre-built `model: Union[BaseLocalModel, BaseAPIModel]` adapter that does not retain a reference to its originating `ModelConfig`. If future `BaseAgent` subclasses need serialization, the subclass becomes responsible for exposing a `_model_config` attribute.
+  - `def pydantic_to_agents(spec: WorkflowDefinition, tool_registry: Dict[str, Callable]) -> list[Agent]` — `is_convergence_point` is restored by setting `agent._is_convergence_point` post-construction because `Agent.__init__` (subclass) does not forward the kwarg to `BaseAgent.__init__`. Documented in module docstring as a known asymmetry of the current `Agent` constructor.
 - `coordination/serialize.py`:
   - `class ExecutionConfigSpec(BaseModel)`, `class ConvergencePolicyConfigSpec(BaseModel)`, `class TracingConfigSpec(BaseModel)`, `class StatusConfigSpec(BaseModel)`
   - `def execution_config_to_pydantic(config: ExecutionConfig) -> ExecutionConfigSpec`
@@ -89,26 +89,29 @@ The merged PR exposes:
 - `coordination/topology/exceptions.py`:
   - `class UnknownToolError(ValueError)` — raised when a `tool_registry` lookup misses
   - `class NonSerializableTopologyError(ValueError)` — raised on serialization paths that cannot be represented (e.g., a custom subclass with extra runtime state the spec cannot capture)
-- `ModelConfig` is exported from `coordination.topology.serialize` as a re-export of `marsys.models.models.ModelConfig` (it is already Pydantic; no mirror)
+- `models/serialize.py`:
+  - `class ModelConfigSpec(BaseModel)` — storage-boundary mirror of `marsys.models.ModelConfig`. Drops the `api_key` field (secrets live in per-user credential stores, not in workflow definitions). Drops the `_validate_api_key` `model_validator(mode="after")` that requires env-resolvable keys at validation time. Keeps every other field verbatim, including `oauth_profile` (a reference, not a credential). Required because `ModelConfig`'s storage-time validator (`models/models.py:209-263`) raises `ValueError` on any consumer (Spren, CI, MARSYS Cloud, community templates) that persists a workflow without keys reachable. This supersedes the original plan's "re-export `ModelConfig` directly, no mirror" stance.
+  - `def model_config_spec_from_runtime(config: ModelConfig) -> ModelConfigSpec` — round-trip helper.
+  - `def runtime_model_config_from_spec(spec: ModelConfigSpec, api_key: Optional[str] = None) -> ModelConfig` — round-trip helper that lets callers supply a key from their credential store at materialization time.
 - A 1-line addition to `coordination/topology/converters/pattern_converter.py` (the `PatternConfigConverter.convert` method) writes the source `PatternConfig` into `topology.metadata["original_pattern"]` as a `PatternConfigSpec.model_dump()` payload before returning the constructed `Topology`. This is a non-TRUNK-CRITICAL change.
 - A standalone Python API for the JSON Schema: `from marsys.coordination.topology.serialize import workflow_definition_schema`. The helper emits Pydantic v2's default schema (which is JSON Schema 2020-12) with an explicit `$schema` dialect URL injected on top (Pydantic does not add `$schema` itself).
 - Framework `CHANGELOG.md` entry under `## [Unreleased]`.
 
 ### Acceptance criteria
 
-- [ ] `workflow_to_pydantic` and `pydantic_to_topology` (+ `pydantic_to_agents` + `pydantic_to_execution_config`) round-trip every standard `NodeType`, every `EdgeType`, every `EdgePattern`, and every `PatternType` preset under semantic equality
+- [ ] `workflow_to_pydantic` and `pydantic_to_topology` (+ `pydantic_to_agents` + `pydantic_to_execution_config`) round-trip every standard `NodeType`, every `EdgeType`, every `EdgePattern`, and every `PatternType` preset under semantic equality. Semantic equality is implemented in a new public helper `topology_equals(a: Topology, b: Topology) -> bool` in `coordination/topology/serialize.py` that compares nodes (by name + type + metadata), edges as a multiset over `(source, target, edge_type, bidirectional, pattern, metadata)`, and `metadata["original_pattern"]`. `Edge.__eq__` (`core.py:119-125`) compares only `(source, target, edge_type)`, so the round-trip tests MUST use `topology_equals` rather than `topology_a == topology_b`.
 - [ ] `topology.metadata["original_pattern"]` is populated by `pattern_converter.convert` for every `PatternType` (HUB_AND_SPOKE, HIERARCHICAL, PIPELINE, MESH, STAR, RING, BROADCAST). Round-tripping a pattern-built topology through `workflow_to_pydantic` → `pydantic_to_topology` produces a re-applicable `PatternConfig` recoverable from `Topology.metadata`
 - [ ] Polymorphic `convergence_policy` discriminator: bare-`float`, named-string (`"strict"`, `"majority"`, `"fail"`, `"user"`, `"any"`), and full `ConvergencePolicyConfigSpec` all round-trip through `ExecutionConfigSpec` and reduce to the same `ConvergencePolicyConfig` post-`pydantic_to_execution_config`. All three discriminant branches tested
 - [ ] Bidirectional edge handling: `Topology.add_edge` auto-inserts a reverse edge for `bidirectional=True`; `workflow_to_pydantic` consolidates the user-declared edge + its synthesized reverse into a single `EdgeSpec` with `bidirectional=True`. Round-tripping does not double the edge count
 - [ ] `AgentSpec.tools: list[str]` carries tool names; `pydantic_to_agents` resolves each name against the supplied `tool_registry`. Unknown name raises `UnknownToolError` with the missing name and a hint pointing at the `tool_registry` parameter. The error is a hard failure, not silent
-- [ ] `ModelConfig` flows through `AgentSpec.agent_model: ModelConfig` directly (re-exported, not mirrored)
+- [ ] `ModelConfigSpec` (in `models/serialize.py`) is the storage-boundary mirror of `marsys.models.ModelConfig` — no `api_key` field, no `_validate_api_key`-style validator. `AgentSpec.agent_model: ModelConfigSpec` carries the mirror, not the runtime `ModelConfig`. Round-trip: `agent_to_pydantic` calls `model_config_spec_from_runtime(agent._model_config)`; `pydantic_to_agents` calls `runtime_model_config_from_spec(spec.agent_model)` which optionally accepts an `api_key` for non-OAuth providers (otherwise the framework runtime validator picks the key up from env, as today).
 - [ ] Enums (`NodeType`, `EdgeType`, `EdgePattern`, `PatternType`) serialize via `Literal[...]` declarations or `model_config = ConfigDict(use_enum_values=True)`; the wire values match the framework's StrEnum values exactly (`"agent"`, `"user"`, `"system"`, `"tool"`, `"invoke"`, `"notify"`, `"query"`, `"stream"`, `"alternating"`, `"symmetric"`, `"hub_and_spoke"`, `"hierarchical"`, `"pipeline"`, `"mesh"`, `"star"`, `"ring"`, `"broadcast"`)
-- [ ] `workflow_definition_schema()` returns a non-empty schema with `$schema == "https://json-schema.org/draft/2020-12/schema"`. The schema is documented in module docstring + framework docs as the source of truth for non-Python consumers
+- [ ] `WorkflowDefinition.model_json_schema()` returns a non-empty schema declaring JSON Schema 2020-12 in the `$schema` field. A dedicated unit test asserts `schema["$schema"] == "https://json-schema.org/draft/2020-12/schema"` so a future Pydantic version drift fails fast at test time rather than silently breaking non-Python consumers. The schema is documented in module docstring + framework docs as the source of truth for non-Python consumers
 - [ ] Property-based round-trip tests via `hypothesis`: a constrained strategy generates valid topologies (concrete strategies for node count, valid edge connectivity over node-pairs, RESERVED_NODE_NAMES exclusion, valid pattern-arg shapes); each generated topology round-trips losslessly. Strategies are reviewed code, not hand-waved comments
 - [ ] Test matrix covers (a) every `NodeType` × `EdgeType` × `EdgePattern` cell as an example-based test; (b) every `PatternType` preset round-trip end-to-end; (c) Hypothesis property tests for randomized topologies (≥100 examples per shape)
 - [ ] Constructor path on rehydration: `pydantic_to_topology` constructs the `Topology` via `Topology(nodes=[...], edges=[...])`, never `model_construct` shortcuts, so `__post_init__` builds indices and runs validation
 - [ ] `pydantic_to_topology(spec, tool_registry={})` raises `UnknownToolError` (not silently lossy) when any agent in `spec.agents` references a tool name with no callable in the registry. Empty `tools: []` is valid and does not require a registry entry
-- [ ] **PR-coordination acceptance: open the Spren-side cleanup PR within 24 hours of this PR merging**; the cleanup PR deletes `packages/spren/src/spren/models/topology.py`, `packages/spren/src/spren/models/agent.py`, `packages/spren/src/spren/models/execution_config.py` and replaces their imports with `from marsys.coordination.topology.serialize import WorkflowDefinition, TopologySpec, NodeSpec, EdgeSpec, ExecutionConfigSpec` (and friends). The Spren-side cleanup is small (~50 lines deleted, ~10 lines of imports added). This PR's description tags the cleanup PR by branch name
+- [ ] **PR-coordination acceptance: open the Spren-side cleanup PR within 24 hours of this PR merging**; the cleanup PR deletes the FIVE mirror files that actually exist on Spren today: `packages/spren/src/spren/models/topology.py`, `packages/spren/src/spren/models/agent.py`, `packages/spren/src/spren/models/execution_config.py`, `packages/spren/src/spren/models/model_config.py`, `packages/spren/src/spren/models/workflow.py`. Replaces their imports with `from marsys.coordination.topology.serialize import WorkflowDefinition, TopologySpec, NodeSpec, EdgeSpec`; `from marsys.coordination.serialize import ExecutionConfigSpec, ConvergencePolicyConfigSpec, TracingConfigSpec, StatusConfigSpec`; `from marsys.agents.serialize import AgentSpec`; `from marsys.models.serialize import ModelConfigSpec`. The Spren-side cleanup is ~350 lines deleted, ~15 lines of imports added. This PR's description tags the cleanup PR by branch name.
 - [ ] **Multi-consumer justification documented in PR description**: Spren / CI integrations / MARSYS Cloud / community templates / MARSYS Studio / workflow versioning UIs
 - [ ] Framework regression suite green (zero new failures vs. baseline)
 - [ ] No TRUNK-CRITICAL changes. Files NOT touched: `coordination/topology/graph.py`, `coordination/orchestra.py`, `coordination/execution/orchestrator.py`, `coordination/execution/real_runtime.py`, `coordination/validation/response_validator.py`. The `pattern_converter.py` edit is non-TRUNK-CRITICAL
@@ -156,7 +159,7 @@ Create `coordination/topology/serialize.py`. Define the model hierarchy in depen
 2. `class NodeSpec(BaseModel)`: `name: str`, `node_type: Literal["user", "agent", "system", "tool"] = "agent"`, `agent_ref: str | None = None`, `is_convergence_point: bool = False`, `metadata: dict[str, Any] = {}`. The `agent_ref` field carries the agent name; the runtime `Node.agent_ref` Python reference is reconstructed at `pydantic_to_topology` time from the agent registry built by `pydantic_to_agents`
 3. `class EdgeSpec(BaseModel)`: `source: str`, `target: str`, `edge_type: Literal["invoke", "notify", "query", "stream"] = "invoke"`, `bidirectional: bool = False`, `pattern: Literal["alternating", "symmetric"] | None = None`, `metadata: dict[str, Any] = {}`
 4. `class TopologySpec(BaseModel)`: `nodes: list[NodeSpec]`, `edges: list[EdgeSpec]`, `metadata: dict[str, Any] = {}`, `rules: list[str] = []`
-5. `class WorkflowDefinition(BaseModel)`: `topology: TopologySpec`, `agents: dict[str, AgentSpec]`, `execution_config: ExecutionConfigSpec`
+5. `class WorkflowDefinition(BaseModel)`: `topology: TopologySpec`, `agents: dict[str, AgentSpec]`, `execution_config: ExecutionConfigSpec`. Carries a `model_validator(mode="after")` cross-reference validator that enforces (a) every agent `NodeSpec.agent_ref` is a key of `agents`, (b) every `EdgeSpec.source` and `EdgeSpec.target` is a `NodeSpec.name`. Mirrors the prior art in Spren's `packages/spren/src/spren/models/workflow.py:36-61` so the framework version fails at storage time instead of at `Orchestra.run()`.
 
 Do the same for execution-side specs in `coordination/serialize.py`:
 
@@ -170,7 +173,7 @@ Do the same for execution-side specs in `coordination/serialize.py`:
 
 `AgentSpec` lives in `agents/serialize.py`:
 
-9. `class AgentSpec(BaseModel)`: `name: str`, `goal: str`, `instruction: str`, `agent_class: str = "Agent"` (concrete class name to instantiate; resolved through `agent_class_registry` at hydration time so subclasses like `BrowserAgent` / `WebSearchAgent` round-trip without silent downcast), `agent_model: ModelConfig` (re-exported from `marsys.models.models`), `tools: list[str] = []`, `max_tokens: int | None = 10000`, `allowed_peers: list[str] = []`, `bidirectional_peers: bool = False`, `is_convergence_point: bool | None = None`, `memory_retention: Literal["single_run", "session", "persistent"] = "session"`, `memory_storage_path: str | None = None`, `plan_config: dict[str, Any] | None = None`, `input_schema: dict[str, Any] | None = None`, `output_schema: dict[str, Any] | None = None`. The `agent_model` field name is deliberately not `model` (Pydantic v2 reserves the `model_*` namespace).
+9. `class AgentSpec(BaseModel)`: `name: str`, `goal: str`, `instruction: str`, `agent_model: ModelConfigSpec` (from `marsys.models.serialize`), `tools: list[str] = []`, `max_tokens: int | None = 10000`, `allowed_peers: list[str] = []`, `bidirectional_peers: bool = False`, `is_convergence_point: bool | None = None`, `memory_retention: Literal["single_run", "session", "persistent"] = "session"`, `memory_storage_path: str | None = None`, `plan_config: dict[str, Any] | None = None`, `input_schema: dict[str, Any] | None = None`, `output_schema: dict[str, Any] | None = None`. The `agent_model` field name is deliberately not `model` (Pydantic v2 reserves the `model_*` namespace).
 
 All Pydantic models declare `model_config = ConfigDict(extra="forbid")` to fail loudly when a producer sends an unknown field, except where existing framework dataclasses use `extra="allow"`-like flexibility (`Topology.metadata`, `Node.metadata`, `Edge.metadata` are unconstrained dicts already; `ConfigDict(extra="forbid")` applies to the spec models, not their nested `metadata` dicts).
 
@@ -179,32 +182,27 @@ All Pydantic models declare `model_config = ConfigDict(extra="forbid")` to fail 
 `agents/serialize.py`:
 
 ```python
-import dataclasses
-
 def agent_to_pydantic(agent: Agent) -> AgentSpec:
     """
-    Capture an Agent (or subclass) as a Pydantic spec.
-
-    Note: typed against the concrete `Agent` class (not `BaseAgent`) because the
-    originating `ModelConfig` is stored on `Agent._model_config` (set at
-    `agents.py:2816`); `BaseAgent` only carries the bound `self.model` adapter,
-    not the Pydantic ModelConfig instance the user passed in. If a workflow uses
-    pure-`BaseAgent` subclasses that don't store the originating config, raise a
-    clear error pointing the user at the `model_config=` constructor kwarg.
+    `Agent` (the concrete subclass at agents.py:2727), NOT `BaseAgent`:
+    only `Agent._model_config` (agents.py:2816) retains the originating
+    ModelConfig. BaseAgent takes a pre-built model adapter that does not
+    expose its source config. A future BaseAgent subclass that wants
+    serialization is responsible for retaining its own `_model_config`.
     """
     return AgentSpec(
         name=agent.name,
         goal=agent.goal,
         instruction=agent.instruction,
-        agent_class=type(agent).__name__,                  # "Agent" / "BrowserAgent" / "WebSearchAgent" / ...
-        agent_model=agent._model_config,                   # the Pydantic ModelConfig stored on Agent
-        tools=list(agent.tools.keys()),                    # tools is ObservableToolsDict (dict subclass); .keys() works
+        agent_model=model_config_spec_from_runtime(agent._model_config),
+        tools=list(agent.tools.keys()),
         max_tokens=agent.max_tokens,
         allowed_peers=sorted(agent._allowed_peers_init),
         bidirectional_peers=agent._bidirectional_peers,
         is_convergence_point=agent._is_convergence_point,
         memory_retention=agent._memory_retention,
-        plan_config=dataclasses.asdict(agent._planning_config) if agent._planning_config else None,
+        memory_storage_path=agent._memory_storage_path,
+        plan_config=agent._planning_config.to_dict() if agent._planning_config else None,
         input_schema=agent.input_schema,
         output_schema=agent.output_schema,
     )
@@ -212,18 +210,15 @@ def agent_to_pydantic(agent: Agent) -> AgentSpec:
 def pydantic_to_agents(
     spec: WorkflowDefinition,
     tool_registry: Dict[str, Callable],
-    agent_class_registry: Dict[str, Type[Agent]] | None = None,
 ) -> list[Agent]:
     """
-    Hydrate Agent (and subclass) instances from a spec.
-
-    `agent_class_registry` maps `agent_class` strings → concrete `Agent` subclass.
-    Defaults to `{"Agent": Agent, "BrowserAgent": BrowserAgent, "WebSearchAgent": WebSearchAgent,
-    "FileOperationAgent": FileOperationAgent}` when not supplied. Unknown class
-    raises `UnknownAgentClassError` so subclass-using workflows do NOT silently
-    downcast to plain `Agent`.
+    Note: `is_convergence_point` is set post-construction because
+    `Agent.__init__` (agents.py:2748-2766) does NOT accept it and does NOT
+    forward it to BaseAgent.__init__. This is a known asymmetry of the
+    current Agent constructor. If/when the framework updates Agent.__init__
+    to accept the kwarg, replace the post-construction set with a
+    constructor kwarg.
     """
-    registry = agent_class_registry or _default_agent_class_registry()
     agents: list[Agent] = []
     for agent_name, agent_spec in spec.agents.items():
         cls = registry.get(agent_spec.agent_class)
@@ -242,14 +237,25 @@ def pydantic_to_agents(
                     f"to pydantic_to_agents."
                 )
             tools_dict[tool_name] = tool_registry[tool_name]
-        agents.append(cls(
+        runtime_model_config = runtime_model_config_from_spec(agent_spec.agent_model)
+        agent = Agent(
             name=agent_spec.name,
             goal=agent_spec.goal,
             instruction=agent_spec.instruction,
-            model_config=agent_spec.agent_model,           # marsys constructor kwarg is `model_config`
+            model_config=runtime_model_config,
             tools=tools_dict,
-            ...
-        ))
+            max_tokens=agent_spec.max_tokens,
+            allowed_peers=agent_spec.allowed_peers,
+            bidirectional_peers=agent_spec.bidirectional_peers,
+            input_schema=agent_spec.input_schema,
+            output_schema=agent_spec.output_schema,
+            memory_retention=agent_spec.memory_retention,
+            memory_storage_path=agent_spec.memory_storage_path,
+            plan_config=agent_spec.plan_config,
+        )
+        if agent_spec.is_convergence_point is not None:
+            agent._is_convergence_point = agent_spec.is_convergence_point
+        agents.append(agent)
     return agents
 ```
 
@@ -326,12 +332,16 @@ This is the reachable Python API path Spren-side type generation reads from. Spr
 Tests live in `packages/framework/tests/coordination/topology/test_serialize.py` and adjacent files mirroring the module layout.
 
 Example-based tests:
-- One test per `NodeType` value verifying `NodeSpec` round-trip
+- One test per `NodeType` value verifying `NodeSpec` round-trip (use `topology_equals` for the comparison; do not rely on `Edge.__eq__` because it ignores `bidirectional`, `pattern`, `metadata` per `core.py:119-125`)
 - One test per `EdgeType` × `EdgePattern` combination
-- One test per `PatternType` preset: build via `PatternConfigConverter.convert(PatternConfig.<factory>(...))`, serialize, deserialize, compare nodes/edges by semantic equality, confirm `metadata["original_pattern"]` round-trips
+- One test per `PatternType` preset: build via `PatternConfigConverter.convert(PatternConfig.<factory>(...))`, serialize, deserialize, compare nodes/edges via `topology_equals`, confirm `metadata["original_pattern"]` round-trips
 - `convergence_policy` discriminator: one test for bare-float (`1.0`, `0.5`), one for each named string (`"strict"`, `"majority"`, `"fail"`, `"user"`, `"any"`), one for full `ConvergencePolicyConfigSpec`. Each round-trips through `ExecutionConfigSpec` and reduces to the same canonical `ConvergencePolicyConfig` after `pydantic_to_execution_config` (compared via `ConvergencePolicyConfig.from_value` semantic-equality)
 - Bidirectional consolidation: build a topology with `Edge(a, b, bidirectional=True)` (which auto-inserts reverse). Serialize → exactly one `EdgeSpec`. Deserialize → topology with two edges (forward + reverse) again. Confirm round-trip is fixed-point (no edge-doubling on repeat)
 - Tool-registry resolution: `pydantic_to_agents(spec, tool_registry={"web_search": stub})` builds agent with `tools={"web_search": stub}`. Missing-key raises `UnknownToolError` with the missing name and the agent name in the error message
+- JSON Schema 2020-12 declaration: `WorkflowDefinition.model_json_schema()["$schema"]` equals exactly `"https://json-schema.org/draft/2020-12/schema"`. This catches silent Pydantic-upgrade dialect drift.
+- `WorkflowDefinition._validate_cross_references`: (a) a spec with `node.agent_ref="nonexistent"` raises `ValidationError`; (b) a spec with `edge.source="not_a_node"` raises `ValidationError`; (c) a valid spec passes.
+- `ModelConfigSpec` round-trip: `agent_model = ModelConfigSpec(type="api", name="gpt-4o", provider="openai")` round-trips through JSON with no `api_key` field present; `runtime_model_config_from_spec(spec, api_key="sk-...")` produces a valid `ModelConfig` with the supplied key.
+- `is_convergence_point` post-construction set: build an `AgentSpec` with `is_convergence_point=True`, run `pydantic_to_agents`, assert the resulting `Agent._is_convergence_point` is `True` (even though `Agent.__init__` doesn't accept the kwarg).
 
 Property-based tests (Hypothesis, `≥100` examples):
 - Composite strategy `topology_strategy()` builds a valid `Topology` by:
@@ -355,14 +365,20 @@ Multi-consumer test:
 
 ### Files to create
 
-- `packages/framework/src/marsys/coordination/topology/serialize.py`
-- `packages/framework/src/marsys/coordination/topology/exceptions.py`
-- `packages/framework/src/marsys/agents/serialize.py`
-- `packages/framework/src/marsys/coordination/serialize.py`
+- `packages/framework/src/marsys/coordination/topology/serialize.py` — `TopologySpec`, `NodeSpec`, `EdgeSpec`, `PatternConfigSpec`, `WorkflowDefinition`, `workflow_to_pydantic`, `pydantic_to_topology`, `topology_equals`, `workflow_definition_schema`
+- `packages/framework/src/marsys/coordination/topology/exceptions.py` — `UnknownToolError`, `NonSerializableTopologyError`
+- `packages/framework/src/marsys/agents/serialize.py` — `AgentSpec`, `agent_to_pydantic`, `pydantic_to_agents`
+- `packages/framework/src/marsys/coordination/serialize.py` — `ExecutionConfigSpec`, `ConvergencePolicyConfigSpec`, `TracingConfigSpec`, `StatusConfigSpec`, `execution_config_to_pydantic`, `pydantic_to_execution_config`
+- `packages/framework/src/marsys/models/serialize.py` — `ModelConfigSpec`, `model_config_spec_from_runtime`, `runtime_model_config_from_spec`
+- `packages/framework/tests/coordination/topology/__init__.py` (the directory does not exist today)
 - `packages/framework/tests/coordination/topology/test_serialize.py`
+- `packages/framework/tests/coordination/topology/test_serialize_hypothesis.py`
+- `packages/framework/tests/coordination/topology/test_schema_consumer.py`
 - `packages/framework/tests/coordination/topology/strategies.py`
 - `packages/framework/tests/agents/test_serialize.py`
 - `packages/framework/tests/coordination/test_serialize.py`
+- `packages/framework/tests/models/test_serialize.py`
+- `packages/framework/tests/integration/test_workflow_definition_round_trip.py`
 
 ### Files to modify
 
@@ -496,9 +512,10 @@ This PR adds one new sibling module per affected package and edits one non-TRUNK
 
 ## Open questions for the framework team
 
-1. **Module placement of execution-side specs.** Brief proposes `coordination/serialize.py` for `ExecutionConfigSpec`, `ConvergencePolicyConfigSpec`, `TracingConfigSpec`, `StatusConfigSpec`. Alternative is colocating each spec next to its dataclass (e.g., a `tracing/serialize.py`). Confirm placement.
-2. **`AgentSpec.agent_model` access path on the runtime side.** The brief reads `agent._model_config` (set on `Agent` concrete at `agents.py:2816`). `BaseAgent` does not store the originating `ModelConfig` — only the bound `self.model` adapter. If a workflow uses a pure-`BaseAgent` subclass that doesn't store the originating config, `agent_to_pydantic` raises a clear error pointing the user at the `model_config=` constructor kwarg.
+1. **Module placement of execution-side specs.** Brief proposes `coordination/serialize.py` for `ExecutionConfigSpec`, `ConvergencePolicyConfigSpec`, `TracingConfigSpec`, `StatusConfigSpec`. Considered colocating each spec next to its dataclass (e.g., a `tracing/serialize.py`); rejected because the four specs compose into `WorkflowDefinition` together, and Spren's prior art groups them similarly. Keeping in `coordination/serialize.py`.
+2. ~~**`AgentSpec.agent_model` access path on the runtime side.**~~ **RESOLVED at A5**: `BaseAPIModel` does NOT retain its source `ModelConfig` (`models.py:482-519`). Only `Agent._model_config` does (`agents.py:2816`). `agent_to_pydantic` is narrowed to `agent: Agent`, reads `agent._model_config`. Re-exporting `ModelConfig` directly was further rejected because `_validate_api_key` (`models.py:209-263`) raises `ValueError` at storage time when keys aren't reachable; a `ModelConfigSpec` mirror is introduced in `models/serialize.py` instead.
 3. **Plan-config and schema-field round-trips.** `plan_config: dict[str, Any] | None` and `input_schema` / `output_schema: dict[str, Any] | None` are passed through opaquely. Confirm this is sufficient for v0.4 consumers; if the framework wants typed schemas for these, they belong in a follow-up PR.
+4. ~~**Session 03 independence.**~~ **RESOLVED at A5**: Session 03 already shipped on the sibling worktree. No functional dependency, mechanical merge conflict expected on `CHANGELOG.md` and `orchestra.py` (this PR does not edit `orchestra.py`). Note in PR description; concatenate `[Unreleased]` bodies at merge time.
 
 ---
 
@@ -514,10 +531,51 @@ On completion:
 
 ### What was actually built (filled by implementer)
 
-> _Implementer fills this in._
->
-> Include: baseline test counts (before change), post-change test counts (must match for regression suite + new tests added), framework PR number + URL, framework release version that includes this feature, the coordinated Spren-side cleanup PR URL + merge timing, anything done differently from the plan with reasons.
+**Baseline (pre-change)**: framework regression at session-start sha `23ae812a59413cd83e01c1a43568c277674d7a38`: 978 tests collected; 12 pre-existing failures + 14 pre-existing errors (test_agent.py / test_managed_memory.py / test_memory_manual.py / test_learnable_agents.py — all unrelated to this PR; verified by stashing and re-running).
+
+**Post-change**: 88 new session-04 tests added (parametrized counts); full regression run 981 passed / 12 failed / 16 skipped / 14 errors. Net delta vs baseline: +9 passing, zero new failures or errors. Pre-existing failures unchanged.
+
+**Files added** (8 source + 7 test):
+- `packages/framework/src/marsys/coordination/topology/serialize.py` — `WorkflowDefinition`, `TopologySpec`, `NodeSpec`, `EdgeSpec`, `PatternConfigSpec`, `workflow_to_pydantic`, `pydantic_to_topology`, `topology_equals`, `workflow_definition_schema`, `_DialectAnnotatingSchemaGenerator`, `_consolidate_edges`
+- `packages/framework/src/marsys/coordination/topology/exceptions.py` — `UnknownToolError`, `NonSerializableTopologyError`
+- `packages/framework/src/marsys/coordination/serialize.py` — `ExecutionConfigSpec`, `ConvergencePolicyConfigSpec`, `TracingConfigSpec`, `StatusConfigSpec`, `execution_config_to_pydantic`, `pydantic_to_execution_config`
+- `packages/framework/src/marsys/agents/serialize.py` — `AgentSpec`, `agent_to_pydantic`, `pydantic_to_agents`
+- `packages/framework/src/marsys/models/serialize.py` — `ModelConfigSpec`, `model_config_spec_from_runtime`, `runtime_model_config_from_spec`
+- Tests: `tests/coordination/topology/{test_serialize.py, test_serialize_hypothesis.py, test_schema_consumer.py, strategies.py, __init__.py}`; `tests/agents/test_serialize.py`; `tests/integration/test_workflow_definition_round_trip.py`
+
+**Files modified** (3, only one source file):
+- `packages/framework/src/marsys/coordination/topology/converters/pattern_converter.py` — localized addition writing `topology.metadata["original_pattern"] = PatternConfigSpec(...).model_dump()` at the top of `PatternConfigConverter.convert`. Non-TRUNK-CRITICAL.
+- `packages/framework/CHANGELOG.md` — entry under `## [Unreleased]`. **Mechanical merge conflict with Session 03's entry expected**; concatenate on merge.
+- `packages/framework/pyproject.toml` — added `hypothesis>=6.0.0` and `jsonschema>=4.23.0` to `[project.optional-dependencies].test`.
+
+**Diff vs plan** (changes made during implementation):
+1. `ModelConfigSpec` mirror **introduced** instead of re-exporting `ModelConfig` directly. Reason: `ModelConfig._validate_api_key` (`models/models.py:209-263`) raises `ValueError` at storage time on any consumer that lacks reachable API keys (Spren storage layer, CI, MARSYS Cloud, community templates). The Spren team had already learned this and shipped their own mirror; the framework now owns the canonical version, and the coordinated Spren cleanup PR drops Spren's `model_config.py`.
+2. `agent_to_pydantic` narrowed to `agent: Agent` (concrete subclass) instead of the brief's `agent: BaseAgent`. Reason: only `Agent._model_config` retains the originating `ModelConfig` (`agents.py:2816`); `BaseAPIModel`/`BaseLocalModel` do not.
+3. `is_convergence_point` round-trips via post-construction private-attribute set in `pydantic_to_agents`. Reason: `Agent.__init__` doesn't accept this kwarg nor forward to `super().__init__`. Documented as a known asymmetry; fix in a future PR that touches `Agent.__init__`.
+4. Added `topology_equals(a, b) -> bool` helper because `Edge.__eq__` (`core.py:119-125`) only compares `(source, target, edge_type)` and ignores `bidirectional`/`pattern`/`metadata`. Round-trip tests must use this helper.
+5. Added `WorkflowDefinition._validate_cross_references` `model_validator(mode="after")` mirroring Spren's prior art (`spren/models/workflow.py:36-61`).
+6. Added `_DialectAnnotatingSchemaGenerator` subclass of `pydantic.json_schema.GenerateJsonSchema` because Pydantic v2's default schema generator carries `schema_dialect` as a class attribute but does NOT emit it as `$schema` in the output. Non-Python consumers need the URI in the document.
+7. Framework-injected `plan_*` tools are filtered out of `agent_to_pydantic`'s wire shape (only user-supplied tools persist). The rehydration path re-injects them based on `plan_config`.
+8. The Spren-cleanup PR acceptance was updated to list **5 files** for deletion (not 3): `topology.py`, `agent.py`, `execution_config.py`, `model_config.py`, `workflow.py`.
+
+**Framework PR / release**: TBD on merge.
+
+**Coordinated Spren-side cleanup PR**: TBD; opens within 24h of this PR merging.
 
 ### Lessons / Surprises (filled by implementer)
 
-> _Implementer fills this in._
+**1. `ModelConfig` is storage-hostile.** The framework's `_validate_api_key` mode-after validator runs on every construction. Useful for runtime; broken for storage. Spren had already discovered this and built `ModelConfigSpec` to dodge it. The brief's "re-export ModelConfig, no mirror" stance was a stale decision from before the Spren team's learning fed back to the framework. The implementer should have caught this from the project memory file (`memory/project_spren_modelconfig_mirror.md`) at the start of A1; instead the validator + improver agents caught it via cross-reference grep.
+
+**2. `agent.model.config` doesn't exist.** The brief assumed `BaseAPIModel` retains the source `ModelConfig`. It doesn't. Only `Agent` (the subclass) retains it as `_model_config`. The brief flagged this as Open Question #2 but then proceeded as if `agent.model.config` worked. Verifying the live attribute path is the implementer's job and was caught by the validator agent.
+
+**3. `Edge.__eq__` is wrong for round-trip equality.** `core.py:119-125` compares only `(source, target, edge_type)` and silently ignores `bidirectional`, `pattern`, `metadata`. Any test asserting `topology == round_tripped_topology` would silently pass even when half the wire shape was dropped. The `topology_equals` helper had to be added to make round-trip assertions meaningful. This is a runtime invariant worth surfacing to the framework team (consider whether `Edge.__eq__` should also compare those fields).
+
+**4. Bidirectional consolidation is subtle.** `Topology.add_edge` auto-inserts a reverse edge for `bidirectional=True`, so the runtime always carries the pair. The consolidation function must fold them back on the wire. A first cut of `_consolidate_edges` used a `consumed` set marking BOTH the forward and reverse keys for every emission; Hypothesis caught the bug where two non-bidirectional edges going opposite directions between the same pair would lose one to the consolidation. Fix: only mark the reverse key when an actual bidirectional pair is consolidated.
+
+**5. Pydantic forward-ref + recursive imports.** `WorkflowDefinition.agents: Dict[str, "AgentSpec"]` requires `AgentSpec` to be in scope at validation time. `AgentSpec` lives in `agents.serialize` (per the brief); `WorkflowDefinition` in `topology.serialize`. Naive cross-import is circular. The fix: bottom-of-module import in `topology.serialize` that triggers the rebuild side effect at load time. Caller-visible API now works standalone.
+
+**6. Framework `plan_*` tools leak into the runtime tools dict.** When `agent_to_pydantic` reads `agent.tools.keys()`, the framework-injected plan tools come along for the ride. Filtering them by name prefix (`plan_*`) is the lightest-touch fix; the alternative (separating user tools from framework tools at the Agent class level) would touch `BaseAgent` / `Agent` which is out of scope.
+
+**7. Pydantic v2 schema generator doesn't emit `$schema`.** `GenerateJsonSchema.schema_dialect` is a class attribute, but `model_json_schema()` does not put it into the output. Non-Python consumers (`jsonschema`, `ajv`, `datamodel-code-generator`) need the URI in the document. A subclass override of `generate()` injects it. A fail-fast assertion in `workflow_definition_schema()` catches silent Pydantic-upgrade dialect drift.
+
+**8. Session 03 already shipped on the sibling worktree.** The brief said sessions 02 and 03 were "independent of this PR." Session 02 ✓; Session 03 already merged on `marsys-spren-work` branch `feature/spren-umbrella` (commits `88eb0e4`, `88e6ddf`, `6df30ab`, `210f3d2`, `83d89c4`, `6805c9b`). Session 04 reads from `orchestra.agent_registry` and `orchestra._execution_config` which both survive Session 03's `Orchestra.__init__` rewrite, so no functional dependency. Mechanical merge conflicts on `CHANGELOG.md` `## [Unreleased]` block and `orchestra.py` lines 124-160 (Session 04 doesn't edit `orchestra.py`, so its merge cost is concatenating the CHANGELOG entry).
