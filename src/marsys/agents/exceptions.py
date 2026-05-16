@@ -819,6 +819,15 @@ class ModelAPIError(ModelError):
                         retry_after = int(response.headers.get("retry-after", 60)) if hasattr(response, 'headers') else 60
                 elif status_code == 400 and "credit balance" in message.lower():
                         classification = APIErrorClassification.INSUFFICIENT_CREDITS.value
+                elif status_code == 400:
+                        # Generic malformed-request 400. `message` was set
+                        # from the provider body at the top of this branch
+                        # (before the status dispatch), so the descriptive
+                        # text surfaces; this arm only needs to classify.
+                        # Parity with the openrouter / anthropic-oauth 400
+                        # arms. Terminal — not retryable.
+                        classification = APIErrorClassification.INVALID_REQUEST.value
+                        is_retryable = False
                 elif status_code == 401:
                         classification = APIErrorClassification.AUTHENTICATION_FAILED.value
                 elif status_code >= 500:
