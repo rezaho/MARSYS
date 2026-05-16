@@ -257,12 +257,12 @@ class TestMessage:
 
     def test_invalid_tool_calls_type(self):
         """Test error for invalid tool_calls type."""
-        with pytest.raises((MessageError, TypeError)):
+        with pytest.raises(MessageError):
             Message(role="assistant", tool_calls="invalid")
 
     def test_invalid_images_type(self):
         """Test error for invalid images type."""
-        with pytest.raises((MessageError, TypeError)):
+        with pytest.raises(MessageError):
             Message(role="user", content="Test", images="invalid")
 
 
@@ -352,7 +352,7 @@ class TestConversationMemory:
     def test_add_without_role_raises(self):
         """Test add without role or message raises error."""
         memory = ConversationMemory()
-        with pytest.raises((MessageError, TypeError)):
+        with pytest.raises(MessageError):
             memory.add()
 
     def test_update_message(self):
@@ -368,7 +368,7 @@ class TestConversationMemory:
     def test_update_nonexistent_raises(self):
         """Test updating non-existent message raises error."""
         memory = ConversationMemory()
-        with pytest.raises((MessageError, TypeError)):
+        with pytest.raises(MessageError):
             memory.update("nonexistent_id", content="Test")
 
     def test_retrieve_all(self):
