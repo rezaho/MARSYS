@@ -22,32 +22,44 @@ class PatternConfigConverter:
     def convert(config: PatternConfig) -> Topology:
         """
         Convert pattern configuration to Topology.
-        
+
         Args:
             config: PatternConfig instance
-            
+
         Returns:
-            Topology instance
-            
+            Topology instance with ``metadata["original_pattern"]`` set so
+            the source ``PatternConfig`` survives a round-trip through the
+            serialize layer (see ``coordination/topology/serialize.py``).
+
         Raises:
             ValueError: If pattern is not supported
         """
         if config.pattern == PatternType.HUB_AND_SPOKE:
-            return PatternConfigConverter._hub_and_spoke(config)
+            topology = PatternConfigConverter._hub_and_spoke(config)
         elif config.pattern == PatternType.HIERARCHICAL:
-            return PatternConfigConverter._hierarchical(config)
+            topology = PatternConfigConverter._hierarchical(config)
         elif config.pattern == PatternType.PIPELINE:
-            return PatternConfigConverter._pipeline(config)
+            topology = PatternConfigConverter._pipeline(config)
         elif config.pattern == PatternType.MESH:
-            return PatternConfigConverter._mesh(config)
+            topology = PatternConfigConverter._mesh(config)
         elif config.pattern == PatternType.STAR:
-            return PatternConfigConverter._star(config)
+            topology = PatternConfigConverter._star(config)
         elif config.pattern == PatternType.RING:
-            return PatternConfigConverter._ring(config)
+            topology = PatternConfigConverter._ring(config)
         elif config.pattern == PatternType.BROADCAST:
-            return PatternConfigConverter._broadcast(config)
+            topology = PatternConfigConverter._broadcast(config)
         else:
             raise ValueError(f"Unknown pattern: {config.pattern}")
+        # Record source pattern for round-trip provenance. Lazy import keeps
+        # the runtime converter free of a hard dependency on the serialize
+        # module's Pydantic surface.
+        from ..serialize import PatternConfigSpec
+        topology.metadata["original_pattern"] = PatternConfigSpec(
+            pattern=config.pattern.value,
+            params=dict(config.params),
+            metadata=dict(config.metadata),
+        ).model_dump()
+        return topology
     
     @staticmethod
     def _hub_and_spoke(config: PatternConfig) -> Topology:
