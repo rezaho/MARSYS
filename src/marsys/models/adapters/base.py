@@ -96,6 +96,46 @@ def _attach_retry_attempts(
         response.metadata.retry_attempts = attempts
 
 
+class _CapturedErrorResponse:
+    """A sync, body-captured view of a closed aiohttp error response.
+
+    aiohttp's body is a coroutine and is unrecoverable once the
+    ``async with`` closes; its ``ClientResponseError`` carries only the
+    reason phrase ("Bad Request"). The async error path reads the body
+    while the response is still live and wraps it here, shaped exactly
+    like the live ``requests.Response`` the *sync* error path already
+    hands to ``handle_api_error`` (``status_code`` / ``json()`` /
+    ``headers``). ``from_provider_response`` and every provider's
+    ``handle_api_error`` then work unchanged for both transports.
+
+    ``json()`` returns the parse captured at construction and is
+    idempotent: the anthropic ``handle_api_error`` wrapper re-reads the
+    body and headers post-classification when the error is non-critical,
+    so this must be safely re-callable.
+
+    This shim exists only because ``from_provider_response`` is coupled to
+    a transport object (it duck-types ``.status_code`` / ``.json()`` /
+    ``.headers``) rather than taking extracted error data, so the sync
+    (``requests``) and async (aiohttp coroutine ``.json()``) paths don't
+    compose. The clean fix (an explicit ``APIErrorContext`` consumed by
+    ``handle_api_error`` / ``from_provider_response``) is a cross-provider
+    contract change tracked as an architecture follow-up in
+    ``docs/implementation/framework/sessions/v0.3.0/09-messageerror-kwarg-mismatch.md``.
+    """
+
+    __slots__ = ("status_code", "_body", "headers")
+
+    def __init__(self, status_code: int, body: Any, headers: Any):
+        self.status_code = status_code
+        self._body = body
+        self.headers = headers
+
+    def json(self) -> Any:
+        if self._body is None:
+            raise ValueError("no JSON error body was captured")
+        return self._body
+
+
 class APIProviderAdapter(ABC):
     """Abstract base class for API provider adapters.
 
@@ -461,6 +501,7 @@ class AsyncBaseAPIAdapter(APIProviderAdapter):
 
         for attempt in range(max_retries + 1):
             response = None
+            err_response = None
             attempt_start = time.time()
             try:
                 request_start_time = attempt_start
@@ -479,6 +520,29 @@ class AsyncBaseAPIAdapter(APIProviderAdapter):
                 ) as response:
                     response_status = response.status
                     attempt_duration_ms = (time.time() - attempt_start) * 1000
+
+                    # Capture the error body while the response is still
+                    # live (it is unrecoverable once the `async with`
+                    # closes; aiohttp's ClientResponseError carries only the
+                    # reason phrase). Gated on non-200 so the success path
+                    # pays nothing. content_type=None: provider 4xx bodies
+                    # are often not application/json.
+                    if response_status != 200:
+                        from multidict import CIMultiDict
+                        try:
+                            _captured_body = await response.json(content_type=None)
+                        except Exception:
+                            # Non-JSON error body (HTML 5xx page, empty
+                            # 400): keep status+headers so classification
+                            # by status still works; body=None makes
+                            # from_provider_response fall back exactly as
+                            # it does today.
+                            _captured_body = None
+                        err_response = _CapturedErrorResponse(
+                            status_code=response_status,
+                            body=_captured_body,
+                            headers=CIMultiDict(response.headers),
+                        )
 
                     if response_status in [500, 502, 503, 504, 529, 408]:
                         if attempt < max_retries:
@@ -582,13 +646,13 @@ class AsyncBaseAPIAdapter(APIProviderAdapter):
 
             except aiohttp.ClientError as e:
                 try:
-                    return self.handle_api_error(e, response=None)
+                    return self.handle_api_error(e, response=err_response)
                 except Exception as api_error:
                     raise api_error
 
             except Exception as e:
                 try:
-                    return self.handle_api_error(e, response=None)
+                    return self.handle_api_error(e, response=err_response)
                 except Exception as api_error:
                     raise api_error
 

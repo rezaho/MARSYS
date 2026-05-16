@@ -237,6 +237,7 @@ def test_message_with_images():
         / "screenshots"
         / "vision_analysis_screenshot.png"
     )
+    test_image.parent.mkdir(parents=True, exist_ok=True)
     test_image.write_bytes(
         b"\x89PNG\r\n\x1a\n\x00\x00\x00\rIHDR\x00\x00\x00\x01\x00\x00\x00\x01\x08\x02\x00\x00\x00\x90wS\xde"
     )
