@@ -57,7 +57,7 @@ def valid_definition() -> dict[str, object]:
             "assistant": {
                 "agent_model": {
                     "type": "api",
-                    "name": "claude-opus-4-7",
+                    "name": "claude-sonnet-4-6",
                     "provider": "anthropic",
                     "base_url": None,
                     "max_tokens": 1024,
