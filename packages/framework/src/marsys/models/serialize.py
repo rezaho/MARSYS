@@ -10,11 +10,16 @@ that validator raises ``ValueError`` whenever an API key is not reachable —
 which is exactly the case at storage time, on machines that haven't been
 configured yet, and inside community workflow templates shared publicly.
 
-At execution time, callers materialize a runnable ``ModelConfig`` from a spec
-via :func:`runtime_model_config_from_spec`, optionally supplying an
-``api_key`` resolved from the consumer's secrets store. When no key is
-supplied, the framework's ``ModelConfig._validate_api_key`` resolves the env
-var as today.
+At execution time, callers materialize a **runnable** ``ModelConfig`` from a
+spec via :func:`runtime_model_config_from_spec` (its default,
+``runnable=True``): validators run, ``base_url`` is derived from
+``provider``, and the credential is resolved from an explicitly-supplied
+``api_key`` or the provider env var — raising if neither is reachable,
+identical to a directly-constructed ``ModelConfig``. To load, validate, or
+display a stored spec on a machine without credentials, callers pass
+``runnable=False`` for a non-raising, non-runnable config that preserves
+every non-secret field. The non-runnable form is an explicit opt-in, not
+the default, so a runtime caller cannot silently receive a dead config.
 """
 
 from __future__ import annotations
@@ -98,23 +103,39 @@ def model_config_spec_from_runtime(config: ModelConfig) -> ModelConfigSpec:
 def runtime_model_config_from_spec(
     spec: ModelConfigSpec,
     api_key: Optional[str] = None,
+    *,
+    runnable: bool = True,
 ) -> ModelConfig:
     """Materialize a :class:`ModelConfig` from a storage spec.
 
-    Two paths:
+    Two orthogonal axes: ``runnable`` (must this config execute?) and
+    ``api_key`` (an explicitly-injected credential, e.g. from a secrets
+    store).
 
-    - **With ``api_key``**: builds a runnable ``ModelConfig`` via the normal
-      Pydantic constructor. ``_validate_api_key`` runs, ``_set_base_url_from_provider``
-      runs. Suitable for immediate execution.
-    - **Without ``api_key``** (the default): builds a ``ModelConfig`` via
-      ``model_construct`` so ``_validate_api_key`` is bypassed. Suitable for
-      inspection, round-trip, or staged materialization (caller supplies the
-      key later from a credential store or env var). The returned object is
-      NOT runnable through ``Agent`` until a real key is attached, but it
-      preserves every non-secret field.
+    - ``runnable=True`` (**the default**): build via the normal Pydantic
+      constructor so every validator runs — ``_set_base_url_from_provider``
+      derives ``base_url`` from ``provider``, and ``_validate_api_key``
+      resolves the credential. For a standard-API-key provider with no
+      ``api_key`` supplied, the provider env var (``OPENAI_API_KEY`` etc.)
+      is read exactly as a directly-constructed ``ModelConfig`` does, and a
+      ``ValueError`` is raised if it is missing. This is the execution
+      contract; ``pydantic_to_agents`` relies on it so canonically-defined
+      workflows run identically to string-notation ones.
+    - ``runnable=False``: build via ``model_construct`` so all validators
+      are bypassed. Never raises, preserves every non-secret field, but the
+      result is NOT runnable until a key is attached. This is the
+      storage/inspection contract — loading, validating, or displaying a
+      stored spec on a machine without credentials (community templates,
+      MARSYS Cloud pre-deploy validation, persistence layers). It was the
+      historical default; making it an explicit opt-in removes the footgun
+      where a runtime caller silently received a dead config.
 
-    OAuth providers (``openai-oauth``, ``anthropic-oauth``) bypass the
-    api-key path; ``oauth_profile`` carries the credential reference.
+    OAuth providers (``openai-oauth``, ``anthropic-oauth``) need no
+    ``api_key`` and no env var on either path: ``_validate_api_key``'s oauth
+    branch is a no-op and the provider adapter resolves both endpoint and
+    credential from ``oauth_profile`` at client-init, independent of these
+    fields. Routing them through ``runnable=True`` is safe and matches the
+    proven string-notation baseline.
     """
     common_fields = dict(
         type=spec.type,
@@ -135,6 +156,11 @@ def runtime_model_config_from_spec(
         gpu_memory_utilization=spec.gpu_memory_utilization,
         quantization=spec.quantization,
     )
-    if api_key is not None:
-        return ModelConfig(api_key=api_key, **common_fields)
-    return ModelConfig.model_construct(api_key=None, **common_fields)
+    if not runnable:
+        # Inspection/storage: bypass every validator — never resolve a
+        # credential, never derive base_url, never raise. Not runnable.
+        return ModelConfig.model_construct(api_key=api_key, **common_fields)
+    # Runnable (default): full validation. api_key=None lets
+    # _validate_api_key resolve the provider env var, and raise if it is
+    # missing — exact parity with a directly-constructed ModelConfig.
+    return ModelConfig(api_key=api_key, **common_fields)

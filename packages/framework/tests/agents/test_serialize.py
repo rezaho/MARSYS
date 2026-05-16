@@ -25,6 +25,11 @@ from marsys.models.serialize import ModelConfigSpec
 
 @pytest.fixture(autouse=True)
 def _api_key_env(monkeypatch):
+    # Load-bearing since Session 07: runtime_model_config_from_spec's default
+    # is runnable=True, so every test materializing an `openai`-provider spec
+    # via pydantic_to_agents now flows through ModelConfig's validators and
+    # needs OPENAI_API_KEY resolvable. Tests that assert the missing-env raise
+    # delete it locally with monkeypatch.delenv.
     monkeypatch.setenv("OPENAI_API_KEY", "sk-test-not-real")
 
 
@@ -183,16 +188,19 @@ def test_agent_to_pydantic_populates_agent_model_from_runtime_config():
     assert spec.agent_model.provider == "openai"
 
 
-def test_runtime_model_config_from_spec_with_no_api_key_succeeds():
-    """AC-33: round-trip without API key produces a ModelConfig whose
-    non-secret fields equal those of the spec (api_key is None)."""
+def test_runtime_model_config_from_spec_inspection_mode_preserves_fields_no_raise(monkeypatch):
+    """AC-33 (amended Session 07 — AC-5): the round-trip/field-preservation
+    + no-raise guarantee now lives behind the explicit ``runnable=False``
+    inspection opt-in (was the bare default pre-Session-07). Holds even with
+    NO credential reachable."""
     from marsys.models.serialize import runtime_model_config_from_spec
 
+    monkeypatch.delenv("OPENAI_API_KEY", raising=False)
     spec = ModelConfigSpec(
         type="api", name="gpt-4o", provider="openai",
         temperature=0.4, max_tokens=2048, oauth_profile="my_profile",
     )
-    runtime = runtime_model_config_from_spec(spec)
+    runtime = runtime_model_config_from_spec(spec, runnable=False)
     assert runtime.type == "api"
     assert runtime.name == "gpt-4o"
     assert runtime.provider == "openai"
@@ -200,6 +208,84 @@ def test_runtime_model_config_from_spec_with_no_api_key_succeeds():
     assert runtime.max_tokens == 2048
     assert runtime.oauth_profile == "my_profile"
     assert runtime.api_key is None
+
+
+def test_runtime_model_config_from_spec_default_runnable_resolves_env():
+    """AC-3: the new default (runnable=True) for a standard-API-key provider
+    with the env var set yields a runnable config — env key resolved,
+    base_url derived from provider. Parity with a directly-constructed
+    ModelConfig / string-notation. (OPENAI_API_KEY set by autouse fixture.)"""
+    from marsys.models.serialize import runtime_model_config_from_spec
+
+    spec = ModelConfigSpec(type="api", name="gpt-4o", provider="openai")
+    runtime = runtime_model_config_from_spec(spec)
+    assert runtime.api_key == "sk-test-not-real"
+    assert runtime.base_url is not None
+    assert "openai" in runtime.base_url.lower()
+
+
+def test_runtime_model_config_from_spec_default_runnable_raises_on_missing_env(monkeypatch):
+    """AC-4: the new default for a standard-API-key provider with the env
+    var UNSET raises ValueError — the same failure class string-notation
+    raises. It must NOT silently return api_key=None/base_url=None."""
+    import pytest
+
+    from marsys.models.serialize import runtime_model_config_from_spec
+
+    from marsys.models.models import ModelConfig
+
+    monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+    spec = ModelConfigSpec(type="api", name="gpt-4o", provider="openai")
+    with pytest.raises(ValueError):
+        runtime_model_config_from_spec(spec)
+
+    # Same failure class as the string-notation path: a directly-constructed
+    # ModelConfig with no key and no reachable env var raises ValueError too.
+    with pytest.raises(ValueError):
+        ModelConfig(type="api", name="gpt-4o", provider="openai")
+
+
+def test_runtime_model_config_from_spec_oauth_default_no_env_var_needed(monkeypatch):
+    """AC-7 (contract half): for an *-oauth provider the default (runnable)
+    call needs no standard-provider env var — _validate_api_key's oauth
+    branch is a no-op. Returns a config, preserves oauth_profile, derives
+    the oauth base_url. No e2e/LLM."""
+    from marsys.models.serialize import runtime_model_config_from_spec
+
+    monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+    monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
+    spec = ModelConfigSpec(
+        type="api", name="claude-haiku-4.5",
+        provider="anthropic-oauth", oauth_profile="marsys-2",
+    )
+    runtime = runtime_model_config_from_spec(spec)  # default runnable=True
+    assert runtime.provider == "anthropic-oauth"
+    assert runtime.oauth_profile == "marsys-2"
+    assert runtime.api_key is None
+    assert runtime.base_url is not None  # _set_base_url_from_provider ran
+
+
+def test_runtime_model_config_from_spec_default_matches_direct_modelconfig():
+    """AC-13: the new default for a standard-API-key provider yields the
+    same base_url + api_key as the equivalent directly-constructed
+    ModelConfig (the string-notation path). The pre-fix
+    base_url=None/api_key=None divergence is gone. (OPENAI_API_KEY set by
+    autouse fixture.)"""
+    from marsys.models.models import ModelConfig
+    from marsys.models.serialize import runtime_model_config_from_spec
+
+    direct = ModelConfig(
+        type="api", name="gpt-4o", provider="openai",
+        temperature=0.3, max_tokens=4000,
+    )
+    spec = ModelConfigSpec(
+        type="api", name="gpt-4o", provider="openai",
+        temperature=0.3, max_tokens=4000,
+    )
+    hydrated = runtime_model_config_from_spec(spec)
+    assert hydrated.base_url == direct.base_url
+    assert hydrated.api_key == direct.api_key
+    assert hydrated.base_url is not None and hydrated.api_key is not None
 
 
 def test_runtime_model_config_from_spec_with_api_key_validates():

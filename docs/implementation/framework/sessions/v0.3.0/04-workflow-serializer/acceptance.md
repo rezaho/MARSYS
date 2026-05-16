@@ -13,6 +13,7 @@ Frozen at 2026-05-12T00:00:00Z. The test auditor reads ONLY this file plus the t
 - AC-7: A module `marsys.agents.serialize` exposes class `AgentSpec` as a Pydantic `BaseModel` and top-level functions `agent_to_pydantic(agent) -> AgentSpec` and `pydantic_to_agents(spec, tool_registry) -> list[Agent]`.
 - AC-8: A module `marsys.coordination.serialize` exposes classes `ExecutionConfigSpec`, `ConvergencePolicyConfigSpec`, `TracingConfigSpec`, `StatusConfigSpec` (all Pydantic `BaseModel`) and top-level functions `execution_config_to_pydantic(config) -> ExecutionConfigSpec` and `pydantic_to_execution_config(spec) -> ExecutionConfig`.
 - AC-9: A module `marsys.models.serialize` exposes class `ModelConfigSpec` and top-level functions `model_config_spec_from_runtime(config) -> ModelConfigSpec` and `runtime_model_config_from_spec(spec, api_key=None) -> ModelConfig`.
+  - _[amended 2026-05-16 — Session 07] signature is now `runtime_model_config_from_spec(spec, api_key=None, *, runnable=True) -> ModelConfig` (additive keyword-only param; default flips to runnable). Rationale: `../07-canonical-workflow-repro.md` §7._
 - AC-10: A module `marsys.coordination.topology.exceptions` exposes class `UnknownToolError` (subclass of `ValueError`) and class `NonSerializableTopologyError` (subclass of `ValueError`).
 - AC-11: A public helper `topology_equals(a: Topology, b: Topology) -> bool` is exposed from `marsys.coordination.topology.serialize`.
 
@@ -55,7 +56,9 @@ Frozen at 2026-05-12T00:00:00Z. The test auditor reads ONLY this file plus the t
 - AC-31: `AgentSpec.agent_model` is typed as `ModelConfigSpec` (not `marsys.models.ModelConfig`).
 - AC-32: `agent_to_pydantic(agent)` populates `AgentSpec.agent_model` by calling `model_config_spec_from_runtime(agent._model_config)`.
 - AC-33: `runtime_model_config_from_spec(spec)` produces a `ModelConfig` whose non-secret fields equal those of `spec` (round-trip preservation of every non-`api_key` field, including `oauth_profile`).
+  - _[amended 2026-05-16 — Session 07] this preservation/no-raise guarantee now holds for `runtime_model_config_from_spec(spec, runnable=False)` (the explicit inspection opt-in). The bare default is now `runnable=True` and resolves the credential / raises if unreachable, exactly like a directly-constructed `ModelConfig`. Reason: the silent-non-runnable default was a footgun that made canonical workflows fail on standard-API-key providers. See `../07-canonical-workflow-repro.md`._
 - AC-34: `runtime_model_config_from_spec(spec, api_key="sk-...")` produces a valid `ModelConfig` with the supplied key.
+  - _[unaffected 2026-05-16 — Session 07] explicit-key path still validates; behavior unchanged under the new default._
 - AC-35: A `ModelConfigSpec` (e.g., `type="api"`, `name="gpt-4o"`, `provider="openai"`) round-trips through JSON with no `api_key` field present in the JSON payload.
 
 ## Functional — WorkflowDefinition cross-reference validator
