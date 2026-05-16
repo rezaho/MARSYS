@@ -365,13 +365,13 @@ class TestMessage:
     def test_images_validation_invalid_type(self):
         """Test images validation rejects non-list."""
         # MessageError is raised when images is not a list
-        with pytest.raises((MessageError, TypeError)):
+        with pytest.raises(MessageError):
             Message(role="user", content="test", images="not_a_list")
 
     def test_images_validation_invalid_item(self):
         """Test images validation rejects non-string items."""
         # MessageError is raised when images item is not a string
-        with pytest.raises((MessageError, TypeError)):
+        with pytest.raises(MessageError):
             Message(role="user", content="test", images=[123])
 
 
@@ -424,7 +424,7 @@ class TestConversationMemory:
         memory = ConversationMemory()
 
         # Either MessageError or TypeError is raised
-        with pytest.raises((MessageError, TypeError)):
+        with pytest.raises(MessageError):
             memory.add()
 
     def test_retrieve_all(self):
@@ -498,7 +498,7 @@ class TestConversationMemory:
         memory = ConversationMemory()
 
         # Either MessageError or KeyError is raised when message not found
-        with pytest.raises((MessageError, KeyError, TypeError)):
+        with pytest.raises((MessageError, KeyError)):
             memory.update("non_existent_id", content="test")
 
     def test_remove_by_id(self):

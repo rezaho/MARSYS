@@ -117,13 +117,42 @@ class AgentFrameworkError(Exception):
 
 class MessageError(AgentFrameworkError):
     """Base class for message handling and validation errors."""
-    
-    def __init__(self, message: str, **kwargs):
-        # Extract error_code to avoid duplicate parameter
+
+    def __init__(
+        self,
+        message: str,
+        message_id: Optional[str] = None,
+        invalid_data: Optional[Any] = None,
+        expected_format: Optional[str] = None,
+        validation_path: Optional[str] = None,
+        **kwargs,
+    ):
+        # The base class previously blind-forwarded **kwargs into
+        # AgentFrameworkError.__init__, whose signature is a closed set —
+        # so any diagnostic kwarg (message_id/invalid_data/...) raised
+        # TypeError and destroyed the real MessageError. Fold the
+        # diagnostics into `context` (size-bounded, matching the sibling
+        # subclasses' truncation) and forward only the
+        # AgentFrameworkError-legal kwargs. Deliberately does NOT set these
+        # as attributes: subclasses (MessageFormatError/SchemaValidationError)
+        # set their own diagnostic attributes BEFORE calling super(), and an
+        # unconditional self.x = x here (x defaulting None when the subclass
+        # consumed the kwarg) would clobber them.
+        context = kwargs.pop("context", {})
+        if message_id:
+            context["message_id"] = message_id
+        if invalid_data is not None:
+            context["invalid_data"] = str(invalid_data)[:200]
+        if expected_format:
+            context["expected_format"] = expected_format
+        if validation_path:
+            context["validation_path"] = validation_path
+
         error_code = kwargs.pop("error_code", "MESSAGE_ERROR")
         super().__init__(
             message,
             error_code=error_code,
+            context=context,
             **kwargs
         )
 
@@ -790,6 +819,15 @@ class ModelAPIError(ModelError):
                         retry_after = int(response.headers.get("retry-after", 60)) if hasattr(response, 'headers') else 60
                 elif status_code == 400 and "credit balance" in message.lower():
                         classification = APIErrorClassification.INSUFFICIENT_CREDITS.value
+                elif status_code == 400:
+                        # Generic malformed-request 400. `message` was set
+                        # from the provider body at the top of this branch
+                        # (before the status dispatch), so the descriptive
+                        # text surfaces; this arm only needs to classify.
+                        # Parity with the openrouter / anthropic-oauth 400
+                        # arms. Terminal — not retryable.
+                        classification = APIErrorClassification.INVALID_REQUEST.value
+                        is_retryable = False
                 elif status_code == 401:
                         classification = APIErrorClassification.AUTHENTICATION_FAILED.value
                 elif status_code >= 500:
