@@ -52,9 +52,9 @@ from marsys.coordination.topology import Topology, Node, Edge
 
 topology = Topology(
     nodes=[
-        Node("Coordinator", node_type=NodeType.AGENT),
-        Node("Worker1", node_type=NodeType.AGENT),
-        Node("Worker2", node_type=NodeType.AGENT)
+        Node("Coordinator"),
+        Node("Worker1"),
+        Node("Worker2")
     ],
     edges=[
         Edge("Coordinator", "Worker1"),
@@ -73,14 +73,14 @@ Represents an agent or system component in the topology.
 
 **Import:**
 ```python
-from marsys.coordination.topology import Node, NodeType
+from marsys.coordination.topology import Node, NodeKind
 ```
 
 **Constructor:**
 ```python
 Node(
     name: str,
-    node_type: NodeType = NodeType.AGENT,
+    kind: NodeKind = NodeKind.AGENT,
     agent_ref: Optional[Any] = None,
     is_convergence_point: bool = False,
     metadata: Dict[str, Any] = None
@@ -91,32 +91,34 @@ Node(
 | Parameter | Type | Description | Default |
 |-----------|------|-------------|---------|
 | `name` | `str` | Unique node identifier | Required |
-| `node_type` | `NodeType` | Type of node | `AGENT` |
+| `kind` | `NodeKind` | Node kind | `AGENT` |
 | `agent_ref` | `Optional[Any]` | Reference to agent instance | `None` |
 | `is_convergence_point` | `bool` | Marks convergence point | `False` |
 | `metadata` | `Dict[str, Any]` | Additional node data | `{}` |
 
-**NodeType Enum:**
+**NodeKind Enum:**
 ```python
-class NodeType(Enum):
-    USER = "user"        # User interaction node
-    AGENT = "agent"      # AI agent node
-    SYSTEM = "system"    # System component
-    TOOL = "tool"        # Tool node
+class NodeKind(Enum):
+    AGENT = "agent"   # LLM-driven agent node (carries an agent_ref)
+    START = "start"   # workflow entry (deterministic)
+    END = "end"       # workflow exit / sink (deterministic)
+    USER = "user"     # human-interaction node (deterministic)
 ```
+
+`START`/`END`/`USER` are deterministic nodes: they are plain `Node`s with the
+corresponding `kind`. Their runtime behaviour is materialized from `kind` by
+the framework — you never place a `StartNode`/`EndNode`/`UserNode` *instance*
+in `Topology.nodes` (that raises `TypeError`).
 
 **Example:**
 ```python
-from marsys.coordination.topology import Node, NodeType
+from marsys.coordination.topology import Node, NodeKind
 
-# Create different node types
-user_node = Node("User", node_type=NodeType.USER)
-agent_node = Node("Assistant", node_type=NodeType.AGENT)
-convergence = Node(
-    "Aggregator",
-    node_type=NodeType.AGENT,
-    is_convergence_point=True
-)
+start = Node("Start", kind=NodeKind.START)        # or Node("Start", kind="start")
+agent_node = Node("Assistant")                    # AGENT is the default
+user_node = Node("User", kind=NodeKind.USER)
+end = Node("End", kind=NodeKind.END)
+convergence = Node("Aggregator", is_convergence_point=True)
 ```
 
 ---
@@ -434,6 +436,37 @@ topology = {
     "rules": ["max_turns(5)"]
 }
 ```
+
+---
+
+## 💾 Serialization (canonical wire format)
+
+A `Topology` + its agents + execution config serialize to a single canonical
+JSON document, `WorkflowDefinition`, that can be stored and re-run later.
+
+```python
+from marsys.coordination.topology.serialize import (
+    WorkflowDefinition, workflow_to_pydantic, pydantic_to_topology,
+    workflow_definition_schema,
+)
+
+spec = workflow_to_pydantic(orchestra, topology)   # runtime -> wire (total over every NodeKind)
+json_text = spec.model_dump_json()                 # persist
+spec = WorkflowDefinition.model_validate_json(json_text)        # load
+topology = pydantic_to_topology(spec, tool_registry={}, handler_registry={})  # wire -> runnable
+```
+
+- On the wire, each node carries `kind` (the `NodeKind` value); `START`/`END`/
+  `USER` nodes round-trip like any other — the serializer is total.
+- `handler_registry` is the dependency-injection seam for `USER`-node handlers
+  (mirrors `tool_registry` for agent tools).
+- The JSON Schema (for non-Python consumers) is `workflow_definition_schema()`;
+  it carries `x-wire-schema-version` (currently `2` — the `kind` shape; `1`
+  was the legacy `node_type` shape). A stored doc using the removed
+  `system`/`tool` node types is rejected at load with a migration message.
+
+End-to-end runnable reference:
+[`packages/framework/examples/session08_workflow_roundtrip.py`](https://github.com/rezaho/MARSYS/blob/main/packages/framework/examples/session08_workflow_roundtrip.py).
 
 ---
 
