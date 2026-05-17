@@ -152,7 +152,7 @@ For production systems with full control and type safety:
 
 ```python
 from marsys.coordination import Orchestra
-from marsys.coordination.topology import Topology, Node, Edge, NodeType, EdgeType
+from marsys.coordination.topology import Topology, Node, Edge, NodeKind, EdgeType
 from marsys.coordination.rules import TimeoutRule, MaxStepsRule
 from marsys.agents import Agent
 from marsys.models import ModelConfig
@@ -178,12 +178,12 @@ writer = Agent(
 nodes = [
     Node(
         name="Researcher",
-        node_type=NodeType.AGENT,
+        kind=NodeKind.AGENT,
         metadata={"role": "information_gatherer"}
     ),
     Node(
         name="Writer",
-        node_type=NodeType.AGENT,
+        kind=NodeKind.AGENT,
         metadata={"role": "content_creator"}
     )
 ]
@@ -390,7 +390,7 @@ topology = Topology(
 
 # Add nodes dynamically
 topology.add_node("Worker2")
-topology.add_node(Node("Analyzer", node_type=NodeType.AGENT))
+topology.add_node(Node("Analyzer", kind=NodeKind.AGENT))
 
 # Add edges
 topology.add_edge("Coordinator", "Worker2")
@@ -413,12 +413,12 @@ Define where parallel branches merge:
 # Manual convergence point
 topology = Topology(
     nodes=[
-        Node("Splitter", node_type=NodeType.AGENT),
-        Node("Worker1", node_type=NodeType.AGENT),
-        Node("Worker2", node_type=NodeType.AGENT),
-        Node("Worker3", node_type=NodeType.AGENT),
+        Node("Splitter", kind=NodeKind.AGENT),
+        Node("Worker1", kind=NodeKind.AGENT),
+        Node("Worker2", kind=NodeKind.AGENT),
+        Node("Worker3", kind=NodeKind.AGENT),
         Node("Aggregator",
-             node_type=NodeType.AGENT,
+             kind=NodeKind.AGENT,
              is_convergence_point=True)  # Convergence point
     ],
     edges=[

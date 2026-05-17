@@ -2,29 +2,51 @@
 
 A **deterministic node** (det-node) is a non-LLM node in the topology graph. Det-nodes have explicit, single-purpose behavior that runs inline when an agent invokes them — they don't make model calls, they don't appear in `Runtime.step`'s contract, and they interact with the orchestrator only through the narrow `DetNodeContext` Protocol.
 
-MARSYS reserves three singleton det-nodes:
+A det-node is a plain `Node` whose `kind` is one of three deterministic
+kinds. The node itself is just data; its behaviour lives in a framework class
+selected from `kind`:
 
-- **`StartNode`** — workflow entry point. Required for new topologies (the legacy migration shim auto-creates one for topologies using `entry_point` metadata).
-- **`EndNode`** — workflow exit point. Optional but typical: agents with a direct edge to `End` get the `terminate_workflow` tool in their schema.
-- **`UserNode`** — bidirectional human Q&A. Agents with a direct edge to `User` get the `ask_user` tool.
+- **`kind=START`** — workflow entry point. **Required, exactly one per
+  topology** (the legacy migration shim auto-creates one for topologies using
+  `entry_point` metadata or a clear single entry agent). Behaviour class: `StartNode`.
+- **`kind=END`** — workflow exit point. Optional, **zero or more**: agents
+  with a direct edge to an `End` node get the `terminate_workflow` tool in
+  their schema. Behaviour class: `EndNode`.
+- **`kind=USER`** — bidirectional human Q&A. Optional, **zero or more**:
+  agents with a direct edge to a `User` node get the `ask_user` tool.
+  Behaviour class: `UserNode`.
 
-Each is a singleton — at most one of each kind per topology.
+Only `START` is the enforced singleton; `END`/`USER` may appear multiple
+times. You express all three as `Node(name, kind=...)` (or the reserved
+strings — see below). You never put a `StartNode`/`EndNode`/`UserNode`
+*instance* in `Topology.nodes`; the behaviour instance is materialized from
+`kind` by the analyzer at run time. `Topology.__post_init__` rejects a
+non-`Node` with `TypeError`.
 
-Source: `src/marsys/coordination/execution/det_nodes.py` (187 LoC).
+Source: behaviour classes in `src/marsys/coordination/execution/det_nodes.py`;
+the node taxonomy (`NodeKind`) in `src/marsys/coordination/topology/core.py`.
 
 ## Reserved names
 
-`Start`, `End`, `User` are reserved at the topology level. The string converters (`StringNotationConverter`, `ObjectNotationConverter`) auto-resolve these names to det-node instances via `RESERVED_DETNODE_NAMES` (`det_nodes.py:174`):
+`Start`, `End`, `User` are reserved at the topology level. `parse_node`
+(used by the string/object converters and `Topology.add_node`) resolves these
+names to a uniform `Node` with the right `kind` — **never** to a det-node
+instance — via `RESERVED_NAME_TO_KIND`, which is derived from the single
+authoritative `NODE_KIND_BEHAVIOUR` registry (`det_nodes.py`):
 
 ```python
-RESERVED_DETNODE_NAMES = {
-    StartNode.RESERVED_NAME: StartNode,   # "Start"
-    EndNode.RESERVED_NAME:   EndNode,     # "End"
-    UserNode.RESERVED_NAME:  UserNode,    # "User"
+# THE single source of truth: kind -> behaviour class
+NODE_KIND_BEHAVIOUR = {
+    NodeKind.START: StartNode,
+    NodeKind.END:   EndNode,
+    NodeKind.USER:  UserNode,
 }
+# derived (do not hand-maintain a second spelling):
+RESERVED_NAME_TO_KIND = {cls.RESERVED_NAME: kind
+                         for kind, cls in NODE_KIND_BEHAVIOUR.items()}
 ```
 
-This means a topology like `{"agents": ["Start", "A", "End"], "flows": ["Start -> A", "A -> End"]}` works without explicitly importing the det-node classes — the converter does the resolution.
+So a topology like `{"agents": ["Start", "A", "End"], "flows": ["Start -> A", "A -> End"]}` works without importing any det-node class — `parse_node` produces `Node(kind=START)` / `Node(kind=END)`, and the analyzer materializes the behaviour.
 
 ## Lifecycle hooks
 
@@ -132,7 +154,12 @@ assistant = Agent(
 )
 
 topology = Topology(
-    nodes=[StartNode(), Node("Assistant"), UserNode(), EndNode()],
+    nodes=[
+        Node("Start", kind="start"),
+        Node("Assistant"),
+        Node("User", kind="user"),
+        Node("End", kind="end"),
+    ],
     edges=[
         Edge("Start", "Assistant"),
         Edge("Assistant", "User"),
@@ -155,11 +182,14 @@ Topology gating that results from these edges:
 
 ## Legacy migration
 
-Topologies using legacy `entry_point=A`, `exit_points=[X, Y]`, or a `User(Node)` regular node continue to work via the auto-shim in `Orchestra._apply_legacy_topology_shim` (`orchestra.py:296`). The shim:
+Topologies using legacy `entry_point=A`, `exit_points=[X, Y]`, or a legacy
+`Node(kind=USER)` continue to work via the auto-shim in
+`Orchestra._apply_legacy_topology_shim` (`orchestra.py`, `REMOVE-IN-V0.4`).
+The shim:
 
-- Synthesizes `StartNode` + edge `Start → A` for `entry_point=A` and emits `DeprecationWarning`.
-- Synthesizes `EndNode` + edges `X → End`, `Y → End` for `exit_points=[X, Y]` and emits `DeprecationWarning`.
-- Registers a `UserNode` det-node alongside any legacy `User(Node)` regular node.
+- Synthesizes a `Start` det-node + edge `Start → A` for `entry_point=A` and emits `DeprecationWarning`.
+- Synthesizes an `End` det-node + edges `X → End`, `Y → End` for `exit_points=[X, Y]` and emits `DeprecationWarning`.
+- Registers a `UserNode` behaviour for any legacy `Node(kind=USER)` (the old `User(Node)` class was removed).
 
 Both forms produce the same runtime graph. The legacy form is kept for one release; removal target v0.4. See [ADR-006](../architecture/framework/decisions/ADR-006-deprecation-timeline.md) for the full migration mapping.
 

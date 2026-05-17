@@ -3,6 +3,7 @@
 **Status**: Accepted
 **Date**: 2026-04-21 (initial), 2026-05-01 (phase 3.5 amendments)
 **Supersedes**: ADR-001 in implementation only — the decision in ADR-001 (branch-based parallel execution) remains in force.
+**Unaffected by [ADR-008](ADR-008-unified-node-kind-model.md)**: Session 08 left the orchestrator dispatch body, the `TopologyLike` Protocol, and the `DeterministicNode` behaviour classes/hooks unchanged. Only how a det-node is *materialized* changed (from `kind` at the `analyzer._add_nodes` seam, not an `isinstance`/string instance in `Topology.nodes`). The barrier algorithm described here is unchanged.
 
 ## Context
 
