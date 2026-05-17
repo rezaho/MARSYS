@@ -1,18 +1,23 @@
 """Run-failure probe — reproduce the post-validation execution error trail.
 
-WF-BUG-RUN-3: the user reports "a lot of errors in the backend" when running a
-workflow. A no-key environment fails at the clean 400 validation gate (RUN-1),
-producing no backend trace. This probe assumes the sidecar was started with a
-*deliberately-invalid* API key (e.g.
-``SPREN_ANTHROPIC_API_KEY=sk-ant-FAKE-...``) so run-create passes the
-secrets-store presence check and execution proceeds far enough to fail at the
-real provider call — surfacing whatever orchestration error trail the user is
-seeing.
+WF-BUG-RUN-3 / AC-5 (live portion): the user reports "a lot of errors in
+the backend" when running a workflow. Post-ADR-008 Spren consumes the
+framework canonical wire types; the framework resolves credentials
+per-provider (no Spren-prefixed variable). Start the sidecar with the
+standard provider variable exported:
+
+  - a *real* ``ANTHROPIC_API_KEY`` → the explicit-``kind`` Start → Agent →
+    End run should reach ``succeeded`` with a non-empty ``final_response``
+    and non-zero cost (this is the live AC-5 acceptance step).
+  - a *deliberately-invalid* ``ANTHROPIC_API_KEY=sk-ant-FAKE-...`` → the
+    run passes materialize + topology validation and fails only at the
+    real provider call, surfacing the orchestration error trail.
 
 This connects to an ALREADY-RUNNING sidecar (it does not spawn one) so the
 caller controls the env. Pass the port + token as argv or env.
 
 Usage:
+    export ANTHROPIC_API_KEY=...   # real (live) or sk-ant-FAKE-... (trail)
     uv run --package spren python scripts/scenarios/run_failure_probe.py \
         <port> <token>
 """
@@ -32,32 +37,35 @@ JOURNEY = "run_failure_probe"
 
 
 def valid_definition() -> dict[str, object]:
-    """Minimal v0.3 runnable workflow: Start → Agent → End.
+    """Minimal v0.3 runnable workflow: explicit-``kind`` Start → Agent → End.
 
-    Session 07 node model: Core det-nodes (start/end) materialize to framework
-    StartNode/EndNode instances. NOT Start→User→Agent→End — v0.3 has no
-    executable User path (no UserNodeHandler wired; see Session 07 "Known
-    v0.3 limitation"), so the RUN-3d regression gate uses Start→Agent→End to
-    isolate det-node materialization from the User-handler concern.
+    Post-ADR-008: nodes carry ``kind`` (not ``node_type``); Start/End are
+    plain ``Node(kind=...)`` materialized at the analyzer seam — no
+    DeterministicNode-instance model. NOT Start→User→Agent→End — v0.3 has
+    no executable User path, so the RUN-3d gate uses Start→Agent→End to
+    isolate the reframe from the User-handler concern. Agents are name-keyed
+    (agents key == AgentSpec.name == node.agent_ref — the framework bind
+    contract). The model is a real dated id (the standard ``anthropic``
+    adapter passes the name verbatim; friendly aliases do not resolve).
     """
     return {
         "topology": {
             "nodes": [
-                {"name": "Start", "node_type": "start", "agent_ref": None, "is_convergence_point": False, "metadata": {}},
-                {"name": "assistant", "node_type": "agent", "agent_ref": "assistant", "is_convergence_point": True, "metadata": {}},
-                {"name": "End", "node_type": "end", "agent_ref": None, "is_convergence_point": False, "metadata": {}},
+                {"name": "Start", "kind": "start", "agent_ref": None, "is_convergence_point": False, "metadata": {}},
+                {"name": "Assistant", "kind": "agent", "agent_ref": "Assistant", "is_convergence_point": True, "metadata": {}},
+                {"name": "End", "kind": "end", "agent_ref": None, "is_convergence_point": False, "metadata": {}},
             ],
             "edges": [
-                {"source": "Start", "target": "assistant", "edge_type": "invoke", "bidirectional": False, "pattern": None, "metadata": {}},
-                {"source": "assistant", "target": "End", "edge_type": "invoke", "bidirectional": False, "pattern": None, "metadata": {}},
+                {"source": "Start", "target": "Assistant", "edge_type": "invoke", "bidirectional": False, "pattern": None, "metadata": {}},
+                {"source": "Assistant", "target": "End", "edge_type": "invoke", "bidirectional": False, "pattern": None, "metadata": {}},
             ],
             "rules": [],
         },
         "agents": {
-            "assistant": {
+            "Assistant": {
                 "agent_model": {
                     "type": "api",
-                    "name": "claude-sonnet-4-6",
+                    "name": "claude-haiku-4-5-20251001",
                     "provider": "anthropic",
                     "base_url": None,
                     "max_tokens": 1024,

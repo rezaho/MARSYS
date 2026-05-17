@@ -15,22 +15,22 @@ the framework hides the real per-branch error behind result.error):
   C) Hand-built minimal marsys (default ExecutionConfig, plain Agent) via
      Orchestra.run(...) — the "pure framework / test_mas.py" path.
 
-Requires SPREN_ANTHROPIC_API_KEY in the env (map from .env's
-ANTHROPIC_API_KEY). Usage:
+Post-ADR-008: the framework resolves credentials per-provider. Export the
+standard ``ANTHROPIC_API_KEY`` (no Spren-prefixed variable). Usage:
     set -a && . .env && set +a && \
-      export SPREN_ANTHROPIC_API_KEY="$ANTHROPIC_API_KEY" && \
       uv run python scripts/scenarios/marsys_direct_probe.py
 """
 from __future__ import annotations
 
 import asyncio
 import dataclasses
+import os
 import sys
 import tempfile
 from pathlib import Path
 from typing import Any
 
-MODEL = "claude-sonnet-4-6"
+MODEL = "claude-haiku-4-5-20251001"
 TASK = "Say hello."
 AGENT_INSTRUCTION = "You are a helpful assistant. Answer concisely."
 
@@ -69,18 +69,18 @@ def _dump_result(label: str, result: Any) -> None:
 
 def _definition():
     from spren.models import AgentSpec, ModelConfigSpec, WorkflowDefinition
-    from spren.models.topology import EdgeSpec, EdgeType, NodeSpec, NodeType, TopologySpec
+    from spren.models.topology import EdgeSpec, NodeKind, NodeSpec, TopologySpec
 
     return WorkflowDefinition(
         topology=TopologySpec(
             nodes=[
-                NodeSpec(name="Start", node_type=NodeType.START),
-                NodeSpec(name="assistant", node_type=NodeType.AGENT, agent_ref="assistant", is_convergence_point=True),
-                NodeSpec(name="End", node_type=NodeType.END),
+                NodeSpec(name="Start", kind=NodeKind.START),
+                NodeSpec(name="assistant", kind=NodeKind.AGENT, agent_ref="assistant", is_convergence_point=True),
+                NodeSpec(name="End", kind=NodeKind.END),
             ],
             edges=[
-                EdgeSpec(source="Start", target="assistant", edge_type=EdgeType.INVOKE),
-                EdgeSpec(source="assistant", target="End", edge_type=EdgeType.INVOKE),
+                EdgeSpec(source="Start", target="assistant", edge_type="invoke"),
+                EdgeSpec(source="assistant", target="End", edge_type="invoke"),
             ],
         ),
         agents={
@@ -137,31 +137,34 @@ async def variant_b_canonical_same_bundle() -> None:
 
 
 async def variant_c_handbuilt_pure() -> None:
-    """Pure framework: build it by hand the way a marsys test would."""
+    """Pure framework: build it by hand the way a marsys test would.
+
+    Post-ADR-008: Start/End are plain ``Node(kind=...)`` (no
+    StartNode/EndNode instances); the framework resolves the key
+    per-provider from the standard ``ANTHROPIC_API_KEY`` (no api_key arg,
+    no Spren-prefixed variable).
+    """
     from marsys.agents.agents import Agent
     from marsys.agents.registry import AgentRegistry
-    from marsys.coordination.execution.det_nodes import EndNode, StartNode
     from marsys.coordination.orchestra import Orchestra
-    from marsys.coordination.topology.core import Edge, Node, NodeType, Topology
+    from marsys.coordination.topology.core import Edge, Node, NodeKind, Topology
     from marsys.models.models import ModelConfig
-    from spren.runs.materialize import _env_secrets_lookup
 
     AgentRegistry.clear()
-    api_key = _env_secrets_lookup("anthropic")
-    if not api_key:
-        print("\n[C] SKIPPED — SPREN_ANTHROPIC_API_KEY not in env", flush=True)
+    if not os.environ.get("ANTHROPIC_API_KEY"):
+        print("\n[C] SKIPPED — ANTHROPIC_API_KEY not in env", flush=True)
         return
     Agent(
-        model_config=ModelConfig(type="api", name=MODEL, provider="anthropic", api_key=api_key),
+        model_config=ModelConfig(type="api", name=MODEL, provider="anthropic"),
         goal="Answer the user's question.",
         instruction=AGENT_INSTRUCTION,
         name="assistant",
     )
     topology = Topology(
         nodes=[
-            StartNode(name="Start"),
-            Node(name="assistant", node_type=NodeType.AGENT, agent_ref="assistant"),
-            EndNode(name="End"),
+            Node(name="Start", kind=NodeKind.START),
+            Node(name="assistant", kind=NodeKind.AGENT, agent_ref="assistant"),
+            Node(name="End", kind=NodeKind.END),
         ],
         edges=[
             Edge(source="Start", target="assistant"),
