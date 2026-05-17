@@ -106,10 +106,15 @@ def list_workflows(
     else:
         sql += " AND is_archived = 0"
     if not include_drafts:
+        # An empty visual_builder draft is hidden — UNLESS it has runs.
+        # A workflow with run history is not an abandoned draft (SP-009:
+        # run snapshots are immutable); surface it. Kept in sync with the
+        # sweeper predicate in delete_empty_drafts_older_than.
         sql += (
             " AND NOT ("
             "provenance = 'visual_builder' AND "
-            "json_extract(definition, '$.topology.nodes') = '[]'"
+            "json_extract(definition, '$.topology.nodes') = '[]' AND "
+            "NOT EXISTS (SELECT 1 FROM runs WHERE runs.workflow_id = workflows.id)"
             ")"
         )
     sql += " ORDER BY id ASC LIMIT ?"
@@ -130,6 +135,11 @@ def delete_empty_drafts_older_than(
     list-filter exactly so a draft hidden from the list IS the row the
     sweeper acts on, and a row that's been touched (topology populated) is
     never deleted.
+
+    WF-BUG-SWEEPER-1: a workflow with runs is excluded. ``runs.workflow_id``
+    has no ``ON DELETE`` (RESTRICT), so deleting such a row raised
+    ``IntegrityError`` every sweep tick. SP-009 also makes it correct: a
+    workflow with immutable run history is not an abandoned empty draft.
     """
     cur = conn.execute(
         """
@@ -137,6 +147,9 @@ def delete_empty_drafts_older_than(
         WHERE provenance = 'visual_builder'
           AND json_extract(definition, '$.topology.nodes') = '[]'
           AND updated_at < ?
+          AND NOT EXISTS (
+            SELECT 1 FROM runs WHERE runs.workflow_id = workflows.id
+          )
         """,
         (max_age_iso,),
     )

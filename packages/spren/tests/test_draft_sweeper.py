@@ -9,7 +9,9 @@ from __future__ import annotations
 import json
 from datetime import datetime, timedelta, timezone
 
+from spren.models import TaskInput
 from spren.storage import Database
+from spren.storage.runs import insert_run
 from spren.storage.workflows import delete_empty_drafts_older_than
 from spren.workers.draft_sweeper import (
     DRAFT_MAX_AGE,
@@ -136,3 +138,69 @@ def test_sweeper_preserves_non_visual_builder_drafts(data_dir) -> None:
     )
     deleted = delete_empty_drafts_older_than(db.connection, max_age_iso=datetime.now(timezone.utc).isoformat())
     assert deleted == 0
+
+
+def test_sweeper_preserves_old_empty_draft_with_runs(
+    client, auth_headers, data_dir
+) -> None:
+    """WF-BUG-SWEEPER-1: an old empty visual_builder draft that HAS a run
+    must NOT be swept (the FK has no ON DELETE → deleting it raised
+    IntegrityError every tick; SP-009 also makes keeping it correct). A
+    sibling old empty draft WITHOUT runs is still swept (behaviour kept)."""
+    with_run = client.post(
+        "/v1/workflows",
+        headers=auth_headers,
+        json={"name": "old-empty-with-run", "definition": EMPTY_DEFINITION, "provenance": "visual_builder"},
+    ).json()
+    no_run = client.post(
+        "/v1/workflows",
+        headers=auth_headers,
+        json={"name": "old-empty-no-run", "definition": EMPTY_DEFINITION, "provenance": "visual_builder"},
+    ).json()
+
+    db = Database(data_dir)
+    insert_run(
+        db.connection,
+        run_id="01SWEEPRUN0000000000000001",
+        workflow_id=with_run["id"],
+        task_input=TaskInput(),
+    )
+    old_ts = (datetime.now(timezone.utc) - DRAFT_MAX_AGE - timedelta(minutes=1)).isoformat()
+    db.connection.execute(
+        "UPDATE workflows SET updated_at = ? WHERE name IN ('old-empty-with-run', 'old-empty-no-run')",
+        (old_ts,),
+    )
+    db.connection.commit()
+
+    # Must not raise (the original bug caught + logged IntegrityError here).
+    deleted = sweep_empty_drafts_once(lambda: db.connection)
+    assert deleted == 1
+
+    remaining = {
+        row[0] for row in db.connection.execute("SELECT name FROM workflows").fetchall()
+    }
+    assert remaining == {"old-empty-with-run"}
+
+
+def test_list_surfaces_empty_draft_with_runs(client, auth_headers, data_dir) -> None:
+    """An empty visual_builder draft with run history is not an abandoned
+    draft (SP-009) — it must appear in the default list, not be hidden.
+    Keeps the list filter and the sweeper predicate in sync."""
+    created = client.post(
+        "/v1/workflows",
+        headers=auth_headers,
+        json={"name": "draft-with-history", "definition": EMPTY_DEFINITION, "provenance": "visual_builder"},
+    ).json()
+
+    db = Database(data_dir)
+    insert_run(
+        db.connection,
+        run_id="01SWEEPRUN0000000000000002",
+        workflow_id=created["id"],
+        task_input=TaskInput(),
+    )
+    db.connection.commit()
+
+    body = client.get("/v1/workflows", headers=auth_headers).json()
+    names = [w["name"] for w in body["items"]]
+    assert "draft-with-history" in names
