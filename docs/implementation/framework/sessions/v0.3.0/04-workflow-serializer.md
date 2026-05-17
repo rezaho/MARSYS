@@ -2,6 +2,8 @@
 
 Required by Spren v0.4 (Python-file workflow round-trip, workflow CRUD persistence, frozen run snapshots) and by anyone wanting to persist a runtime topology to disk.
 
+> **⚠️ Superseded in part by Session 08 / [ADR-008](../../../../architecture/framework/decisions/ADR-008-unified-node-kind-model.md) (2026-05-17).** This is the *executed* Session-04 plan, kept as a historical record — it is **not** rewritten. The node-model claims below are now out of date: `NodeType`→`NodeKind` (`SYSTEM`/`TOOL` dropped, `START`/`END` added), `NodeSpec.node_type`→`kind`, `NonSerializableTopologyError` removed (the wire is now **total** over all kinds — AC-59 reversed), `pydantic_to_topology` gained a `handler_registry` parameter, wire schema version → 2. The current contract is `08-unified-node-kind-model/acceptance.md` + ADR-008. The Session-04 `acceptance.md` carries the dated AC-59 reversal.
+
 ---
 
 ## Working rules

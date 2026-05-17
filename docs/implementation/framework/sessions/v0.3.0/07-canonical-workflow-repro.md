@@ -63,6 +63,8 @@ a conclusion until `CONFIRMED@<cite>` or `RISK-LOGGED`.
 | P4 | Canonical run path: `WorkflowDefinition` → `pydantic_to_topology(spec, tool_registry)` → `Orchestra.run(topology=<Topology>, …)`; `WorkflowDefinition` cannot be passed to `Orchestra.run` directly | primary-source | CONFIRMED@`coordination/orchestra.py:426-441` |
 | P5 | `Agent.__init__` auto-registers into the global `AgentRegistry` | primary-source | CONFIRMED@`agents/agents.py:253` |
 
+> _Forward note (2026-05-17 — Session 08 / [ADR-008](../../../../architecture/framework/decisions/ADR-008-unified-node-kind-model.md)): this is a frozen historical record and is not rewritten. P4's `pydantic_to_topology(spec, tool_registry)` signature later gained a third `handler_registry` parameter (`pydantic_to_topology(spec, tool_registry, handler_registry=None)`); the 2-arg call shown here still works. The Session-04 `WorkflowDefinition`/`NodeType` model referenced here was unified to `NodeKind` in Session 08._
+
 **Frame check.** Most load-bearing premise: P1 — the bug exists in the
 canonical run path. Falsifier: the canonical twin runs end-to-end with the
 same success outcome as the string-notation baseline. The reproduction step
