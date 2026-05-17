@@ -1010,6 +1010,24 @@ PALETTE-2 (interaction), PALETTE-3 (categories/specialized agents), PALETTE-4 (c
 
 **Why escalated, not auto-applied**: "Spren auto-injects topology-derived coordination instructions into the user's agent prompt at materialization" is a genuine product/architecture decision (opaque prompt enrichment), not a mechanical bug fix — the architect (user) must bless the approach before implementation. Tracked as a backlog task; needs the bug-fix pipeline (independent review of the derivation) + the probe re-run to prove a real successful completion.
 
+---
+
+#### ⭐ DECISION NEEDED (consolidated 2026-05-18 — read this, the rest above is the trail)
+
+**Plain version**: when you build `Start → Agent → End` visually and hit Run, the model is called and answers, but the workflow still ends "failed". Reason: marsys only treats an answer as "delivered" if the agent calls the `terminate_workflow` tool, and nothing tells the model to call it. A bare "you are a helpful assistant" agent never does, so every default visual-builder run fails. This is the framework's own #1 documented failure mode, not a Spren or framework bug — it's a contract the visual builder doesn't satisfy.
+
+**Why this is now the top item**: RUN-1, RUN-3b, LINT-REACTIVITY, SWEEPER-1 all fixed this session; RUN-3a/3c/3d fixed earlier. RUN-3e is the **last thing standing between the visual builder and a working Run**. RUN-3b part (b) shipped, so the run record + inspector now show the *real* branch reason (e.g. "assistant: did not call terminate_workflow") instead of the opaque "insufficient arrivals" — the diagnostic dead-end in the "Secondary" note above is **already closed**; what remains is making runs actually *succeed*.
+
+**The one decision**: the fix is for Spren's materializer to append a short, topology-derived delivery instruction to each agent's prompt (edge→End ⇒ "call `terminate_workflow(answer=…)` to deliver the final answer"; edge→peer ⇒ invoke directive; edge→User ⇒ ask directive). Derived from the same topology the framework gates the tools on, so they're consistent by construction; it is the framework's own prescribed remedy. Your stated objection was that this is **opaque prompt enrichment**.
+
+**My recommendation (heuristic-applied, but the product call is yours)**: Q1/Q3 — a workflow you built visually should be runnable *by construction*; making the user hand-type framework coordination-tool instructions leaks framework internals into the builder UX (boundary break). So the enrichment itself is the right design. The real objection is *opacity*, not the enrichment — so the answer is **make it visible, not absent**: append it, and surface the derived "delivery contract" in the agent config panel (read-only line: "On run, this agent is told: …") so nothing is hidden. That satisfies the framework contract AND your transparency concern. Options for you:
+- **(A) Approve transparent enrichment** (recommended): append + show the derived line in the right-rail config so the user always sees exactly what's added.
+- **(B) Approve silent enrichment**: append, don't surface it (simplest; the opacity you flagged remains).
+- **(C) Reject auto-enrichment**: require the user to write coordination instructions themselves (keeps prompts pure; visual builder is "expert-only" until a better UX exists).
+- **(D) Something else / discuss.**
+
+**Held until you decide.** Everything else needed is ready: implementation is a scoped `materialize.py:_materialize_agent` change behind the bug-fix pipeline (independent review of the edge→tool derivation is mandatory — it must mirror `coordination_tools.py:107-110` exactly or it reintroduces the mismatch); then a real-key probe re-run to prove a green end-to-end run. I did **not** run a fresh real-key reproduction — RUN-3e needs a *successful* model call (a fake key fails earlier at RUN-3b), so reproducing it spends API credit; that's your call to authorize, not mine to spend autonomously.
+
 ## Session log
 
 | Time | Activity |
