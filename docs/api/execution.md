@@ -271,7 +271,6 @@ ROOT is the unique exception: `resolver_branch=None`, terminal sink for the work
 
 ```python
 from marsys.coordination import Orchestra
-from marsys.coordination.execution.det_nodes import StartNode, EndNode
 from marsys.coordination.topology import Topology, Node, Edge
 from marsys.agents import Agent
 from marsys.agents.registry import AgentRegistry
@@ -285,7 +284,7 @@ worker = Agent(
 )
 
 topology = Topology(
-    nodes=[StartNode(), Node("Worker"), EndNode()],
+    nodes=[Node("Start", kind="start"), Node("Worker"), Node("End", kind="end")],
     edges=[Edge("Start", "Worker"), Edge("Worker", "End")],
 )
 
@@ -307,7 +306,7 @@ researcher = Agent(model_config=config, name="Researcher", instruction="Research
 fact_checker = Agent(model_config=config, name="FactChecker", instruction="Verify facts, then `invoke_agent` Coordinator.")
 
 topology = Topology(
-    nodes=[StartNode(), Node("Coordinator"), Node("Researcher"), Node("FactChecker"), EndNode()],
+    nodes=[Node("Start", kind="start"), Node("Coordinator"), Node("Researcher"), Node("FactChecker"), Node("End", kind="end")],
     edges=[
         Edge("Start", "Coordinator"),
         Edge("Coordinator", "Researcher"),
@@ -326,10 +325,8 @@ When Coordinator emits `invoke_agent` with two invocations in one turn, the orch
 ### User-in-the-loop
 
 ```python
-from marsys.coordination.execution.det_nodes import UserNode
-
 topology = Topology(
-    nodes=[StartNode(), Node("Assistant"), UserNode(), EndNode()],
+    nodes=[Node("Start", kind="start"), Node("Assistant"), Node("User", kind="user"), Node("End", kind="end")],
     edges=[
         Edge("Start", "Assistant"),
         Edge("Assistant", "User"),

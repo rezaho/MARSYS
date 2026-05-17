@@ -124,7 +124,7 @@ researcher = Agent(
 )
 
 topology = Topology(
-    nodes=[StartNode(), Node("Coordinator"), Node("Researcher"), EndNode()],
+    nodes=[Node("Start", kind="start"), Node("Coordinator"), Node("Researcher"), Node("End", kind="end")],
     edges=[
         Edge("Start", "Coordinator"),
         Edge("Coordinator", "Researcher"),

@@ -454,11 +454,11 @@ class VerbosityLevel(IntEnum):
     NORMAL = 1
     VERBOSE = 2
 
-class NodeType(Enum):
-    USER = "user"
+class NodeKind(Enum):
     AGENT = "agent"
-    SYSTEM = "system"
-    TOOL = "tool"
+    START = "start"
+    END = "end"
+    USER = "user"
 
 class EdgeType(Enum):
     INVOKE = "invoke"
