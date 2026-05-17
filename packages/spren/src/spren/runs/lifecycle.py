@@ -261,6 +261,35 @@ def schedule_run(
     return task
 
 
+def _summarize_failure(result: Any) -> str:
+    """Best-available human cause for a failed run.
+
+    ``OrchestraResult.error`` is often the orchestration-level *symptom*
+    (e.g. "ROOT failure: insufficient arrivals"); the actionable cause
+    lives on the failed ``BranchResult``\\ s (framework
+    ``branches/types.py``: ``error`` + ``get_last_agent()``). Surfacing
+    the branch reason makes the run record's ``error`` diagnosable
+    without digging into the trace NDJSON (WF-BUG-RUN-3b). ``getattr``
+    throughout because tests stub ``Orchestra`` with structural result
+    doubles (see ``register_run`` docstring).
+    """
+    reasons: list[str] = []
+    for br in getattr(result, "branch_results", None) or []:
+        if getattr(br, "success", True):
+            continue
+        err = getattr(br, "error", None)
+        if not err:
+            continue
+        get_agent = getattr(br, "get_last_agent", None)
+        agent = get_agent() if callable(get_agent) else None
+        reasons.append(f"{agent}: {err}" if agent else str(err))
+    top = getattr(result, "error", None)
+    if reasons:
+        joined = "; ".join(dict.fromkeys(reasons))
+        return f"{joined} ({top})" if top and top not in joined else joined
+    return str(top or "execution failed")
+
+
 async def _run_lifecycle(
     *,
     active: ActiveRun,
@@ -311,9 +340,7 @@ async def _run_lifecycle(
 
         success = bool(getattr(result, "success", True))
         final_response: Any | None = getattr(result, "final_response", None)
-        error_msg: str | None = None if success else (
-            str(getattr(result, "error", None) or "execution failed")
-        )
+        error_msg: str | None = None if success else _summarize_failure(result)
 
         terminal_status = RunStatus.SUCCEEDED if success else RunStatus.FAILED
         event_kind = "finished"

@@ -18,6 +18,7 @@ lifespan handler (4-hour cadence; deletes empty visual-builder rows older than
 from __future__ import annotations
 
 import asyncio
+import logging
 from contextlib import asynccontextmanager
 from datetime import datetime, timezone
 from importlib.metadata import PackageNotFoundError, version
@@ -44,6 +45,8 @@ from .runs.lifecycle import shutdown_all_active
 from .storage import Database, MigrationsRunner
 from .storage.idempotency import sweep_expired
 from .workers import run_draft_sweeper_forever
+
+logger = logging.getLogger(__name__)
 
 _WEBUI_DIR = Path(__file__).parent / "_webui"
 
@@ -165,6 +168,26 @@ def create_app(
             )
         )
         return JSONResponse(status_code=422, content=envelope.model_dump(mode="json"))
+
+    @app.exception_handler(Exception)
+    async def unhandled_handler(request: Request, exc: Exception) -> JSONResponse:
+        # Every error this API emits is the structured envelope. An
+        # unhandled exception is just `INTERNAL_ERROR` — the full cause
+        # goes to the server log (operators), never to the client body
+        # (no path/secret leakage). WF-BUG-RUN-3b (a): before this, any
+        # unhandled error escaped as Starlette's raw text/plain 500 on
+        # every router, so the frontend had no envelope to surface.
+        logger.exception(
+            "unhandled error on %s %s", request.method, request.url.path
+        )
+        envelope = ErrorEnvelope(
+            error=ErrorPayload(
+                code="INTERNAL_ERROR",
+                message="an unexpected error occurred",
+                details={},
+            )
+        )
+        return JSONResponse(status_code=500, content=envelope.model_dump(mode="json"))
 
     # Resolve the framework tool registry once at app construction. The lint
     # endpoint reads from the same source via ``known_tools_provider``.

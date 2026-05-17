@@ -23,6 +23,7 @@ from spren.models import (
 from spren.runs.broker import RunsBroker
 from spren.runs.lifecycle import (
     _publish_event,
+    _summarize_failure,
     _to_list_item,
     cancel_run,
     deregister,
@@ -429,3 +430,64 @@ async def test_lifecycle_honors_cancelling_in_exception_branch(db_with_workflow)
         assert is_active("run-F") is False
     finally:
         _active_runs.pop("run-F", None)
+
+
+class _StubBranch:
+    """Structural BranchResult double (lifecycle uses getattr/duck typing)."""
+
+    def __init__(self, *, success: bool, error: str | None, agent: str | None = None):
+        self.success = success
+        self.error = error
+        self._agent = agent
+
+    def get_last_agent(self):  # noqa: D401 - mirrors framework BranchResult
+        return self._agent
+
+
+class _StubResult:
+    def __init__(self, *, error=None, branch_results=None):
+        self.error = error
+        self.branch_results = branch_results or []
+
+
+class TestSummarizeFailure:
+    """WF-BUG-RUN-3b (b): the run record's error must carry the real
+    per-branch cause, not just the orchestration-level symptom."""
+
+    def test_prefers_failed_branch_reason_with_agent(self) -> None:
+        result = _StubResult(
+            error="ROOT failure: insufficient arrivals",
+            branch_results=[
+                _StubBranch(success=True, error=None, agent="Planner"),
+                _StubBranch(
+                    success=False,
+                    error="[MODEL_API_AUTHENTICATION_FAILED_ERROR] 401",
+                    agent="assistant",
+                ),
+            ],
+        )
+        msg = _summarize_failure(result)
+        assert "assistant: [MODEL_API_AUTHENTICATION_FAILED_ERROR] 401" in msg
+        # The orchestration symptom is kept as secondary context.
+        assert "ROOT failure: insufficient arrivals" in msg
+
+    def test_falls_back_to_top_error_when_no_branch_reason(self) -> None:
+        result = _StubResult(error="boom at orchestrator", branch_results=[])
+        assert _summarize_failure(result) == "boom at orchestrator"
+
+    def test_branch_reason_without_agent(self) -> None:
+        result = _StubResult(
+            error=None,
+            branch_results=[_StubBranch(success=False, error="tool exploded")],
+        )
+        assert _summarize_failure(result) == "tool exploded"
+
+    def test_last_resort_when_nothing_available(self) -> None:
+        assert _summarize_failure(_StubResult()) == "execution failed"
+
+    def test_no_duplicate_when_branch_reason_equals_top(self) -> None:
+        result = _StubResult(
+            error="same reason",
+            branch_results=[_StubBranch(success=False, error="same reason")],
+        )
+        assert _summarize_failure(result) == "same reason"

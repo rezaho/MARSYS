@@ -1,4 +1,4 @@
-"""Server-level tests: routes, auth, CORS."""
+"""Server-level tests: routes, auth, CORS, error envelope."""
 from __future__ import annotations
 
 from fastapi.testclient import TestClient
@@ -75,3 +75,28 @@ class TestCORS:
             },
         )
         assert "access-control-allow-origin" not in r.headers
+
+
+class TestUnhandledErrorEnvelope:
+    """WF-BUG-RUN-3b (a): an unhandled exception on ANY route must return
+    the structured {"error":{"code":"INTERNAL_ERROR"}} envelope, not
+    Starlette's raw text/plain 500 (the frontend has no envelope to
+    surface otherwise). The cause goes to the log, never the body."""
+
+    def test_unhandled_exception_returns_internal_error_envelope(
+        self, app_with_token
+    ) -> None:
+        async def _boom() -> None:
+            raise RuntimeError("synthetic failure with /secret/path leak")
+
+        app_with_token.add_api_route("/_boom", _boom, methods=["GET"])
+        with TestClient(app_with_token, raise_server_exceptions=False) as c:
+            r = c.get("/_boom")
+        assert r.status_code == 500
+        body = r.json()
+        assert body["error"]["code"] == "INTERNAL_ERROR"
+        assert body["error"]["message"] == "an unexpected error occurred"
+        assert body["error"]["details"] == {}
+        # The internal exception text must NOT leak to the client body.
+        assert "secret" not in r.text
+        assert "RuntimeError" not in r.text
