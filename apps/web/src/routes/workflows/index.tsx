@@ -146,7 +146,7 @@ function EmptyState(): ReactElement {
 function WorkflowCard({ workflow }: { workflow: Workflow }): ReactElement {
   const agentCount = Object.keys(workflow.definition.agents ?? {}).length;
   const flow = (workflow.definition.topology.nodes ?? [])
-    .filter((n) => (n.node_type ?? "agent") === "agent" || n.node_type === "user")
+    .filter((n) => (n.kind ?? "agent") === "agent" || n.kind === "user")
     .slice(0, 5)
     .map((n) => n.name)
     .join(" → ");

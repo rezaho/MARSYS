@@ -21,9 +21,7 @@ export type ExecutionConfigSpec = components["schemas"]["ExecutionConfigSpec"];
 export type TopologySpec = components["schemas"]["TopologySpec"];
 export type NodeSpec = components["schemas"]["NodeSpec"];
 export type EdgeSpec = components["schemas"]["EdgeSpec"];
-export type NodeType = components["schemas"]["NodeType"];
-export type EdgeType = components["schemas"]["EdgeType"];
-export type EdgePattern = components["schemas"]["EdgePattern"];
+export type NodeKind = components["schemas"]["NodeKind"];
 
 export type ToolInfo = components["schemas"]["ToolInfo"];
 export type ToolListResponse = components["schemas"]["ToolListResponse"];

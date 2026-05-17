@@ -92,11 +92,14 @@ function blankAgent(name: string): AgentSpec {
   };
 }
 
-function agentNode(name: string, agentRef: string): NodeSpec {
+function agentNode(name: string): NodeSpec {
+  // The framework binds `agent_ref` against `AgentSpec.name`, and Spren's
+  // canonical convention is `agents` key === name === agent_ref. Patterns
+  // therefore key every agent by its own (pattern-unique) name.
   return {
     name,
-    node_type: "agent",
-    agent_ref: agentRef,
+    kind: "agent",
+    agent_ref: name,
     is_convergence_point: false,
     metadata: {},
   };
@@ -131,16 +134,14 @@ function hubAndSpoke(n: number): PatternResult {
   const nodes: NodeSpec[] = [];
   const edges: EdgeSpec[] = [];
 
-  const hubAgentId = "agent_hub";
-  agents[hubAgentId] = blankAgent("Hub");
-  nodes.push(agentNode("Hub", hubAgentId));
+  agents["Hub"] = blankAgent("Hub");
+  nodes.push(agentNode("Hub"));
 
   const spokeCount = Math.max(2, n - 1);
   for (let i = 1; i <= spokeCount; i++) {
-    const id = `agent_spoke_${i}`;
     const name = `Spoke ${i}`;
-    agents[id] = blankAgent(name);
-    nodes.push(agentNode(name, id));
+    agents[name] = blankAgent(name);
+    nodes.push(agentNode(name));
     edges.push(edge("Hub", name));
   }
   return { nodes, edges, agents };
@@ -152,10 +153,9 @@ function pipeline(n: number): PatternResult {
   const edges: EdgeSpec[] = [];
 
   for (let i = 1; i <= n; i++) {
-    const id = `agent_${i}`;
     const name = `Agent ${i}`;
-    agents[id] = blankAgent(name);
-    nodes.push(agentNode(name, id));
+    agents[name] = blankAgent(name);
+    nodes.push(agentNode(name));
     if (i > 1) edges.push(edge(`Agent ${i - 1}`, name));
   }
   return { nodes, edges, agents };
@@ -169,24 +169,21 @@ function hierarchical(n: number): PatternResult {
   const nodes: NodeSpec[] = [];
   const edges: EdgeSpec[] = [];
 
-  const rootId = "agent_root";
-  agents[rootId] = blankAgent("Root");
-  nodes.push(agentNode("Root", rootId));
+  agents["Root"] = blankAgent("Root");
+  nodes.push(agentNode("Root"));
 
   const leaves = Math.max(2, n - 2);
   const managers = Math.min(Math.ceil(leaves / 2), Math.max(1, n - 1 - leaves));
   for (let m = 1; m <= managers; m++) {
-    const mgrId = `agent_mgr_${m}`;
     const mgrName = `Manager ${m}`;
-    agents[mgrId] = blankAgent(mgrName);
-    nodes.push(agentNode(mgrName, mgrId));
+    agents[mgrName] = blankAgent(mgrName);
+    nodes.push(agentNode(mgrName));
     edges.push(edge("Root", mgrName));
   }
   for (let i = 1; i <= leaves; i++) {
-    const id = `agent_leaf_${i}`;
     const name = `Leaf ${i}`;
-    agents[id] = blankAgent(name);
-    nodes.push(agentNode(name, id));
+    agents[name] = blankAgent(name);
+    nodes.push(agentNode(name));
     const mgrName = `Manager ${((i - 1) % managers) + 1}`;
     edges.push(edge(mgrName, name));
   }
@@ -200,10 +197,9 @@ function mesh(n: number): PatternResult {
   const names: string[] = [];
 
   for (let i = 1; i <= n; i++) {
-    const id = `agent_${i}`;
     const name = `Agent ${i}`;
-    agents[id] = blankAgent(name);
-    nodes.push(agentNode(name, id));
+    agents[name] = blankAgent(name);
+    nodes.push(agentNode(name));
     names.push(name);
   }
   for (let i = 0; i < names.length; i++) {

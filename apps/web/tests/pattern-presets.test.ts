@@ -14,7 +14,8 @@ describe("HUB_AND_SPOKE", () => {
     for (const e of edges) {
       expect(e.source).toBe("Hub");
     }
-    expect(Object.keys(agents)).toContain("agent_hub");
+    // Agents are keyed by name (framework bind contract), not a random id.
+    expect(Object.keys(agents)).toContain("Hub");
   });
 });
 

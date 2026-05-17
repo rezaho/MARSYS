@@ -122,7 +122,7 @@ describe("type generation", () => {
   });
 
   it("topology / node / edge / execution-config types exist", () => {
-    const node: NodeSpec = { name: "X", node_type: "agent" };
+    const node: NodeSpec = { name: "X", kind: "agent" };
     const edge: EdgeSpec = { source: "A", target: "B" };
     const topo: TopologySpec = { nodes: [node], edges: [edge] };
     const exec: ExecutionConfigSpec = {};

@@ -361,25 +361,54 @@ export interface paths {
 export type webhooks = Record<string, never>;
 export interface components {
     schemas: {
-        /** AgentSpec */
+        /**
+         * AgentSpec
+         * @description Wire mirror of :class:`marsys.agents.Agent`'s constructor surface.
+         */
         AgentSpec: {
-            agent_model: components["schemas"]["ModelConfigSpec"];
             /** Name */
             name: string;
             /** Goal */
             goal: string;
             /** Instruction */
             instruction: string;
+            agent_model: components["schemas"]["ModelConfigSpec"];
             /** Tools */
             tools?: string[];
+            /**
+             * Max Tokens
+             * @default 10000
+             */
+            max_tokens?: number | null;
+            /** Allowed Peers */
+            allowed_peers?: string[];
+            /**
+             * Bidirectional Peers
+             * @default false
+             */
+            bidirectional_peers?: boolean;
+            /** Is Convergence Point */
+            is_convergence_point?: boolean | null;
             /**
              * Memory Retention
              * @default session
              * @enum {string}
              */
             memory_retention?: "single_run" | "session" | "persistent";
-            /** Allowed Peers */
-            allowed_peers?: string[];
+            /** Memory Storage Path */
+            memory_storage_path?: string | null;
+            /** Plan Config */
+            plan_config?: {
+                [key: string]: unknown;
+            } | null;
+            /** Input Schema */
+            input_schema?: {
+                [key: string]: unknown;
+            } | null;
+            /** Output Schema */
+            output_schema?: {
+                [key: string]: unknown;
+            } | null;
         };
         /** ArtifactInfo */
         ArtifactInfo: {
@@ -432,7 +461,10 @@ export interface components {
             /** Data Dir */
             data_dir: string;
         };
-        /** ConvergencePolicyConfigSpec */
+        /**
+         * ConvergencePolicyConfigSpec
+         * @description Wire mirror of :class:`ConvergencePolicyConfig`.
+         */
         ConvergencePolicyConfigSpec: {
             /**
              * Min Ratio
@@ -458,34 +490,32 @@ export interface components {
             log_level?: "info" | "warning" | "error";
         };
         /**
-         * EdgePattern
-         * @enum {string}
+         * EdgeSpec
+         * @description Wire mirror of :class:`marsys.coordination.topology.core.Edge`.
          */
-        EdgePattern: "alternating" | "symmetric";
-        /** EdgeSpec */
         EdgeSpec: {
             /** Source */
             source: string;
             /** Target */
             target: string;
-            /** @default invoke */
-            edge_type?: components["schemas"]["EdgeType"];
+            /**
+             * Edge Type
+             * @default invoke
+             * @enum {string}
+             */
+            edge_type?: "invoke" | "notify" | "query" | "stream";
             /**
              * Bidirectional
              * @default false
              */
             bidirectional?: boolean;
-            pattern?: components["schemas"]["EdgePattern"] | null;
+            /** Pattern */
+            pattern?: ("alternating" | "symmetric") | null;
             /** Metadata */
             metadata?: {
                 [key: string]: unknown;
             };
         };
-        /**
-         * EdgeType
-         * @enum {string}
-         */
-        EdgeType: "invoke" | "notify" | "query" | "stream";
         /** ErrorEnvelope */
         ErrorEnvelope: {
             error: components["schemas"]["ErrorPayload"];
@@ -504,7 +534,16 @@ export interface components {
                 [key: string]: unknown;
             };
         };
-        /** ExecutionConfigSpec */
+        /**
+         * ExecutionConfigSpec
+         * @description Wire mirror of :class:`ExecutionConfig`.
+         *
+         *     ``convergence_policy`` accepts the same ``Union[float, str,
+         *     ConvergencePolicyConfigSpec]`` polymorphism that ``ExecutionConfig.convergence_policy``
+         *     accepts at runtime. The ``model_validator(mode="before")`` normalizes
+         *     dict inputs to ``ConvergencePolicyConfigSpec`` while leaving bare floats
+         *     and bare strings on their own discriminant branch.
+         */
         ExecutionConfigSpec: {
             /**
              * Steering Mode
@@ -563,6 +602,7 @@ export interface components {
              */
             user_interaction_timeout?: number;
             status?: components["schemas"]["StatusConfigSpec"];
+            tracing?: components["schemas"]["TracingConfigSpec"];
             /**
              * User First
              * @default false
@@ -572,10 +612,9 @@ export interface components {
             initial_user_msg?: string | null;
             /**
              * User Interaction
-             * @default none
-             * @enum {string}
+             * @default terminal
              */
-            user_interaction?: "terminal" | "web" | "none";
+            user_interaction?: string;
             /**
              * Auto Cleanup Agents
              * @default true
@@ -708,7 +747,7 @@ export interface components {
         };
         /**
          * ModelConfigSpec
-         * @description Storage-boundary mirror of marsys's ModelConfig (no api_key).
+         * @description Storage-boundary mirror of :class:`marsys.models.ModelConfig` (no api_key).
          */
         ModelConfigSpec: {
             /**
@@ -741,7 +780,7 @@ export interface components {
              * Reasoning Effort
              * @default low
              */
-            reasoning_effort?: ("minimal" | "low" | "medium" | "high") | null;
+            reasoning_effort?: string | null;
             /** Oauth Profile */
             oauth_profile?: string | null;
             /** Model Class */
@@ -778,12 +817,32 @@ export interface components {
             /** Quantization */
             quantization?: ("awq" | "gptq" | "fp8") | null;
         };
-        /** NodeSpec */
+        /**
+         * NodeKind
+         * @description The canonical kind of a topology node — the single discriminator that
+         *     determines what executes it. ``AGENT`` is LLM-driven (carries an
+         *     ``agent_ref``); ``START``/``END``/``USER`` are deterministic control
+         *     nodes whose behaviour lives in the framework classes selected from this
+         *     kind (see ``execution.det_nodes``). This enum is the canonical taxonomy:
+         *     the wire ``NodeSpec.kind`` mirrors it 1:1 and every boundary derives
+         *     from it.
+         * @enum {string}
+         */
+        NodeKind: "agent" | "start" | "end" | "user";
+        /**
+         * NodeSpec
+         * @description Wire mirror of :class:`marsys.coordination.topology.core.Node`.
+         *
+         *     ``agent_ref`` carries the agent NAME (the registry key), not the live
+         *     Python reference. The runtime ``Node.agent_ref`` Python object is
+         *     reconstructed at :func:`pydantic_to_topology` time from the agents
+         *     materialized by :func:`pydantic_to_agents`.
+         */
         NodeSpec: {
             /** Name */
             name: string;
             /** @default agent */
-            node_type?: components["schemas"]["NodeType"];
+            kind?: components["schemas"]["NodeKind"];
             /** Agent Ref */
             agent_ref?: string | null;
             /**
@@ -796,11 +855,6 @@ export interface components {
                 [key: string]: unknown;
             };
         };
-        /**
-         * NodeType
-         * @enum {string}
-         */
-        NodeType: "user" | "agent" | "system" | "tool";
         /** RunCancelledEvent */
         RunCancelledEvent: {
             /**
@@ -1069,7 +1123,10 @@ export interface components {
             /** Version */
             version: string;
         };
-        /** StatusConfigSpec */
+        /**
+         * StatusConfigSpec
+         * @description Wire mirror of :class:`StatusConfig`.
+         */
         StatusConfigSpec: {
             /**
              * Enabled
@@ -1078,6 +1135,73 @@ export interface components {
             enabled?: boolean;
             /** Verbosity */
             verbosity?: number | null;
+            /**
+             * Cli Output
+             * @default true
+             */
+            cli_output?: boolean;
+            /**
+             * Cli Colors
+             * @default true
+             */
+            cli_colors?: boolean;
+            /**
+             * Show Thoughts
+             * @default true
+             */
+            show_thoughts?: boolean;
+            /**
+             * Show Tool Calls
+             * @default true
+             */
+            show_tool_calls?: boolean;
+            /**
+             * Show Timings
+             * @default true
+             */
+            show_timings?: boolean;
+            /**
+             * Aggregation Window Ms
+             * @default 500
+             */
+            aggregation_window_ms?: number;
+            /**
+             * Aggregate Parallel
+             * @default true
+             */
+            aggregate_parallel?: boolean;
+            /**
+             * Max Events Per Session
+             * @default 10000
+             */
+            max_events_per_session?: number;
+            /**
+             * Session Cleanup After S
+             * @default 3600
+             */
+            session_cleanup_after_s?: number;
+            /** Channels */
+            channels?: string[];
+            /**
+             * Show Agent Prefixes
+             * @default true
+             */
+            show_agent_prefixes?: boolean;
+            /**
+             * Prefix Width
+             * @default 20
+             */
+            prefix_width?: number;
+            /**
+             * Prefix Alignment
+             * @default left
+             */
+            prefix_alignment?: string;
+            /**
+             * Follow Up Timeout
+             * @default 30
+             */
+            follow_up_timeout?: number;
         };
         /** TaskInput */
         TaskInput: {
@@ -1106,14 +1230,62 @@ export interface components {
             /** Items */
             items: components["schemas"]["ToolInfo"][];
         };
-        /** TopologySpec */
+        /**
+         * TopologySpec
+         * @description Wire mirror of :class:`marsys.coordination.topology.core.Topology`.
+         */
         TopologySpec: {
             /** Nodes */
             nodes?: components["schemas"]["NodeSpec"][];
             /** Edges */
             edges?: components["schemas"]["EdgeSpec"][];
+            /** Metadata */
+            metadata?: {
+                [key: string]: unknown;
+            };
             /** Rules */
             rules?: string[];
+        };
+        /**
+         * TracingConfigSpec
+         * @description Wire mirror of :class:`TracingConfig`.
+         *
+         *     Excludes ``sinks`` and ``message_store`` fields (runtime objects that
+         *     cannot be persisted) and the ``redactor`` instance — these get supplied
+         *     at runtime by the consumer wiring its own :class:`TelemetrySink` set.
+         *     Persisting only the toggles preserves trace-shape intent across runs.
+         */
+        TracingConfigSpec: {
+            /**
+             * Enabled
+             * @default false
+             */
+            enabled?: boolean;
+            /**
+             * Output Dir
+             * @default ./traces
+             */
+            output_dir?: string;
+            /**
+             * Include Generation Details
+             * @default true
+             */
+            include_generation_details?: boolean;
+            /**
+             * Include Message Content
+             * @default true
+             */
+            include_message_content?: boolean;
+            /**
+             * Include Tool Results
+             * @default true
+             */
+            include_tool_results?: boolean;
+            /**
+             * Capture Full Input
+             * @default false
+             */
+            capture_full_input?: boolean;
         };
         /** ValidationError */
         ValidationError: {
@@ -1185,7 +1357,16 @@ export interface components {
                 [key: string]: unknown;
             } | null;
         };
-        /** WorkflowDefinition */
+        /**
+         * WorkflowDefinition
+         * @description The canonical wire shape for a runnable workflow.
+         *
+         *     Cross-references are validated post-construction: every ``NodeSpec.agent_ref``
+         *     must be a key of ``agents``, and every ``EdgeSpec.source`` / ``EdgeSpec.target``
+         *     must match a ``NodeSpec.name``. Failures raise Pydantic ``ValidationError``
+         *     at storage time rather than at ``Orchestra.run()`` time, which is where
+         *     Spren and the AST importer were silently shipping broken topologies before.
+         */
         WorkflowDefinition: {
             topology: components["schemas"]["TopologySpec"];
             /** Agents */

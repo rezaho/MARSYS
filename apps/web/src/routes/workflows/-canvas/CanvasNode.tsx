@@ -1,24 +1,27 @@
 /**
- * Custom canvas node — one component handles every `NodeType` (agent /
- * user / system / tool) via a `nodeType` data field. The xyflow library
- * routes `data.nodeType` to this component because we register one
+ * Custom canvas node — one component handles every `NodeKind` (agent /
+ * start / end / user) via a `kind` data field. The xyflow library
+ * routes `data.kind` to this component because we register one
  * `nodeTypes` entry; per-shape rendering happens inline.
  */
 import { Handle, Position, type NodeProps } from "@xyflow/react";
 import { useAtomValue } from "jotai";
 import type { ReactElement } from "react";
 
-import type { NodeType } from "../../../lib/api";
+import type { NodeKind } from "../../../lib/api";
 import { lintFindingsAtom } from "../../../stores/canvas";
 
 import "./CanvasNode.css";
 
 export interface CanvasNodeData extends Record<string, unknown> {
   name: string;
-  nodeType: NodeType;
+  kind: NodeKind;
   /**
-   * The id Spren uses to look up the agent in `WorkflowDefinition.agents`.
-   * Present only on `nodeType === "agent"` nodes.
+   * In-memory handle into the working `agents` map for this node. On the
+   * wire the canonical key is the agent's name (`agents` keyed by name,
+   * `agent_ref === name`); this handle only has to be stable for the
+   * editing session — serialization re-keys by node name. Present only
+   * on `kind === "agent"` nodes.
    */
   agentRefAgentId?: string;
   agentName?: string;
@@ -59,16 +62,16 @@ export function CanvasNode({ data, selected, id }: NodeProps): ReactElement {
 
   return (
     <div
-      className={`canvas-node canvas-node--${nodeData.nodeType}${selected ? " is-selected" : ""}`}
+      className={`canvas-node canvas-node--${nodeData.kind}${selected ? " is-selected" : ""}`}
       data-testid="canvas-node"
       data-node-name={nodeData.name}
-      data-node-type={nodeData.nodeType}
+      data-node-kind={nodeData.kind}
       data-node-id={id}
     >
       <Handle type="target" position={Position.Left} className="canvas-node-handle" />
       <div className="canvas-node-body">
         <div className="canvas-node-tag">
-          &lt;{nodeData.nodeType} name=&quot;{nodeData.name}&quot;
+          &lt;{nodeData.kind} name=&quot;{nodeData.name}&quot;
           {nodeData.agentModel ? ` model="${nodeData.agentModel}"` : ""}
           {nodeData.toolName ? ` tool="${nodeData.toolName}"` : ""} /&gt;
         </div>

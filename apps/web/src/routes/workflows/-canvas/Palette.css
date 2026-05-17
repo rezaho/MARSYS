@@ -40,3 +40,47 @@
 .canvas-palette-chip:active {
   cursor: grabbing;
 }
+
+.canvas-palette-cat {
+  color: var(--ink-faint);
+  margin: 0 2px 0 8px;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  font-size: 10px;
+}
+
+.canvas-palette-group {
+  display: inline-flex;
+  align-items: center;
+}
+
+.canvas-palette-group > summary {
+  cursor: pointer;
+  color: var(--ink-faint);
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  font-size: 10px;
+  list-style: none;
+  margin-right: 6px;
+}
+
+.canvas-palette-group[open] > summary {
+  color: var(--ink);
+}
+
+.canvas-palette-group-items {
+  display: inline-flex;
+  gap: 6px;
+  align-items: center;
+}
+
+.canvas-palette-chip.is-inactive {
+  cursor: not-allowed;
+  opacity: 0.45;
+  border-style: dashed;
+}
+
+.canvas-palette-chip.is-inactive:hover {
+  background: transparent;
+  border-color: var(--rule);
+}

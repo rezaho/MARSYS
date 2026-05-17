@@ -110,7 +110,7 @@ function definitionToFlow(definition: WorkflowDefinition): {
 
   const nameToAgentId = new Map<string, string>();
   for (const node of topologyNodes) {
-    if ((node.node_type ?? "agent") === "agent" && node.agent_ref) {
+    if ((node.kind ?? "agent") === "agent" && node.agent_ref) {
       nameToAgentId.set(node.name, node.agent_ref);
     }
   }
@@ -121,7 +121,7 @@ function definitionToFlow(definition: WorkflowDefinition): {
     const y = typeof metadata.position_y === "number" ? metadata.position_y : 0;
     const agentRef = nameToAgentId.get(node.name);
     const agent = agentRef ? agents[agentRef] : undefined;
-    const subtitle = agent?.agent_model?.name ?? node.node_type ?? "agent";
+    const subtitle = agent?.agent_model?.name ?? node.kind ?? "agent";
     return {
       id: node.name,
       type: "default",

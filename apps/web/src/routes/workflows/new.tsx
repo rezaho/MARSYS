@@ -33,8 +33,16 @@ export const Route = createFileRoute("/workflows/new")({
   component: NewWorkflowRoute,
 });
 
+// A fresh canvas is seeded with exactly one Start node — the single,
+// non-deletable, canvas-wide entry point. It is a real persisted
+// `kind="start"` node (not a shim), so a new workflow round-trips
+// through the framework without the permissive missing-Start path.
 const EMPTY_DEFINITION: WorkflowCreateRequest["definition"] = {
-  topology: { nodes: [], edges: [], rules: [] },
+  topology: {
+    nodes: [{ name: "Start", kind: "start" }],
+    edges: [],
+    rules: [],
+  },
   agents: {},
   execution_config: {},
 };
