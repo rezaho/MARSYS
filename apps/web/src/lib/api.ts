@@ -82,6 +82,56 @@ function authHeader(token: string): HeadersInit {
   return { Authorization: `Bearer ${token}` };
 }
 
+/**
+ * A failed API call. `code` is the backend envelope's machine code
+ * (`{"error":{"code":...}}`) and is the contract callers branch on;
+ * `message` is the human-readable text to show the user; `raw` is the
+ * untouched body for diagnostics. Branch on `code`/`status`, never on
+ * `message` substrings.
+ */
+export class ApiError extends Error {
+  readonly status: number;
+  readonly code: string | null;
+  readonly raw: string;
+
+  constructor(args: { status: number; code: string | null; message: string; raw: string }) {
+    super(args.message);
+    this.name = "ApiError";
+    this.status = args.status;
+    this.code = args.code;
+    this.raw = args.raw;
+  }
+}
+
+/**
+ * Parse the backend's `{"error":{"code","message","details"}}` envelope
+ * from a non-OK response and throw a typed {@link ApiError}. Falls back to
+ * the raw body / status line when the body is not the structured envelope.
+ *
+ * Adopted by `createRun` (the run-create path — WF-BUG-RUN-1). The other
+ * client functions still throw plain `Error`; migrating them is a separate
+ * mechanical change deliberately kept out of the run-create bug fix to
+ * avoid altering unrelated call sites' error-display behaviour.
+ */
+async function failResponse(res: Response, action: string): Promise<never> {
+  const raw = await res.text();
+  let code: string | null = null;
+  let message = "";
+  try {
+    const parsed = JSON.parse(raw) as { error?: { code?: string; message?: string } };
+    if (parsed?.error) {
+      code = parsed.error.code ?? null;
+      message = parsed.error.message ?? "";
+    }
+  } catch {
+    // body is not JSON — fall through to the raw-text message
+  }
+  if (!message) {
+    message = raw.trim() || `${action} failed: ${res.status} ${res.statusText}`;
+  }
+  throw new ApiError({ status: res.status, code, message, raw });
+}
+
 export async function fetchBootstrap(token: string): Promise<BootstrapResponse> {
   const res = await fetch(`${resolveBaseUrl()}/v1/bootstrap`, {
     headers: authHeader(token),
@@ -208,8 +258,7 @@ export async function createRun(
     body: JSON.stringify(payload),
   });
   if (!res.ok) {
-    const body = await res.text();
-    throw new Error(`create run failed: ${res.status} ${body}`);
+    await failResponse(res, "create run");
   }
   return res.json() as Promise<RunCreateResponse>;
 }

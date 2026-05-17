@@ -31,12 +31,14 @@ vi.mock("../src/hooks/useRunSse", () => ({
 }));
 
 import {
+  ApiError,
   cancelRun as mockCancelRun,
   createRun as mockCreateRun,
 } from "../src/lib/api";
 import { RunButton } from "../src/components/RunButton";
 import {
   activeRunIdAtom,
+  completionToastAtom,
   runStatusAtom,
 } from "../src/stores/run";
 
@@ -75,6 +77,34 @@ describe("RunButton", () => {
         task_input: { text: "", attachments: [] },
         trigger: "manual",
       });
+    });
+  });
+
+  it("surfaces a failed completion toast when create-run rejects (WF-BUG-RUN-1)", async () => {
+    (mockCreateRun as ReturnType<typeof vi.fn>).mockRejectedValueOnce(
+      new ApiError({
+        status: 400,
+        code: "VALIDATION_FAILED",
+        message: "No api_key in secrets store for provider 'anthropic'",
+        raw: "{}",
+      }),
+    );
+
+    const { store } = renderWithStore(
+      <RunButton workflowId="wf-1" workflowName="My Flow" />,
+    );
+    fireEvent.click(screen.getByTestId("run-button-idle"));
+
+    await waitFor(() => {
+      expect(store.get(completionToastAtom)).not.toBeNull();
+    });
+    const toast = store.get(completionToastAtom)!;
+    expect(toast.variant).toBe("failed");
+    expect(toast.errorMessage).toContain("No api_key");
+    expect(toast.runId).toBe("");
+    // The button must return to idle, not hang in submitting.
+    await waitFor(() => {
+      expect(screen.getByTestId("run-button-idle")).toBeTruthy();
     });
   });
 

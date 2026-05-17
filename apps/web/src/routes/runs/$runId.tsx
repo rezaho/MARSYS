@@ -3,6 +3,7 @@ import { Link, createFileRoute, useNavigate } from "@tanstack/react-router";
 import { useEffect, useState, type ReactElement } from "react";
 
 import {
+  ApiError,
   getRun,
   type ArtifactInfo,
   type RunRead,
@@ -107,7 +108,11 @@ export function RunDetailView({ runId }: { runId: string }): ReactElement {
       // If the failure was an unknown attachment, partition the run's
       // attachments into survivors + missing and surface a confirm.
       const message = err instanceof Error ? err.message : "Re-run failed";
-      if (!message.includes("ATTACHMENT_NOT_FOUND") && !message.includes("400")) {
+      const isAttachmentMiss =
+        err instanceof ApiError
+          ? err.code === "ATTACHMENT_NOT_FOUND" || err.status === 400
+          : false;
+      if (!isAttachmentMiss) {
         setRerunError(message);
         return;
       }

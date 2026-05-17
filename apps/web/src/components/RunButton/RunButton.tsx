@@ -15,6 +15,7 @@ import { useAtom, useAtomValue, useSetAtom } from "jotai";
 import { useEffect, useRef, useState, type ReactElement } from "react";
 
 import {
+  ApiError,
   cancelRun as apiCancelRun,
   createRun as apiCreateRun,
   isTerminalStatus,
@@ -121,6 +122,21 @@ export function RunButton({
       setStatus(res.status);
     } catch (err) {
       console.error("create run failed", err);
+      const message =
+        err instanceof ApiError || err instanceof Error
+          ? err.message
+          : "Run could not be started";
+      // The run never started — surface it through the same run-feedback
+      // channel terminal failures use (WF-BUG-RUN-1: this path previously
+      // only console.error'd, so every rejected POST /v1/runs was silent).
+      setCompletionToast({
+        runId: "",
+        workflowName,
+        variant: "failed",
+        durationMs: null,
+        costUsd: 0,
+        errorMessage: message,
+      });
     } finally {
       setSubmitting(false);
     }
