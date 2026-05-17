@@ -58,7 +58,6 @@ def stub_materialize(monkeypatch):
     def fake_materialize(  # noqa: ARG001
         *,
         definition,
-        secrets_lookup=None,
         enable_aggui=True,
         data_dir=None,
         run_id=None,
@@ -68,7 +67,6 @@ def stub_materialize(monkeypatch):
 
         bundle = RuntimeBundle(
             topology=Topology(nodes=[], edges=[]),
-            agents=[],
             execution_config=ExecutionConfig(),
         )
         captured["bundle"] = bundle
@@ -657,7 +655,7 @@ def test_post_runs_snapshot_immutable_across_workflow_edit(
 
     # Now mutate the workflow
     edited = dict(sample_definition)
-    edited["agents"] = {**sample_definition["agents"], "agent_2": sample_definition["agents"]["agent_1"]}
+    edited["agents"] = {**sample_definition["agents"], "agent_2": sample_definition["agents"]["Researcher"]}
     client.put(
         f"/v1/workflows/{wf_id}",
         json={

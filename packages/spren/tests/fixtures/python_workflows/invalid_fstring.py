@@ -1,6 +1,6 @@
 """Rejected — uses an f-string in a user-facing field."""
 from marsys.agents import Agent
-from marsys.coordination.topology.core import Node, NodeType, Topology
+from marsys.coordination.topology.core import Node, NodeKind, Topology
 from marsys.models import ModelConfig
 
 USER_NAME = "Reza"
@@ -18,6 +18,6 @@ agent = Agent(
     tools={"stub": stub},
 )
 topology = Topology(
-    nodes=[Node(name="Researcher", node_type=NodeType.AGENT, agent_ref="Researcher")],
+    nodes=[Node(name="Researcher", kind=NodeKind.AGENT, agent_ref="Researcher")],
     edges=[],
 )

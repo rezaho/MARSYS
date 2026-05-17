@@ -13,7 +13,7 @@ from marsys.coordination.topology.core import (
     EdgePattern,
     EdgeType,
     Node,
-    NodeType,
+    NodeKind,
     Topology,
 )
 from marsys.models import ModelConfig
@@ -45,8 +45,8 @@ b = Agent(
 
 topology = Topology(
     nodes=[
-        Node(name="A", node_type=NodeType.AGENT, agent_ref="A"),
-        Node(name="B", node_type=NodeType.AGENT, agent_ref="B"),
+        Node(name="A", kind=NodeKind.AGENT, agent_ref="A"),
+        Node(name="B", kind=NodeKind.AGENT, agent_ref="B"),
     ],
     edges=[
         Edge(

@@ -77,13 +77,13 @@ def sample_definition() -> dict:
     return {
         "topology": {
             "nodes": [
-                {"name": "Researcher", "node_type": "agent", "agent_ref": "agent_1"},
+                {"name": "Researcher", "kind": "agent", "agent_ref": "Researcher"},
             ],
             "edges": [],
             "rules": [],
         },
         "agents": {
-            "agent_1": {
+            "Researcher": {
                 "agent_model": {"type": "api", "name": "gpt-4o", "provider": "openai"},
                 "name": "Researcher",
                 "goal": "do research",

@@ -47,7 +47,7 @@ def test_valid_minimal_round_trip():
     edge = defn.topology.edges[0]
     assert edge.source == "Researcher"
     assert edge.target == "Writer"
-    assert edge.edge_type.value == "invoke"
+    assert edge.edge_type == "invoke"
 
     assert defn.execution_config.convergence_timeout == 120.0
     assert defn.execution_config.user_interaction == "none"
@@ -113,7 +113,7 @@ def test_rejects_subscript_in_tools_dict_value():
 \"\"\"x\"\"\"
 from marsys.agents import Agent
 from marsys.models import ModelConfig
-from marsys.coordination.topology.core import Node, NodeType, Topology
+from marsys.coordination.topology.core import Node, NodeKind, Topology
 TOOLS = {"a": 1, "b": 2}
 def stub(): pass
 agent = Agent(
@@ -123,7 +123,7 @@ agent = Agent(
     model_config=ModelConfig(type="api", name="gpt-4o", provider="openai"),
     tools={"x": TOOLS["a"]},
 )
-topology = Topology(nodes=[Node(name="R", node_type=NodeType.AGENT, agent_ref="R")], edges=[])
+topology = Topology(nodes=[Node(name="R", kind=NodeKind.AGENT, agent_ref="R")], edges=[])
 """
     with pytest.raises(PythonImportError) as exc:
         parse_python_workflow(src)
@@ -186,7 +186,7 @@ def test_drops_api_key_silently():
 \"\"\"x\"\"\"
 from marsys.agents import Agent
 from marsys.models import ModelConfig
-from marsys.coordination.topology.core import Node, NodeType, Topology
+from marsys.coordination.topology.core import Node, NodeKind, Topology
 def stub(): pass
 agent = Agent(
     name="R",
@@ -196,7 +196,7 @@ agent = Agent(
     tools={"stub": stub},
 )
 topology = Topology(
-    nodes=[Node(name="R", node_type=NodeType.AGENT, agent_ref="R")],
+    nodes=[Node(name="R", kind=NodeKind.AGENT, agent_ref="R")],
     edges=[],
 )
 """

@@ -1,21 +1,28 @@
 """Workflow envelope + CRUD request/response shapes.
 
-``WorkflowDefinition`` runs a ``model_validator(mode='after')`` that enforces
-two cross-references the framework also expects at runtime: every agent node's
-``agent_ref`` must be a key of ``agents``; every edge endpoint must match a
-node ``name``.
+The ``definition`` is the framework's canonical ``WorkflowDefinition``
+(SP-005 — Spren no longer defines its own copy or its own
+``_validate_cross_references``; the framework's model-validator owns the
+agent_ref/edge cross-reference checks and the permissive missing-Start
+``DeprecationWarning``). The envelope types below are genuinely Spren's:
+storage identity, provenance, archival, pagination.
 """
 from __future__ import annotations
 
 from datetime import datetime
 from typing import Any, Literal
 
-from pydantic import BaseModel, ConfigDict, Field, model_validator
+from marsys.coordination.topology.serialize import WorkflowDefinition
+from pydantic import BaseModel, ConfigDict, Field
 
-from .agent import AgentSpec
-from .execution_config import ExecutionConfigSpec
-from .topology import NodeType, TopologySpec
-
+__all__ = [
+    "Workflow",
+    "WorkflowCreateRequest",
+    "WorkflowDefinition",
+    "WorkflowListResponse",
+    "WorkflowProvenance",
+    "WorkflowUpdateRequest",
+]
 
 WorkflowProvenance = Literal[
     "visual_builder",
@@ -24,41 +31,6 @@ WorkflowProvenance = Literal[
     "template",
     "api",
 ]
-
-
-class WorkflowDefinition(BaseModel):
-    model_config = ConfigDict(extra="forbid")
-
-    topology: TopologySpec
-    agents: dict[str, AgentSpec] = Field(default_factory=dict)
-    execution_config: ExecutionConfigSpec = Field(default_factory=ExecutionConfigSpec)
-
-    @model_validator(mode="after")
-    def _validate_cross_references(self) -> "WorkflowDefinition":
-        node_names = {node.name for node in self.topology.nodes}
-        agent_keys = set(self.agents.keys())
-
-        for node in self.topology.nodes:
-            if node.node_type == NodeType.AGENT and node.agent_ref is not None:
-                if node.agent_ref not in agent_keys:
-                    raise ValueError(
-                        f"node '{node.name}' has agent_ref='{node.agent_ref}' "
-                        f"which is not a key of agents (have: {sorted(agent_keys)})"
-                    )
-
-        for edge in self.topology.edges:
-            if edge.source not in node_names:
-                raise ValueError(
-                    f"edge source '{edge.source}' is not a node name "
-                    f"(have: {sorted(node_names)})"
-                )
-            if edge.target not in node_names:
-                raise ValueError(
-                    f"edge target '{edge.target}' is not a node name "
-                    f"(have: {sorted(node_names)})"
-                )
-
-        return self
 
 
 class Workflow(BaseModel):

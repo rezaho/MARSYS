@@ -5,7 +5,7 @@ through module-level constants. Verifies the importer's two-pass walker
 resolves ``Name`` references against the constants table.
 """
 from marsys.agents import Agent
-from marsys.coordination.topology.core import Edge, EdgeType, Node, NodeType, Topology
+from marsys.coordination.topology.core import Edge, EdgeType, Node, NodeKind, Topology
 from marsys.models import ModelConfig
 
 AGENT_NAME = "Reza"
@@ -28,6 +28,6 @@ agent = Agent(
 )
 
 topology = Topology(
-    nodes=[Node(name=AGENT_NAME, node_type=NodeType.AGENT, agent_ref=AGENT_NAME)],
+    nodes=[Node(name=AGENT_NAME, kind=NodeKind.AGENT, agent_ref=AGENT_NAME)],
     edges=[],
 )

@@ -256,19 +256,20 @@ def test_create_rejects_orphan_agent_ref(client, auth_headers, sample_definition
     assert r.json()["error"]["code"] == "VALIDATION_FAILED"
 
 
-def test_create_rejects_reserved_node_name(client, auth_headers, sample_definition):
-    bad = {
+def test_create_accepts_formerly_reserved_node_name(client, auth_headers, sample_definition):
+    """AC-7: there is no Spren reserved-name validator post-reframe; the
+    framework NodeSpec accepts a node named 'User'/'system'/'tool'."""
+    ok = {
         **sample_definition,
-        "topology": {**sample_definition["topology"], "nodes": [{"name": "User", "node_type": "agent"}]},
+        "topology": {**sample_definition["topology"], "nodes": [{"name": "User", "kind": "agent"}]},
         "agents": {},
     }
     r = client.post(
         "/v1/workflows",
-        json={"name": "bad", "definition": bad, "provenance": "api"},
+        json={"name": "ok", "definition": ok, "provenance": "api"},
         headers=auth_headers,
     )
-    assert r.status_code == 422
-    assert r.json()["error"]["code"] == "VALIDATION_FAILED"
+    assert r.status_code == 201, r.text
 
 
 # --- idempotency ---

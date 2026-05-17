@@ -14,6 +14,7 @@ from .execution_config import (
     ConvergencePolicyConfigSpec,
     ExecutionConfigSpec,
     StatusConfigSpec,
+    TracingConfigSpec,
 )
 from .file import FileMetadata, FileUploadResponse
 from .lint import LintCode, LintFinding, LintResponse, LintSeverity
@@ -46,9 +47,8 @@ from .topology import (
     EdgePattern,
     EdgeSpec,
     EdgeType,
-    NodeCategory,
+    NodeKind,
     NodeSpec,
-    NodeType,
     TopologySpec,
 )
 from .workflow import (
@@ -84,9 +84,8 @@ __all__ = [
     "MemoryRetention",
     "ModelConfigSpec",
     "ModelType",
-    "NodeCategory",
+    "NodeKind",
     "NodeSpec",
-    "NodeType",
     "RunCancelledEvent",
     "RunCreate",
     "RunCreateResponse",
@@ -109,6 +108,7 @@ __all__ = [
     "ToolListResponse",
     "ToolSource",
     "TopologySpec",
+    "TracingConfigSpec",
     "Workflow",
     "WorkflowCreateRequest",
     "WorkflowDefinition",
