@@ -1,5 +1,21 @@
 # Session 07: Node-model building blocks + Core (Start/End/User) — unblock RUN-3d
 
+> **⚠️ SUPERSEDED 2026-05-17 — do not implement.** This plan's load-bearing
+> premises were invalidated by framework ADR-008 (node-kind unification),
+> which shipped to `main`. Specifically: **P2 is false** — a topology no
+> longer accepts `DeterministicNode` *instances*; `Topology.nodes` is
+> homogeneous plain `Node(kind=…)` and deterministic behaviour is
+> materialized from `Node.kind` at the analyzer seam. **P7 is false** —
+> Spren does not own a node taxonomy or a per-type materialization
+> contract; it consumes the framework canonical `NodeSpec` directly via
+> the `spren.models` façade (SP-005, strict). The node-model redesign,
+> the Spren `NodeType` mirror, and `runs/materialize.py`'s det-node
+> translation described here are all gone. The live plan that replaces
+> this is [`08-canonical-workflow-reframe.md`](./08-canonical-workflow-reframe.md);
+> the current framework ground truth is
+> [`docs/architecture/spren/11-node-model.md`](../../../../../architecture/spren/11-node-model.md)
+> (rewritten for ADR-008). Kept for history only.
+
 > Numbering note: session number is per-bundle-sequential within `02-run-execution-and-inspection` (04→05→06→07). It collides globally with bundle 03's `07-meta-agent-core`; the repo already has duplicate session numbers across bundles (two `06`s). Architect: renumber to `09` if strict global uniqueness is preferred.
 
 ## Premises this plan rests on

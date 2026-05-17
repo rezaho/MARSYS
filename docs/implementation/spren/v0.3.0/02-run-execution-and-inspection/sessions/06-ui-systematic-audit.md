@@ -653,6 +653,21 @@ The user reviewed the audit and flagged that the mechanical scenario walk **miss
 
 The only way to satisfy the run-create key check today is to set `SPREN_ANTHROPIC_API_KEY` (or the matching provider env var) **before** the sidecar starts. Settings/secrets UI is Session 10. So in the current shipped product the Run button can never succeed for a user who didn't pre-set an env var — and nothing tells them that. Decide: (a) accept as a known Session-10 gap but at minimum make RUN-1's error actionable ("set SPREN_<PROVIDER>_API_KEY and restart, or wait for Settings"), or (b) bring a minimal key-entry affordance forward. Architectural call — escalate.
 
+> **DISSOLVED 2026-05-17 — Session 08 (credential reframe, D1/P11).** The
+> framing above is obsolete. There is no longer a Spren run-create key
+> *check*: the `_env_secrets_lookup` / `SPREN_<PROVIDER>_API_KEY`
+> pre-gate machinery was deleted. Spren imposes **zero** credential
+> assumption — the framework resolves the key **per-provider** from the
+> standard variable (`ANTHROPIC_API_KEY`, `OPENROUTER_API_KEY`, …,
+> exactly as the framework itself does), and a genuinely missing key
+> surfaces the framework's own clear per-provider `ValidationError`
+> mapped to a Spren 400. "v0.3 has no in-app key entry" is now the
+> **intended** model (standard env-var path), not a defect; the
+> in-product credential store (keychain / encrypted SQLite) is the
+> explicit, separate v0.4 seam. Escalation closed. See
+> [`08-canonical-workflow-reframe.md`](./08-canonical-workflow-reframe.md)
+> §8 D1 + the credential table in §9.
+
 ### WF-BUG-RUN-3 — ⭐⭐ THE "Run is broken" ROOT CAUSE — Spren passes raw dicts where the framework expects typed config objects
 
 **User report**: "when I click on run, in the backend I see a lot of errors appearing and nothing happens (no workflow runs)".

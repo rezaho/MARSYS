@@ -51,17 +51,18 @@ All tables include `created_at` and `updated_at` (UTC, microsecond precision). A
 | `created_at` | TEXT NOT NULL | ISO 8601 UTC |
 | `updated_at` | TEXT NOT NULL | ISO 8601 UTC |
 
-`definition` JSON shape (mirrors marsys topology + execution config):
+`definition` JSON shape (the framework canonical `WorkflowDefinition` —
+marsys topology + agents + execution config):
 
 ```json
 {
   "topology": {
-    "nodes": [{"name": "Researcher", "node_type": "agent", "agent_ref": "agent_id"}, ...],
+    "nodes": [{"name": "Researcher", "kind": "agent", "agent_ref": "Researcher"}, ...],
     "edges": [{"source": "Researcher", "target": "Writer", "edge_type": "invoke"}, ...],
     "rules": [...]
   },
   "agents": {
-    "agent_id_1": {
+    "Researcher": {
       "name": "Researcher",
       "agent_model": {...ModelConfig fields...},
       "goal": "...",
@@ -81,7 +82,7 @@ All tables include `created_at` and `updated_at` (UTC, microsecond precision). A
 }
 ```
 
-`edge_type` and `edge.pattern` are lowercase strings faithfully mirroring `marsys.coordination.topology.core.EdgeType` / `EdgePattern`: `edge_type ∈ {invoke, notify, query, stream}`, `pattern ∈ {alternating, symmetric}` (or null). **`node_type` is NOT a faithful framework mirror** — the node taxonomy is Spren's own UX-layer model with a materialization contract; see [`11-node-model.md`](./11-node-model.md). (The old `{user, agent, system, tool}` set copied two vestigial framework enum members — `SYSTEM`/`TOOL` have zero usages in marsys — and mistook the string-DSL name sugar for the canonical model. Corrected 2026-05-15.) The agent's model-config field is named `agent_model` rather than `model` because Pydantic v2 reserves the attribute name `model_config`; storage JSON shape mirrors the Pydantic mirror.
+`edge_type` and `edge.pattern` are lowercase strings faithfully mirroring `marsys.coordination.topology.core.EdgeType` / `EdgePattern`: `edge_type ∈ {invoke, notify, query, stream}`, `pattern ∈ {alternating, symmetric}` (or null). Post-ADR-008 the node taxonomy **is** the framework's canonical `NodeKind`: `kind ∈ {agent, start, end, user}` (the removed `system`/`tool` members are rejected on read). Spren consumes the framework `NodeSpec` directly via the `spren.models` re-export façade — there is no Spren node mirror and no materialization contract; see [`11-node-model.md`](./11-node-model.md). The framework binds `node.agent_ref` against `AgentSpec.name`, so the `agents` dict is keyed by name (`key == AgentSpec.name == agent_ref`); the earlier random `agent_<id>` keying was a canvas bug, fixed + migrated 2026-05-17. The agent's model-config field is named `agent_model` rather than `model` because Pydantic v2 reserves the attribute name `model_config`; the stored JSON is the framework canonical shape (SP-005).
 
 ### `runs`
 
