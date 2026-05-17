@@ -5,7 +5,7 @@ This module handles the analysis of topology definitions to identify execution p
 divergence/convergence points, and build runtime graphs for dynamic branch creation.
 """
 
-from .core import Topology, Node, Edge, User, NodeType, EdgeType, EdgePattern
+from .core import Topology, Node, Edge, NodeKind, EdgeType, EdgePattern
 from .graph import (
     NodeInfo,
     TopologyGraph,
@@ -23,8 +23,7 @@ __all__ = [
     "Topology",
     "Node",
     "Edge",
-    "User",
-    "NodeType",
+    "NodeKind",
     "EdgeType",
     "EdgePattern",
     # Graph components
