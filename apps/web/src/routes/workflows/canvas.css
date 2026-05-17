@@ -101,6 +101,11 @@
   border-left: 1px solid var(--rule);
   min-height: 0;
   overflow-y: auto;
+  /* Stack above the ambient presence orb (position:fixed, z-index:30)
+   * so an open config panel and its pinned action footer are never
+   * occluded by it (WF-BUG-RIGHTRAIL-1). */
+  position: relative;
+  z-index: 31;
 }
 
 .canvas-empty {

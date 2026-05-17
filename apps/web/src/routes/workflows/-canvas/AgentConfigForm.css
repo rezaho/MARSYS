@@ -130,11 +130,21 @@
   line-height: 1.4;
 }
 
+/* Pinned action footer (WF-BUG-RIGHTRAIL-1): Apply/Delete must always be
+ * reachable, not buried at the end of a long scroll under the orb. Sticky
+ * to the bottom of the scrolling form; negative margins cancel the form's
+ * 22px side / 24px bottom padding so the opaque bar spans the rail edge-
+ * to-edge and sits flush. The rail itself stacks above the ambient orb
+ * (see .canvas-rail) so nothing here is ever occluded. */
 .agent-form-actions {
+  position: sticky;
+  bottom: 0;
   display: flex;
   justify-content: space-between;
   gap: 12px;
-  padding-top: 8px;
+  margin: 8px -22px -24px;
+  padding: 14px 22px;
+  background: var(--surface);
   border-top: 1px solid var(--rule);
 }
 
