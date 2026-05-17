@@ -159,7 +159,6 @@ Topology gating prevents two classes of bugs:
 ```python
 from marsys.coordination import Orchestra
 from marsys.coordination.config import ExecutionConfig
-from marsys.coordination.execution.det_nodes import StartNode, EndNode
 from marsys.coordination.topology import Topology, Node, Edge
 from marsys.agents import Agent
 from marsys.agents.registry import AgentRegistry
@@ -194,7 +193,7 @@ coordinator = Agent(
 )
 
 topology = Topology(
-    nodes=[StartNode(), Node("Coordinator"), Node("Researcher"), Node("FactChecker"), EndNode()],
+    nodes=[Node("Start", kind="start"), Node("Coordinator"), Node("Researcher"), Node("FactChecker"), Node("End", kind="end")],
     edges=[
         Edge("Start", "Coordinator"),
         Edge("Coordinator", "Researcher"),

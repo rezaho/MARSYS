@@ -2,11 +2,13 @@ name: DeterministicNode
 criticality: TRUNK-CRITICAL
 
 purpose: |
-  Non-LLM nodes in the topology graph with explicit, single-purpose
-  behavior. Reserved singleton subclasses (StartNode, EndNode, UserNode)
-  drive workflow entry, exit, and bidirectional human Q&A. Det-nodes
-  interact with the orchestrator only through the narrow DetNodeContext
-  Protocol, keeping coupling explicit and the API surface minimal.
+  Non-LLM behaviour for deterministic topology nodes. A det-node is a
+  uniform Node whose kind is START/END/USER (NodeKind); its behaviour class
+  (StartNode/EndNode/UserNode) is selected from kind via the single-sourced
+  NODE_KIND_BEHAVIOUR registry and materialized at the analyzer seam — det-
+  node *instances* are never stored in Topology.nodes. Det-nodes drive
+  workflow entry, exit, and bidirectional human Q&A, and interact with the
+  orchestrator only through the narrow DetNodeContext Protocol.
 
 members:
   - StartNode (workflow entry; required, exactly one per topology)
@@ -17,7 +19,7 @@ responsibilities:
   - Provide explicit, deterministic behavior at workflow entry, exit, and human-interaction points
   - Implement three lifecycle hooks per subclass: on_workflow_start, on_single_invoke, on_dispatch
   - Drive coordination tool gating via topology edges (has_edge_to_endnode, has_edge_to_usernode)
-  - Reserve the names "Start", "End", "User" at the topology level (RESERVED_DETNODE_NAMES)
+  - Map NodeKind -> behaviour class via the single authoritative NODE_KIND_BEHAVIOUR registry (RESERVED_NAME_TO_KIND, the reserved-name->kind lookup, is derived from it — no second hand-maintained spelling)
 
 not_responsible_for:
   - Branch / Barrier state mutation — owned by Orchestrator
@@ -39,7 +41,7 @@ relationships:
 
 boundaries:
   add_here:
-    - New det-node subclass (subclass DeterministicNode; add to RESERVED_DETNODE_NAMES; implement the three lifecycle hooks)
+    - New det-node kind (add a NodeKind member; subclass DeterministicNode; add one NODE_KIND_BEHAVIOUR entry; implement the three lifecycle hooks). Extension-open — no dispatch-site edits, no RESERVED_DETNODE_NAMES (removed; collapsed into NODE_KIND_BEHAVIOUR)
     - New DetNodeContext methods if a new det-node type needs them (added to the Protocol so all implementers stay in sync)
   not_here:
     - LLM calls
@@ -47,10 +49,10 @@ boundaries:
     - Topology graph mutation (det-nodes are registered via topology.register_det_node, not via the Orchestrator)
 
 invariants:
-  - At most one StartNode, one EndNode, one UserNode per topology (singletons).
+  - Exactly one StartNode per topology (the only enforced singleton); EndNode and UserNode are optional, zero or more.
   - StartNode.on_workflow_start dispatches to all outgoing edges with delivery_target = ROOT.
   - StartNode.on_single_invoke / on_dispatch raise (Start cannot be invoked from agents).
   - EndNode.on_single_invoke calls deliver_to_root (branch terminates, value -> ROOT).
   - EndNode.on_dispatch calls dispatch_to_root (fire-and-forget, fork doesn't wait for ROOT).
   - UserNode FIFO single-pending: at most one user question outstanding; siblings queue.
-  - Reserved names "Start", "End", "User" auto-resolve in topology converters via RESERVED_DETNODE_NAMES.
+  - Reserved names "Start", "End", "User" auto-resolve in parse_node to a uniform Node(kind=START/END/USER) via RESERVED_NAME_TO_KIND (derived from NODE_KIND_BEHAVIOUR); the behaviour instance is materialized later at analyzer._add_nodes, never placed in Topology.nodes.
