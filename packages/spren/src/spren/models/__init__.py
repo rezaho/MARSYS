@@ -8,14 +8,33 @@ secrets store) happens at execution time in Session 04+.
 from __future__ import annotations
 
 from .agent import AgentSpec, MemoryRetention
+from .artifact import ArtifactInfo, ArtifactListResponse
 from .errors import ErrorCode, ErrorEnvelope, ErrorPayload
 from .execution_config import (
     ConvergencePolicyConfigSpec,
     ExecutionConfigSpec,
     StatusConfigSpec,
+    TracingConfigSpec,
 )
+from .file import FileMetadata, FileUploadResponse
 from .lint import LintCode, LintFinding, LintResponse, LintSeverity
 from .model_config import ApiProvider, ModelConfigSpec, ModelType
+from .run import (
+    RunCancelledEvent,
+    RunCreate,
+    RunCreateResponse,
+    RunCreatedEvent,
+    RunFinishedEvent,
+    RunListItem,
+    RunListResponse,
+    RunRead,
+    RunStatus,
+    RunUpdatedEvent,
+    RunsListEvent,
+    TERMINAL_STATUSES,
+    TaskInput,
+)
+from .trace import RunTrace, RunTraceCompletionStatus, SpanKind, SpanNode
 from .tools import (
     ImportWarningCode,
     ImportWarningPayload,
@@ -24,7 +43,14 @@ from .tools import (
     ToolSource,
     WorkflowImportResponse,
 )
-from .topology import EdgePattern, EdgeSpec, EdgeType, NodeSpec, NodeType, TopologySpec
+from .topology import (
+    EdgePattern,
+    EdgeSpec,
+    EdgeType,
+    NodeKind,
+    NodeSpec,
+    TopologySpec,
+)
 from .workflow import (
     Workflow,
     WorkflowCreateRequest,
@@ -37,6 +63,8 @@ from .workflow import (
 __all__ = [
     "AgentSpec",
     "ApiProvider",
+    "ArtifactInfo",
+    "ArtifactListResponse",
     "ConvergencePolicyConfigSpec",
     "EdgePattern",
     "EdgeSpec",
@@ -45,6 +73,8 @@ __all__ = [
     "ErrorEnvelope",
     "ErrorPayload",
     "ExecutionConfigSpec",
+    "FileMetadata",
+    "FileUploadResponse",
     "ImportWarningCode",
     "ImportWarningPayload",
     "LintCode",
@@ -54,13 +84,31 @@ __all__ = [
     "MemoryRetention",
     "ModelConfigSpec",
     "ModelType",
+    "NodeKind",
     "NodeSpec",
-    "NodeType",
+    "RunCancelledEvent",
+    "RunCreate",
+    "RunCreateResponse",
+    "RunCreatedEvent",
+    "RunFinishedEvent",
+    "RunListItem",
+    "RunListResponse",
+    "RunRead",
+    "RunStatus",
+    "RunTrace",
+    "RunTraceCompletionStatus",
+    "RunUpdatedEvent",
+    "RunsListEvent",
+    "SpanKind",
+    "SpanNode",
     "StatusConfigSpec",
+    "TERMINAL_STATUSES",
+    "TaskInput",
     "ToolInfo",
     "ToolListResponse",
     "ToolSource",
     "TopologySpec",
+    "TracingConfigSpec",
     "Workflow",
     "WorkflowCreateRequest",
     "WorkflowDefinition",

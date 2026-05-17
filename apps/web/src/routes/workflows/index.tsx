@@ -6,6 +6,7 @@ import { listWorkflows, type Workflow, type WorkflowProvenance } from "../../lib
 import { PresenceOrb } from "../../components/TopBar/PresenceOrb";
 import { ProvenanceBadge } from "../../components/ProvenanceBadge";
 import { TopBar } from "../../components/TopBar";
+import { Button, Card, TagMarkup } from "../../components/ui";
 import { useCapabilities } from "../../providers/capabilities";
 import { ImportPythonButton } from "./-components/ImportPythonButton";
 import { useCommands } from "../../stores/useCommands";
@@ -75,14 +76,14 @@ function WorkflowsRoute(): ReactElement {
         <header className="workflows-header">
           <h1>Workflows</h1>
           <div className="workflows-actions">
-            <button
-              type="button"
-              className="workflows-button workflows-button--primary"
+            <Button
+              variant="primary"
+              size="md"
               data-testid="new-workflow-button"
               onClick={() => navigate({ to: "/workflows/new" })}
             >
               + New
-            </button>
+            </Button>
             <ImportPythonButton />
           </div>
         </header>
@@ -127,11 +128,16 @@ function WorkflowsRoute(): ReactElement {
 function EmptyState(): ReactElement {
   return (
     <div className="workflows-empty-state" data-testid="workflows-empty">
-      <pre className="workflows-empty-snippet">
-        {`<workflow name=""
-          agents={...}
-          edges={...} />`}
-      </pre>
+      <TagMarkup
+        tag="workflow"
+        size="sm"
+        block
+        attrs={[
+          ["name", ""],
+          ["agents", ["..."]],
+          ["edges", ["..."]],
+        ]}
+      />
       <p>No workflows yet. Create one or import a Python file.</p>
     </div>
   );
@@ -140,12 +146,14 @@ function EmptyState(): ReactElement {
 function WorkflowCard({ workflow }: { workflow: Workflow }): ReactElement {
   const agentCount = Object.keys(workflow.definition.agents ?? {}).length;
   const flow = (workflow.definition.topology.nodes ?? [])
-    .filter((n) => (n.node_type ?? "agent") === "agent" || n.node_type === "user")
+    .filter((n) => (n.kind ?? "agent") === "agent" || n.kind === "user")
     .slice(0, 5)
     .map((n) => n.name)
     .join(" → ");
   return (
-    <Link
+    <Card
+      as={Link}
+      interactive
       to="/workflows/$workflowId"
       params={{ workflowId: workflow.id }}
       className="workflow-card"
@@ -164,6 +172,6 @@ function WorkflowCard({ workflow }: { workflow: Workflow }): ReactElement {
         last edited {new Date(workflow.updated_at).toLocaleString()}
       </p>
       {flow ? <p className="workflow-card-flow">{flow}</p> : null}
-    </Link>
+    </Card>
   );
 }

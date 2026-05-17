@@ -6,7 +6,7 @@ mirrors. The two stub callables below exist solely so the parser sees real
 """
 from marsys.agents import Agent
 from marsys.coordination.config import ExecutionConfig
-from marsys.coordination.topology.core import Edge, EdgeType, Node, NodeType, Topology
+from marsys.coordination.topology.core import Edge, EdgeType, Node, NodeKind, Topology
 from marsys.models import ModelConfig
 
 
@@ -40,8 +40,8 @@ writer = Agent(
 
 topology = Topology(
     nodes=[
-        Node(name="Researcher", node_type=NodeType.AGENT, agent_ref="Researcher", is_convergence_point=False),
-        Node(name="Writer", node_type=NodeType.AGENT, agent_ref="Writer", is_convergence_point=True),
+        Node(name="Researcher", kind=NodeKind.AGENT, agent_ref="Researcher", is_convergence_point=False),
+        Node(name="Writer", kind=NodeKind.AGENT, agent_ref="Writer", is_convergence_point=True),
     ],
     edges=[
         Edge(source="Researcher", target="Writer", edge_type=EdgeType.INVOKE, bidirectional=False),

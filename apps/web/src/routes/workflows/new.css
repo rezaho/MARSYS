@@ -4,9 +4,93 @@
   flex-direction: column;
   align-items: center;
   justify-content: center;
-  gap: 16px;
+  gap: 24px;
   background: var(--ground);
   color: var(--ink-soft);
+  font-family: var(--font-sans);
+  padding: 24px;
+  text-align: center;
+}
+
+.new-workflow-orb {
+  width: 72px;
+  height: 72px;
+}
+
+.new-workflow-msg {
+  margin: 0;
   font-family: var(--font-mono);
   font-size: 12px;
+  letter-spacing: 0.04em;
+  color: var(--ink-soft);
+}
+
+.new-workflow-detail {
+  margin: 6px 0 0;
+  font-family: var(--font-mono);
+  font-size: 11px;
+  color: var(--ink-faint);
+  max-width: 60ch;
+}
+
+.new-workflow-error {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 4px;
+  max-width: 60ch;
+}
+
+.new-workflow-error > p:first-child {
+  margin: 0;
+  font-family: var(--font-sans);
+  font-size: 15px;
+  color: var(--ink);
+}
+
+.new-workflow-pending {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 4px;
+}
+
+.new-workflow-actions {
+  margin-top: 12px;
+  display: flex;
+  gap: 8px;
+  align-items: center;
+}
+
+.new-workflow-retry {
+  background: var(--ink);
+  color: var(--surface);
+  border: 0;
+  padding: 8px 14px;
+  border-radius: 6px;
+  font-family: var(--font-sans);
+  font-size: 12px;
+  font-weight: 500;
+  cursor: pointer;
+  transition: background 240ms var(--ease-out);
+}
+
+.new-workflow-retry:hover {
+  background: var(--magenta);
+}
+
+.new-workflow-link {
+  color: var(--ink-soft);
+  text-decoration: none;
+  font-family: var(--font-sans);
+  font-size: 12px;
+  padding: 8px 14px;
+  border-radius: 6px;
+  border: 1px solid var(--rule);
+  transition: border-color 240ms var(--ease-out), color 240ms var(--ease-out);
+}
+
+.new-workflow-link:hover {
+  border-color: var(--ink-faint);
+  color: var(--ink);
 }

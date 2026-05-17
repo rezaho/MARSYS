@@ -6,17 +6,23 @@ finding-shape contracts the UI consumes.
 """
 from __future__ import annotations
 
+import pytest
+
 from spren.lint import lint_workflow
 from spren.models import (
     AgentSpec,
     EdgeSpec,
     ExecutionConfigSpec,
     ModelConfigSpec,
+    NodeKind,
     NodeSpec,
-    NodeType,
     TopologySpec,
     WorkflowDefinition,
 )
+
+# Agent-only definitions (no explicit Start) emit the framework's permissive
+# DeprecationWarning (AC-6) — expected, not under test here.
+pytestmark = pytest.mark.filterwarnings("ignore::DeprecationWarning")
 
 
 def _agent(name: str = "Researcher", tools: list[str] | None = None) -> AgentSpec:
@@ -47,7 +53,7 @@ def _definition(
 def test_clean_workflow_produces_no_findings() -> None:
     definition = _definition(
         nodes=[
-            NodeSpec(name="Researcher", node_type=NodeType.AGENT, agent_ref="agent_1"),
+            NodeSpec(name="Researcher", kind=NodeKind.AGENT, agent_ref="agent_1"),
         ],
         edges=[],
         agents={"agent_1": _agent(tools=["web_search"])},
@@ -59,7 +65,7 @@ def test_clean_workflow_produces_no_findings() -> None:
 def test_unknown_tool_produces_warning_with_node_name() -> None:
     definition = _definition(
         nodes=[
-            NodeSpec(name="Researcher", node_type=NodeType.AGENT, agent_ref="agent_1"),
+            NodeSpec(name="Researcher", kind=NodeKind.AGENT, agent_ref="agent_1"),
         ],
         edges=[],
         agents={"agent_1": _agent(tools=["browse_url"])},
@@ -78,7 +84,7 @@ def test_unknown_tool_produces_warning_with_node_name() -> None:
 
 def test_unknown_tool_did_you_mean_suggests_a_close_match() -> None:
     definition = _definition(
-        nodes=[NodeSpec(name="A", node_type=NodeType.AGENT, agent_ref="agent_1")],
+        nodes=[NodeSpec(name="A", kind=NodeKind.AGENT, agent_ref="agent_1")],
         edges=[],
         agents={"agent_1": _agent(tools=["fetch_url"])},
     )
@@ -90,7 +96,7 @@ def test_unknown_tool_did_you_mean_suggests_a_close_match() -> None:
 
 def test_dangling_edge_endpoint_produces_error() -> None:
     definition = _definition(
-        nodes=[NodeSpec(name="A", node_type=NodeType.AGENT, agent_ref="agent_1")],
+        nodes=[NodeSpec(name="A", kind=NodeKind.AGENT, agent_ref="agent_1")],
         edges=[],  # we add the dangling edge directly below to bypass the model_validator
         agents={"agent_1": _agent(name="A")},
     )
@@ -98,7 +104,7 @@ def test_dangling_edge_endpoint_produces_error() -> None:
     # exercise the linter against a definition synthesized to bypass it:
     bad = WorkflowDefinition.model_construct(
         topology=TopologySpec.model_construct(
-            nodes=[NodeSpec(name="A", node_type=NodeType.AGENT, agent_ref="agent_1")],
+            nodes=[NodeSpec(name="A", kind=NodeKind.AGENT, agent_ref="agent_1")],
             edges=[EdgeSpec(source="A", target="Ghost")],
             rules=[],
         ),
@@ -115,7 +121,7 @@ def test_dangling_edge_endpoint_produces_error() -> None:
 def test_missing_agent_ref_for_agent_node_produces_finding() -> None:
     bad = WorkflowDefinition.model_construct(
         topology=TopologySpec(
-            nodes=[NodeSpec(name="A", node_type=NodeType.AGENT, agent_ref="agent_does_not_exist")],
+            nodes=[NodeSpec(name="A", kind=NodeKind.AGENT, agent_ref="agent_does_not_exist")],
             edges=[],
             rules=[],
         ),
@@ -129,7 +135,7 @@ def test_missing_agent_ref_for_agent_node_produces_finding() -> None:
 
 def test_agent_node_without_agent_ref_warns() -> None:
     definition = _definition(
-        nodes=[NodeSpec(name="A", node_type=NodeType.AGENT, agent_ref=None)],
+        nodes=[NodeSpec(name="A", kind=NodeKind.AGENT, agent_ref=None)],
         edges=[],
         agents={},
     )
@@ -150,7 +156,7 @@ def test_missing_required_fields_flag_empty_agent_fields() -> None:
         allowed_peers=[],
     )
     definition = _definition(
-        nodes=[NodeSpec(name="N", node_type=NodeType.AGENT, agent_ref="agent_1")],
+        nodes=[NodeSpec(name="N", kind=NodeKind.AGENT, agent_ref="agent_1")],
         edges=[],
         agents={"agent_1": bad_agent},
     )
@@ -173,10 +179,10 @@ def test_orphan_node_with_no_path_from_entry_is_unreachable() -> None:
     """
     definition = _definition(
         nodes=[
-            NodeSpec(name="Entry", node_type=NodeType.USER),
-            NodeSpec(name="Reachable", node_type=NodeType.AGENT, agent_ref="agent_1"),
-            NodeSpec(name="Mid", node_type=NodeType.AGENT, agent_ref="agent_2"),
-            NodeSpec(name="OrphanTarget", node_type=NodeType.AGENT, agent_ref="agent_3"),
+            NodeSpec(name="Entry", kind=NodeKind.USER),
+            NodeSpec(name="Reachable", kind=NodeKind.AGENT, agent_ref="agent_1"),
+            NodeSpec(name="Mid", kind=NodeKind.AGENT, agent_ref="agent_2"),
+            NodeSpec(name="OrphanTarget", kind=NodeKind.AGENT, agent_ref="agent_3"),
         ],
         edges=[
             EdgeSpec(source="Entry", target="Reachable"),
@@ -206,9 +212,9 @@ def test_truly_orphan_node_is_unreachable() -> None:
     bad = WorkflowDefinition.model_construct(
         topology=TopologySpec(
             nodes=[
-                NodeSpec(name="Entry", node_type=NodeType.USER),
-                NodeSpec(name="X", node_type=NodeType.AGENT, agent_ref="agent_x"),
-                NodeSpec(name="Y", node_type=NodeType.AGENT, agent_ref="agent_y"),
+                NodeSpec(name="Entry", kind=NodeKind.USER),
+                NodeSpec(name="X", kind=NodeKind.AGENT, agent_ref="agent_x"),
+                NodeSpec(name="Y", kind=NodeKind.AGENT, agent_ref="agent_y"),
             ],
             edges=[
                 # X → Y is a non-entry component (X has incoming from… well, nothing).
@@ -232,10 +238,10 @@ def test_unreachable_when_target_only_reached_via_dropped_edge() -> None:
     bad = WorkflowDefinition.model_construct(
         topology=TopologySpec(
             nodes=[
-                NodeSpec(name="Entry", node_type=NodeType.USER),
-                NodeSpec(name="Reachable", node_type=NodeType.AGENT, agent_ref="r"),
-                NodeSpec(name="Cycle1", node_type=NodeType.AGENT, agent_ref="c1"),
-                NodeSpec(name="Cycle2", node_type=NodeType.AGENT, agent_ref="c2"),
+                NodeSpec(name="Entry", kind=NodeKind.USER),
+                NodeSpec(name="Reachable", kind=NodeKind.AGENT, agent_ref="r"),
+                NodeSpec(name="Cycle1", kind=NodeKind.AGENT, agent_ref="c1"),
+                NodeSpec(name="Cycle2", kind=NodeKind.AGENT, agent_ref="c2"),
             ],
             edges=[
                 EdgeSpec(source="Entry", target="Reachable"),
@@ -264,8 +270,8 @@ def test_unreachable_when_target_only_reached_via_dropped_edge() -> None:
 def test_cycle_without_escape_produces_errors() -> None:
     definition = _definition(
         nodes=[
-            NodeSpec(name="A", node_type=NodeType.AGENT, agent_ref="agent_a"),
-            NodeSpec(name="B", node_type=NodeType.AGENT, agent_ref="agent_b"),
+            NodeSpec(name="A", kind=NodeKind.AGENT, agent_ref="agent_a"),
+            NodeSpec(name="B", kind=NodeKind.AGENT, agent_ref="agent_b"),
         ],
         edges=[
             EdgeSpec(source="A", target="B"),
@@ -283,9 +289,9 @@ def test_cycle_without_escape_produces_errors() -> None:
 def test_cycle_with_escape_is_quiet() -> None:
     definition = _definition(
         nodes=[
-            NodeSpec(name="A", node_type=NodeType.AGENT, agent_ref="agent_a"),
-            NodeSpec(name="B", node_type=NodeType.AGENT, agent_ref="agent_b"),
-            NodeSpec(name="Exit", node_type=NodeType.USER),
+            NodeSpec(name="A", kind=NodeKind.AGENT, agent_ref="agent_a"),
+            NodeSpec(name="B", kind=NodeKind.AGENT, agent_ref="agent_b"),
+            NodeSpec(name="Exit", kind=NodeKind.USER),
         ],
         edges=[
             EdgeSpec(source="A", target="B"),
@@ -301,7 +307,7 @@ def test_cycle_with_escape_is_quiet() -> None:
 def test_self_loop_without_escape_is_a_cycle_finding() -> None:
     bad = WorkflowDefinition.model_construct(
         topology=TopologySpec(
-            nodes=[NodeSpec(name="X", node_type=NodeType.AGENT, agent_ref="agent_x")],
+            nodes=[NodeSpec(name="X", kind=NodeKind.AGENT, agent_ref="agent_x")],
             edges=[EdgeSpec(source="X", target="X")],
             rules=[],
         ),

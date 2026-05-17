@@ -8,6 +8,7 @@
  */
 import { useState, type ReactElement } from "react";
 
+import { Dialog } from "../../../components/ui";
 import {
   generatePattern,
   PATTERN_META,
@@ -38,95 +39,93 @@ export function PatternModal({
     canvasEmpty ? "empty_canvas" : "merge",
   );
 
-  if (!open) return null;
   const meta = PATTERN_META.find((p) => p.key === selected)!;
   const clamped = Math.min(meta.maxAgents, Math.max(meta.minAgents, count));
 
   return (
-    <div
-      className="pattern-modal-backdrop"
-      onMouseDown={(e) => {
-        if (e.target === e.currentTarget) onClose();
-      }}
-      data-testid="pattern-modal"
+    <Dialog
+      open={open}
+      onClose={onClose}
+      ariaLabel="Insert pattern"
+      position="center"
+      className="pattern-modal"
+      testId="pattern-modal"
     >
-      <div className="pattern-modal" role="dialog" aria-modal="true" aria-label="Insert pattern">
-        <header className="pattern-modal-header">
-          <h2>Insert pattern</h2>
-          <button
-            type="button"
-            className="pattern-modal-close"
-            onClick={onClose}
-            aria-label="Close"
-          >
-            ×
-          </button>
-        </header>
-        <ul className="pattern-modal-options">
-          {PATTERN_META.map((p) => (
-            <li key={p.key}>
-              <label className={`pattern-option${selected === p.key ? " is-selected" : ""}`}>
-                <input
-                  type="radio"
-                  name="pattern"
-                  value={p.key}
-                  checked={selected === p.key}
-                  onChange={() => {
-                    setSelected(p.key);
-                    setCount(Math.min(Math.max(count, p.minAgents), p.maxAgents));
-                  }}
-                  data-testid={`pattern-radio-${p.key}`}
-                />
-                <span className="pattern-option-label">{p.label}</span>
-                <span className="pattern-option-desc">{p.description}</span>
-                <span className="pattern-option-use">For: {p.use}</span>
-              </label>
-            </li>
-          ))}
-        </ul>
+      <header className="pattern-modal-header">
+        <h2>Insert pattern</h2>
+        <button
+          type="button"
+          className="pattern-modal-close"
+          onClick={onClose}
+          aria-label="Close"
+        >
+          ×
+        </button>
+      </header>
+      <ul className="pattern-modal-options">
+        {PATTERN_META.map((p) => (
+          <li key={p.key}>
+            <label className={`pattern-option${selected === p.key ? " is-selected" : ""}`}>
+              <input
+                type="radio"
+                name="pattern"
+                value={p.key}
+                checked={selected === p.key}
+                onChange={() => {
+                  setSelected(p.key);
+                  setCount(Math.min(Math.max(count, p.minAgents), p.maxAgents));
+                }}
+                data-testid={`pattern-radio-${p.key}`}
+              />
+              <span className="pattern-option-label">{p.label}</span>
+              <span className="pattern-option-desc">{p.description}</span>
+              <span className="pattern-option-use">For: {p.use}</span>
+            </label>
+          </li>
+        ))}
+      </ul>
 
-        <div className="pattern-modal-controls">
-          <label>
-            <span>Number of agents</span>
-            <input
-              type="number"
-              min={meta.minAgents}
-              max={meta.maxAgents}
-              value={clamped}
-              onChange={(e) => setCount(Number(e.target.value))}
-              data-testid="pattern-count"
-            />
-          </label>
-          <label>
-            <span>Insert at</span>
-            <select
-              value={mode}
-              onChange={(e) => setMode(e.target.value as PatternInsertMode)}
-              data-testid="pattern-mode"
-            >
-              <option value="empty_canvas" disabled={!canvasEmpty}>
-                empty canvas
-              </option>
-              <option value="merge">merge with existing nodes</option>
-              <option value="replace">replace canvas</option>
-            </select>
-          </label>
-        </div>
-
-        <footer className="pattern-modal-actions">
-          <button type="button" onClick={onClose} className="pattern-modal-cancel">
-            Cancel
-          </button>
-          <button
-            type="button"
-            className="pattern-modal-insert"
-            onClick={() => onInsert(generatePattern(selected, clamped), mode)}
-            data-testid="pattern-insert"
+      <div className="pattern-modal-controls">
+        <label>
+          <span>Number of agents</span>
+          <input
+            type="number"
+            min={meta.minAgents}
+            max={meta.maxAgents}
+            value={clamped}
+            onChange={(e) => setCount(Number(e.target.value))}
+            data-testid="pattern-count"
+          />
+        </label>
+        <label>
+          <span>Insert at</span>
+          <select
+            value={mode}
+            onChange={(e) => setMode(e.target.value as PatternInsertMode)}
+            data-testid="pattern-mode"
           >
-            Insert
-          </button>
-        </footer>
+            <option value="empty_canvas" disabled={!canvasEmpty}>
+              empty canvas
+            </option>
+            <option value="merge">merge with existing nodes</option>
+            <option value="replace">replace canvas</option>
+          </select>
+        </label>
       </div>
-    </div>
+
+      <footer className="pattern-modal-actions">
+        <button type="button" onClick={onClose} className="pattern-modal-cancel">
+          Cancel
+        </button>
+        <button
+          type="button"
+          className="pattern-modal-insert"
+          onClick={() => onInsert(generatePattern(selected, clamped), mode)}
+          data-testid="pattern-insert"
+        >
+          Insert
+        </button>
+      </footer>
+    </Dialog>
   );
 }

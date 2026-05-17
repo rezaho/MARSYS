@@ -114,7 +114,7 @@ Event types map 1:1 to AG-UI:
 - `StateSnapshot` / `StateDelta`
 - `Custom` (for events that don't fit standard types — used sparingly, see SP-004)
 
-The translation layer ships in the framework at `marsys.transport.aggui` (Framework v0.3 Session 06). It subscribes to MARSYS `EventBus` and emits AG-UI events as `AsyncIterator[AGUIEvent]` from `AGUIEventStream(orchestra, run_id)`. Spren v0.3 Session 04 wraps the iterator in an SSE HTTP endpoint at `/v1/runs/{id}/events`.
+The translation layer ships in the framework at `marsys.transport.aggui`. It subscribes to MARSYS `EventBus` and emits AG-UI events as `AsyncIterator[AGUIEvent]` from `AGUIEventStream(orchestra, run_id)`. Spren wraps the iterator in an SSE HTTP endpoint at `/v1/runs/{id}/events`.
 
 ## OpenAPI, TypeScript, and Python type generation
 

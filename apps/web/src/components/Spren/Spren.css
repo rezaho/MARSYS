@@ -8,30 +8,179 @@
  * Crossfade transition discipline:
  *   - outgoing layer: opacity 1 → 0, scale 1 → 0.92 over 700ms
  *   - incoming layer: opacity 0 → 1, scale 0.92 → 1 over 700ms
- * Both pass through the converged-orb pose at 50% opacity each (since
- * each layer's resting shape is the same canonical egg).
+ * Both pass through the converged-orb pose at 50% opacity each.
  *
- * Reduced-motion: `prefers-reduced-motion: reduce` falls back to the
- * idle layer rendered without keyframe animations, with a static
- * drop-shadow so the orb still feels present.
+ * Tier-1 micro-interactions — composed via registered CSS custom
+ * properties so behaviors REPLACE values, not stack keyframes. This
+ * matters because two `@keyframes` rules both writing to the same
+ * `transform` property fight: the animation wins and other rules
+ * (hover, :active) get clobbered. Composing through custom properties
+ * lets idle drift, hover scale, click squash, and focus pulse all
+ * write independent values that the wrap's single transform expression
+ * combines.
+ *
+ * Reduced-motion: keep state-transition crossfades (shortened to
+ * 200ms), keep saturation pulse + drop-shadow, drop drift/shake/bounce.
  */
+
+/* — Registered custom properties so they can be animated/transitioned
+ *   cleanly. Fallbacks via standard custom properties for browsers
+ *   that don't support @property (unlikely in 2026 but cheap to add). */
+@property --spren-drift-x {
+  syntax: "<length>";
+  initial-value: 0px;
+  inherits: false;
+}
+@property --spren-drift-y {
+  syntax: "<length>";
+  initial-value: 0px;
+  inherits: false;
+}
+@property --spren-drift-rot {
+  syntax: "<angle>";
+  initial-value: 0deg;
+  inherits: false;
+}
+@property --spren-hover-scale {
+  syntax: "<number>";
+  initial-value: 1;
+  inherits: false;
+}
+@property --spren-press-scale {
+  syntax: "<number>";
+  initial-value: 1;
+  inherits: false;
+}
+@property --spren-mood-saturate {
+  syntax: "<number>";
+  initial-value: 1;
+  inherits: false;
+}
+@property --spren-focus-saturate {
+  syntax: "<number>";
+  initial-value: 1;
+  inherits: false;
+}
 
 .spren-wrap {
   position: relative;
   width: 100%;
   height: 100%;
   display: block;
+  /* Compose all the transform contributors into one expression. */
+  transform:
+    translate(var(--spren-drift-x), var(--spren-drift-y))
+    rotate(var(--spren-drift-rot))
+    scale(calc(var(--spren-hover-scale) * var(--spren-press-scale)));
+  /* Compose all the filter contributors. */
+  filter: saturate(calc(var(--spren-mood-saturate) * var(--spren-focus-saturate)));
+  transition:
+    --spren-hover-scale 280ms cubic-bezier(0.34, 1.56, 0.64, 1),
+    --spren-press-scale 200ms cubic-bezier(0.34, 1.56, 0.64, 1),
+    --spren-mood-saturate 320ms cubic-bezier(0.4, 0, 0.2, 1);
+  /* Hint to the compositor — the WRAPPER promotes, not the SVG. */
+  will-change: transform, filter;
+  contain: layout paint style;
 }
 
-.spren-wrap[data-clickable="true"] {
-  cursor: pointer;
-}
+/* — Mood — sets the baseline saturate. Hue rotations land via a
+ *    secondary filter slot on the same wrap so they don't fight. */
+.spren-wrap[data-mood="curious"]   { --spren-mood-saturate: 1.08; }
+.spren-wrap[data-mood="unsettled"] { --spren-mood-saturate: 1.12; }
 
+.spren-wrap[data-clickable="true"] { cursor: pointer; }
 .spren-wrap[data-clickable="true"]:focus-visible {
   outline: 2px solid var(--magenta);
   outline-offset: 4px;
   border-radius: 50%;
 }
+
+/* — Hover wake — bumps two custom properties. The composed transform
+ *    and filter expressions on .spren-wrap pick them up automatically. */
+.spren-wrap[data-clickable="true"][data-size="presence"]:hover,
+.spren-wrap[data-clickable="true"][data-size="tiny"]:hover {
+  --spren-hover-scale: 1.10;
+  --spren-mood-saturate: 1.30;
+}
+.spren-wrap[data-clickable="true"][data-mood="curious"][data-size="presence"]:hover,
+.spren-wrap[data-clickable="true"][data-mood="curious"][data-size="tiny"]:hover {
+  --spren-mood-saturate: 1.34;
+}
+.spren-wrap[data-clickable="true"][data-mood="unsettled"][data-size="presence"]:hover,
+.spren-wrap[data-clickable="true"][data-mood="unsettled"][data-size="tiny"]:hover {
+  --spren-mood-saturate: 1.34;
+}
+
+/* — Click squash + bounce — :active drops scale to 0.92 fast, the
+ *    transition restores it via the back-out curve. */
+.spren-wrap[data-clickable="true"]:active {
+  --spren-press-scale: 0.92;
+  transition:
+    --spren-press-scale 80ms cubic-bezier(0.4, 0, 0.6, 1),
+    --spren-hover-scale 280ms cubic-bezier(0.34, 1.56, 0.64, 1),
+    --spren-mood-saturate 320ms cubic-bezier(0.4, 0, 0.2, 1);
+}
+
+/* — Focus pulse — fires once when any input gains focus app-wide.
+ *    Writes the focus-saturate variable; the composed filter picks it up. */
+.spren-wrap[data-focus-pulse="true"] {
+  animation: spren-focus-pulse 700ms ease-in-out;
+}
+
+@keyframes spren-focus-pulse {
+  0%, 100% { --spren-focus-saturate: 1; }
+  40%      { --spren-focus-saturate: 1.45; }
+}
+
+/* — Idle drift — animates the drift custom properties, not transform
+ *    directly. Other rules that want transform via hover/press write
+ *    DIFFERENT custom properties; the wrap composes all of them in its
+ *    one transform expression. */
+.spren-wrap[data-size="presence"],
+.spren-wrap[data-size="tiny"] {
+  animation: spren-idle-drift 14s cubic-bezier(0.45, 0, 0.55, 1) infinite;
+}
+
+@keyframes spren-idle-drift {
+  0% {
+    --spren-drift-x: 0px;
+    --spren-drift-y: 0px;
+    --spren-drift-rot: 0deg;
+  }
+  20% {
+    --spren-drift-x: 18px;
+    --spren-drift-y: -10px;
+    --spren-drift-rot: 3deg;
+  }
+  40% {
+    --spren-drift-x: 22px;
+    --spren-drift-y: 8px;
+    --spren-drift-rot: -2deg;
+  }
+  60% {
+    --spren-drift-x: -12px;
+    --spren-drift-y: 16px;
+    --spren-drift-rot: 2.5deg;
+  }
+  80% {
+    --spren-drift-x: -18px;
+    --spren-drift-y: -6px;
+    --spren-drift-rot: -3deg;
+  }
+  100% {
+    --spren-drift-x: 0px;
+    --spren-drift-y: 0px;
+    --spren-drift-rot: 0deg;
+  }
+}
+
+/* — Unsettled mood drifts faster. — */
+.spren-wrap[data-mood="unsettled"][data-size="presence"],
+.spren-wrap[data-mood="unsettled"][data-size="tiny"] {
+  animation-duration: 7s;
+}
+
+/* — Layer crossfade — */
 
 .spren-layer {
   position: absolute;
@@ -58,7 +207,7 @@
   overflow: visible;
 }
 
-/* ── per-state container animations ─────────────────────────────────── */
+/* ── per-state container animations on the inner SVG ────────────────── */
 
 .spren-layer[data-state="idle"] .spren-svg {
   animation: spren-float-idle 8s ease-in-out infinite;
@@ -124,10 +273,7 @@
   85%, 100% { transform: rotate(-1080deg); }
 }
 
-.spren-type-dot {
-  transform-origin: 250px 250px;
-}
-
+.spren-type-dot { transform-origin: 250px 250px; }
 .spren-type-dot-1 { animation: spren-dot1 12s infinite; }
 .spren-type-dot-2 { animation: spren-dot2 12s infinite; }
 .spren-type-dot-3 { animation: spren-dot3 12s infinite; }
@@ -192,15 +338,40 @@
 
 @media (prefers-reduced-motion: reduce) {
   .spren-wrap {
-    filter: drop-shadow(0 12px 48px rgba(232, 33, 130, 0.25));
+    filter: drop-shadow(0 12px 48px rgba(232, 33, 130, 0.25))
+            saturate(calc(var(--spren-mood-saturate) * var(--spren-focus-saturate)));
+    animation: spren-reduced-presence 12s ease-in-out infinite;
+  }
+  .spren-layer {
+    transition: opacity 200ms ease-out !important;
+    transform: none !important;
   }
   .spren-svg,
   .spren-svg *,
-  .spren-vortex-wrapper {
+  .spren-vortex-wrapper,
+  .spren-wrap[data-size="presence"],
+  .spren-wrap[data-size="tiny"] {
     animation: none !important;
   }
   .spren-svg animate,
   .spren-svg animateTransform {
     display: none;
   }
+  /* Keep the saturation pulse on hover (color, not motion). */
+  .spren-wrap[data-clickable="true"][data-size="presence"]:hover,
+  .spren-wrap[data-clickable="true"][data-size="tiny"]:hover {
+    --spren-hover-scale: 1;
+  }
+}
+
+@keyframes spren-reduced-presence {
+  0%, 100% { opacity: 0.92; }
+  50%      { opacity: 1.0; }
+}
+
+/* — Performance kill switch — drops the drift but keeps state-transition
+ *   crossfades, hover, click. */
+html[data-spren-degraded="true"] .spren-wrap[data-size="presence"],
+html[data-spren-degraded="true"] .spren-wrap[data-size="tiny"] {
+  animation: none;
 }

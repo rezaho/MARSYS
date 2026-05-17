@@ -1,0 +1,130 @@
+.sidebar-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 24px 20px 16px;
+  border-bottom: 1px solid var(--rule);
+}
+
+.sidebar-wordmark {
+  font-family: var(--font-sans);
+  font-size: 18px;
+  font-weight: 500;
+  color: var(--ink);
+  letter-spacing: -0.01em;
+}
+
+.sidebar-wordmark-dot {
+  color: var(--magenta);
+  margin-left: 1px;
+}
+
+.sidebar-close {
+  width: 28px;
+  height: 28px;
+  border: 0;
+  background: transparent;
+  color: var(--ink-soft);
+  font-size: 22px;
+  line-height: 1;
+  cursor: pointer;
+  border-radius: 4px;
+  transition: background 200ms var(--ease-out), color 200ms var(--ease-out);
+}
+
+.sidebar-close:hover {
+  background: var(--rule-soft);
+  color: var(--ink);
+}
+
+.sidebar-section {
+  padding: 16px 12px 4px;
+}
+
+.sidebar-section-label {
+  margin: 0 0 8px 12px;
+  font-family: var(--font-mono);
+  font-size: 10.5px;
+  letter-spacing: 0.16em;
+  text-transform: uppercase;
+  color: var(--ink-soft);
+}
+
+.sidebar-section ul {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.sidebar-link {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  padding: 10px 12px;
+  border-radius: 8px;
+  text-decoration: none;
+  color: var(--ink);
+  font-family: var(--font-sans);
+  cursor: pointer;
+  transition: background 200ms var(--ease-out);
+}
+
+.sidebar-link:hover:not(.is-disabled) {
+  background: var(--rule-soft);
+}
+
+.sidebar-link.is-active {
+  background: var(--ink);
+  color: var(--surface);
+}
+
+.sidebar-link.is-active .sidebar-link-hint {
+  color: rgba(252, 250, 246, 0.65);
+}
+
+.sidebar-link.is-disabled {
+  cursor: not-allowed;
+  color: var(--ink-faint);
+}
+
+.sidebar-link-label {
+  font-size: 14px;
+  font-weight: 500;
+}
+
+.sidebar-link-hint {
+  font-size: 11px;
+  color: var(--ink-soft);
+  font-family: var(--font-mono);
+  letter-spacing: 0.02em;
+}
+
+.sidebar-link.is-disabled .sidebar-link-hint {
+  color: var(--ink-faint);
+}
+
+.sidebar-footer {
+  margin-top: auto;
+  padding: 16px 20px 24px;
+  border-top: 1px solid var(--rule);
+}
+
+.sidebar-footer-hint {
+  margin: 0;
+  font-family: var(--font-mono);
+  font-size: 11px;
+  color: var(--ink-faint);
+  letter-spacing: 0.04em;
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+}
+
+@media (max-width: 640px) {
+  .sidebar {
+    --ui-slide-over-width: min(320px, calc(100vw - 48px));
+  }
+}

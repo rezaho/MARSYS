@@ -1,0 +1,142 @@
+/* Trace-tree primitive — recursive span row layout. */
+
+.trace-tree {
+  display: flex;
+  flex-direction: column;
+  outline: none;
+  font-family: var(--font-sans);
+  font-size: 13px;
+  color: var(--ink);
+}
+
+.trace-tree:focus {
+  outline: none;
+}
+
+.trace-row {
+  --indent: calc(var(--depth, 0) * 16px);
+  display: flex;
+  align-items: stretch;
+  position: relative;
+  padding: 0;
+  border-radius: 4px;
+  transition: background-color 120ms ease-out;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .trace-row {
+    transition: none;
+  }
+}
+
+.trace-row--focused {
+  background-color: rgba(232, 33, 130, 0.04);
+}
+.trace-row--selected {
+  background-color: rgba(232, 33, 130, 0.10);
+  box-shadow: inset 2px 0 0 var(--magenta);
+}
+.trace-row:hover {
+  background-color: rgba(0, 0, 0, 0.02);
+}
+
+.trace-row-caret {
+  flex: 0 0 auto;
+  width: 20px;
+  margin-left: var(--indent);
+  background: transparent;
+  border: 0;
+  cursor: pointer;
+  color: var(--ink-soft);
+  font-size: 10px;
+  line-height: 1;
+  padding: 0 4px;
+}
+.trace-row-caret:disabled {
+  cursor: default;
+  opacity: 0;
+}
+
+.trace-row-clickable {
+  flex: 1;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 6px 8px;
+  background: transparent;
+  border: 0;
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+  color: inherit;
+}
+
+.trace-row-kind {
+  display: inline-block;
+  padding: 1px 6px;
+  border-radius: 3px;
+  background-color: var(--rule);
+  color: var(--ink-soft);
+  font-family: var(--font-mono);
+  font-size: 11px;
+  text-transform: lowercase;
+}
+.trace-row-kind[data-kind="generation"] {
+  color: var(--magenta);
+  background-color: rgba(232, 33, 130, 0.10);
+}
+.trace-row-kind[data-kind="tool"] {
+  color: #5c8a3a;
+  background-color: rgba(92, 138, 58, 0.12);
+}
+.trace-row-kind[data-kind="execution"] {
+  color: var(--ink);
+}
+
+.trace-row-name {
+  font-weight: 500;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.trace-row-spacer {
+  flex: 1;
+}
+
+.trace-row-timing {
+  font-family: var(--font-mono);
+  font-size: 11px;
+  color: var(--ink-soft);
+  white-space: nowrap;
+}
+.trace-row-cost {
+  font-family: var(--font-mono);
+  font-size: 11px;
+  color: var(--ink-soft);
+  white-space: nowrap;
+  min-width: 48px;
+  text-align: right;
+}
+.trace-row-status {
+  width: 16px;
+  display: inline-block;
+  text-align: center;
+  font-family: var(--font-mono);
+  font-size: 12px;
+  color: #5c8a3a;
+}
+.trace-row--error .trace-row-status {
+  color: var(--magenta-deep);
+}
+
+/* Connector line: vertical hairline from each non-root row up to its
+ * parent. The 16px indentation lets the line sit at indent - 8px. */
+.trace-row[style*="--depth"]:not([style*="--depth: 0"])::before {
+  content: "";
+  position: absolute;
+  left: calc(var(--indent) - 8px);
+  top: 0;
+  bottom: 50%;
+  width: 1px;
+  background-color: var(--rule);
+}

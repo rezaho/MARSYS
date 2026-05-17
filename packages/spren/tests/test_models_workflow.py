@@ -1,4 +1,9 @@
-"""Pydantic-model unit tests for workflow + topology + agent + execution_config."""
+"""Pydantic-model unit tests for the consumed framework canonical types.
+
+Post-Session-08: ``spren.models`` re-exports the framework canonical wire
+types. There is no Spren ``NodeType``/reserved-name validator; the node
+discriminator is ``NodeSpec.kind`` (``NodeKind`` = agent/start/end/user).
+"""
 from __future__ import annotations
 
 from datetime import datetime, timezone
@@ -14,12 +19,16 @@ from spren.models import (
     EdgeType,
     ExecutionConfigSpec,
     ModelConfigSpec,
+    NodeKind,
     NodeSpec,
-    NodeType,
     TopologySpec,
     Workflow,
     WorkflowDefinition,
 )
+
+# Agent-only definitions (no explicit Start) emit the framework's permissive
+# DeprecationWarning (AC-6) — expected, not under test here.
+pytestmark = pytest.mark.filterwarnings("ignore::DeprecationWarning")
 
 
 def _agent(provider: str = "openai", name: str = "Researcher") -> AgentSpec:
@@ -29,8 +38,6 @@ def _agent(provider: str = "openai", name: str = "Researcher") -> AgentSpec:
         goal="g",
         instruction="i",
         tools=["search_web"],
-        memory_retention="session",
-        allowed_peers=[],
     )
 
 
@@ -47,8 +54,8 @@ def test_model_config_spec_validates_without_env_keys(monkeypatch):
 
 
 def test_model_config_spec_omits_api_key_field():
-    """``api_key`` must not be representable on the spec — credentials live in
-    the secrets store, not in workflow definitions."""
+    """``api_key`` must not be representable on the spec — credentials are
+    resolved per-provider by the framework at runtime, not stored."""
     schema = ModelConfigSpec.model_json_schema()
     assert "api_key" not in schema.get("properties", {})
 
@@ -61,27 +68,29 @@ def test_model_config_spec_keeps_oauth_profile():
 # --- NodeSpec ---
 
 
-@pytest.mark.parametrize("reserved", ["user", "User", "USER", "system", "System", "tool", "Tool"])
-def test_nodespec_rejects_reserved_names(reserved):
-    with pytest.raises(ValidationError):
-        NodeSpec(name=reserved, node_type=NodeType.AGENT)
+@pytest.mark.parametrize("name", ["user", "User", "USER", "system", "tool", "Tool"])
+def test_nodespec_accepts_formerly_reserved_names(name):
+    """AC-7: there is no Spren reserved-name validator post-reframe; the
+    framework NodeSpec imposes no such restriction."""
+    spec = NodeSpec(name=name, kind=NodeKind.AGENT)
+    assert spec.name == name
 
 
 def test_nodespec_accepts_non_reserved():
-    NodeSpec(name="Researcher", node_type=NodeType.AGENT)
-    NodeSpec(name="Writer", node_type=NodeType.AGENT)
+    NodeSpec(name="Researcher", kind=NodeKind.AGENT)
+    NodeSpec(name="Writer", kind=NodeKind.AGENT)
 
 
 def test_nodespec_rejects_empty_name():
     with pytest.raises(ValidationError):
-        NodeSpec(name="", node_type=NodeType.AGENT)
+        NodeSpec(name="", kind=NodeKind.AGENT)
 
 
 # --- Enum values ---
 
 
-def test_node_type_values_match_marsys():
-    assert {m.value for m in NodeType} == {"user", "agent", "system", "tool"}
+def test_node_kind_values():
+    assert {m.value for m in NodeKind} == {"agent", "start", "end", "user"}
 
 
 def test_edge_type_values_match_marsys():
@@ -96,10 +105,7 @@ def test_edge_pattern_values_match_marsys():
 
 
 def test_workflow_provenance_literal_rejects_unknown():
-    defn = WorkflowDefinition(
-        topology=TopologySpec(nodes=[], edges=[], rules=[]),
-        agents={},
-    )
+    defn = WorkflowDefinition(topology=TopologySpec(nodes=[], edges=[], rules=[]), agents={})
     now = datetime.now(timezone.utc)
     with pytest.raises(ValidationError):
         Workflow(
@@ -126,14 +132,14 @@ def test_workflow_provenance_accepts_known(provenance):
     )
 
 
-# --- Cross-validation ---
+# --- Cross-validation (framework WorkflowDefinition._validate_cross_references) ---
 
 
 def test_workflow_definition_rejects_orphan_agent_ref():
     with pytest.raises(ValidationError):
         WorkflowDefinition(
             topology=TopologySpec(
-                nodes=[NodeSpec(name="X", node_type=NodeType.AGENT, agent_ref="nope")],
+                nodes=[NodeSpec(name="X", kind=NodeKind.AGENT, agent_ref="nope")],
                 edges=[],
             ),
             agents={"agent_1": _agent()},
@@ -144,10 +150,8 @@ def test_workflow_definition_rejects_unknown_edge_endpoint():
     with pytest.raises(ValidationError):
         WorkflowDefinition(
             topology=TopologySpec(
-                nodes=[NodeSpec(name="Researcher", node_type=NodeType.AGENT, agent_ref="agent_1")],
-                edges=[
-                    EdgeSpec(source="Researcher", target="Ghost", edge_type=EdgeType.INVOKE),
-                ],
+                nodes=[NodeSpec(name="Researcher", kind=NodeKind.AGENT, agent_ref="agent_1")],
+                edges=[EdgeSpec(source="Researcher", target="Ghost", edge_type="invoke")],
             ),
             agents={"agent_1": _agent()},
         )
@@ -157,27 +161,22 @@ def test_workflow_definition_accepts_resolved_references():
     defn = WorkflowDefinition(
         topology=TopologySpec(
             nodes=[
-                NodeSpec(name="Researcher", node_type=NodeType.AGENT, agent_ref="agent_1"),
-                NodeSpec(name="Writer", node_type=NodeType.AGENT, agent_ref="agent_2"),
+                NodeSpec(name="Researcher", kind=NodeKind.AGENT, agent_ref="agent_1"),
+                NodeSpec(name="Writer", kind=NodeKind.AGENT, agent_ref="agent_2"),
             ],
-            edges=[
-                EdgeSpec(source="Researcher", target="Writer", edge_type=EdgeType.INVOKE),
-            ],
+            edges=[EdgeSpec(source="Researcher", target="Writer", edge_type="invoke")],
         ),
         agents={"agent_1": _agent(), "agent_2": _agent(provider="anthropic", name="Writer")},
     )
     assert len(defn.topology.nodes) == 2
 
 
-# --- Mixed-provider per-agent ---
-
-
 def test_workflow_supports_per_agent_providers():
     defn = WorkflowDefinition(
         topology=TopologySpec(
             nodes=[
-                NodeSpec(name="A", node_type=NodeType.AGENT, agent_ref="a"),
-                NodeSpec(name="B", node_type=NodeType.AGENT, agent_ref="b"),
+                NodeSpec(name="A", kind=NodeKind.AGENT, agent_ref="a"),
+                NodeSpec(name="B", kind=NodeKind.AGENT, agent_ref="b"),
             ],
             edges=[],
         ),
@@ -190,14 +189,7 @@ def test_workflow_supports_per_agent_providers():
     assert defn.agents["b"].agent_model.provider == "anthropic"
 
 
-# --- AgentSpec shape ---
-
-
-def test_agentspec_has_no_plan_config_field():
-    """plan_config is not part of the storage-boundary shape; added when
-    runtime planning is wired."""
-    schema = AgentSpec.model_json_schema()
-    assert "plan_config" not in schema.get("properties", {})
+# --- AgentSpec shape (the framework's, per SP-005) ---
 
 
 def test_agentspec_uses_agent_model_not_model_config():

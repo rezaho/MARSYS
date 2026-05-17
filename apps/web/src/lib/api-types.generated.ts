@@ -127,32 +127,315 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/v1/runs": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** List Runs Handler */
+        get: operations["list_runs_handler_v1_runs_get"];
+        put?: never;
+        /** Create Run */
+        post: operations["create_run_v1_runs_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/v1/runs/_event_schemas": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Event Schemas
+         * @description Returns null-shaped schemas for the aggregate SSE event union.
+         *
+         *     Forces the OpenAPI schema to include `RunCreatedEvent` /
+         *     `RunUpdatedEvent` / `RunFinishedEvent` / `RunCancelledEvent` so
+         *     the generated TypeScript client can discriminate them.
+         */
+        get: operations["event_schemas_v1_runs__event_schemas_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/v1/runs/events": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Aggregate Events */
+        get: operations["aggregate_events_v1_runs_events_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/v1/runs/{run_id}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Read Run */
+        get: operations["read_run_v1_runs__run_id__get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/v1/runs/{run_id}/trace": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Read Trace */
+        get: operations["read_trace_v1_runs__run_id__trace_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/v1/runs/{run_id}/workflow": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Read Workflow Snapshot */
+        get: operations["read_workflow_snapshot_v1_runs__run_id__workflow_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/v1/runs/{run_id}/artifacts": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Read Artifacts */
+        get: operations["read_artifacts_v1_runs__run_id__artifacts_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/v1/runs/{run_id}/artifacts/{name}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Download Artifact */
+        get: operations["download_artifact_v1_runs__run_id__artifacts__name__get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/v1/runs/{run_id}/cancel": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Cancel Run Handler */
+        post: operations["cancel_run_handler_v1_runs__run_id__cancel_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/v1/runs/{run_id}/events": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Per Run Events */
+        get: operations["per_run_events_v1_runs__run_id__events_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/v1/files": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Upload */
+        post: operations["upload_v1_files_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/v1/files/{file_id}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Get Metadata */
+        get: operations["get_metadata_v1_files__file_id__get"];
+        put?: never;
+        post?: never;
+        /** Delete Handler */
+        delete: operations["delete_handler_v1_files__file_id__delete"];
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/v1/files/{file_id}/download": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Download */
+        get: operations["download_v1_files__file_id__download_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
 }
 export type webhooks = Record<string, never>;
 export interface components {
     schemas: {
-        /** AgentSpec */
+        /**
+         * AgentSpec
+         * @description Wire mirror of :class:`marsys.agents.Agent`'s constructor surface.
+         */
         AgentSpec: {
-            agent_model: components["schemas"]["ModelConfigSpec"];
             /** Name */
             name: string;
             /** Goal */
             goal: string;
             /** Instruction */
             instruction: string;
+            agent_model: components["schemas"]["ModelConfigSpec"];
             /** Tools */
             tools?: string[];
+            /**
+             * Max Tokens
+             * @default 10000
+             */
+            max_tokens?: number | null;
+            /** Allowed Peers */
+            allowed_peers?: string[];
+            /**
+             * Bidirectional Peers
+             * @default false
+             */
+            bidirectional_peers?: boolean;
+            /** Is Convergence Point */
+            is_convergence_point?: boolean | null;
             /**
              * Memory Retention
              * @default session
              * @enum {string}
              */
             memory_retention?: "single_run" | "session" | "persistent";
-            /** Allowed Peers */
-            allowed_peers?: string[];
+            /** Memory Storage Path */
+            memory_storage_path?: string | null;
+            /** Plan Config */
+            plan_config?: {
+                [key: string]: unknown;
+            } | null;
+            /** Input Schema */
+            input_schema?: {
+                [key: string]: unknown;
+            } | null;
+            /** Output Schema */
+            output_schema?: {
+                [key: string]: unknown;
+            } | null;
+        };
+        /** ArtifactInfo */
+        ArtifactInfo: {
+            /** Name */
+            name: string;
+            /** Size Bytes */
+            size_bytes: number;
+            /** Mime Type */
+            mime_type: string;
+            /**
+             * Created At
+             * Format: date-time
+             */
+            created_at: string;
+        };
+        /** ArtifactListResponse */
+        ArtifactListResponse: {
+            /** Items */
+            items: components["schemas"]["ArtifactInfo"][];
         };
         /** Body_import_python_workflow_v1_workflows_import_python_post */
         Body_import_python_workflow_v1_workflows_import_python_post: {
+            /** File */
+            file: string;
+        };
+        /** Body_upload_v1_files_post */
+        Body_upload_v1_files_post: {
             /** File */
             file: string;
         };
@@ -178,7 +461,10 @@ export interface components {
             /** Data Dir */
             data_dir: string;
         };
-        /** ConvergencePolicyConfigSpec */
+        /**
+         * ConvergencePolicyConfigSpec
+         * @description Wire mirror of :class:`ConvergencePolicyConfig`.
+         */
         ConvergencePolicyConfigSpec: {
             /**
              * Min Ratio
@@ -204,34 +490,32 @@ export interface components {
             log_level?: "info" | "warning" | "error";
         };
         /**
-         * EdgePattern
-         * @enum {string}
+         * EdgeSpec
+         * @description Wire mirror of :class:`marsys.coordination.topology.core.Edge`.
          */
-        EdgePattern: "alternating" | "symmetric";
-        /** EdgeSpec */
         EdgeSpec: {
             /** Source */
             source: string;
             /** Target */
             target: string;
-            /** @default invoke */
-            edge_type?: components["schemas"]["EdgeType"];
+            /**
+             * Edge Type
+             * @default invoke
+             * @enum {string}
+             */
+            edge_type?: "invoke" | "notify" | "query" | "stream";
             /**
              * Bidirectional
              * @default false
              */
             bidirectional?: boolean;
-            pattern?: components["schemas"]["EdgePattern"] | null;
+            /** Pattern */
+            pattern?: ("alternating" | "symmetric") | null;
             /** Metadata */
             metadata?: {
                 [key: string]: unknown;
             };
         };
-        /**
-         * EdgeType
-         * @enum {string}
-         */
-        EdgeType: "invoke" | "notify" | "query" | "stream";
         /** ErrorEnvelope */
         ErrorEnvelope: {
             error: components["schemas"]["ErrorPayload"];
@@ -242,7 +526,7 @@ export interface components {
              * Code
              * @enum {string}
              */
-            code: "WORKFLOW_NOT_FOUND" | "WORKFLOW_HAS_RUNS" | "PYTHON_IMPORT_REJECTED" | "MIGRATION_FAILED" | "VALIDATION_FAILED" | "INVALID_CURSOR" | "INTERNAL_ERROR";
+            code: "WORKFLOW_NOT_FOUND" | "WORKFLOW_HAS_RUNS" | "WORKFLOW_ARCHIVED" | "PYTHON_IMPORT_REJECTED" | "MIGRATION_FAILED" | "VALIDATION_FAILED" | "INVALID_CURSOR" | "INTERNAL_ERROR" | "RUN_NOT_FOUND" | "RUN_NOT_CANCELLABLE" | "TRIGGER_NOT_YET_SUPPORTED" | "INVALID_TASK_INPUT" | "FILE_NOT_FOUND" | "FILE_TOO_LARGE" | "STORAGE_CAP_EXCEEDED" | "FILE_REFERENCED_BY_RUNS" | "ATTACHMENT_NOT_FOUND" | "ARTIFACT_NOT_FOUND" | "INVALID_FILENAME" | "TRACE_NOT_AVAILABLE";
             /** Message */
             message: string;
             /** Details */
@@ -250,7 +534,16 @@ export interface components {
                 [key: string]: unknown;
             };
         };
-        /** ExecutionConfigSpec */
+        /**
+         * ExecutionConfigSpec
+         * @description Wire mirror of :class:`ExecutionConfig`.
+         *
+         *     ``convergence_policy`` accepts the same ``Union[float, str,
+         *     ConvergencePolicyConfigSpec]`` polymorphism that ``ExecutionConfig.convergence_policy``
+         *     accepts at runtime. The ``model_validator(mode="before")`` normalizes
+         *     dict inputs to ``ConvergencePolicyConfigSpec`` while leaving bare floats
+         *     and bare strings on their own discriminant branch.
+         */
         ExecutionConfigSpec: {
             /**
              * Steering Mode
@@ -309,6 +602,7 @@ export interface components {
              */
             user_interaction_timeout?: number;
             status?: components["schemas"]["StatusConfigSpec"];
+            tracing?: components["schemas"]["TracingConfigSpec"];
             /**
              * User First
              * @default false
@@ -318,10 +612,9 @@ export interface components {
             initial_user_msg?: string | null;
             /**
              * User Interaction
-             * @default none
-             * @enum {string}
+             * @default terminal
              */
-            user_interaction?: "terminal" | "web" | "none";
+            user_interaction?: string;
             /**
              * Auto Cleanup Agents
              * @default true
@@ -348,6 +641,47 @@ export interface components {
              * @default 10
              */
             content_only_hard_limit?: number;
+        };
+        /** FileMetadata */
+        FileMetadata: {
+            /**
+             * Schema Version
+             * @default 1
+             */
+            schema_version?: number;
+            /** Id */
+            id: string;
+            /** Original Name */
+            original_name: string;
+            /** Mime Type */
+            mime_type: string;
+            /** Size Bytes */
+            size_bytes: number;
+            /** Sha256 */
+            sha256: string;
+            /**
+             * Created At
+             * Format: date-time
+             */
+            created_at: string;
+        };
+        /** FileUploadResponse */
+        FileUploadResponse: {
+            /**
+             * Schema Version
+             * @default 1
+             */
+            schema_version?: number;
+            /** File Id */
+            file_id: string;
+            /** Original Name */
+            original_name: string;
+            /** Mime Type */
+            mime_type: string;
+            /** Size Bytes */
+            size_bytes: number;
+            /** Sha256 */
+            sha256: string;
         };
         /** FrameworkInfo */
         FrameworkInfo: {
@@ -413,7 +747,7 @@ export interface components {
         };
         /**
          * ModelConfigSpec
-         * @description Storage-boundary mirror of marsys's ModelConfig (no api_key).
+         * @description Storage-boundary mirror of :class:`marsys.models.ModelConfig` (no api_key).
          */
         ModelConfigSpec: {
             /**
@@ -446,7 +780,7 @@ export interface components {
              * Reasoning Effort
              * @default low
              */
-            reasoning_effort?: ("minimal" | "low" | "medium" | "high") | null;
+            reasoning_effort?: string | null;
             /** Oauth Profile */
             oauth_profile?: string | null;
             /** Model Class */
@@ -483,12 +817,32 @@ export interface components {
             /** Quantization */
             quantization?: ("awq" | "gptq" | "fp8") | null;
         };
-        /** NodeSpec */
+        /**
+         * NodeKind
+         * @description The canonical kind of a topology node — the single discriminator that
+         *     determines what executes it. ``AGENT`` is LLM-driven (carries an
+         *     ``agent_ref``); ``START``/``END``/``USER`` are deterministic control
+         *     nodes whose behaviour lives in the framework classes selected from this
+         *     kind (see ``execution.det_nodes``). This enum is the canonical taxonomy:
+         *     the wire ``NodeSpec.kind`` mirrors it 1:1 and every boundary derives
+         *     from it.
+         * @enum {string}
+         */
+        NodeKind: "agent" | "start" | "end" | "user";
+        /**
+         * NodeSpec
+         * @description Wire mirror of :class:`marsys.coordination.topology.core.Node`.
+         *
+         *     ``agent_ref`` carries the agent NAME (the registry key), not the live
+         *     Python reference. The runtime ``Node.agent_ref`` Python object is
+         *     reconstructed at :func:`pydantic_to_topology` time from the agents
+         *     materialized by :func:`pydantic_to_agents`.
+         */
         NodeSpec: {
             /** Name */
             name: string;
             /** @default agent */
-            node_type?: components["schemas"]["NodeType"];
+            kind?: components["schemas"]["NodeKind"];
             /** Agent Ref */
             agent_ref?: string | null;
             /**
@@ -501,11 +855,267 @@ export interface components {
                 [key: string]: unknown;
             };
         };
+        /** RunCancelledEvent */
+        RunCancelledEvent: {
+            /**
+             * Schema Version
+             * @default 1
+             */
+            schema_version?: number;
+            /**
+             * Type
+             * @default RunCancelled
+             * @constant
+             */
+            type?: "RunCancelled";
+            run: components["schemas"]["RunListItem"];
+        };
+        /** RunCreate */
+        RunCreate: {
+            /**
+             * Schema Version
+             * @default 1
+             */
+            schema_version?: number;
+            /** Workflow Id */
+            workflow_id: string;
+            task_input?: components["schemas"]["TaskInput"];
+            /**
+             * Trigger
+             * @default manual
+             */
+            trigger?: string;
+        };
+        /** RunCreateResponse */
+        RunCreateResponse: {
+            /**
+             * Schema Version
+             * @default 1
+             */
+            schema_version?: number;
+            /** Run Id */
+            run_id: string;
+            status: components["schemas"]["RunStatus"];
+        };
+        /** RunCreatedEvent */
+        RunCreatedEvent: {
+            /**
+             * Schema Version
+             * @default 1
+             */
+            schema_version?: number;
+            /**
+             * Type
+             * @default RunCreated
+             * @constant
+             */
+            type?: "RunCreated";
+            run: components["schemas"]["RunListItem"];
+        };
+        /** RunFinishedEvent */
+        RunFinishedEvent: {
+            /**
+             * Schema Version
+             * @default 1
+             */
+            schema_version?: number;
+            /**
+             * Type
+             * @default RunFinished
+             * @constant
+             */
+            type?: "RunFinished";
+            run: components["schemas"]["RunListItem"];
+        };
+        /** RunListItem */
+        RunListItem: {
+            /**
+             * Schema Version
+             * @default 1
+             */
+            schema_version?: number;
+            /** Id */
+            id: string;
+            /** Workflow Id */
+            workflow_id: string;
+            status: components["schemas"]["RunStatus"];
+            /**
+             * Created At
+             * Format: date-time
+             */
+            created_at: string;
+            /** Finished At */
+            finished_at?: string | null;
+            /** Total Duration Ms */
+            total_duration_ms?: number | null;
+            /**
+             * Total Cost Usd
+             * @default 0
+             */
+            total_cost_usd?: number;
+        };
+        /** RunListResponse */
+        RunListResponse: {
+            /** Items */
+            items: components["schemas"]["RunListItem"][];
+            /** Next Cursor */
+            next_cursor: string | null;
+            /** Has More */
+            has_more: boolean;
+        };
+        /** RunRead */
+        RunRead: {
+            /**
+             * Schema Version
+             * @default 1
+             */
+            schema_version?: number;
+            /** Id */
+            id: string;
+            /** Workflow Id */
+            workflow_id: string;
+            status: components["schemas"]["RunStatus"];
+            task_input: components["schemas"]["TaskInput"];
+            /** Trigger */
+            trigger: string;
+            /** Started At */
+            started_at?: string | null;
+            /** Finished At */
+            finished_at?: string | null;
+            /** Total Steps */
+            total_steps?: number | null;
+            /** Total Duration Ms */
+            total_duration_ms?: number | null;
+            /**
+             * Total Tokens Input
+             * @default 0
+             */
+            total_tokens_input?: number;
+            /**
+             * Total Tokens Output
+             * @default 0
+             */
+            total_tokens_output?: number;
+            /**
+             * Total Cost Usd
+             * @default 0
+             */
+            total_cost_usd?: number;
+            /** Final Response */
+            final_response?: unknown | null;
+            /** Error */
+            error?: string | null;
+            /**
+             * Created At
+             * Format: date-time
+             */
+            created_at: string;
+            /**
+             * Updated At
+             * Format: date-time
+             */
+            updated_at: string;
+        };
         /**
-         * NodeType
+         * RunStatus
          * @enum {string}
          */
-        NodeType: "user" | "agent" | "system" | "tool";
+        RunStatus: "queued" | "running" | "cancelling" | "succeeded" | "failed" | "cancelled";
+        /**
+         * RunTrace
+         * @description Hierarchical trace JSON returned by ``GET /v1/runs/{id}/trace``.
+         */
+        RunTrace: {
+            /**
+             * Schema Version
+             * @default 1
+             */
+            schema_version?: number;
+            /** Run Id */
+            run_id: string;
+            completion_status: components["schemas"]["RunTraceCompletionStatus"];
+            /**
+             * Truncated Line Count
+             * @default 0
+             */
+            truncated_line_count?: number;
+            /** Total Spans */
+            total_spans: number;
+            /** Spans */
+            spans: components["schemas"]["SpanNode"][];
+            /**
+             * Truncated
+             * @default false
+             */
+            truncated?: boolean;
+            /** Truncation Reason */
+            truncation_reason?: string | null;
+        };
+        /**
+         * RunTraceCompletionStatus
+         * @description Mirrors ``NDJSONTraceReader.completion_status`` verbatim.
+         * @enum {string}
+         */
+        RunTraceCompletionStatus: "complete" | "truncated" | "crashed";
+        /** RunUpdatedEvent */
+        RunUpdatedEvent: {
+            /**
+             * Schema Version
+             * @default 1
+             */
+            schema_version?: number;
+            /**
+             * Type
+             * @default RunUpdated
+             * @constant
+             */
+            type?: "RunUpdated";
+            run: components["schemas"]["RunListItem"];
+        };
+        /**
+         * SpanNode
+         * @description One node in the hierarchical trace tree.
+         */
+        SpanNode: {
+            /** Span Id */
+            span_id: string;
+            /** Parent Span Id */
+            parent_span_id?: string | null;
+            /** Trace Id */
+            trace_id: string;
+            /** Name */
+            name: string;
+            /**
+             * Kind
+             * @enum {string}
+             */
+            kind: "execution" | "branch" | "step" | "generation" | "tool";
+            /** Start Time */
+            start_time: number;
+            /** End Time */
+            end_time?: number | null;
+            /** Duration Ms */
+            duration_ms?: number | null;
+            /**
+             * Status
+             * @default ok
+             */
+            status?: string;
+            /** Attributes */
+            attributes?: {
+                [key: string]: unknown;
+            };
+            /** Events */
+            events?: {
+                [key: string]: unknown;
+            }[];
+            /** Links */
+            links?: {
+                [key: string]: unknown;
+            }[];
+            /** Children */
+            children?: components["schemas"]["SpanNode"][];
+        };
         /** SprenInfo */
         SprenInfo: {
             /** Active */
@@ -513,7 +1123,10 @@ export interface components {
             /** Version */
             version: string;
         };
-        /** StatusConfigSpec */
+        /**
+         * StatusConfigSpec
+         * @description Wire mirror of :class:`StatusConfig`.
+         */
         StatusConfigSpec: {
             /**
              * Enabled
@@ -522,6 +1135,83 @@ export interface components {
             enabled?: boolean;
             /** Verbosity */
             verbosity?: number | null;
+            /**
+             * Cli Output
+             * @default true
+             */
+            cli_output?: boolean;
+            /**
+             * Cli Colors
+             * @default true
+             */
+            cli_colors?: boolean;
+            /**
+             * Show Thoughts
+             * @default true
+             */
+            show_thoughts?: boolean;
+            /**
+             * Show Tool Calls
+             * @default true
+             */
+            show_tool_calls?: boolean;
+            /**
+             * Show Timings
+             * @default true
+             */
+            show_timings?: boolean;
+            /**
+             * Aggregation Window Ms
+             * @default 500
+             */
+            aggregation_window_ms?: number;
+            /**
+             * Aggregate Parallel
+             * @default true
+             */
+            aggregate_parallel?: boolean;
+            /**
+             * Max Events Per Session
+             * @default 10000
+             */
+            max_events_per_session?: number;
+            /**
+             * Session Cleanup After S
+             * @default 3600
+             */
+            session_cleanup_after_s?: number;
+            /** Channels */
+            channels?: string[];
+            /**
+             * Show Agent Prefixes
+             * @default true
+             */
+            show_agent_prefixes?: boolean;
+            /**
+             * Prefix Width
+             * @default 20
+             */
+            prefix_width?: number;
+            /**
+             * Prefix Alignment
+             * @default left
+             */
+            prefix_alignment?: string;
+            /**
+             * Follow Up Timeout
+             * @default 30
+             */
+            follow_up_timeout?: number;
+        };
+        /** TaskInput */
+        TaskInput: {
+            /**
+             * Text
+             * @default
+             */
+            text?: string;
+            /** Attachments */
+            attachments?: string[];
         };
         /** ToolInfo */
         ToolInfo: {
@@ -540,14 +1230,62 @@ export interface components {
             /** Items */
             items: components["schemas"]["ToolInfo"][];
         };
-        /** TopologySpec */
+        /**
+         * TopologySpec
+         * @description Wire mirror of :class:`marsys.coordination.topology.core.Topology`.
+         */
         TopologySpec: {
             /** Nodes */
             nodes?: components["schemas"]["NodeSpec"][];
             /** Edges */
             edges?: components["schemas"]["EdgeSpec"][];
+            /** Metadata */
+            metadata?: {
+                [key: string]: unknown;
+            };
             /** Rules */
             rules?: string[];
+        };
+        /**
+         * TracingConfigSpec
+         * @description Wire mirror of :class:`TracingConfig`.
+         *
+         *     Excludes ``sinks`` and ``message_store`` fields (runtime objects that
+         *     cannot be persisted) and the ``redactor`` instance — these get supplied
+         *     at runtime by the consumer wiring its own :class:`TelemetrySink` set.
+         *     Persisting only the toggles preserves trace-shape intent across runs.
+         */
+        TracingConfigSpec: {
+            /**
+             * Enabled
+             * @default false
+             */
+            enabled?: boolean;
+            /**
+             * Output Dir
+             * @default ./traces
+             */
+            output_dir?: string;
+            /**
+             * Include Generation Details
+             * @default true
+             */
+            include_generation_details?: boolean;
+            /**
+             * Include Message Content
+             * @default true
+             */
+            include_message_content?: boolean;
+            /**
+             * Include Tool Results
+             * @default true
+             */
+            include_tool_results?: boolean;
+            /**
+             * Capture Full Input
+             * @default false
+             */
+            capture_full_input?: boolean;
         };
         /** ValidationError */
         ValidationError: {
@@ -619,7 +1357,16 @@ export interface components {
                 [key: string]: unknown;
             } | null;
         };
-        /** WorkflowDefinition */
+        /**
+         * WorkflowDefinition
+         * @description The canonical wire shape for a runnable workflow.
+         *
+         *     Cross-references are validated post-construction: every ``NodeSpec.agent_ref``
+         *     must be a key of ``agents``, and every ``EdgeSpec.source`` / ``EdgeSpec.target``
+         *     must match a ``NodeSpec.name``. Failures raise Pydantic ``ValidationError``
+         *     at storage time rather than at ``Orchestra.run()`` time, which is where
+         *     Spren and the AST importer were silently shipping broken topologies before.
+         */
         WorkflowDefinition: {
             topology: components["schemas"]["TopologySpec"];
             /** Agents */
@@ -669,6 +1416,13 @@ export interface components {
             provenance_metadata?: {
                 [key: string]: unknown;
             } | null;
+        };
+        /** _RunsEventSchemas */
+        _RunsEventSchemas: {
+            created?: components["schemas"]["RunCreatedEvent"] | null;
+            updated?: components["schemas"]["RunUpdatedEvent"] | null;
+            finished?: components["schemas"]["RunFinishedEvent"] | null;
+            cancelled?: components["schemas"]["RunCancelledEvent"] | null;
         };
     };
     responses: never;
@@ -1106,6 +1860,664 @@ export interface operations {
                 content: {
                     "application/json": components["schemas"]["LintResponse"];
                 };
+            };
+            /** @description Not Found */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    list_runs_handler_v1_runs_get: {
+        parameters: {
+            query?: {
+                cursor?: string | null;
+                limit?: number;
+                workflow_id?: string | null;
+                status?: string | null;
+                since?: string | null;
+                until?: string | null;
+            };
+            header?: {
+                authorization?: string | null;
+            };
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["RunListResponse"];
+                };
+            };
+            /** @description Bad Request */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    create_run_v1_runs_post: {
+        parameters: {
+            query?: never;
+            header?: {
+                authorization?: string | null;
+            };
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["RunCreate"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            201: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["RunCreateResponse"];
+                };
+            };
+            /** @description Bad Request */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+            /** @description Not Found */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    event_schemas_v1_runs__event_schemas_get: {
+        parameters: {
+            query?: never;
+            header?: {
+                authorization?: string | null;
+            };
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["_RunsEventSchemas"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    aggregate_events_v1_runs_events_get: {
+        parameters: {
+            query?: never;
+            header?: {
+                authorization?: string | null;
+            };
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": unknown;
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    read_run_v1_runs__run_id__get: {
+        parameters: {
+            query?: never;
+            header?: {
+                authorization?: string | null;
+            };
+            path: {
+                run_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["RunRead"];
+                };
+            };
+            /** @description Not Found */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    read_trace_v1_runs__run_id__trace_get: {
+        parameters: {
+            query?: never;
+            header?: {
+                authorization?: string | null;
+            };
+            path: {
+                run_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["RunTrace"];
+                };
+            };
+            /** @description Not Found */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    read_workflow_snapshot_v1_runs__run_id__workflow_get: {
+        parameters: {
+            query?: never;
+            header?: {
+                authorization?: string | null;
+            };
+            path: {
+                run_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["WorkflowDefinition"];
+                };
+            };
+            /** @description Not Found */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    read_artifacts_v1_runs__run_id__artifacts_get: {
+        parameters: {
+            query?: never;
+            header?: {
+                authorization?: string | null;
+            };
+            path: {
+                run_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ArtifactListResponse"];
+                };
+            };
+            /** @description Not Found */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    download_artifact_v1_runs__run_id__artifacts__name__get: {
+        parameters: {
+            query?: never;
+            header?: {
+                authorization?: string | null;
+            };
+            path: {
+                run_id: string;
+                name: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Bad Request */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+            /** @description Not Found */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    cancel_run_handler_v1_runs__run_id__cancel_post: {
+        parameters: {
+            query?: never;
+            header?: {
+                authorization?: string | null;
+            };
+            path: {
+                run_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["RunRead"];
+                };
+            };
+            /** @description Not Found */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+            /** @description Conflict */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    per_run_events_v1_runs__run_id__events_get: {
+        parameters: {
+            query?: never;
+            header?: {
+                "Last-Event-ID"?: string | null;
+                authorization?: string | null;
+            };
+            path: {
+                run_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": unknown;
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    upload_v1_files_post: {
+        parameters: {
+            query?: never;
+            header?: {
+                authorization?: string | null;
+            };
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "multipart/form-data": components["schemas"]["Body_upload_v1_files_post"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            201: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["FileUploadResponse"];
+                };
+            };
+            /** @description Bad Request */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+            /** @description Request Entity Too Large */
+            413: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    get_metadata_v1_files__file_id__get: {
+        parameters: {
+            query?: never;
+            header?: {
+                authorization?: string | null;
+            };
+            path: {
+                file_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["FileMetadata"];
+                };
+            };
+            /** @description Not Found */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    delete_handler_v1_files__file_id__delete: {
+        parameters: {
+            query?: never;
+            header?: {
+                authorization?: string | null;
+            };
+            path: {
+                file_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": unknown;
+                };
+            };
+            /** @description Deleted */
+            204: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Not Found */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+            /** @description Conflict */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    download_v1_files__file_id__download_get: {
+        parameters: {
+            query?: never;
+            header?: {
+                authorization?: string | null;
+            };
+            path: {
+                file_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
             };
             /** @description Not Found */
             404: {

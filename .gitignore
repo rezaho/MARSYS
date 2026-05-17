@@ -125,6 +125,11 @@ playwright-report/
 test-results/
 **/*.tsbuildinfo
 
+# AI agent session bookkeeping (local-only — implementer skill writes a
+# session-start sha here for the implementation-reviewer to use)
+.claude/
+**/.claude/
+
 # Spren type-gen pipeline (Session 02): the snapshot is regenerated on every
 # `pnpm --filter @marsys/spren-web build` from a transient sidecar. The
 # generated *.ts file IS tracked.

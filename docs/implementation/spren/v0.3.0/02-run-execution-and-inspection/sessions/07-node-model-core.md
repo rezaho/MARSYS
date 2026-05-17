@@ -1,0 +1,154 @@
+# Session 07: Node-model building blocks + Core (Start/End/User) — unblock RUN-3d
+
+> **⚠️ SUPERSEDED 2026-05-17 — do not implement.** This plan's load-bearing
+> premises were invalidated by framework ADR-008 (node-kind unification),
+> which shipped to `main`. Specifically: **P2 is false** — a topology no
+> longer accepts `DeterministicNode` *instances*; `Topology.nodes` is
+> homogeneous plain `Node(kind=…)` and deterministic behaviour is
+> materialized from `Node.kind` at the analyzer seam. **P7 is false** —
+> Spren does not own a node taxonomy or a per-type materialization
+> contract; it consumes the framework canonical `NodeSpec` directly via
+> the `spren.models` façade (SP-005, strict). The node-model redesign,
+> the Spren `NodeType` mirror, and `runs/materialize.py`'s det-node
+> translation described here are all gone. The live plan that replaces
+> this is [`08-canonical-workflow-reframe.md`](./08-canonical-workflow-reframe.md);
+> the current framework ground truth is
+> [`docs/architecture/spren/11-node-model.md`](../../../../../architecture/spren/11-node-model.md)
+> (rewritten for ADR-008). Kept for history only.
+
+> Numbering note: session number is per-bundle-sequential within `02-run-execution-and-inspection` (04→05→06→07). It collides globally with bundle 03's `07-meta-agent-core`; the repo already has duplicate session numbers across bundles (two `06`s). Architect: renumber to `09` if strict global uniqueness is preferred.
+
+## Premises this plan rests on
+
+- **P1 — The node taxonomy, not just the missing Start node, is the defect.** Spren's `NodeType` was an unfaithful mirror; the fix is a node-model redesign, not a Start/End patch. — basis: `docs/architecture/spren/11-node-model.md` (design locked 2026-05-15) + `docs/implementation/spren/v0.3.0/02-run-execution-and-inspection/sessions/06-ui-systematic-audit.md` "Node-model redesign" section. **[architect-asserted — this is a product-owner decision, not a code fact; validator need not re-derive, but must treat 11-node-model.md as the binding spec]**
+- **P2 — The framework's supported way to declare an explicit det-node from an externally-built topology is to put a `DeterministicNode` *instance* in `Topology.nodes`.** A plain `Node(name="Start")` does NOT resolve; only `DeterministicNode` instances or bare strings do, and the string path excludes `"User"`. — basis verified this session: `packages/framework/src/marsys/coordination/topology/core.py:170-174` (Topology accepts `Node|DeterministicNode`), `coordination/topology/converters/parsing.py:54-72` (object returned as-is; string-only name resolution; `node != "User"` at :67), `coordination/topology/analyzer.py:181-192` (`register_det_node` only for `DeterministicNode`), `coordination/execution/det_nodes.py:67-187` (`StartNode`/`EndNode`/`UserNode` ctors take `name=`, all in `__all__`).
+- **P3 — `NodeType.SYSTEM` / `NodeType.TOOL` are vestigial.** Zero references in `packages/framework/src/marsys` (grep run this session). Only `AGENT` + legacy `USER` regular-node + the `DeterministicNode` subclasses are real. — basis verified this session.
+- **P4 — `packages/framework/` is TRUNK-CRITICAL and READ-ONLY this session.** The fix is entirely Spren-side (`packages/spren/`, `apps/web/`). — basis: project `CLAUDE.md` TRUNK-CRITICAL list + SP-001/SP-018.
+- **P5 — A runnable workflow requires every non-Start/non-End node to reach End or User (User is a valid terminal).** — basis CONFIRMED (A3 validator): `coordination/topology/graph.py:1395-1467` (`validate_workflow`), `:1469-1490` (`_reaches`), `:1303-1393` (`validate()` reachability); runs from `Orchestra.execute` AFTER the legacy shim — `orchestra.py:959-965`. Note `validate_workflow` is a no-op when no det-nodes are registered (`graph.py:1412-1413`) — this is the *execution-path* mechanism behind Session 06's "lint couldn't run validate_workflow", and is distinct from the Spren linter (P9).
+- **P6 — A one-shot FORWARD migration is REQUIRED (was wrongly waived).** SP-006 + BRAINDUMP (`:591/:593/:784/:1213`) mandate one-shot forward migrations for any stored-shape change; the mechanism is shipped and live (`packages/spren/src/spren/storage/migrations/runner.py` `MigrationsRunner` + applied `01__create_workflows.py`/`02__create_runs.py`/`03__create_files.py`). This change rewrites stored `definition` JSON `node_type` values, so a `04__*` forward migration is mandatory — **not** a backward-compat shim (which SP-006 still forbids). — basis CONFIRMED (A3 validator, REFUTED the prior "disposable data" premise).
+- **P7 — Spren node model is Spren's own surface, not an SP-005 framework mirror.** SP-005 still governs genuine mirrors (e.g. `ExecutionConfig`); the node palette is a translation surface with a per-type materialization contract. — basis: `docs/architecture/spren/11-node-model.md` "Principle".
+- **P8 — The framework legacy topology shim no-ops once Spren explicitly registers det-nodes.** `orchestra.py:955 _apply_legacy_topology_shim` runs before `validate()`/`validate_workflow()` (`:959-965`); its branches are guarded by `get_start_node() is None` / `existing_*det*`, so once Spren emits a `StartNode`/`UserNode`/`EndNode` the shim does not synthesize or double-inject. — basis: ground-truth-verified earlier this audit (recorded in session 06 RUN-3d); A3 validator confirmed the shim runs pre-validation. The plan asserts this as a verified premise and AC-1 guards against regression of it.
+- **P9 — The Spren linter is pure and independent; it does NOT and MUST NOT call framework `validate_workflow` (SP-018/SP-019).** `packages/spren/src/spren/lint/workflow_linter.py` hand-rolls its own reachability/cycle rules with zero framework calls. `models/lint.py:1-9`'s docstring falsely claims it wraps framework validation; Session 03's frozen acceptance AC-20 specified that wrap but it was never implemented and would now violate SP-018. — basis CONFIRMED (A3 validator). Consequence: AC-11 is "make the existing Spren rules Start/End/User-aware", not "reuse the framework contract".
+- **P10 — v0.3 has NO executable User-interaction path.** Spren's `register_run` constructs `Orchestra(...)` without a `communication_manager` (`lifecycle.py:186-190`), so `_user_node_handler` stays `None` (`orchestra.py:380-385`) and is never bound to UserNode det-nodes (`:1018-1022`); a `UserNode.on_single_invoke` with no handler calls `ctx.fail(...)` (`det_nodes.py:150-153`). A workflow whose agent invokes a User node fails at runtime ("no handler bound") — before any provider call. The v0.3 runnable shape is therefore `Start → Agent → End`. — basis CONFIRMED (A3 validator + A4 improver, source-traced). See "Known v0.3 limitation" section; full backlog detail to be carried forward for a future interactive-runs session.
+
+## Goal
+
+Replace Spren's vestigial 4-value `NodeType` with the locked node-model (category + type + per-type materialization), implement the **Core** category (Start/End/User) concretely so a visually-built workflow materializes into a marsys topology that passes framework validation and runs, and render **Tools/Logic/Data** as modeled-but-inactive palette categories. This eliminates RUN-3d: a `Start → Agent → End` workflow built in the canvas executes instead of failing `[TOPOLOGY_ERROR] not reachable from Start`. (User-node materialization + collapse is implemented and unit-tested, but a User node is not yet *executable* in v0.3 — see "Known v0.3 limitation"; the runnable shape is `Start → Agent → End`.)
+
+## Acceptance criteria
+
+- AC-1: A `WorkflowDefinition` whose topology contains a Core/Start node, a Core/User node, an Agent node, and a Core/End node materializes without error; the resulting marsys `Topology` contains `StartNode`, `UserNode`, `EndNode` **instances** (not plain `Node`s) registered as det-nodes, and contains **exactly one `StartNode`, named as Spren emitted it** (proves the framework legacy shim did NOT synthesize one — P8 regression guard).
+- AC-2: `POST /v1/runs` on a `Start → Agent → End` visual-builder workflow (fake-key sidecar) returns 201 and the run does **not** fail with any `TOPOLOGY_ERROR`; it proceeds to and fails at the fake provider call (out of scope). (`Start→Agent→End`, not `…User…`, deliberately isolates the det-node materialization fix from the v0.3 User-not-executable limitation — P10.)
+- AC-3: The Spren node mirror exposes no `system` or `tool` `NodeType` value; the model is category-based per `11-node-model.md`. OpenAPI schema + generated TS client regenerate without those values.
+- AC-4: Multiple Core/User nodes in one definition collapse at materialization to exactly one marsys `UserNode`; every edge incident to any visual User node is present, rewired to that single `UserNode`.
+- AC-5: A new workflow created via the canvas/create path contains exactly one Core/Start node by default; attempting to create a second Start (any path: palette, API, import) is rejected or prevented.
+- AC-6: A Core/Start node cannot be deleted from the canvas (delete handler, xyflow Backspace/Delete keycode, and edge/selection-driven removal all no-op for Start).
+- AC-7: The reserved-name validator rejects a reserved name only for `agent`-category nodes; Core nodes named `Start`/`End`/`User` are accepted (PRODUCT-BUG-001 reconciled).
+- AC-8: Importing a Python workflow file that declares a framework `StartNode`/`EndNode`/`UserNode` (or `Start`/`End`/`User` named nodes) produces the corresponding Core nodes in the Spren definition (not Agent nodes named "Start").
+- AC-9: The empty-draft sweeper still correctly identifies a never-edited new workflow as a draft despite the seeded Start node (predicate updated; a Start-only canvas with no agents/edges is "empty draft", a touched one is not).
+- AC-10: Palette renders five categories; Agents + Core items are droppable; Tools/Logic/Data render visibly disabled ("coming soon") and cannot be dropped or produce nodes.
+- AC-11: The existing **pure-Spren** linter (`workflow_linter.py`, zero framework calls — P9/SP-018) is made Start/End/User-aware: reachability is computed from the explicit Core/Start node (not "nodes with no incoming edges"); a non-Start/non-End node that cannot reach an End or User node yields a finding with a **distinct `no_terminal` `LintCode`** (added to `models/lint.py`'s `Literal`) and a plain-language message ("connect this agent to an End or User node"). No `validate_workflow` call.
+- AC-12: Framework regression baseline holds (`packages/framework/tests`: 841 collected, 764 pass per CLAUDE.md baseline — no framework files changed, so this must not move).
+- AC-13: A one-shot forward migration (`packages/spren/src/spren/storage/migrations/04__*.py`) rewrites every stored `workflows.definition` JSON to the new node model; running `MigrationsRunner` against a DB seeded with a pre-07-shaped workflow row leaves that row parseable under the new model with correct category/type values, and the migration body imports no `spren.models` symbol (frozen-artifact discipline).
+- AC-14: `models/lint.py`'s module docstring no longer claims the linter wraps the framework's `TopologyGraph.validate_workflow()`; it states the truth (pure Spren linter, Start/End/User-aware, mirrors the validate-workflow *contract* in logic, no framework call).
+
+## Out of scope
+
+- The **rich palette UX redesign** (left island, vertical categories, click-to-expand detail sections, per-tool config cards, drag-drop polish) — that is task #21 / the `PALETTE REDESIGN SPEC` in session 06. This session does the **minimal** palette change: five categories present, Agents+Core droppable, others inactive. No visual redesign.
+- Any **Tools / Logic / Data materialization** — modeled and inactive only. No tool-as-node, no conditional, no transform.
+- Canvas node visual design (#22), right-rail (#23/#24), RUN-1 silent-swallow (#13), RUN-3b envelope (#14), lint-reactivity (#15), auth (#16).
+- **Making the User node executable** (wiring a `CommunicationManager`/`UserNodeHandler` into Spren's run path). v0.3 has no human-in-the-loop run path (P10); this session implements User-node *materialization + collapse* (unit-tested) but not *execution*. Documented in "Known v0.3 limitation"; the user will open a separate interactive-runs session for it.
+- Retroactively editing Session 03's frozen `acceptance.md` (AC-20). It specified an SP-018-violating "wrap framework validation"; recorded as **superseded** in session 06 instead (don't mutate a frozen acceptance file).
+- Modifying anything under `packages/framework/` (P4). NOTE: the `04__*` forward migration is **in scope** (SP-006-mandated, P6) — it is not a backward-compat shim.
+
+## Files in scope
+
+| Path | Change | Basis |
+|---|---|---|
+| `packages/spren/src/spren/models/topology.py` | Replace vestigial `NodeType` repr with the category+type model; reconcile `_no_reserved_names` to agent-scoped (PRODUCT-BUG-001) | CONFIRMED A3: `NodeType` :17-21, `NodeSpec` :36-43, `_no_reserved_names` :45-55; agent-scoping is faithful — framework enforces reserved names agent-only (`agents/agents.py:242`, `agents/registry.py:62`); `RESERVED_NODE_NAMES={user,system,tool}` so `Start`/`End` already pass, only `User` needs the carve-out |
+| `packages/spren/src/spren/models/__init__.py` | Export surface for new model types | verified this session (exports `NodeType`, `*Spec`) |
+| `packages/spren/src/spren/runs/materialize.py` | `_materialize_node`/`_materialize_topology`: emit `StartNode`/`EndNode`/`UserNode` instances; collapse multiple User → one canonical `UserNode` (build canonical identity BEFORE edge rewrite); rewire+dedupe edges | CONFIRMED A3: `_materialize_node` :90-103 (returns plain `Node` for ALL types incl. USER today — the defect), `_materialize_topology` :118-121, `materialize_run` **:282-325** (NOT :245-289 — corrected) |
+| `packages/spren/src/spren/storage/migrations/04__remap_node_model.py` | **NEW** one-shot forward migration: per-row `json.loads`→remap `$.topology.nodes[*].node_type`→`json.dumps`; pure-dict, **no `spren.models` import** (frozen artifact); match `01/02/03` convention; runner wraps txn (no self-managed transaction) | CONFIRMED A3: `storage/migrations/runner.py:65-77` (txn wrapper), existing `01__create_workflows.py` convention |
+| `packages/spren/src/spren/storage/workflows.py` | Empty-draft predicate `json_extract($.topology.nodes)='[]'` → "no agent nodes AND no edges" — change BOTH sites identically | CONFIRMED A3: list filter `:108-112`, sweeper `delete_empty_drafts_older_than` predicate `:134-141` (two sites, identical literal) |
+| `packages/spren/src/spren/importers/python_workflow.py` | `_coerce_node_type` + node build: map framework det-nodes / `Start`/`End`/`User` to Core types | CONFIRMED A3: `_coerce_node_type` :633-660, called :467; `_build_execution_config` :603 is an unrelated collision-named fn — do not touch |
+| `packages/spren/src/spren/lint/workflow_linter.py` | Make `_unreachable_nodes` (~:193-252) Start-anchored (entry = Core/Start, not no-incoming); tighten `_cycles_without_escape` (~:255-303) escape = reaches End/User; add the "no node reaches terminal" finding. **Zero framework calls** (SP-018/P9) | CONFIRMED A3 |
+| `packages/spren/src/spren/models/lint.py` | Add `"no_terminal"` to the `LintCode` `Literal` (~:19-26); correct the false module docstring (~:1-9) per AC-14 | CONFIRMED A3 |
+| `packages/spren/src/spren/routes/lint.py` | (verify) `lint_workflow(...)` call site `:68` — no change expected beyond the rule behavior flowing through | CONFIRMED A3 |
+| `apps/web/src/routes/workflows/new.tsx` | `EMPTY_DEFINITION` seeds one Core/Start node | CONFIRMED A3: literal `:36-40`, used `:55` |
+| `apps/web/src/routes/workflows/$workflowId.tsx` | Non-deletable Start (centralized "is Start" guard across ALL removal paths); allow multiple User; single-Start guard on add; node_type read/write maps to new model | CONFIRMED A3: `addNode` :317-358 (name derivation :323), `applyNodeChanges` remove :636-637, `reactFlowToWorkflow` :722-769 (writes node_type :744), `workflowToReactFlow` :673-720 (reads :699) |
+| `apps/web/src/routes/workflows/index.tsx` | Workflow-card preview switches on `node_type` (`=== "agent" || "user"`) — adjust to new model | CONFIRMED A3: `:149` |
+| `apps/web/src/routes/workflows/-canvas/Palette.tsx` | Replace 4 `PALETTE_NODES` (`:13-18`) with five categories; Agents+Core droppable; Tools/Logic/Data disabled | CONFIRMED A3: 4 hardcoded nodes today |
+| `apps/web/src/routes/workflows/-canvas/CanvasNode.tsx` | Render Core node kinds | CONFIRMED A3 exists; internals [implementer reads] |
+| `apps/web/src/lib/pattern-presets.ts`, `apps/web/src/lib/auto-layout.ts` | Presets emit agent-only, NO Start (CONFIRMED A3) → presets must seed a Start or be non-runnable; layout is type-generic (no change likely) | CONFIRMED A3: presets `:116-215` agent-only |
+| `apps/web/src/lib/api.ts` + `api-types.generated.ts` | Regenerate: `pnpm --filter @marsys/spren-web generate:types` (`apps/web/scripts/generate-types.mjs`) after the mirror change | CONFIRMED A3: `NodeType` at `api-types.generated.ts:803`; codegen command confirmed |
+| `scripts/scenarios/run_failure_probe.py` | Update to `Start → Agent → End` (the v0.3 runnable shape — NOT User, per P10) | CONFIRMED A3: `:34-75` encodes the old broken `user_in→assistant` shape |
+| `packages/spren/tests/test_models_workflow.py` | **MUST UPDATE** (not add): `:83-84` asserts `{NodeType}=={user,agent,system,tool}`, `:64-67` parametrizes reserved-name reject over system/tool for AGENT — both pin the removed behavior | CONFIRMED A3 |
+| `packages/spren/tests/test_runs_materialize.py` + new migration test + importer/lint tests | New assertions: det-node instance emission (AC-1), exactly-one-StartNode (AC-1/P8), User-collapse+dedupe (AC-4), agent-scoped validator (AC-7), importer det-nodes (AC-8), `04__*` frozen-baseline (AC-13), Start-anchored lint + `no_terminal` (AC-11) | `test_runs_materialize.py` CONFIRMED A3 (`:23-24` AGENT-only today) |
+
+## Testing strategy
+
+- **Unit (spren):** topology-mirror model (category/type validation; agent-scoped reserved-name AC-7); `materialize.py` (det-node instance emission + exactly-one-StartNode AC-1; multi-User collapse + edge rewire/dedupe AC-4 — proven HERE by unit test, not by a run, since User isn't executable in v0.3); importer det-node coercion (AC-8); empty-draft predicate both sites incl. a "Start + 1 agent ≠ draft" case written BEFORE the sweeper edit (AC-9); `04__*` migration frozen-baseline (AC-13: seed a pre-07 row via raw SQL, run `MigrationsRunner`, assert new-model-parseable + migration imports no model symbol); Start-anchored lint + `no_terminal` finding (AC-11). Invoke: `uv run python -m pytest <abs path>` (shell cwd `packages/spren`; `uv sync --extra test` first).
+- **Integration (spren):** `POST /v1/runs` on a `Start → Agent → End` workflow returns 201 + no `TOPOLOGY_ERROR` (AC-2); reuse `test_runs_lifecycle*`.
+- **Real-system / E2E:** `scripts/scenarios/run_failure_probe.py` against a fake-key sidecar, updated to **`Start → Agent → End`** (NOT User — P10) — must reach the provider call (fail only there). This is the RUN-3d regression gate. Frontend: a Playwright/`claude-in-chrome` pass that creates a workflow, confirms a default non-deletable Start (AC-5/6), wires `Start→Agent→End`, and Runs without `TOPOLOGY_ERROR`.
+- **Out-of-scope tests:** the pre-existing `test_default_secrets_lookup_handles_dashed_provider` failure (openai-oauth / missing `~/.codex/auth.json`) is environment-dependent and unrelated — do NOT chase it. Framework suite (`packages/framework/tests`) must stay at the 841/764 baseline (AC-12) — no framework edits, so any drift means an accidental framework touch.
+
+## Approach
+
+1. **Mirror first.** Redefine the Spren topology node model per `11-node-model.md`: a node carries a category (`agents|core|tools|logic|data`) + a type; Core types `start|end|user`; Agents carries the agent class. Drop `system`/`tool`. Reconcile `_no_reserved_names` → agent-category-scoped (PRODUCT-BUG-001; only `User` actually needs the carve-out). Update `models/__init__.py` exports. Regenerate OpenAPI/TS via `pnpm --filter @marsys/spren-web generate:types`; diff the generated client, confirm only node-model changes, typecheck web.
+2. **Materializer.** Dispatch Core type → `StartNode(name=...)` / `EndNode(name=...)` / `UserNode(name=...)` instances (P2). For User-collapse: first compute the single canonical `UserNode` identity, THEN translate edges — every endpoint referencing any visual User node points to the one canonical name, **dedupe** edges after rewrite (two Users→same agent must not create a duplicate edge). Agent nodes stay plain `Node`. AC-4 is proven by a materializer **unit test** (not a run — User isn't executable in v0.3, P10).
+3. **Forward migration (SP-006-mandated, P6).** Add `storage/migrations/04__remap_node_model.py`: iterate `workflows`, `json.loads(definition)` → remap each node's `node_type` to the new model → `json.dumps` → `UPDATE`. Pure dict transform; **no `spren.models` import** (frozen artifact); no self-managed transaction (runner wraps). `system`/`tool` → Agent (vestigial, P3). Write the frozen-baseline test (AC-13) alongside.
+4. **Importer.** `_coerce_node_type` + node construction: a framework `StartNode`/`EndNode`/`UserNode` or a node named `Start`/`End`/`User` → the matching Core node, not an Agent.
+5. **Empty-draft predicate.** Redefine "empty draft" as "visual_builder AND no agent nodes AND no edges" at **both** sites (`workflows.py:108-112` list filter AND `:134-141` sweeper) identically — a default-Start-only canvas is still a draft (AC-9). Write the "Start + 1 agent ≠ draft" guard test BEFORE editing the sweeper.
+6. **Canvas.** `EMPTY_DEFINITION` seeds exactly one Core/Start. Centralize an "is Start" predicate; apply it in every removal path (delete button, xyflow `deleteKeyCode`, selection/edge-driven `applyNodeChanges` remove) so Start is non-deletable everywhere. Single-Start guard on every add path. Allow multiple User nodes. Fix `index.tsx:149` node_type switch for the new model.
+7. **Palette (minimal).** Five categories; Agents + Core droppable; Tools/Logic/Data visibly disabled, non-droppable. No UX redesign (→ #21).
+8. **Lint — pure Spren, no framework call (P9/SP-018).** Make `workflow_linter.py`'s existing `_unreachable_nodes` Start-anchored (entry = the Core/Start node) and `_cycles_without_escape` escape = reaches End/User; emit the "cannot reach End/User" finding with a new distinct `no_terminal` `LintCode` (`models/lint.py`). Correct the false `models/lint.py` module docstring (AC-14). Do NOT call `validate_workflow`. (Session 03's frozen AC-20 — the "wrap framework validation" criterion — is recorded as **superseded** in session 06; do not edit Session 03's acceptance file.)
+9. **Probe + tests + review.** Update `run_failure_probe.py` to `Start→Agent→End`; update the must-UPDATE tests (`test_models_workflow.py:83-84,:64-67`); add unit/integration/E2E per Testing strategy. Then `implementation-reviewer` on the full diff.
+
+## Risks / known unknowns
+
+| Risk | Mitigation / detection |
+|---|---|
+| Multi-User edge-rewire collisions (two visual Users both edge to one agent → duplicate edges after collapse) | Build canonical UserNode identity before edge rewrite; dedupe post-rewrite; unit test 2-Users→1-agent asserts no duplicate/no dangling edge (AC-4) |
+| OpenAPI→TS regen drift breaks unrelated frontend types | Run `generate:types`, diff the generated client, confirm only node-model changes; typecheck the web package |
+| xyflow has removal paths beyond the known ones (programmatic, copy/paste) | One centralized "is Start" predicate used by every change handler, not per-call-site (AC-6) |
+| Empty-draft predicate change misclassifies in-progress workflows as drafts → **data loss via sweeper** (highest-stakes) | Predicate requires no-agents AND no-edges; change BOTH sites (`:108-112` + `:134-141`) identically; write the "Start + 1 agent ≠ draft" test BEFORE editing the sweeper |
+| Forward migration `04__*` corrupts stored definitions | Frozen-baseline test (AC-13) seeds a pre-07 row + asserts post-migration parses under the new model; migration imports no model symbol (frozen-artifact discipline) so a future model change can't retroactively alter it |
+| AC-2 false-pass risk: a User-containing run fails "no handler bound" before the provider, not with TOPOLOGY_ERROR (P10) | AC-2 deliberately uses `Start→Agent→End`; User path is unit-tested at materialization only; the User-not-executable gap is documented + out of scope (separate session) |
+| Implementer treats the must-UPDATE tests as regressions | Plan names them explicitly (`test_models_workflow.py:83-84,:64-67`); they pin removed behavior — update, don't add-parallel |
+
+## Known v0.3 limitation — the User node is materialized but NOT executable (carry-forward for a future interactive-runs session)
+
+Accepted by the product owner 2026-05-15. This session ships User-node *modeling, materialization, and collapse* (multiple visual User nodes → one canonical marsys `UserNode`, edges rewired, unit-tested). It does **not** make a User node *execute*. A future session (the user will open it) must wire human-in-the-loop runs. Full detail so that session can start cold:
+
+**What's missing (source-traced):**
+- Spren's `register_run` (`packages/spren/src/spren/runs/lifecycle.py:186-190`) constructs `Orchestra(agent_registry=…, execution_config=…, storage_backend=…)` — **no `communication_manager`** argument.
+- `Orchestra.__init__` creates `self._user_node_handler` only when `self.communication_manager` is truthy (`packages/framework/src/marsys/coordination/orchestra.py:380-385`); with none it stays `None`.
+- The handler is bound to `UserNode` det-nodes only if non-None (`orchestra.py:1018-1022`); so the bind is skipped.
+- `UserNode.on_single_invoke` with no handler calls `ctx.fail(branch, "UserNode 'User' has no handler bound")` (`packages/framework/src/marsys/coordination/execution/det_nodes.py:150-153`).
+- The framework auto-creates a `CommunicationManager` only inside the `Orchestra.run()` classmethod (`orchestra.py:770-810`) when `execution_config.user_interaction ∈ {"terminal","web"}` — and `"web"` is an explicit not-yet-implemented no-op (`:794-796`). Spren bypasses `Orchestra.run()` and uses the constructor + `EventBus`/`TelemetrySink` seam (SP-018), so it never gets the auto-created manager.
+
+**Consequence:** any workflow whose agent invokes a User node fails at runtime ("no handler bound") — *before* any provider/model call. Hence v0.3's runnable shape is `Start → Agent → End`; the canvas can place/collapse User nodes, lint can flag them, but a run that reaches one fails.
+
+**What the future session must do (scope sketch, not this session):** decide the Spren human-in-the-loop transport (SP-003 says one POST for mid-run user interaction; `03-api-design.md`), implement a Spren `UserNodeHandler` that bridges the framework's user-interaction enqueue to that POST + the SSE stream, wire a `communication_manager`/handler into `register_run`'s `Orchestra(...)` construction (or the chosen seam), and add an E2E that runs `Start → User → Agent → End` to completion with a simulated user reply. Cross-ref SP-011 (bounded triggers — a mid-run user reply is an external-source inbox event) and `09-meta-agent.md` (the meta-agent may itself answer User prompts when armed).
+
+## A5 decisions resolved (2026-05-15)
+
+- **AC-2 reframed** to `Start→Agent→End` (the User-not-executable limitation, P10) — adopted.
+- **P6 reversed**: a `04__*` forward migration is required (SP-006) — adopted; in scope.
+- **AC-11 reframed** to pure-Spren Start/End/User-aware lint, no framework call (P9/SP-018) — adopted.
+- **Open Q1 (User-node limitation)**: accepted by user; documented above; a separate interactive-runs session will be opened by the user. This session = materialization only.
+- **Open Q2 (Session-03 AC-20)**: do NOT edit Session 03's frozen acceptance; record AC-20 as superseded in session 06 (an SP-018-violating "wrap framework validation" that was never implemented; this session ships the correct Spren-pure shape). The false `models/lint.py` docstring is corrected in-scope (AC-14).
+- **Open Q3 (lint code)**: distinct `no_terminal` `LintCode` — adopted (AC-11).
+
+## Dependencies
+
+- RUN-3a ✅ + RUN-3c ✅ (shipped this audit — run-create reaches materialization/orchestra). This session removes the next blocker on the same path.
+- No external services. No DB schema migration (JSON definition column; predicate-only change). OpenAPI→TS codegen step required.
+
+## References
+
+- `docs/architecture/spren/11-node-model.md` — **binding spec** (the locked node model: categories, materialization contract, active/inactive policy, Tool duality, User-collapse, extensibility, framework ground-truth)
+- `docs/architecture/spren/02-data-model.md` — corrected node_type description (points to 11)
+- `docs/architecture/spren/08-design-principles.md` — SP-001/005/006/018/019
+- `docs/implementation/spren/v0.3.0/02-run-execution-and-inspection/sessions/06-ui-systematic-audit.md` — WF-BUG-RUN-3d, the "Node-model redesign" decision + process root-cause, WF-BUG-PALETTE-1, PRODUCT-BUG-001, Framework node+agent catalog
+- Session 04 (`04-run-execution.md`) — the run path this builds on

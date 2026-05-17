@@ -1,6 +1,6 @@
 """Rejected — builds edges via list comprehension."""
 from marsys.agents import Agent
-from marsys.coordination.topology.core import Edge, EdgeType, Node, NodeType, Topology
+from marsys.coordination.topology.core import Edge, EdgeType, Node, NodeKind, Topology
 from marsys.models import ModelConfig
 
 
@@ -19,6 +19,6 @@ agent_a = Agent(
 )
 
 topology = Topology(
-    nodes=[Node(name=n, node_type=NodeType.AGENT) for n in names],
+    nodes=[Node(name=n, kind=NodeKind.AGENT) for n in names],
     edges=[Edge(source=a, target=b, edge_type=EdgeType.INVOKE) for a, b in zip(names, names[1:])],
 )

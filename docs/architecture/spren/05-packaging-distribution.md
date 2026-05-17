@@ -89,7 +89,7 @@ copy dist/ → packages/spren/src/spren/_webui/   │                           
 
 Coordinated by `Justfile` recipes. Today: `just build` runs the Vite production build and copies the output into `packages/spren/src/spren/_webui/`; `just install` provisions Python (uv workspace `sync`), JS (pnpm), Rust (cargo fetch), and the Tauri CLI (`cargo install tauri-cli --version "^2"`); `just dev` runs the FastAPI sidecar plus Vite dev server; `just dev-desktop` runs Vite plus the Tauri shell (`cd apps/desktop && cargo tauri dev`); `just test` runs all suites (`uv run --package marsys pytest …`, `uv run --package spren pytest …`, `uv run --package spren-tui pytest …`, `pnpm --filter '@marsys/spren-web' test --run`, `cargo test`).
 
-The release pipeline (Session 10) extends this with PyInstaller + Tauri bundling + signing + per-channel publish recipes (`build-sidecar`, `build-desktop`, `build-pipx`, `build-docker`, `publish-<channel>`).
+The release pipeline extends this with PyInstaller + Tauri bundling + signing + per-channel publish recipes (`build-sidecar`, `build-desktop`, `build-pipx`, `build-docker`, `publish-<channel>`).
 
 ## Auto-update
 

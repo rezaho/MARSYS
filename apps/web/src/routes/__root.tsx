@@ -1,7 +1,9 @@
 import { Outlet, createRootRoute } from "@tanstack/react-router";
 
+import { AuthGate } from "../components/AuthGate";
 import { CommandPalette } from "../components/CommandPalette";
 import { GlobalCommands } from "../components/GlobalCommands";
+import { Sidebar } from "../components/Sidebar";
 import { CapabilitiesProvider } from "../providers/capabilities";
 import { QueryProvider } from "../providers/query";
 
@@ -13,9 +15,12 @@ function RootComponent() {
   return (
     <QueryProvider>
       <CapabilitiesProvider>
-        <Outlet />
-        <CommandPalette />
-        <GlobalCommands />
+        <AuthGate>
+          <Outlet />
+          <Sidebar />
+          <CommandPalette />
+          <GlobalCommands />
+        </AuthGate>
       </CapabilitiesProvider>
     </QueryProvider>
   );

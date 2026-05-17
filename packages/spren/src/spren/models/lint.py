@@ -1,12 +1,11 @@
 """Pydantic shapes for the lint surface (POST /v1/workflows/{id}/lint).
 
 `LintFinding` is the structured per-node / per-edge finding the UI surfaces in
-the top-toolbar chip + bottom panel. The Spren-side lint endpoint wraps the
-framework's ``TopologyGraph.validate_workflow()`` (which raises one
-multi-line ``TopologyError``) by parsing the error message back into discrete
-findings, and adds Spren-only cross-reference findings (unknown tool, missing
-agent_ref) that the framework doesn't track because the framework operates on
-already-resolved callables.
+the top-toolbar chip + bottom panel. The Spren lint pass is a **pure Spren
+linter** computed from the ``WorkflowDefinition`` directly — it makes ZERO
+framework calls (SP-018); it does not call ``TopologyGraph.validate_workflow``
+or any other framework function. It reads the framework ``NodeSpec.kind``
+field and produces structured findings the canvas can pin to nodes/edges.
 """
 from __future__ import annotations
 

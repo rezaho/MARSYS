@@ -73,7 +73,7 @@ def test_empty_draft_save_advances_past_predicate(client, auth_headers) -> None:
     }
     populated = {
         "topology": {
-            "nodes": [{"name": "Researcher", "node_type": "agent", "agent_ref": "a1"}],
+            "nodes": [{"name": "Researcher", "kind": "agent", "agent_ref": "a1"}],
             "edges": [],
             "rules": [],
         },

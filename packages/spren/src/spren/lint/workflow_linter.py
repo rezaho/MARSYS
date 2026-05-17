@@ -3,17 +3,17 @@
 Produces a flat list of ``LintFinding`` rows the UI surfaces in the
 top-toolbar chip + bottom panel. The rules implemented in v0.3:
 
-- ``missing_agent_ref`` — a node with ``node_type=AGENT`` and a non-null
+- ``missing_agent_ref`` — a node with ``kind=AGENT`` and a non-null
   ``agent_ref`` whose key is not in ``WorkflowDefinition.agents``.
 - ``dangling_edge`` — an edge endpoint that doesn't match any node name.
 - ``unknown_tool`` — an agent references a tool name not present in the
   framework's ``AVAILABLE_TOOLS`` registry. Spren-side tool registration
   arrives in v0.4.
 - ``unreachable`` — a node that no other node in the graph points at. Counts
-  as a warning because (a) entry points are valid lonely nodes and (b)
-  Spren's v0.3 topology model has no explicit Start node, so reachability
-  is computed from the set of nodes with no incoming edges treated as entry
-  candidates.
+  as a warning because entry points are valid lonely nodes. Reachability is
+  computed from the set of nodes with no incoming edges treated as entry
+  candidates; an explicit Start node (``kind="start"``), when present, has no
+  incoming edges and is therefore naturally an entry candidate.
 - ``cycle_no_escape`` — a non-trivial strongly-connected component (cycle of
   two or more nodes, or a self-loop) with no outgoing edge to a node outside
   the component. Surfaces as an error because the workflow can't terminate.
@@ -30,7 +30,7 @@ from __future__ import annotations
 from collections import defaultdict
 from typing import Iterable
 
-from spren.models import LintFinding, NodeType, WorkflowDefinition
+from spren.models import LintFinding, NodeKind, WorkflowDefinition
 
 
 def lint_workflow(
@@ -84,7 +84,7 @@ def _missing_agent_refs(definition: WorkflowDefinition) -> list[LintFinding]:
     out: list[LintFinding] = []
     agent_keys = set(definition.agents.keys())
     for node in definition.topology.nodes:
-        if node.node_type != NodeType.AGENT:
+        if node.kind != NodeKind.AGENT:
             continue
         if node.agent_ref is None:
             out.append(
@@ -122,7 +122,7 @@ def _unknown_tools(
     # the user actually sees on the canvas.
     nodes_by_agent_ref: dict[str, str] = {}
     for node in definition.topology.nodes:
-        if node.node_type == NodeType.AGENT and node.agent_ref is not None:
+        if node.kind == NodeKind.AGENT and node.agent_ref is not None:
             nodes_by_agent_ref[node.agent_ref] = node.name
 
     for agent_id, agent in definition.agents.items():
@@ -152,7 +152,7 @@ def _missing_required_fields(definition: WorkflowDefinition) -> list[LintFinding
     out: list[LintFinding] = []
     nodes_by_agent_ref: dict[str, str] = {}
     for node in definition.topology.nodes:
-        if node.node_type == NodeType.AGENT and node.agent_ref is not None:
+        if node.kind == NodeKind.AGENT and node.agent_ref is not None:
             nodes_by_agent_ref[node.agent_ref] = node.name
 
     for agent_id, agent in definition.agents.items():

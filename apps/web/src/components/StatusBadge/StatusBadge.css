@@ -1,0 +1,38 @@
+.status-badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  font-family: var(--font-mono);
+  font-size: 10px;
+  font-weight: 500;
+  letter-spacing: 0.02em;
+  padding: 3px 7px;
+  border-radius: 3px;
+  white-space: nowrap;
+}
+
+.status-badge--queued {
+  background: var(--ink-soft);
+  color: var(--surface);
+}
+
+.status-badge--running,
+.status-badge--cancelling {
+  background: var(--peach);
+  color: var(--ink);
+}
+
+.status-badge--succeeded {
+  background: var(--magenta);
+  color: var(--surface);
+}
+
+.status-badge--failed {
+  background: var(--magenta-deep);
+  color: var(--surface);
+}
+
+.status-badge--cancelled {
+  background: var(--rule);
+  color: var(--ink-soft);
+}

@@ -9,9 +9,14 @@
 
 .topbar-left {
   display: inline-flex;
-  flex-direction: column;
-  align-items: flex-start;
-  gap: 4px;
+  flex-direction: row;
+  align-items: center;
+  gap: 14px;
+  flex-wrap: wrap;
+}
+
+.topbar-left > .topbar-temporal {
+  margin-left: 2px;
 }
 
 .topbar-temporal {

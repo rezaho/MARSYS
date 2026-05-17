@@ -298,3 +298,54 @@ The following are explicitly excluded from Session 03; tests asserting their pre
 - Distinct semantic behavior for the four framework `EdgeType` values (`INVOKE` / `NOTIFY` / `QUERY` / `STREAM`) — future framework session.
 - Alternating + symmetric edge patterns as user-selectable variants in the canvas — future framework session.
 - SSE-based lint streaming — deferred to v0.4 (Framework Session 05 advanced linter).
+
+## Post-implementation additions [added 2026-05-12]
+
+Added during visual review after the initial Session 03 ship. These criteria are mandatory for the v0.3.1 cut.
+
+### Sidebar menu
+
+- AC-191 [added 2026-05-12]: A hamburger trigger button is rendered at the far-left of the top bar on every route, with `aria-label` "Open menu" / "Close menu" and `aria-expanded` reflecting the open state.
+- AC-192 [added 2026-05-12]: Clicking the trigger opens a 280 px (desktop) / `min(320 px, calc(100vw - 48px))` (mobile) slide-in sidebar panel from the left edge, with a dim backdrop behind it.
+- AC-193 [added 2026-05-12]: The sidebar contains a "Surfaces" section listing Home + Workflows (both linkable) and a "Coming soon" section listing Runs, Memory, Settings (disabled, with a one-line hint each).
+- AC-194 [added 2026-05-12]: The sidebar closes on Esc, on click outside (backdrop mousedown), or on clicking any link inside (the link navigates and closes implicitly).
+- AC-195 [added 2026-05-12]: The first link in the sidebar receives keyboard focus when the sidebar opens.
+- AC-196 [added 2026-05-12]: The sidebar's open state lives in a Zustand slice at `apps/web/src/stores/ui.ts` so any component can call `setSidebarOpen` / `toggleSidebar`.
+
+### Orb micro-interactions — Tier 1
+
+- AC-197 [added 2026-05-12]: On non-home routes the presence orb renders at 80 × 80 px (56 × 56 px below 640 px viewport width), anchored to the lower-right with a 24 px gutter (16 px on mobile). The previous 56 px top-right placement is removed.
+- AC-198 [added 2026-05-12]: The presence orb wrapper runs an `18 s` idle-drift keyframe animation (transform translate ± 8 px, rotate ± 1.4°), offset from the 8 s SVG breath cycle.
+- AC-199 [added 2026-05-12]: Hovering an interactive presence/tiny orb (clickable variant) increases scale to 1.04 and saturation to 1.15 over 280 ms via `cubic-bezier(0.34, 1.56, 0.64, 1)`.
+- AC-200 [added 2026-05-12]: Clicking the orb runs a squash-and-bounce: `scale(0.92)` while `:active` (80 ms ease-out), back to 1.0 on release. CSS-only.
+- AC-201 [added 2026-05-12]: Any focus event on an `<input>`, `<textarea>`, or `contenteditable` element anywhere in the document sets `data-focus-pulse="true"` on the Spren wrapper, which triggers a 700 ms saturation pulse keyframe. The attribute resets to `"false"` after 700 ms. Debounced 200 ms so rapid focus changes don't strobe.
+- AC-202 [added 2026-05-12]: The Spren component exposes a `mood` prop accepting `"attentive" | "curious" | "unsettled"`. The mood reflects on the wrapper's `data-mood` attribute. CSS attribute selectors tint the orb without touching the SVG.
+- AC-203 [added 2026-05-12]: The `unsettled` mood doubles the idle-drift rate (18 s → 9 s loop) for non-stage sizes via a CSS `animation-duration` override keyed on `[data-mood="unsettled"][data-size="presence" | "tiny"]`.
+- AC-204 [added 2026-05-12]: Default `mood` is `"attentive"` when the prop is omitted.
+
+### Performance kill switch
+
+- AC-205 [added 2026-05-12]: `apps/web/src/lib/perf-monitor.ts` exports a `startPerfMonitor()` function that samples `requestAnimationFrame` deltas over rolling 60-frame windows. When the median exceeds 20 ms for two consecutive windows, it sets `document.documentElement.dataset.sprenDegraded = "true"`. When the next window's median drops back under 20 ms, the attribute is removed.
+- AC-206 [added 2026-05-12]: `startPerfMonitor()` is invoked once from `apps/web/src/main.tsx` on app boot.
+- AC-207 [added 2026-05-12]: The monitor resets its sample buffer when `document.hidden` becomes true and skips its sampling tick until visibility returns.
+- AC-208 [added 2026-05-12]: When `data-spren-degraded="true"` is set on `<html>`, CSS in `Spren.css` freezes the wrapper's idle-drift animation on presence + tiny sizes via `animation: none`.
+
+### Reduced-motion fallback
+
+- AC-209 [added 2026-05-12]: Under `prefers-reduced-motion: reduce`, the state-transition crossfade duration is shortened from 700 ms to 200 ms (state transitions still carry information).
+- AC-210 [added 2026-05-12]: Under `prefers-reduced-motion: reduce`, a 12 s opacity ripple (0.92 ↔ 1.0) runs on the wrapper as the "still present" signal — pure opacity, no transform.
+- AC-211 [added 2026-05-12]: Under `prefers-reduced-motion: reduce`, drift / shake / vortex / hover-scale animations are disabled. The hover saturation pulse is preserved.
+
+### `/workflows/new` reliability
+
+- AC-212 [added 2026-05-12]: When `/workflows/new` mounts and the capabilities provider is still bootstrapping, the page renders "Connecting to Spren…" until capabilities resolve.
+- AC-213 [added 2026-05-12]: When capabilities fail (no auth token or bootstrap exception), the page renders "Can't reach the Spren sidecar." plus the underlying error message and a link back to `/`.
+- AC-214 [added 2026-05-12]: While the create mutation is pending less than 5 s, the page renders "Setting up a new canvas…" with the running orb in `thinking` state.
+- AC-215 [added 2026-05-12]: When the create mutation has been pending for 5 s or longer, the page additionally surfaces the elapsed time and a Retry button + Cancel-to-`/workflows` link.
+- AC-216 [added 2026-05-12]: When the create mutation errors, the page renders "Couldn't create workflow." plus the underlying error message and a Retry button + Cancel link. The error is `console.error`'d for dev visibility.
+- AC-217 [added 2026-05-12]: When the mutation succeeds, the page renders "Opening canvas…" briefly while the router redirects to `/workflows/{id}` with `replace: true`.
+
+### Test coverage additions
+
+- AC-218 [added 2026-05-12]: Vitest unit tests cover: sidebar trigger toggles store state; sidebar panel mounts only when open; backdrop click closes; aria-expanded reflects open state (4+ tests in `tests/sidebar.test.tsx`).
+- AC-219 [added 2026-05-12]: Vitest unit tests cover: mood prop reflects on data-mood, default is attentive, focus-pulse fires on input focus (5+ tests added to `tests/spren-orb.test.tsx`).

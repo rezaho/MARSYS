@@ -1,0 +1,115 @@
+/* Dialog primitive — three positioning modes that match the three
+ * existing modal surfaces in the app. Each position carries the
+ * backdrop properties + entry animation that the pre-refactor source
+ * used, so a clean migration is a pixel-for-pixel match.
+ *
+ *   bottom — chat sheet. Backdrop blur 6px @ 0.18 dim, z-50, slide-up.
+ *   center — pattern modal. Backdrop blur 6px @ 0.22 dim, z-60, no entry.
+ *   top    — command palette. Backdrop blur 8px @ 0.22 dim, z-100, slide-down.
+ */
+
+.ui-dialog-backdrop {
+  position: fixed;
+  inset: 0;
+  display: flex;
+  justify-content: center;
+}
+
+.ui-dialog-backdrop--bottom {
+  background: rgba(26, 20, 16, 0.18);
+  backdrop-filter: blur(6px);
+  -webkit-backdrop-filter: blur(6px);
+  z-index: 50;
+  align-items: flex-end;
+  animation: ui-dialog-fade-in 240ms var(--ease-out);
+}
+
+.ui-dialog-backdrop--center {
+  background: rgba(26, 20, 16, 0.22);
+  backdrop-filter: blur(6px);
+  -webkit-backdrop-filter: blur(6px);
+  z-index: 60;
+  align-items: center;
+}
+
+.ui-dialog-backdrop--top {
+  background: rgba(26, 20, 16, 0.22);
+  backdrop-filter: blur(8px);
+  -webkit-backdrop-filter: blur(8px);
+  z-index: 100;
+  align-items: flex-start;
+  padding-top: 18vh;
+  animation: ui-dialog-fade-in 200ms var(--ease-out);
+}
+
+.ui-dialog {
+  background: var(--surface);
+  border: 1px solid var(--rule);
+  display: flex;
+  flex-direction: column;
+}
+
+/* — Sizes — */
+.ui-dialog--sm {
+  width: min(420px, calc(100% - 32px));
+}
+
+.ui-dialog--md {
+  width: min(560px, calc(100% - 32px));
+}
+
+.ui-dialog--lg {
+  width: min(720px, calc(100% - 32px));
+}
+
+/* — Per-position shapes (radius, shadow, padding, animation) — */
+
+.ui-dialog--bottom {
+  /* Chat sheet — bottom-anchored, rounded 16px, taller shadow,
+   * 24px bottom margin, slide-up entry. */
+  width: min(640px, calc(100% - 32px));
+  max-height: 80vh;
+  margin-bottom: 24px;
+  border-radius: 16px;
+  box-shadow:
+    0 24px 64px -24px rgba(232, 33, 130, 0.16),
+    0 8px 24px -12px rgba(26, 20, 16, 0.12);
+  padding: 28px 28px 20px;
+  gap: 20px;
+  animation: ui-dialog-slide-up 280ms var(--ease-out);
+}
+
+.ui-dialog--center {
+  /* Pattern modal — vertically centered, 14px radius, no entry animation. */
+  max-height: 80vh;
+  border-radius: 14px;
+  overflow: hidden;
+  box-shadow:
+    0 24px 64px -24px rgba(232, 33, 130, 0.18),
+    0 8px 24px -12px rgba(26, 20, 16, 0.18);
+}
+
+.ui-dialog--top {
+  /* Command palette — narrower, 14px radius, slide-down entry. */
+  border-radius: 14px;
+  overflow: hidden;
+  box-shadow:
+    0 24px 64px -24px rgba(232, 33, 130, 0.18),
+    0 8px 24px -12px rgba(26, 20, 16, 0.18);
+  animation: ui-dialog-slide-down 220ms var(--ease-out);
+}
+
+@keyframes ui-dialog-fade-in {
+  from { opacity: 0; }
+  to   { opacity: 1; }
+}
+
+@keyframes ui-dialog-slide-up {
+  from { transform: translateY(40px); opacity: 0; }
+  to   { transform: translateY(0);    opacity: 1; }
+}
+
+@keyframes ui-dialog-slide-down {
+  from { transform: translateY(-12px); opacity: 0; }
+  to   { transform: translateY(0);     opacity: 1; }
+}

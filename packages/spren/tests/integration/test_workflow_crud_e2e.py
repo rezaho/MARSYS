@@ -33,8 +33,8 @@ def _complex_definition() -> dict:
     return {
         "topology": {
             "nodes": [
-                {"name": "Researcher", "node_type": "agent", "agent_ref": "agent_1", "is_convergence_point": False, "metadata": {}},
-                {"name": "Writer", "node_type": "agent", "agent_ref": "agent_2", "is_convergence_point": True, "metadata": {}},
+                {"name": "Researcher", "kind": "agent", "agent_ref": "agent_1", "is_convergence_point": False, "metadata": {}},
+                {"name": "Writer", "kind": "agent", "agent_ref": "agent_2", "is_convergence_point": True, "metadata": {}},
             ],
             "edges": [
                 {"source": "Researcher", "target": "Writer", "edge_type": "invoke", "bidirectional": False, "pattern": None, "metadata": {}},

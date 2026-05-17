@@ -33,6 +33,9 @@
   --radius-card: 14px;
   --radius-pill: 24px;
   --radius-control: 10px;
+  --radius-button-sm: 6px;
+  --radius-button-md: 8px;
+  --radius-chip: 4px;
 }
 
 *,

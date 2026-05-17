@@ -1,33 +1,67 @@
 /**
- * Small breathing presence orb shown top-right on non-home surfaces.
+ * Loosely-anchored ambient presence orb on non-home surfaces.
  *
- * 56px on desktop, 40px on mobile (per §10.7 polish item 7). Clicking
- * opens the chat sheet. Same Spren component, sized down — the
- * crossfade and per-state animations remain identical, so a state shift
- * on the presence orb (e.g., a meta-agent thinking pass) reads the same
- * way it does on the home stage.
+ * 80 px on desktop, 56 px on mobile. Anchored to the lower-right with
+ * `position: fixed` — NOT a notification-dot in the top-right.
+ *
+ * The wrapper applies an 18 s idle drift via CSS keyframes (see
+ * Spren.css `spren-idle-drift`), offset from the SVG's 8 s breath so
+ * they beat against each other rather than syncing into a uniform
+ * throb. Click opens the chat sheet.
+ *
+ * The `data-mood` on the orb wrapper modulates gradient tint + drift
+ * rate; this presence component propagates the caller-supplied mood
+ * down. v0.3.1 callers pass `mood="attentive"` (default); v0.4 wires
+ * cost-headroom + idle-deep detection to drive mood programmatically.
  */
 import { useState, type ReactElement } from "react";
 
 import { Spren } from "../Spren";
+import type { SprenMood, SprenSize, SprenState } from "../Spren";
 import { ChatSheet } from "../ChatSheet";
 
 import "./PresenceOrb.css";
 
-export function PresenceOrb({
-  testId = "presence-orb",
-}: {
+interface PresenceOrbProps {
+  /**
+   * Defaults to "attentive". Pass "curious" or "unsettled" to drive
+   * mood-aware micro-interactions (e.g., faster drift, deeper tint).
+   */
+  mood?: SprenMood;
+
+  /**
+   * Override the default size. The page-level placement assumes
+   * "presence" (80 px desktop / 56 px mobile via CSS).
+   */
+  size?: SprenSize;
+
+  /**
+   * Override the orb state. Defaults to "idle"; the canvas wires this
+   * to the run state during execution (thinking/speaking/idle) per
+   * Session 04 §8.2.
+   */
+  state?: SprenState;
+
+  /** Forwarded test id. */
   testId?: string;
-}): ReactElement {
+}
+
+export function PresenceOrb({
+  mood = "attentive",
+  size = "presence",
+  state = "idle",
+  testId = "presence-orb",
+}: PresenceOrbProps): ReactElement {
   const [open, setOpen] = useState(false);
   return (
     <>
       <div className="presence-orb" data-testid={testId}>
         <Spren
-          state="idle"
-          size="presence"
+          state={state}
+          mood={mood}
+          size={size}
           onClick={() => setOpen(true)}
-          ariaLabel="Talk to Spren"
+          ariaLabel="presence orb"
           testId={`${testId}-spren`}
         />
       </div>

@@ -7,8 +7,13 @@ Ready signal format (single line, flushed):
     spren-ready: port=<N> token=<T> data-dir=<path>
 
 Shutdown protocol: a stdin-reader thread consumes lines from sys.stdin and
-triggers uvicorn's graceful shutdown when it sees `shutdown\\n`. EOF on stdin
-also triggers graceful shutdown — the sidecar should never outlive its parent.
+triggers uvicorn's graceful shutdown ONLY when it sees `shutdown\\n`. Bare
+EOF must NOT shut the sidecar down — a launcher that hands the child a
+closed/never-written stdin (PowerShell `Start-Job` + `cmd /c` under
+`just dev`, `stdio=ignore`/DEVNULL in CI) surfaces an immediate EOF that
+would otherwise kill the server right after `spren-ready`. Managing
+parents that need a lifecycle hook (the Tauri shell, the type-gen script)
+send an explicit `shutdown` line; they do not rely on EOF.
 """
 from __future__ import annotations
 
@@ -60,15 +65,25 @@ def _stdin_is_pipe() -> bool:
 
 
 def _watch_stdin_for_shutdown(server: uvicorn.Server) -> None:
-    """Trigger graceful shutdown when stdin emits `shutdown\\n` or EOF."""
+    """Trigger graceful shutdown ONLY on an explicit ``shutdown`` line.
+
+    Bare EOF is intentionally a no-op: a launcher that gives the child a
+    closed/never-written stdin (PowerShell ``Start-Job`` + ``cmd /c``
+    under ``just dev``, ``stdio=ignore``/DEVNULL in CI) surfaces an
+    immediate EOF that previously killed the server right after startup.
+    Managing parents send an explicit ``shutdown`` line; they do not rely
+    on EOF.
+    """
     try:
         for line in sys.stdin:
             if line.strip() == "shutdown":
-                break
-    finally:
-        # Either the shutdown line arrived, stdin hit EOF, or sys.stdin
-        # raised. In all three cases we want uvicorn to exit cleanly.
-        server.should_exit = True
+                server.should_exit = True
+                return
+    except Exception:
+        # A broken/again-closed stdin must not take the server down.
+        return
+    # stdin reached EOF without a `shutdown` line — intentional no-op:
+    # the server keeps running until SIGINT or an explicit shutdown.
 
 
 @click.command()

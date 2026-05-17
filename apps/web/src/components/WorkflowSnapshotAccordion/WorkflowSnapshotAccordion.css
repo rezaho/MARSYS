@@ -1,0 +1,102 @@
+/* Read-only workflow snapshot accordion. */
+
+.workflow-snapshot-accordion {
+  border: 1px solid var(--rule);
+  border-radius: 6px;
+  background-color: var(--surface);
+  overflow: hidden;
+}
+
+.workflow-snapshot-header {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  width: 100%;
+  background: transparent;
+  border: 0;
+  padding: 12px 16px;
+  font: inherit;
+  font-size: 14px;
+  font-weight: 500;
+  color: var(--ink);
+  cursor: pointer;
+  text-align: left;
+  transition: background-color 120ms ease-out;
+}
+.workflow-snapshot-header:hover {
+  background-color: rgba(0, 0, 0, 0.02);
+}
+@media (prefers-reduced-motion: reduce) {
+  .workflow-snapshot-header {
+    transition: none;
+  }
+}
+
+.workflow-snapshot-caret {
+  color: var(--ink-soft);
+  font-size: 11px;
+  width: 12px;
+  display: inline-block;
+}
+
+.workflow-snapshot-title {
+  flex: 1;
+}
+
+.workflow-snapshot-meta {
+  font-family: var(--font-mono);
+  font-size: 11px;
+  color: var(--ink-soft);
+}
+
+.workflow-snapshot-body {
+  border-top: 1px solid var(--rule);
+  padding: 12px 16px;
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.workflow-snapshot-loading,
+.workflow-snapshot-empty {
+  margin: 0;
+  font-family: var(--font-mono);
+  font-size: 12px;
+  color: var(--ink-soft);
+}
+
+.workflow-snapshot-canvas {
+  height: 320px;
+  border: 1px solid var(--rule);
+  border-radius: 4px;
+  background-color: rgba(0, 0, 0, 0.01);
+  overflow: hidden;
+}
+
+.workflow-snapshot-open-canvas {
+  align-self: flex-start;
+  background: transparent;
+  border: 1px solid var(--rule);
+  border-radius: 4px;
+  padding: 6px 10px;
+  font: inherit;
+  font-size: 12px;
+  color: var(--magenta);
+  cursor: pointer;
+}
+.workflow-snapshot-open-canvas:hover {
+  border-color: var(--magenta);
+}
+
+.snapshot-node {
+  font-size: 12px;
+}
+.snapshot-node-name {
+  font-weight: 500;
+  color: var(--ink);
+}
+.snapshot-node-sub {
+  font-family: var(--font-mono);
+  font-size: 10px;
+  color: var(--ink-soft);
+}

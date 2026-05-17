@@ -41,8 +41,8 @@ from spren.models import (
     EdgeType,
     ExecutionConfigSpec,
     ModelConfigSpec,
+    NodeKind,
     NodeSpec,
-    NodeType,
     TopologySpec,
     WorkflowDefinition,
 )
@@ -463,20 +463,28 @@ def _build_nodes(arg: ast.AST, constants: dict[str, Any], agents: dict[str, Agen
                 reason="node_not_call",
                 line=getattr(element, "lineno", None),
             )
-        kwargs = _bind_call(element, ["name", "node_type", "agent_ref", "is_convergence_point", "metadata"], constants)
-        node_type = _coerce_node_type(kwargs.get("node_type"), element.lineno)
+        kwargs = _bind_call(element, ["name", "kind", "node_type", "agent_ref", "is_convergence_point", "metadata"], constants)
+        if kwargs.get("node_type") is not None:
+            raise PythonImportError(
+                "Node(node_type=...) was removed; the framework node "
+                "discriminator is 'kind' (NodeKind.AGENT/START/END/USER). "
+                "Re-author this file against the current marsys surface.",
+                reason="removed_node_type",
+                line=element.lineno,
+            )
+        kind = _coerce_node_kind(kwargs.get("kind"), element.lineno)
         agent_ref = kwargs.get("agent_ref")
         # Allow agent_ref to point at an agent name from the file (matching
         # marsys's runtime behavior of resolving agent_ref to the agent
         # instance by name).
-        if isinstance(agent_ref, str) and node_type == NodeType.AGENT and agent_ref not in agents:
+        if isinstance(agent_ref, str) and kind == NodeKind.AGENT and agent_ref not in agents:
             # Fall through to Spren-side cross-validation for the cleaner
             # error message; don't pre-empt here.
             pass
         try:
             spec = NodeSpec(
                 name=kwargs["name"],
-                node_type=node_type,
+                kind=kind,
                 agent_ref=agent_ref if isinstance(agent_ref, str) else None,
                 is_convergence_point=bool(kwargs.get("is_convergence_point", False)),
                 metadata=dict(kwargs.get("metadata") or {}),
@@ -490,8 +498,8 @@ def _build_nodes(arg: ast.AST, constants: dict[str, Any], agents: dict[str, Agen
         nodes.append(spec)
         # If the node is an agent and agent_ref was omitted, default to the
         # node name (matches the agents map keying) — this keeps the import
-        # round-trippable even when users wrote `Node(name="X", node_type="agent")`.
-        if spec.node_type == NodeType.AGENT and spec.agent_ref is None and spec.name in agent_names:
+        # round-trippable even when users wrote `Node(name="X", kind="agent")`.
+        if spec.kind == NodeKind.AGENT and spec.agent_ref is None and spec.name in agent_names:
             nodes[-1] = spec.model_copy(update={"agent_ref": spec.name})
     return nodes
 
@@ -553,12 +561,15 @@ def _build_edges(
                 bidirectional = True
                 pattern = None
 
+            # Framework EdgeSpec.edge_type / .pattern are string literals
+            # (EdgeTypeLiteral / EdgePatternLiteral), not the runtime enums —
+            # serialize the coerced enum to its wire value.
             spec = EdgeSpec(
                 source=source,
                 target=target,
-                edge_type=_coerce_edge_type(kwargs.get("edge_type"), element.lineno),
+                edge_type=_coerce_edge_type(kwargs.get("edge_type"), element.lineno).value,
                 bidirectional=bidirectional,
-                pattern=pattern,
+                pattern=pattern.value if pattern is not None else None,
                 metadata=metadata,
             )
         except PythonImportError:
@@ -630,32 +641,32 @@ def _build_execution_config(call: ast.Call, constants: dict[str, Any]) -> Execut
 # --- enum coercion ---
 
 
-def _coerce_node_type(value: Any, line: int) -> NodeType:
+def _coerce_node_kind(value: Any, line: int) -> NodeKind:
     if value is None:
-        return NodeType.AGENT
-    if isinstance(value, NodeType):
+        return NodeKind.AGENT
+    if isinstance(value, NodeKind):
         return value
     if isinstance(value, str):
         try:
-            return NodeType(value.lower())
+            return NodeKind(value.lower())
         except ValueError as exc:
             raise PythonImportError(
-                f"unknown node_type '{value}'",
-                reason="bad_node_type",
+                f"unknown kind '{value}'",
+                reason="bad_node_kind",
                 line=line,
             ) from exc
     if isinstance(value, dict) and "_enum_member" in value:
         cls = value["_enum_class"]
-        if cls != "NodeType":
+        if cls != "NodeKind":
             raise PythonImportError(
-                f"expected NodeType, got {cls}",
-                reason="bad_node_type",
+                f"expected NodeKind, got {cls}",
+                reason="bad_node_kind",
                 line=line,
             )
-        return NodeType(value["_enum_member"])
+        return NodeKind(value["_enum_member"])
     raise PythonImportError(
-        f"unsupported node_type literal: {type(value).__name__}",
-        reason="bad_node_type",
+        f"unsupported kind literal: {type(value).__name__}",
+        reason="bad_node_kind",
         line=line,
     )
 
@@ -769,9 +780,9 @@ def _resolve_literal(node: ast.AST, *, table: dict[str, Any]) -> Any:
             raise _NotALiteral(f"{target}(...) cannot appear as a nested literal")
         raise _NotALiteral(f"unsupported call: {target or '<unknown>'}")
     if isinstance(node, ast.Attribute):
-        # Allow NodeType.AGENT, EdgeType.INVOKE, EdgePattern.SYMMETRIC etc.
+        # Allow NodeKind.AGENT, EdgeType.INVOKE, EdgePattern.SYMMETRIC etc.
         owner = _name_of(node.value)
-        if owner in {"NodeType", "EdgeType", "EdgePattern"}:
+        if owner in {"NodeKind", "EdgeType", "EdgePattern"}:
             return {"_enum_class": owner, "_enum_member": node.attr.lower()}
         raise _NotALiteral(f"unsupported attribute access: {owner}.{node.attr}")
     raise _NotALiteral(f"unsupported expression: {type(node).__name__}")

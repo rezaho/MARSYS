@@ -138,23 +138,6 @@
   border-top: 1px solid var(--rule);
 }
 
-.agent-form-delete {
-  background: transparent;
-  border: 1px solid var(--rule);
-  color: var(--ink-soft);
-  padding: 6px 12px;
-  border-radius: 6px;
-  font-family: var(--font-sans);
-  font-size: 12px;
-  cursor: pointer;
-  transition: color 200ms var(--ease-out), border-color 200ms var(--ease-out);
-}
-
-.agent-form-delete:hover {
-  color: var(--magenta-deep);
-  border-color: var(--magenta-deep);
-}
-
 .agent-form-apply {
   background: var(--ink);
   color: var(--surface);

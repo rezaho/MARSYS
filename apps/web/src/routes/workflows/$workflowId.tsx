@@ -24,20 +24,32 @@ import {
   type ReactElement,
 } from "react";
 
+import { CompletionToast } from "../../components/CompletionToast";
+import { FileAttachInput, uploadFilesViaDrop } from "../../components/FileAttachInput";
+import { RunButton } from "../../components/RunButton";
 import { PresenceOrb, TopBar } from "../../components/TopBar";
+import { Button } from "../../components/ui";
+import {
+  canvasAttachmentsAtom,
+  dragOverlayActiveAtom,
+} from "../../stores/canvasAttachments";
+import { orbStateAtom } from "../../stores/run";
 import {
   getWorkflow,
   lintWorkflowById,
   replaceWorkflow,
   type AgentSpec,
-  type EdgeSpec,
-  type NodeSpec,
-  type NodeType,
+  type NodeKind,
   type WorkflowDefinition,
 } from "../../lib/api";
 import type { PatternResult } from "../../lib/pattern-presets";
 import type { PatternInsertMode } from "./-canvas/PatternModal";
 import { autoLayout } from "../../lib/auto-layout";
+import {
+  isStartKind,
+  reactFlowToWorkflow,
+  workflowToReactFlow,
+} from "../../lib/canvas-serialize";
 import { useCapabilities } from "../../providers/capabilities";
 import {
   dirtyAtom,
@@ -187,16 +199,10 @@ function CanvasInner(): ReactElement {
         run: () => addNode("user"),
       },
       {
-        id: "add-system-node",
-        label: "Add System node",
+        id: "add-end-node",
+        label: "Add End node",
         section: "canvas",
-        run: () => addNode("system"),
-      },
-      {
-        id: "add-tool-node",
-        label: "Add Tool node",
-        section: "canvas",
-        run: () => addNode("tool"),
+        run: () => addNode("end"),
       },
       {
         id: "insert-pattern",
@@ -265,41 +271,67 @@ function CanvasInner(): ReactElement {
     setDirty(true);
   }, [setDirty]);
 
-  // ---- Drop from palette ----
+  // ---- Drop from palette OR file drag ----
+  const setCanvasAttachments = useSetAtom(canvasAttachmentsAtom);
+  const [dragOverlay, setDragOverlay] = useAtom(dragOverlayActiveAtom);
+
   const onDragOver = useCallback((event: DragEvent<HTMLDivElement>) => {
     event.preventDefault();
-    event.dataTransfer.dropEffect = "move";
-  }, []);
+    const isFile = (event.dataTransfer.types || []).includes("Files");
+    if (isFile) {
+      event.dataTransfer.dropEffect = "copy";
+      if (!dragOverlay) setDragOverlay(true);
+    } else {
+      event.dataTransfer.dropEffect = "move";
+    }
+  }, [dragOverlay, setDragOverlay]);
+
+  const onDragLeave = useCallback((event: DragEvent<HTMLDivElement>) => {
+    // Only clear when leaving the canvas-stage entirely, not when crossing
+    // into a child element. Cast through unknown because xyflow's Node
+    // type shadows the DOM Node global.
+    const target = event.currentTarget as unknown as globalThis.Node;
+    const related = event.relatedTarget as unknown as globalThis.Node | null;
+    if (related && target.contains(related)) return;
+    setDragOverlay(false);
+  }, [setDragOverlay]);
 
   const onDrop = useCallback((event: DragEvent<HTMLDivElement>) => {
     event.preventDefault();
-    const nodeType = event.dataTransfer.getData("application/spren-node-type") as NodeType;
-    if (!nodeType) return;
+    setDragOverlay(false);
+    const files = Array.from(event.dataTransfer.files ?? []);
+    if (files.length > 0) {
+      uploadFilesViaDrop(files, token, setCanvasAttachments);
+      return;
+    }
+    const kind = event.dataTransfer.getData("application/spren-node-type") as NodeKind;
+    if (!kind) return;
     const position = flow.screenToFlowPosition({ x: event.clientX, y: event.clientY });
-    addNode(nodeType, position);
+    addNode(kind, position);
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [flow]);
+  }, [flow, token, setCanvasAttachments, setDragOverlay]);
 
   function addNode(
-    type: NodeType,
+    kind: NodeKind,
     position?: { x: number; y: number },
   ) {
     const existingNames = new Set(nodes.map((n) => n.data.name));
     let counter = 1;
-    let baseName = type === "agent" ? "Agent" : type[0].toUpperCase() + type.slice(1);
+    let baseName = kind === "agent" ? "Agent" : kind[0].toUpperCase() + kind.slice(1);
     let name = `${baseName} ${counter}`;
     while (existingNames.has(name)) {
       counter++;
       name = `${baseName} ${counter}`;
     }
     const id = `node-${Math.random().toString(36).slice(2, 9)}`;
-    const data: CanvasNodeData = { name, nodeType: type };
-    let agentsNext = agents;
-    if (type === "agent") {
-      const agentId = `agent_${Math.random().toString(36).slice(2, 9)}`;
-      agentsNext = {
+    const data: CanvasNodeData = { name, kind };
+    if (kind === "agent") {
+      // Key the agent by its (unique) node name so it round-trips into the
+      // framework's name-based bind contract (agents key === AgentSpec.name
+      // === node.agent_ref). No random id scheme.
+      setAgents({
         ...agents,
-        [agentId]: {
+        [name]: {
           agent_model: { type: "api", name: "", provider: "anthropic" },
           name,
           goal: "",
@@ -308,9 +340,8 @@ function CanvasInner(): ReactElement {
           memory_retention: "session",
           allowed_peers: [],
         },
-      };
-      data.agentRefAgentId = agentId;
-      setAgents(agentsNext);
+      });
+      data.agentRefAgentId = name;
     }
     const newNode: Node<CanvasNodeData> = {
       id,
@@ -326,7 +357,7 @@ function CanvasInner(): ReactElement {
   // ---- Selected agent for the right rail ----
   const selectedNode = nodes.find((n) => n.id === selectedNodeId);
   const selectedAgentEntry = useMemo<{ id: string; agent: AgentSpec } | null>(() => {
-    if (!selectedNode || selectedNode.data.nodeType !== "agent") return null;
+    if (!selectedNode || selectedNode.data.kind !== "agent") return null;
     const agentRef = (selectedNode.data as CanvasNodeData & { agentRefAgentId?: string }).agentRefAgentId;
     if (!agentRef) {
       // Existing imported workflow: look up by matching node.name → topology
@@ -391,17 +422,25 @@ function CanvasInner(): ReactElement {
     // empty (sensible default); replace is destructive. The pattern modal
     // disables "empty_canvas" when the canvas has nodes.
     const replaces = mode === "replace" || mode === "empty_canvas";
+    // Every preset is a complete runnable shape: it owns its single Start
+    // node + the edge into its entry agent (see pattern-presets.ts). The
+    // canvas only has to keep "exactly one Start" — a graph-combination
+    // concern that belongs here, in the inserter.
     if (replaces) {
-      const rfNodes: Node<CanvasNodeData>[] = newNodes.map((n) => ({
-        id: n.name,
-        type: "spren",
-        position: { x: 0, y: 0 },
-        data: {
-          name: n.name,
-          nodeType: (n.node_type ?? "agent") as NodeType,
-          agentRefAgentId: n.agent_ref ?? undefined,
-        },
-      }));
+      const rfNodes: Node<CanvasNodeData>[] = newNodes.map((n) => {
+        const kind = (n.kind ?? "agent") as NodeKind;
+        return {
+          id: n.name,
+          type: "spren",
+          position: { x: 0, y: 0 },
+          deletable: !isStartKind(kind),
+          data: {
+            name: n.name,
+            kind,
+            agentRefAgentId: n.agent_ref ?? undefined,
+          },
+        };
+      });
       const rfEdges: Edge<CanvasEdgeData>[] = newEdges.map((e, i) => ({
         id: `e-${e.source}-${e.target}-${i}`,
         source: e.source,
@@ -413,19 +452,36 @@ function CanvasInner(): ReactElement {
       setEdges(rfEdges);
       setAgents(newAgents);
     } else {
+      // Merge into the existing canvas. It already has its single Start —
+      // drop the preset's Start and retarget the preset's Start-out edges
+      // onto the canvas Start so we never end up with two.
+      const existingStart = nodes.find((nd) => isStartKind(nd.data.kind));
+      const presetStartName = newNodes.find(
+        (n) => (n.kind ?? "agent") === "start",
+      )?.name;
+      const mergeNodes = existingStart
+        ? newNodes.filter((n) => (n.kind ?? "agent") !== "start")
+        : newNodes;
       const startIndex = nodes.length;
-      const rfNodes: Node<CanvasNodeData>[] = newNodes.map((n, i) => ({
-        id: `node-${startIndex + i}-${n.name}`,
-        type: "spren",
-        position: { x: 200 + (i % 4) * 240, y: 200 + Math.floor(i / 4) * 140 },
-        data: {
-          name: n.name,
-          nodeType: (n.node_type ?? "agent") as NodeType,
-          agentRefAgentId: n.agent_ref ?? undefined,
-        },
-      }));
+      const rfNodes: Node<CanvasNodeData>[] = mergeNodes.map((n, i) => {
+        const kind = (n.kind ?? "agent") as NodeKind;
+        return {
+          id: `node-${startIndex + i}-${n.name}`,
+          type: "spren",
+          position: { x: 200 + (i % 4) * 240, y: 200 + Math.floor(i / 4) * 140 },
+          deletable: !isStartKind(kind),
+          data: {
+            name: n.name,
+            kind,
+            agentRefAgentId: n.agent_ref ?? undefined,
+          },
+        };
+      });
       const idByName = new Map<string, string>();
       rfNodes.forEach((n) => idByName.set(n.data.name, n.id));
+      if (existingStart && presetStartName) {
+        idByName.set(presetStartName, existingStart.id);
+      }
       const rfEdges: Edge<CanvasEdgeData>[] = newEdges.map((e, i) => ({
         id: `e-merge-${i}-${e.source}-${e.target}`,
         source: idByName.get(e.source) ?? e.source,
@@ -461,27 +517,33 @@ function CanvasInner(): ReactElement {
           </span>
         }
       />
-      <PresenceOrb />
+      <CanvasPresenceOrb />
       <CanvasEdgeArrow />
       <div className="canvas-toolbar" data-testid="canvas-toolbar">
         <LintChip onGoToNode={focusNodeByName} />
-        <button
-          type="button"
-          className="canvas-toolbar-button"
+        <Button
+          variant="secondary"
+          size="sm"
           onClick={() => setPatternModalOpen(true)}
           data-testid="canvas-toolbar-pattern"
         >
           + Pattern
-        </button>
-        <button
-          type="button"
-          className="canvas-toolbar-button canvas-toolbar-button--primary"
+        </Button>
+        <Button
+          variant="primary"
+          size="sm"
           onClick={() => saveMutation.mutate()}
           disabled={saveMutation.isPending}
           data-testid="canvas-toolbar-save"
         >
           {saveMutation.isPending ? "Saving…" : "Save"}
-        </button>
+        </Button>
+        <FileAttachInput testId="canvas-toolbar-attach" />
+        <RunButton
+          workflowId={workflowId}
+          workflowName={name || workflowId}
+          testId="canvas-toolbar-run"
+        />
         {saveMutation.isSuccess ? (
           <span className="canvas-toolbar-toast" data-testid="canvas-save-toast">
             saved
@@ -496,7 +558,22 @@ function CanvasInner(): ReactElement {
           </span>
         ) : null}
       </div>
-      <div className="canvas-stage" onDragOver={onDragOver} onDrop={onDrop} data-testid="canvas-stage">
+      <div
+        className="canvas-stage"
+        onDragOver={onDragOver}
+        onDragLeave={onDragLeave}
+        onDrop={onDrop}
+        data-testid="canvas-stage"
+      >
+        {dragOverlay && (
+          <div
+            className="canvas-drag-overlay"
+            data-testid="canvas-drag-overlay"
+            aria-hidden="true"
+          >
+            Drop to attach
+          </div>
+        )}
         <ReactFlow
           nodes={nodes}
           edges={edges}
@@ -539,8 +616,14 @@ function CanvasInner(): ReactElement {
         onInsert={insertPattern}
         onClose={() => setPatternModalOpen(false)}
       />
+      <CompletionToast />
     </div>
   );
+}
+
+function CanvasPresenceOrb(): ReactElement {
+  const [orbState] = useAtom(orbStateAtom);
+  return <PresenceOrb state={orbState} />;
 }
 
 function CanvasEmpty(): ReactElement {
@@ -573,7 +656,9 @@ function applyNodeChanges(
         );
         break;
       case "remove":
-        next = next.filter((n) => n.id !== change.id);
+        next = next.filter(
+          (n) => n.id !== change.id || isStartKind(n.data.kind),
+        );
         break;
       case "select":
         next = next.map((n) =>
@@ -609,101 +694,6 @@ function applyEdgeChanges(
   return next;
 }
 
-function workflowToReactFlow(definition: WorkflowDefinition): {
-  nodes: Node<CanvasNodeData>[];
-  edges: Edge<CanvasEdgeData>[];
-} {
-  const topologyNodes = definition.topology.nodes ?? [];
-  const topologyEdges = definition.topology.edges ?? [];
-  const agentsMap = definition.agents ?? {};
-
-  const nameToAgentId = new Map<string, string>();
-  for (const node of topologyNodes) {
-    if ((node.node_type ?? "agent") === "agent" && node.agent_ref) {
-      nameToAgentId.set(node.name, node.agent_ref);
-    }
-  }
-  const nodes: Node<CanvasNodeData>[] = topologyNodes.map((node) => {
-    const agentRef = nameToAgentId.get(node.name);
-    const agent = agentRef ? agentsMap[agentRef] : undefined;
-    const metadata = (node.metadata ?? {}) as Record<string, unknown>;
-    const x = typeof metadata.position_x === "number" ? metadata.position_x : 0;
-    const y = typeof metadata.position_y === "number" ? metadata.position_y : 0;
-    return {
-      id: node.name,
-      type: "spren",
-      position: { x, y },
-      data: {
-        name: node.name,
-        nodeType: (node.node_type ?? "agent") as NodeType,
-        agentRefAgentId: agentRef,
-        agentName: agent?.name,
-        agentModel: agent?.agent_model?.name,
-      },
-    } satisfies Node<CanvasNodeData>;
-  });
-  const edges: Edge<CanvasEdgeData>[] = topologyEdges.map((edge, i) => {
-    const metadata = (edge.metadata ?? {}) as Record<string, unknown>;
-    return {
-      id: `e-${edge.source}-${edge.target}-${i}`,
-      source: edge.source,
-      target: edge.target,
-      type: "spren",
-      data: {
-        bidirectional: edge.bidirectional ?? false,
-        converted: Boolean(metadata.spren_converted_from),
-      },
-    } satisfies Edge<CanvasEdgeData>;
-  });
-  return { nodes, edges };
-}
-
-function reactFlowToWorkflow(
-  nodes: Node<CanvasNodeData>[],
-  edges: Edge<CanvasEdgeData>[],
-  agents: Record<string, AgentSpec>,
-): WorkflowDefinition {
-  // Use the data.name as the topology node name. Ensure uniqueness — if
-  // two canvas nodes ended up with the same name (rare; shouldn't happen
-  // with addNode's counter) we append the short id to disambiguate.
-  const seenNames = new Set<string>();
-  const idToName = new Map<string, string>();
-  for (const node of nodes) {
-    let nm = node.data.name;
-    if (seenNames.has(nm)) nm = `${nm}_${node.id.slice(0, 4)}`;
-    seenNames.add(nm);
-    idToName.set(node.id, nm);
-  }
-
-  const topologyNodes: NodeSpec[] = nodes.map((n) => {
-    const name = idToName.get(n.id) ?? n.data.name;
-    const data = n.data as CanvasNodeData & { agentRefAgentId?: string };
-    return {
-      name,
-      node_type: data.nodeType,
-      agent_ref: data.nodeType === "agent" ? (data.agentRefAgentId ?? null) : null,
-      is_convergence_point: false,
-      metadata: { position_x: n.position.x, position_y: n.position.y },
-    };
-  });
-
-  const topologyEdges: EdgeSpec[] = edges.map((e) => ({
-    source: idToName.get(e.source) ?? e.source,
-    target: idToName.get(e.target) ?? e.target,
-    edge_type: "invoke",
-    bidirectional: Boolean(e.data?.bidirectional),
-    pattern: null,
-    metadata: {},
-  }));
-
-  return {
-    topology: {
-      nodes: topologyNodes,
-      edges: topologyEdges,
-      rules: [],
-    },
-    agents,
-    execution_config: {},
-  };
-}
+// `workflowToReactFlow` / `reactFlowToWorkflow` now live in
+// `../../lib/canvas-serialize` (pure, unit-tested).
 

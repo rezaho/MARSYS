@@ -51,17 +51,18 @@ All tables include `created_at` and `updated_at` (UTC, microsecond precision). A
 | `created_at` | TEXT NOT NULL | ISO 8601 UTC |
 | `updated_at` | TEXT NOT NULL | ISO 8601 UTC |
 
-`definition` JSON shape (mirrors marsys topology + execution config):
+`definition` JSON shape (the framework canonical `WorkflowDefinition` —
+marsys topology + agents + execution config):
 
 ```json
 {
   "topology": {
-    "nodes": [{"name": "Researcher", "node_type": "agent", "agent_ref": "agent_id"}, ...],
+    "nodes": [{"name": "Researcher", "kind": "agent", "agent_ref": "Researcher"}, ...],
     "edges": [{"source": "Researcher", "target": "Writer", "edge_type": "invoke"}, ...],
     "rules": [...]
   },
   "agents": {
-    "agent_id_1": {
+    "Researcher": {
       "name": "Researcher",
       "agent_model": {...ModelConfig fields...},
       "goal": "...",
@@ -81,7 +82,7 @@ All tables include `created_at` and `updated_at` (UTC, microsecond precision). A
 }
 ```
 
-`node_type`, `edge_type`, and `edge.pattern` values are lowercase strings matching `marsys.coordination.topology.core.NodeType` / `EdgeType` / `EdgePattern`: `node_type ∈ {user, agent, system, tool}`, `edge_type ∈ {invoke, notify, query, stream}`, `pattern ∈ {alternating, symmetric}` (or null). The agent's model-config field is named `agent_model` rather than `model` because Pydantic v2 reserves the attribute name `model_config`; storage JSON shape mirrors the Pydantic mirror.
+`edge_type` and `edge.pattern` are lowercase strings faithfully mirroring `marsys.coordination.topology.core.EdgeType` / `EdgePattern`: `edge_type ∈ {invoke, notify, query, stream}`, `pattern ∈ {alternating, symmetric}` (or null). Post-ADR-008 the node taxonomy **is** the framework's canonical `NodeKind`: `kind ∈ {agent, start, end, user}` (the removed `system`/`tool` members are rejected on read). Spren consumes the framework `NodeSpec` directly via the `spren.models` re-export façade — there is no Spren node mirror and no materialization contract; see [`11-node-model.md`](./11-node-model.md). The framework binds `node.agent_ref` against `AgentSpec.name`, so the `agents` dict is keyed by name (`key == AgentSpec.name == agent_ref`); the earlier random `agent_<id>` keying was a canvas bug, fixed + migrated 2026-05-17. The agent's model-config field is named `agent_model` rather than `model` because Pydantic v2 reserves the attribute name `model_config`; the stored JSON is the framework canonical shape (SP-005).
 
 ### `runs`
 
@@ -171,7 +172,7 @@ See [`07-security.md`](./07-security.md) for the storage policy.
 
 ## Trace event format (NDJSON)
 
-The framework's NDJSON streaming writer (Framework v0.3 Session 01) writes one JSON object per line, append-only, flushed per closed span. The wire format is the framework's contract — Spren reads it as-is. Schema-versioned, lowercase `kind`, float epoch-second timestamps, ULIDs for span/trace IDs.
+The framework's NDJSON streaming writer writes one JSON object per line, append-only, flushed per closed span. The wire format is the framework's contract — Spren reads it as-is. Schema-versioned, lowercase `kind`, float epoch-second timestamps, ULIDs for span/trace IDs.
 
 Example shape (one closed `generation` span):
 
@@ -185,7 +186,7 @@ Two non-span line types are emitted by the writer and must be filtered by reader
 - `kind == "stream_event"` — diagnostic (e.g. `{"event": "dropped_span", "dropped_span_count": N}`).
 - `kind == "stream_completed"` — terminal marker, exactly once on close. Missing marker on EOF means the writer crashed.
 
-The framework-side AG-UI translator (`marsys.transport.aggui`, Framework v0.3 Session 06) is a separate `EventBus` consumer that translates framework lifecycle events into AG-UI events. Spren v0.3 Session 04 wraps the framework's `AGUIEventStream(orchestra, run_id) -> AsyncIterator[AGUIEvent]` adapter in an SSE HTTP endpoint at `GET /v1/runs/{id}/events`; it does not consume `trace.ndjson` for live streaming. The trace file is for the run inspector + cold reads (reconnect replay).
+The framework-side AG-UI translator (`marsys.transport.aggui`) is a separate `EventBus` consumer that translates framework lifecycle events into AG-UI events. Spren wraps the framework's `AGUIEventStream(orchestra, run_id) -> AsyncIterator[AGUIEvent]` adapter in an SSE HTTP endpoint at `GET /v1/runs/{id}/events`; it does not consume `trace.ndjson` for live streaming. The trace file is for the run inspector + cold reads (reconnect replay).
 
 ## Migrations
 

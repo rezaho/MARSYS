@@ -47,7 +47,7 @@ def test_lint_returns_findings_shape(client, auth_headers, created_workflow) -> 
 def test_lint_finding_has_required_keys(client, auth_headers, sample_definition) -> None:
     # Replace the clean fixture with a workflow that references an unknown tool
     # so we get at least one finding back.
-    sample_definition["agents"]["agent_1"]["tools"] = ["this_tool_does_not_exist"]
+    sample_definition["agents"]["Researcher"]["tools"] = ["this_tool_does_not_exist"]
     create = client.post(
         "/v1/workflows",
         headers=auth_headers,
@@ -67,7 +67,7 @@ def test_lint_finding_has_required_keys(client, auth_headers, sample_definition)
 
 def test_lint_for_clean_workflow_returns_empty_findings(client, auth_headers, sample_definition) -> None:
     # Use a framework-registered tool so unknown_tool doesn't fire.
-    sample_definition["agents"]["agent_1"]["tools"] = ["web_search"]
+    sample_definition["agents"]["Researcher"]["tools"] = ["web_search"]
     create = client.post(
         "/v1/workflows",
         headers=auth_headers,

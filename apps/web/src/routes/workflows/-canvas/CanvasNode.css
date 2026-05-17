@@ -41,14 +41,6 @@
   background: linear-gradient(0deg, var(--rule-soft), var(--surface));
 }
 
-.canvas-node--system {
-  background: var(--rule-soft);
-}
-
-.canvas-node--tool .canvas-node-name {
-  font-family: var(--font-mono);
-}
-
 .canvas-node-marker {
   position: absolute;
   top: -2px;

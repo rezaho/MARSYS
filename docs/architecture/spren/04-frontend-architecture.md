@@ -14,19 +14,19 @@ This document covers the GUI stack (Tauri + Vite + React + TanStack Router) shar
 | Language | **TypeScript ^6** | Pinned in `apps/web/package.json`; re-verify before each release. |
 | Routing | **TanStack Router** | Best-in-class type inference; pairs with Pydantic-generated TS for end-to-end type safety (SP-005, SP-019). File-based route generation. |
 | Server-state cache | **TanStack Query** | Caching, mutations, SSE invalidation. |
-| Client state (global) | **Zustand** | Small, native `useSyncExternalStore`. Lands when the first surface needs persisted client state (Session 03+). |
-| Client state (canvas-hot) | **Jotai** | Fine-grained reactivity for high-frequency canvas updates (selection, drag). Lands with the visual builder (Session 03). |
-| Forms | **React Hook Form + Zod** | Schema validation on the client; backend Pydantic remains authoritative. Lands when the first non-trivial form ships (Session 03). |
-| Component primitives | **shadcn/ui + `radix-ui`** | Heavy theme customization away from generic-shadcn defaults. Lands with the design system (Session 03). |
+| Client state (global) | **Zustand** | Small, native `useSyncExternalStore`. |
+| Client state (canvas-hot) | **Jotai** | Fine-grained reactivity for high-frequency canvas updates (selection, drag). |
+| Forms | **React Hook Form + Zod** | Schema validation on the client; backend Pydantic remains authoritative. |
+| Component primitives | **shadcn/ui + `radix-ui`** | Heavy theme customization away from generic-shadcn defaults. |
 | Charts | **shadcn/ui charts** (Recharts under the hood) | Lighter than Tremor; revisit if insufficient. |
 | Canvas | **`@xyflow/react`** | The current React Flow package; legacy `reactflow` is not used. |
 | Motion | **`motion`** (single package, `motion/react`) | Successor to Framer Motion + Motion One. |
 | Command palette | **cmdk** | Linear / Vercel primitive. Primary navigation surface; `:` palette in the TUI mirrors it. |
 | Type | **`geist`** (Sans / Mono via subpaths) | Single package; works inside Vite via standard CSS imports. Mono is used heavily for agent names, tool IDs, span IDs. |
-| Styling | **Tailwind v4 + CSS variables** | Tokens defined as `@theme inline` over the design-token CSS variables; shadcn primitives consume the same variables. Lands in Session 03 alongside the design system. |
+| Styling | **Tailwind v4 + CSS variables** | Tokens defined as `@theme inline` over the design-token CSS variables; shadcn primitives consume the same variables. |
 | Static asset delivery | Vite bundle | Tauri embeds it as app resources; the FastAPI sidecar serves the same files from `_webui/` for browser-tab mode. |
 
-The Session 01 foundation ships TypeScript, React 19, Vite, TanStack Router, TanStack Query, the `geist` type package, and MSW (test-only). Tailwind, shadcn, Radix, cmdk, `@xyflow/react`, Zustand, Jotai, React Hook Form, Zod, and motion land alongside the surfaces that need them — primarily Session 03 (visual builder + design system). Pin exact major.minor in `package.json`; re-verify before each release.
+Baseline deps (TypeScript, React 19, Vite, TanStack Router, TanStack Query, the `geist` type package, and MSW for test-only network stubbing) underpin every surface. Tailwind, shadcn, Radix, cmdk, `@xyflow/react`, Zustand, Jotai, React Hook Form, Zod, and motion land alongside the design system. Pin exact major.minor in `package.json`; re-verify before each release.
 
 ## Distribution shape — single bundle, three surfaces
 
@@ -209,9 +209,7 @@ The locked v0.3 tokens live in `apps/web/src/styles/tokens.css`:
 }
 ```
 
-The `geist` npm package is **not** consumed (it peers `next>=13.2.0`); instead the design system imports `@fontsource/geist-sans` + `@fontsource/geist-mono` and Tailwind v4 maps them via an `@theme inline` block in `apps/web/src/styles/globals.css`. Empty states use the tag-markup typographic device (`<agent name="" model="" tools={...} />`) per the Research Console aesthetic.
-
-The Session 01 / 02 placeholder UIs used inline styles only — Tailwind v4, `@xyflow/react`, cmdk, Jotai, Zustand, React Hook Form, Zod, and motion all land in Session 03 alongside the design system.
+The `geist` npm package is **not** consumed (it peers `next>=13.2.0`); instead the design system imports `@fontsource/geist-sans` + `@fontsource/geist-mono` and Tailwind v4 maps them via an `@theme inline` block in `apps/web/src/styles/globals.css`. Empty states use the tag-markup typographic device (`<agent name="" model="" tools={...} />`).
 
 ## Tauri webview integration
 

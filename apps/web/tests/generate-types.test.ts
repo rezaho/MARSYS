@@ -122,11 +122,34 @@ describe("type generation", () => {
   });
 
   it("topology / node / edge / execution-config types exist", () => {
-    const node: NodeSpec = { name: "X", node_type: "agent" };
+    const node: NodeSpec = { name: "X", kind: "agent" };
     const edge: EdgeSpec = { source: "A", target: "B" };
     const topo: TopologySpec = { nodes: [node], edges: [edge] };
     const exec: ExecutionConfigSpec = {};
     const defn: WorkflowDefinition = { topology: topo, agents: {}, execution_config: exec };
     expect(defn.topology?.nodes?.[0]?.name).toBe("X");
+  });
+
+  it("NodeKind is exactly the post-ADR-008 union (AC-11a)", () => {
+    const source = readFileSync(GENERATED, "utf8");
+    // exact union — no `system`/`tool` member, no extra members
+    expect(source).toContain('NodeKind: "agent" | "start" | "end" | "user"');
+    expect(source).not.toContain('NodeKind: "agent" | "start" | "end" | "user" | "system"');
+    // NodeSpec carries `kind`, not the old `node_type`
+    const start = source.indexOf("NodeSpec: {");
+    const end = source.indexOf("};", start);
+    const body = source.slice(start, end);
+    expect(body).toContain("kind?: components");
+    expect(body).not.toContain("node_type");
+  });
+
+  it("TopologySpec carries the additive metadata field (AC-1d)", () => {
+    const source = readFileSync(GENERATED, "utf8");
+    const start = source.indexOf("TopologySpec: {");
+    const end = source.indexOf("};", start);
+    const body = source.slice(start, end);
+    expect(body).toContain("metadata?:");
+    const topo: TopologySpec = { nodes: [], edges: [], metadata: {} };
+    expect(topo.metadata).toEqual({});
   });
 });

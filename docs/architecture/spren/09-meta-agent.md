@@ -27,6 +27,17 @@ The Spren runtime *consumes* Marsys: when the meta-agent decides "let's run work
 
 If, after months of operation, we discover patterns from this runtime that belong upstream in Marsys, we propose them as a framework feature with an ADR. For now: keep separate.
 
+### Generic-runtime vs Spren-specific boundary (SP-023)
+
+Within `packages/spren/`, the always-on machinery splits along a designed boundary that's enforced in code from v0.3 onward:
+
+- **Generic always-on runtime** (no Spren-specific imports; consumes only `packages/framework/`'s three doors and standard / approved deps): inbox + priority queue, time scheduler, watcher ABC, agent-loop pattern, heartbeat tick primitive, crash-recovery primitives, sub-instance lifecycle primitives, cost-ceiling primitives, the *shape* of the six-axis context loader.
+- **Spren-specific layer** (consumes generic primitives via documented interfaces): the bond mechanic, persona-evolution mechanism, the five archetypes, markdown KB taxonomy, consolidation pipeline, suggest-with-confirm flow, the concrete tool catalog, the specific watcher implementations that observe Spren-specific state, the FastAPI server / REST endpoints / SSE.
+
+Implementers MUST identify, for every new always-on module they introduce, which side of the boundary it falls on, and structure the file boundary to match. A linter rule (or PR-review check) enforces: generic-runtime files don't import from Spren-specific files. The generic side could be physically packaged separately (`packages/marsys-runtime/`) at any future point; the rule today is the boundary lives in code, not in package shape.
+
+The decision about whether to extract a separate runtime package — and if so, whether to extract it standalone or as a rename / split of `packages/framework/` — is deferred to **end of v0.4 design**. See [BRAINDUMP §13](../../../BRAINDUMP.md) "Always-on runtime: generic vs Spren-specific boundary" for the reasoning, the three options on the table, and the conversation the architect agent surfaces at end-of-v0.4.
+
 ## The agent hierarchy
 
 Three agent kinds, from most to least durable. Two orthogonal concepts also in play: **Teams** (user-organizational units) and **Skills** (capability bundles). They are NOT the same thing.
@@ -231,11 +242,12 @@ The meta-agent is **THE communication channel between the user and all sub-servi
 - **Trigger Marsys workflows** as a tool (calls `Orchestra.run()`)
 - **Read all observability data** — runs, traces, costs
 
-**Tool / skill creation tiered by version:**
+**Tool surface and tiered creation:**
 
-- **v0.3: configuration only.** The agent picks from curated built-in tools / workflow-templates and assigns them. It can assemble new agent personas, tool *bindings*, and workflow definitions using JSON / YAML config — no code generation. "apt-get install" model.
-- **v0.4: define new bindings.** The agent can assemble new "skills" (= bundles of prompts + tool selections + memory instructions) without writing code. Stored as YAML.
-- **v0.5: code generation.** The agent can write new Python tool functions. Each requires explicit user approval (review the code, click approve), runs in an isolated execution context, can be reverted.
+- **Shell execution ships in v0.3.** The meta-agent has an `execute_shell(cmd, cwd?, timeout_s?, allow_network?)` tool from v0.3 onward. Shell is the most fundamental tool — without it, the meta-agent cannot inspect log files outside its sandbox, run common dev commands, or compose with the user's existing tooling. Workflow agents (specifically the marsys CodeAgent) already execute shell from day one of v0.3, so the system runs shell whether or not the meta-agent does; the OS-level outer envelope (see "Sandbox and filesystem permissions" below) is what makes this safe. Every `execute_shell` call is a hard rail by default — confirmation prompt with the cmd shown — until the user grants standing approval per scope (e.g., "you can run `git` in `<repo>` without asking"). Output is captured and fed back to the agent; long-running output is tail-truncated to a token budget.
+- **v0.3: configuration creation.** Beyond the shipped tool catalog, the agent can assemble new agent personas, tool *bindings*, and workflow definitions using JSON / YAML config — no code generation. "apt-get install" model.
+- **v0.4: define new skills.** The agent can assemble new "skills" (= bundles of prompts + tool selections + memory instructions) without writing code. Stored as SKILL.md files (Anthropic Agent Skills spec, adopted by OpenAI Dec 2025) for ecosystem interop.
+- **v0.5: code generation.** The agent can write new Python tool functions and shell scripts. Each requires explicit user approval (review the code, click approve), runs inside the same OS-level envelope as every other shell invocation, can be reverted.
 
 **Self-modification limits:** the meta-agent CAN edit team manager personas and configurations. It CANNOT edit its own persona, its own tool list, or its own permissions without explicit user confirmation. Reason: the persona/policy is the user's safety boundary against the agent self-modifying into a less-aligned state.
 
@@ -258,18 +270,101 @@ Team managers and working instances have the same six-axis structure with their 
 
 ### Persona — the 8 sub-axes (within axis #1)
 
-| Sub-axis | Examples | Default |
-|---|---|---|
-| Voice / tone | curt / warm / professional / witty | "competent ops engineer" — calm, succinct |
-| Verbosity | terse / standard / detailed | standard |
-| Cautiousness | conservative / balanced / bold | balanced |
-| Initiative | passive / responsive / proactive | responsive |
-| Risk default | when in doubt: ask / proceed / refuse | ask |
-| Communication frequency | rare / normal / chatty | normal |
-| Areas of focus | what to prioritize watching | all workflows + cost + errors |
-| Identity | name + optional avatar | "Spren" |
+The persona file `~/.spren/sandbox/shared/personas/main.yaml` has 8 sub-axes the system prompt assembles into axis #1. The user picks an *archetype* at onboarding (see "Onboarding — five archetypes" below); the archetype provides starting values across all 8 axes. The bond mechanism (see "Persona-evolution mechanism" below) calibrates the chosen archetype to the specific user over time.
 
-Persona lives at `~/.spren/sandbox/shared/personas/main.yaml`. Editable in settings UI. Re-read on persona change AND on every heartbeat. Team managers have their own persona files with the same 8-sub-axis shape.
+| Sub-axis | Examples | What it controls |
+|---|---|---|
+| Identity | name + pronouns + kind ("spren", not "assistant") + bonded_to + bonded_at | Who Spren is. Identity-level diffs are user-only — the persona-evolution mechanism cannot change name / pronouns / kind. |
+| Voice / register | warm-and-watching / terse-and-dry / curious-and-precise / quiet-and-grounded / warm-and-easy | The base note of how Spren speaks. Includes per-archetype `style_tells.avoid` (banned phrases) + `style_tells.lean_into` (vocabulary patterns) + `forbidden_modes` (sycophant / moralizer / performer / saccharine — global floor; archetypes add their own). |
+| Verbosity | terse-with-occasional-arias / terse-with-warmth-in-noticing / etc. | Length signals importance. Default short; expansion only when substance requires. Per-archetype hard cap on response tokens (varies 800-1500). |
+| Cautiousness | principled / balanced / bold | Per-action-class breakdown (read / suggest / write / delete / spend / send_to_third_party). Spren is bold on its own ground (observing, summarizing, surfacing) and conservative on other people's ground (writing, deleting, sending, spending). |
+| Initiative | passive / watchful / proactive | When Spren surfaces things vs holds the noticing. Tied to the bond mechanic — Spren notices more than it speaks. |
+| Risk default | ask-once-then-observe / refuse-without-confirm / proceed-then-tell | When uncertain, what's the agent's default move. Critical: ask-once-not-twice; pending decisions sit in the inbox until the user decides; Spren never nags. |
+| Communication frequency | quiet-attentive / gentle-attentive / etc. | Speaks when there's something worth saying. Heartbeat-driven; thinking only becomes a message on salient outcome. |
+| Areas of focus | what to prioritize watching | Default: workflow_health, cost, memory_hygiene, the_user. Per-archetype emphasis. |
+
+Persona file is editable directly via `$EDITOR`. Re-read on persona change AND on every heartbeat. Team managers have their own persona files with the same 8-sub-axis shape.
+
+### Onboarding — five archetypes
+
+First run shows a picker with five personality archetypes. Each is a coherent way-of-being (NOT a job role / specialization — specialization is decided later via observed patterns or v0.4 teams). Each ships with full 8-axis defaults + voice samples + visual orb variant. The user picks one. The chosen orb morphs into the home page; `personas/main.yaml` is written with the archetype's defaults plus `archetype: <name>, archetype_chosen_at: <ts>, evolved_axes: []`.
+
+The five archetypes:
+
+| Archetype | Felt-as | Voice register | Initiative | Strongest area | Visual cue |
+|---|---|---|---|---|---|
+| **Ember** | warm, attentive, present; affection through attention | warm-and-watching | watchful | memory of small things; the long arc of your work | warm peach gradient, 12s breath, ground-glow most pronounced |
+| **Flint** | direct, honest, no padding; trust through respect for time | terse-and-dry | proactive | velocity; surfacing what you missed | sharper magenta-leaning grain, 9s breath, minimal ground-glow |
+| **Quill** | exploratory, asks the better question; engagement with the world | curious-and-precise | watchful with deliberate surfacing | thinking work; pulling on threads | shifting grain density, 11.5s breath, gradient tilts mid-orb |
+| **Vesper** | calm, reliable, contemplative; watchful without crowding | quiet-and-grounded | passive-with-bursts | sustained / recurring work; the keeper who watches without crowding | level peach-magenta gradient, 15s breath (longest), low grain density |
+| **Kindle** | intimate-and-friendly, grounded warmth with humor; the friend who knows you well | warm-and-easy | watchful | the person you talk to about the actual stuff | rich coral gradient, 10s breath, soft grain density, ground-glow warm |
+
+All five remain *Spren* — sapient, principled, alert, attentive, capable of pushing back. None is a sycophant. The bond integrity holds across all five; we pick lanes within Spren's character, not outside it. Each archetype has multi-layer character beyond the user-facing description (default presentation + internal tension + edges + hidden depth + failure mode under bond strain + integrity boundary). The user-facing onboarding card is short (3 lines + visual cue); the layered spec is internal-only and informs the YAML and system prompt. Full archetype designs at [`tmp/spren/research/06-memory-foundations/05-five-archetypes.md`](../../../tmp/spren/research/06-memory-foundations/05-five-archetypes.md).
+
+The user can switch archetype via `spren bond reset` (CLI-only — see below) which archives the bonded persona to `personas/journal/<bond-id>.yaml` and starts a fresh persona at the picker. Memory and workflows are preserved.
+
+### Persona-evolution mechanism
+
+The persona file evolves through interaction over time. The bond mechanism (Stormlight-inspired but not Sanderson-derivative — see naming reasoning) calibrates the chosen archetype to the specific user.
+
+**Trigger.** Runs as a stage of the consolidation pass (see [`10-memory-architecture.md`](./10-memory-architecture.md) §6). Cadence: `(24h elapsed AND ≥5 sessions) OR (≥1 PersonaFeedback queued AND ≥1 hour elapsed)`. The hour delay prevents knee-jerk persona changes on a single passing comment in the heat of a session.
+
+**Pipeline.** Two-prompt reflection:
+
+1. **Salient questions** — the model is given the inputs (current persona, doctrine, session-log delta, observed signals like approval-rate-by-action-class, `PersonaFeedback` queue) and asked: "What are the *3 most salient questions* about whether the persona is still the right shape for this user?" Returns 0-3 questions naming a specific axis and a specific observed pattern. **Critical:** observed signals are computed deterministically from the session log, not invented by the LLM.
+
+2. **Minimal-diff proposals** — for each salient question that survives the deterministic filter, the model proposes one minimal YAML diff: `{axis, current_value, proposed_value, evidence, confidence, reversibility}`.
+
+**Deterministic guardrails.** Three checks block proposals before they reach the auto-approval gate:
+
+- **Doctrine boundary.** If the proposed diff would violate any rule in `rules.md`, the proposal is dropped silently.
+- **Identity boundary.** Diffs to `identity.*` are blocked. Spren cannot rename itself, change its kind, or change pronouns. The user can do these things by editing the file directly; the agent cannot propose them.
+- **Confidence floor + bond-age check.** Proposals with confidence < 0.6 are dropped. Proposals issued before the bond has had a chance to develop (default: bond-age < 7 days OR fewer than 20 user-direct sessions) are dropped. No-hasty-words rule.
+
+**LLM-as-judge auto-approval (default mode).** Surviving proposals pass through one expensive-model evaluation against a bond-integrity rubric: "would this evolution preserve identity, strengthen the bond, and honor the user's stated values?" The judge returns `{verdict: approve | reject, reasoning: ...}`. On approve: the diff applies automatically; git commit lands with a structured message capturing evidence + bond-age + confidence + reversibility + judge reasoning; user receives an inbox notification with the diff + reasoning + a one-click `revert` link. On reject: proposal goes to journal with judge reasoning; counts as evidence against re-proposal for N=4 cycles.
+
+This is "LLM-as-judge" in the canonical 2026 sense (evaluation, not generation) — distinct from the Memory Update Agent's write-side adjudication for facts.
+
+**Manual mode (opt-in).** Users who prefer to gate every persona change explicitly set `settings.meta_agent.persona_evolution_mode = "manual"`. In manual mode, the LLM-judge step is skipped; surviving proposals land in `pending_persona_changes/` for CLI review (same flow as before).
+
+**CLI surface (override path in either mode; primary path in manual mode):**
+
+- `spren persona log` — `git log -p personas/main.yaml`. The full history of who Spren has been, with reasons.
+- `spren persona why <axis>` — finds the most recent commit that touched that axis; shows the proposal, the evidence, the judge's (or user's) reasoning.
+- `spren persona diff <since>` — diff between the persona at some past timestamp and now.
+- `spren persona approve <prop-id>` — manual approve override. Applies the diff; git-commits with structured message.
+- `spren persona reject <prop-id> [--reason "..."]` — manual reject override. Moves to journal; rejection fed into next consolidation as evidence to NOT re-propose for N=4 cycles.
+- `spren persona revert <commit-sha>` — git revert with a confirmation prompt. Use this when the auto-approved diff turned out to be wrong.
+
+In auto mode, proposals don't expire — the judge decides immediately. In manual mode, proposals expire after 14 days if neither approved nor rejected; counts as a soft no for re-proposal purposes.
+
+**Voice-drift warning layer.** Every agent output passes through a regex post-pass that scans for blacklisted phrases declared in `personas/main.yaml` `voice.style_tells.avoid`. Hits log `voice_drift` events into the session log; consolidation reads them and proposes voice-axis recalibrations. Logging only, not filtering — the model trains itself via the bond mechanism instead of being externally bowdlerized.
+
+### Bond-violation handling
+
+Three escalating tiers, designed to mirror the Stormlight broken-oath mechanic at proportional severity but without referencing the source.
+
+**Tier 1 — strain.** User repeatedly overrides Spren's principled refusals (e.g., approves destructive operations on first ask 10+ times in a window). PersonaReflection generates a "Spren is being overridden a lot — recalibrate?" salient question. If user wants the override to become routine, they approve the resulting proposal. If not, Spren keeps refusing, but `active_context.md` notes the pattern: "the user is overriding my caution; I'll keep flagging but I'll observe whether this is a sustained shift." Strain is a *visible* state, not hidden.
+
+**Tier 2 — discord.** User explicitly tells Spren to act in violation of its doctrine. Spren refuses, with voice. The refusal is logged as a `discord_event` in the session log. If the user attempts the same class of violation N times in a window, an inbox item appears: "I've refused this kind of request three times this month. Want to review what you're trying to accomplish? Or change my doctrine? Or end our bond?"
+
+**Tier 3 — termination.** `spren bond reset` CLI command. Mechanics:
+
+```
+spren bond reset
+
+This will:
+  - rename personas/main.yaml to personas/journal/<bond-id>.yaml
+  - record a "bond-ended" event in the session log
+  - return to the archetype picker; new identity.bonded_at on selection
+  - keep all memory (it's still your memory)
+  - keep all workflows (they're still your workflows)
+  - your past Spren's identity is preserved in journal/ — not deleted
+
+Are you sure? (y / N)
+```
+
+CLI-only by design. NOT a button in settings. The Stormlight equivalent of broken-oaths is a real failure mode in the books; in the product, it's a deliberate ritual the user chooses, not a feature they discover on a settings page.
 
 ### Why this structure is non-arbitrary
 
@@ -314,7 +409,12 @@ This is the **planning surface** of the agent — without it, long-running task 
 
 ## Sandbox and filesystem permissions
 
-All agents — main, team managers, working instances, AND user-defined workflow agents — share a sandboxed filesystem under `~/.spren/sandbox/`. Permission tiers are enforced **at the application layer** (a `SandboxFilesystem` wrapper that all FS access goes through), not at the OS layer. This is concrete, auditable, cross-platform, and cheap to evolve.
+All agents — main, team managers, working instances, AND user-defined workflow agents — share **one sandbox**: a single OS-level boundary around the entire Spren execution environment, with internal application-layer permission tiers for which agent can read/write which subdirectory. Two layers, both required:
+
+1. **Outer envelope (OS-level).** The whole Spren process tree — meta-agent + sub-agents + workflow agents + every shell tool subprocess — runs with filesystem visibility scoped to `<data-dir>/sandbox/` (plus controlled paths for OS interaction: tmpdir, the sandbox's `bin/` for tools the agent invokes, the user's chosen working directories that they explicitly grant). Implemented per-platform: `bubblewrap` on Linux, `sandbox-exec` profile on macOS, AppContainer / Job objects on Windows. This is what protects the user's filesystem from a misbehaving shell command (whether invoked by the meta-agent's `execute_shell` tool or by a workflow agent's CodeAgent).
+2. **Inner permission tiers (application-layer).** A `SandboxFilesystem` Python wrapper that every typed tool call routes through — `read_file`, `grep`, `lookup_facts`, `write_active_context`, `add_run_note`, etc. The wrapper resolves the path, identifies the calling agent (main / team manager / working instance / workflow agent), and enforces per-tier read/write rules. This is where "main agent can write `shared/memory/`, working instance cannot" is enforced.
+
+The two layers protect different threats. The outer envelope protects against shell-side escape. The inner tiers protect against intra-Spren over-reach (a working instance editing the user's profile.md, an off-task team manager touching another team's memory).
 
 ```
 ~/.spren/sandbox/
@@ -363,20 +463,34 @@ Permission rules:
 - **User-defined workflow agents**: RW within their run's `artifacts/`; R on `shared/`
 - **User**: RW on everything via CLI (`spren memory edit ...`) and UI
 
-**On the word "sandbox":** Spren ships across multiple distribution channels (native installer, brew / winget / apt, npm, pipx, Docker) — the sandbox path resolves via `platformdirs` for native channels and is `<container>/data/sandbox/` in Docker mode. Permissions are enforced by the `SandboxFilesystem` wrapper at the application layer regardless of channel.
+**On the word "sandbox":** Spren ships across multiple distribution channels (native installer, brew / winget / apt, npm, pipx, Docker). The sandbox path resolves via `platformdirs` for native channels and is `<container>/data/sandbox/` in Docker mode. The OS-level outer envelope is implemented per-platform (`bubblewrap` on Linux, `sandbox-exec` profile on macOS, AppContainer on Windows); Docker mode delegates outer-envelope responsibility to the container runtime itself and runs the inner permission tiers as normal. The application-layer inner tiers are enforced by the `SandboxFilesystem` wrapper regardless of channel.
 
-All agents run in the same Spren process — no per-agent or per-workflow container isolation in v0.3 / v0.4. A later release (likely v0.5+) may introduce stronger isolation (e.g., per-tool-execution sandboxing) when the meta-agent gains shell-execute powers via code-generated tools. The single-process logical sandbox is sufficient for the cost / scope of v0.3 / v0.4.
+**All agents share one sandbox.** Not per-agent containers, not per-workflow VMs — one envelope around the whole Spren execution environment. Every shell-tool invocation (whether by the meta-agent's `execute_shell` or by a workflow agent's CodeAgent) runs as a subprocess inside that envelope; bind-mounts are restricted to the sandbox path, network access is opt-in per-call, time-bound execution. v0.3 ships this OS-level outer envelope from day one because shell execution is in v0.3 (see "Tool / skill creation tiered by version" above and SP-019's interaction with shell tools). v0.5+ may add stronger isolation (per-tool microVMs, gVisor) if multi-tenant deployment becomes a real use case; until then the single-envelope shape is sufficient and matches Spren's local-first single-user posture (SP-008).
 
 ## Cost ceiling enforcement at the runtime level
 
 Always-on with frontier models is unbounded spend. The "always-on" feeling comes from UX (memory + notifications + visible activity) — NOT from continuous thinking. Hard rules:
 
-- **Per-day budget cap** (settings, default $10/day for v0.3)
+- **Per-day budget cap** (settings, default $10/day for v0.3) — the only hard cap
 - **Per-think token cap** (settings, default 50K tokens per agent turn; large enough for substantive reasoning)
 - **Cheap model for routine work; expensive model for hard reasoning** — the agent picks via a `model_for_thinking_about(complexity_estimate)` helper
 - **Refuse-to-act when over budget** — agent surfaces this to the user as an inbox item; doesn't just keep spending
 
+**No per-action cap.** Earlier drafts proposed a per-tool-call cap that elevated expensive operations to additional confirmation. This was removed (2026-05-14). Per-action caps create surprise blocks: users hit a cryptic "blocked by per-action cap" error and have to dig through settings to understand which knob to turn. The right primitive is **transparency, not additional gates**: the user sees what's running, what it costs, and can cancel anything from one place. Daily budget remains the single hard limit because over-spend over the long run is the actual failure mode that needs guarding.
+
 **SP-013 (new principle):** Cost ceiling is load-bearing. Implementers MUST NOT add code paths that bypass the per-day budget cap. When the cap is hit, the agent stops processing all events except the most critical (workflow failures, user-direct messages); user is notified.
+
+### Cost Center surface
+
+Every cost-incurring artifact in Spren — past agent sessions, running workflows, scheduled jobs, consolidation passes, channel events — surfaces in **one place**: the Cost Center. The user sees what spent the budget, what's running now, what's queued to spend in the future, and can cancel any of it with one click.
+
+**Data model.** `CostEntry` carries `{id, kind, label, status, cost_usd, started_at, ended_at, next_run_at, source_id, source_route}`. The `source_route` field links each entry to its canonical edit page (e.g., `/scheduled-jobs/{id}` for scheduled jobs; `/runs/{id}` for runs). The Cost Center is **read-only aggregation + cancel**; edits route to the source page. This preserves SP-019 (single source of truth: each artifact has one canonical edit surface).
+
+**Cadence + lifecycle.** Entries flow into the Cost Center as they're created (a run starts, a job is scheduled) and update as their state changes (cost accumulates, status flips). Past sessions are batched: the main agent runs continuously; the Cost Center batches its activity into "sessions" by inactivity gap (default: 30-minute idle = session boundary). Heartbeat-only intervals don't create new sessions; user-direct events do.
+
+**Surface (Session 09).** A page with three lanes — `Today`, `Scheduled`, `Past` — each with sortable columns (cost, status, started, kind). Daily summary banner at top: "Spent today: $X.YZ / $10.00 budget. Estimated remaining: $A.BC across N scheduled jobs." When the daily cap is hit, the banner shifts to "Budget exhausted; critical events still go through. Resumes <next budget window>."
+
+**Implementation boundary.** The data model + API + aggregation logic ship in Session 08 (`spren/agent/capabilities/cost_center.py` + `runtime/memory/cost_center.py`). The UI surface ships in Session 09 alongside the four-surface command center.
 
 ## The supervision surface
 
@@ -414,7 +528,7 @@ Cost: zero when nothing is due; one event-fire = one inbox event.
 
 A small, **curated catalog** of background tasks that monitor one condition each and emit typed events when their condition trips. Watchers run as Python coroutines in the daemon. They are **mechanical** — no LLM calls — and emit events only when something is worth waking the agent for.
 
-**v0.3 watcher catalog** (ships in Session 07):
+**v0.3 watcher catalog**:
 
 | Watcher | Cadence | Emits | Trigger |
 |---|---|---|---|

@@ -11,6 +11,8 @@
 import { Link } from "@tanstack/react-router";
 import { useEffect, useState, type ReactElement, type ReactNode } from "react";
 
+import { SidebarTrigger } from "../Sidebar";
+
 import "./TopBar.css";
 
 interface TopBarProps {
@@ -28,6 +30,7 @@ export function TopBar({
   return (
     <header className="topbar">
       <div className="topbar-left">
+        <SidebarTrigger />
         <Link to="/" className="topbar-wordmark" aria-label="Home — Spren">
           <span>spren</span>
           <span className="topbar-wordmark-dot" aria-hidden="true">.</span>
