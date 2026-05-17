@@ -96,15 +96,11 @@ export function Palette({
     <div className="canvas-palette" data-testid="canvas-palette">
       <span className="canvas-palette-label">Palette</span>
 
-      <details className="canvas-palette-group" open data-testid="canvas-palette-agents">
-        <summary>Agents</summary>
-        <div className="canvas-palette-group-items">
-          {activeChip(ACTIVE_AGENT.kind, ACTIVE_AGENT.label)}
-          {SPECIALIZED_AGENTS.map((s) =>
-            inactiveChip(s, "Specialized agent presets — coming in a later session", s),
-          )}
-        </div>
-      </details>
+      <span className="canvas-palette-cat">Agents</span>
+      {activeChip(ACTIVE_AGENT.kind, ACTIVE_AGENT.label)}
+      {SPECIALIZED_AGENTS.map((s) =>
+        inactiveChip(s, "Specialized agent presets — coming in a later session", s),
+      )}
 
       <span className="canvas-palette-cat">Core</span>
       {inactiveChip("Start", "Every canvas already has its single Start node", "start")}
