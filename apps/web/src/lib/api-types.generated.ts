@@ -1850,7 +1850,11 @@ export interface operations {
             };
             cookie?: never;
         };
-        requestBody?: never;
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["WorkflowDefinition"];
+            };
+        };
         responses: {
             /** @description Successful Response */
             200: {
@@ -1859,15 +1863,6 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["LintResponse"];
-                };
-            };
-            /** @description Not Found */
-            404: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["ErrorEnvelope"];
                 };
             };
             /** @description Validation Error */

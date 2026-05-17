@@ -36,7 +36,7 @@ import {
 import { orbStateAtom } from "../../stores/run";
 import {
   getWorkflow,
-  lintWorkflowById,
+  lintWorkflow,
   replaceWorkflow,
   type AgentSpec,
   type NodeKind,
@@ -165,7 +165,13 @@ function CanvasInner(): ReactElement {
     lintTimerRef.current = window.setTimeout(async () => {
       setLintStatus("loading");
       try {
-        const result = await lintWorkflowById(token, workflowId);
+        // Lint the LIVE canvas (serialized like Save does), not the
+        // stored definition — fixes WF-BUG-LINT-REACTIVITY: a fix made
+        // on the canvas now clears its finding immediately, no save or
+        // page reload needed. Effect deps already include nodes/edges/
+        // agents, so every edit re-lints what's on screen.
+        const definition = reactFlowToWorkflow(nodes, edges, agents);
+        const result = await lintWorkflow(token, workflowId, definition);
         setLintFindings(result.findings);
         const hasErrors = result.findings.some((f) => f.severity === "error");
         const hasWarnings = result.findings.some((f) => f.severity === "warning");

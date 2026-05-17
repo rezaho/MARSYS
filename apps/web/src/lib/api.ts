@@ -192,10 +192,18 @@ export async function listTools(token: string): Promise<ToolListResponse> {
   return res.json() as Promise<ToolListResponse>;
 }
 
-export async function lintWorkflowById(token: string, id: string): Promise<LintResponse> {
+export async function lintWorkflow(
+  token: string,
+  id: string,
+  definition: WorkflowDefinition,
+): Promise<LintResponse> {
+  // Lints the LIVE canvas definition, not the stored one (WF-BUG-LINT-
+  // REACTIVITY): the linter must reflect what you're editing, not the
+  // last save. `id` is the route identity only.
   const res = await fetch(`${resolveBaseUrl()}/v1/workflows/${id}/lint`, {
     method: "POST",
-    headers: authHeader(token),
+    headers: { ...authHeader(token), "Content-Type": "application/json" },
+    body: JSON.stringify(definition),
   });
   if (!res.ok) throw new Error(`lint workflow failed: ${res.status} ${res.statusText}`);
   return res.json() as Promise<LintResponse>;

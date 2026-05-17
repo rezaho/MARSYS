@@ -64,8 +64,14 @@ class SprenClient:
     def delete_workflow(self, workflow_id: str) -> httpx.Response:
         return self._http.delete(f"/v1/workflows/{workflow_id}")
 
-    def lint_workflow(self, workflow_id: str) -> httpx.Response:
-        return self._http.post(f"/v1/workflows/{workflow_id}/lint")
+    def lint_workflow(
+        self, workflow_id: str, definition: dict[str, Any]
+    ) -> httpx.Response:
+        # Lint is body-driven (WF-BUG-LINT-REACTIVITY): the endpoint lints
+        # the submitted definition, not the stored one.
+        return self._http.post(
+            f"/v1/workflows/{workflow_id}/lint", json=definition
+        )
 
     def list_tools(self) -> httpx.Response:
         return self._http.get("/v1/tools")

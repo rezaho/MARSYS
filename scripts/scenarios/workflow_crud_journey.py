@@ -277,7 +277,7 @@ def run() -> int:
                     )
 
             # --- step 8: lint ----------------------------------------------
-            r = c.lint_workflow(workflow_id)
+            r = c.lint_workflow(workflow_id, payload["definition"])
             if r.status_code != 200:
                 findings.critical(
                     surface="POST /v1/workflows/{id}/lint",

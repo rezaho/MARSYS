@@ -204,7 +204,6 @@ def create_app(
     app.include_router(
         make_lint_router(
             require_auth,
-            db_factory=lambda: db.connection,
             known_tools_provider=lambda: tool_names,
         ),
     )
