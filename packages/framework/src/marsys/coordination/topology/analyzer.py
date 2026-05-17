@@ -164,32 +164,56 @@ class TopologyAnalyzer:
     def _add_nodes(self, graph: TopologyGraph, topology_def: Union[Topology, Dict[str, Any]]) -> None:
         """Add nodes from topology definition to graph.
 
-        Distinguishes regular Node entries (legacy path) from
-        DeterministicNode instances (unified-barrier orchestrator path).
-        Det-nodes are added as plain graph nodes AND registered on
-        graph.det_nodes via register_det_node so the new orchestrator's
-        topology-protocol queries (get_det_node, is_det_node,
-        get_start_node) resolve correctly.
+        This is the materialization seam (ADR-008 Decision 3, Option A):
+        ``Topology.nodes`` is homogeneous ``Node``. A node whose ``kind`` is
+        a deterministic kind (``START``/``END``/``USER``) has its behaviour
+        instance built HERE — from ``node.kind`` via the single-sourced
+        ``NODE_KIND_BEHAVIOUR`` registry — and registered on graph.det_nodes
+        via ``register_det_node`` so the orchestrator's topology-protocol
+        queries (get_det_node, is_det_node, get_start_node) resolve. A
+        deserialized ``core.Node(kind=START)`` therefore becomes a registered
+        det-node here too (closes ADR-008 P4b).
         """
         # Import here to avoid circular imports
         from .converters.parsing import parse_node
-        from ..execution.det_nodes import DeterministicNode
+        from .core import NodeKind
+        from ..execution.det_nodes import NODE_KIND_BEHAVIOUR
 
         # Handle both Topology objects and dicts
         nodes = topology_def.nodes if hasattr(topology_def, 'nodes') else topology_def.get('nodes', [])
 
         for node_item in nodes:
-            # Use shared parsing to handle any node format
+            # Use shared parsing to handle any node format. parse_node always
+            # returns a uniform Node (never a DeterministicNode) — Option A.
             node = parse_node(node_item)
 
-            if isinstance(node, DeterministicNode):
-                # Add a plain graph node for adjacency tracking, then register
-                # the det-node so the orchestrator can look it up.
+            # USER is the single documented legacy carve-out (REMOVE-IN-V0.4):
+            # a USER node stays a regular NodeInfo(kind=USER) so the
+            # backward-compat shim's legacy-User translation (User→Start
+            # entry synthesis; agent→User ⇒ agent→End delivery synthesis;
+            # UserNode det-node registration) fires identically to the
+            # pre-Session-08 legacy User(Node) path. The shim (total, always
+            # run post-analyze in Orchestra.run) registers the UserNode
+            # det-node so post-analyze det-node queries still resolve for it.
+            # When the shim is deleted at v0.4, USER joins the generic
+            # materialization branch below (the carve-out is the only thing
+            # to remove — no dispatch restructure).
+            if node.kind is not NodeKind.AGENT and node.kind is not NodeKind.USER:
+                # Any deterministic kind in the single-sourced registry:
+                # materialize its behaviour instance from kind, add a plain
+                # graph node for adjacency tracking, then register the
+                # det-node so the orchestrator's topology-protocol queries
+                # resolve. Extension-open — a new NodeKind needs only an enum
+                # value + a behaviour class + a NODE_KIND_BEHAVIOUR entry; no
+                # edit here. Replaces the prior parse-time det-instance
+                # creation (Option A): a deserialized core.Node(kind=START)
+                # registers as a det-node here (closes ADR-008 P4b).
+                behaviour_cls = NODE_KIND_BEHAVIOUR[node.kind]
                 graph.add_node(node.name)
-                graph.register_det_node(node)
+                graph.register_det_node(behaviour_cls(node.name))
                 continue
 
-            graph.add_node(node.name, agent=node.agent_ref, node_type=node.node_type)
+            graph.add_node(node.name, agent=node.agent_ref, kind=node.kind)
 
             # Transfer convergence point flag (both True and False)
             if hasattr(node, 'is_convergence_point'):

@@ -125,7 +125,7 @@ class ObjectNotationConverter:
             agent_registry: Registry to check against
         """
         for node in topology.nodes:
-            if node.node_type.value == "agent" and node.agent_ref:
+            if node.kind.value == "agent" and node.agent_ref:
                 # Check if agent is registered
                 agent_name = node.name
                 if not agent_registry.get(agent_name):
