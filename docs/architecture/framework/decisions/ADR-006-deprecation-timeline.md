@@ -2,16 +2,17 @@
 
 **Status**: Accepted
 **Date**: 2026-05-02
+**Amended**: 2026-05-17 — affected by [ADR-008](ADR-008-unified-node-kind-model.md) (Session 08). The canonical destination model is now a uniform `Node(kind=NodeKind.START/END/USER)`; det-node *instances* (`StartNode()`/`EndNode()`/`UserNode()`) are no longer valid `Topology.nodes` members (raises `TypeError`). `node_type`→`kind`, `NodeType`→`NodeKind`. The `_apply_legacy_topology_shim` itself (and its v0.4 removal target) is unchanged by ADR-008; only the shape of the "canonical" target it migrates *to* changed. Examples below are updated accordingly.
 
 ## Context
 
-Phase 3 cutover (commit `bc19b98`) replaced `BranchSpawner` and `BranchExecutor` with `Orchestrator` + `RealRuntime`. Phase 3.5 (commits `2689a39` … `402b223`) then added topology-gated coordination tools, det-node singletons (`StartNode`/`EndNode`/`UserNode`), the `AgentInput` abstraction at the orchestrator-agent boundary, retry-tiered steering, a content-only hard limit, and a legacy migration shim.
+Phase 3 cutover (commit `bc19b98`) replaced `BranchSpawner` and `BranchExecutor` with `Orchestrator` + `RealRuntime`. Phase 3.5 (commits `2689a39` … `402b223`) then added topology-gated coordination tools, deterministic node kinds (`StartNode`/`EndNode`/`UserNode` behaviour), the `AgentInput` abstraction at the orchestrator-agent boundary, retry-tiered steering, a content-only hard limit, and a legacy migration shim.
 
 These changes renamed several v0.2.x APIs and removed others. Some legacy symbols are kept as deprecated aliases for one release so existing user code continues to work; the rest emit `DeprecationWarning` via runtime auto-translation. This ADR codifies the deprecation timeline and provides the canonical migration table that documentation banners across the project link to.
 
 ## Decision
 
-Maintain a single migration table (below) as the source of truth for v0.2.x → v0.3.0 renames. Every deprecated API emits `DeprecationWarning` at runtime; the auto-translation shim in `Orchestra._apply_legacy_topology_shim` (`src/marsys/coordination/orchestra.py:296`) handles topology-level legacy forms idempotently. **Removal target: MARSYS v0.4.**
+Maintain a single migration table (below) as the source of truth for v0.2.x → v0.3.0 renames. Every deprecated API emits `DeprecationWarning` at runtime; the auto-translation shim `Orchestra._apply_legacy_topology_shim` handles topology-level legacy forms idempotently. **Removal target: MARSYS v0.4.**
 
 Documentation banners on every page that mentions a legacy term link back to the migration table fragment in this ADR. When the parallel code track removes an alias, the corresponding row's status updates to "removed in v0.3.0" and banner text adjusts.
 
@@ -24,8 +25,8 @@ Documentation banners on every page that mentions a legacy term link back to the
 | `return_final_response` (tool name) | `terminate_workflow` | Alias kept for one release (still in `COORDINATION_TOOL_NAMES` line 30) | v0.4 |
 | `can_return_final_response` (`CoordinationContext` field) | `can_terminate_workflow` | **Removed in v0.3.0** (commit `82ff393`, step-7 cleanup); shim was @property aliasing `can_terminate_workflow` | already gone |
 | `entry_point` / `exit_points` (topology metadata) | explicit `Start → A` / `X → End` det-node edges | Auto-shim emits `DeprecationWarning` | v0.4 |
-| `User(Node)` (regular user node) | `UserNode` (det-node singleton) | Auto-translated by shim | v0.4 |
-| `has_user_access(agent)` | `has_edge_to_endnode(agent)` / `has_edge_to_usernode(agent)` | Still exists at `graph.py:804`; kept while validators transition | v0.4 |
+| legacy `Node(kind=USER)` (was the removed `User(Node)` class) | `UserNode` behaviour (materialized from `kind=USER`) | Auto-translated by shim | v0.4 |
+| `has_user_access(agent)` | `has_edge_to_endnode(agent)` / `has_edge_to_usernode(agent)` | Still exists in `graph.py`; kept while validators transition | v0.4 |
 | JSON `{"next_action": "...", "action_input": "..."}` response format | native tool calls (`invoke_agent` / `terminate_workflow` / `ask_user` / `end_conversation`) | Removed (no shim) | already gone |
 | `final_response` action (string) | `terminate_workflow` tool | `ActionType.FINAL_RESPONSE` retained as enum alias (`response_validator.py:32`) | v0.4 |
 | `parallel_invoke` action (single string) | repeated `invoke_agent` tool calls in same model turn (concurrent dispatch by Orchestrator) | Removed | already gone |
@@ -37,7 +38,7 @@ Documentation banners on every page that mentions a legacy term link back to the
 ### `entry_point` / `exit_points` topology metadata
 
 - **Trigger**: any `Topology.metadata['entry_point']` or `['exit_points']` non-empty at `Orchestra.run`.
-- **Shim**: `src/marsys/coordination/orchestra.py:296` (`_apply_legacy_topology_shim`). Synthesizes `StartNode` + edge `Start → A` for `entry_point=A`; synthesizes `EndNode` + edges `X → End`, `Y → End` for `exit_points=[X, Y]`. Idempotent.
+- **Shim**: `Orchestra._apply_legacy_topology_shim`. Synthesizes a `Start` det-node + edge `Start → A` for `entry_point=A`; synthesizes an `End` det-node + edges `X → End`, `Y → End` for `exit_points=[X, Y]`. Idempotent.
 - **Migration**: replace metadata with explicit det-node edges:
 
 ```python
@@ -54,7 +55,7 @@ from marsys.coordination.execution.det_nodes import StartNode, EndNode
 from marsys.coordination.topology import Topology, Node, Edge
 
 topology = Topology(
-    nodes=[StartNode(), Node("Coordinator"), Node("Researcher"), EndNode()],
+    nodes=[Node("Start", kind="start"), Node("Coordinator"), Node("Researcher"), Node("End", kind="end")],
     edges=[
         Edge("Start", "Coordinator"),
         Edge("Coordinator", "Researcher"),
@@ -70,17 +71,15 @@ topology = Topology(
 - **Alias**: `src/marsys/coordination/formats/coordination_tools.py:COORDINATION_TOOL_NAMES` (line 25, alias entry at line 30) keeps the name; `_validate_return_final_response` routes to `_validate_terminate_workflow` and emits `ActionType.FINAL_RESPONSE` for back-compat.
 - **Migration**: rename the agent's instruction wording from `final_response` / `return_final_response` to `terminate_workflow`. No topology change required.
 
-### `User(Node)` regular user node
+### legacy user node (the removed `User(Node)` class)
 
-- **Trigger**: topology contains a node with `node_type == NodeType.USER` and no `UserNode` det-node.
-- **Shim**: same `_apply_legacy_topology_shim` registers a `UserNode` det-node alongside.
-- **Migration**: use `UserNode()` directly in topology nodes:
+- **Trigger**: topology contains a node with `kind == NodeKind.USER` and no `UserNode` behaviour yet bound.
+- **Shim**: same `_apply_legacy_topology_shim` registers a `UserNode` behaviour for it.
+- **Migration**: express the user node as a uniform `Node(kind=USER)` (or the reserved string `"User"`):
 
 ```python
-from marsys.coordination.execution.det_nodes import UserNode
-
 topology = Topology(
-    nodes=[StartNode(), Node("Assistant"), UserNode(), EndNode()],
+    nodes=[Node("Start", kind="start"), Node("Assistant"), Node("User", kind="user"), Node("End", kind="end")],
     edges=[
         Edge("Start", "Assistant"),
         Edge("Assistant", "User"),
@@ -93,8 +92,8 @@ topology = Topology(
 ### `has_user_access(agent)`
 
 - **Trigger**: internal — called by validators and tool-gating.
-- **Replacement**: `has_edge_to_endnode(agent)` (`graph.py:846`) checks the `terminate_workflow` gate; `has_edge_to_usernode(agent)` (`graph.py:862`) checks the `ask_user` gate.
-- **Current state**: `has_user_access` still exists at `src/marsys/coordination/topology/graph.py:804` alongside the new methods. It will be removed once internal validators are fully migrated.
+- **Replacement**: `has_edge_to_endnode(agent)` (in `graph.py`) checks the `terminate_workflow` gate; `has_edge_to_usernode(agent)` checks the `ask_user` gate.
+- **Current state**: `has_user_access` still exists in `src/marsys/coordination/topology/graph.py` alongside the new methods. It will be removed once internal validators are fully migrated.
 - **Migration**: internal — most user code does not call this method directly.
 
 ### `can_return_final_response` field on `CoordinationContext` (REMOVED in v0.3.0)
