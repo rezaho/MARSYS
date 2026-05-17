@@ -18,7 +18,7 @@ from marsys.coordination.topology.core import (
     EdgePattern,
     EdgeType,
     Node,
-    NodeType,
+    NodeKind,
     RESERVED_NODE_NAMES,
     Topology,
 )
@@ -61,7 +61,7 @@ def topology_strategy(draw, max_nodes: int = 8) -> Topology:
     nodes = [
         Node(
             name=name,
-            node_type=draw(st.sampled_from(list(NodeType))),
+            kind=draw(st.sampled_from(list(NodeKind))),
         )
         for name in names
     ]

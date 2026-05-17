@@ -10,7 +10,8 @@ from __future__ import annotations
 from typing import Iterable, Optional, Union
 
 from marsys.coordination.execution.det_nodes import (
-    RESERVED_DETNODE_NAMES,
+    NODE_KIND_BEHAVIOUR,
+    RESERVED_NAME_TO_KIND,
     DeterministicNode,
 )
 from marsys.coordination.topology.graph import TopologyEdge, TopologyGraph
@@ -50,8 +51,8 @@ def build_topology(
             if spec in seen:
                 continue
             seen.add(spec)
-            if spec in RESERVED_DETNODE_NAMES:
-                cls = RESERVED_DETNODE_NAMES[spec]
+            if spec in RESERVED_NAME_TO_KIND:
+                cls = NODE_KIND_BEHAVIOUR[RESERVED_NAME_TO_KIND[spec]]
                 graph.add_node(spec)
                 graph.register_det_node(cls())
             else:
