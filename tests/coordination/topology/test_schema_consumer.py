@@ -23,8 +23,8 @@ def _valid_payload() -> dict:
     return {
         "topology": {
             "nodes": [
-                {"name": "A", "node_type": "agent", "agent_ref": "Worker"},
-                {"name": "B", "node_type": "user"},
+                {"name": "A", "kind": "agent", "agent_ref": "Worker"},
+                {"name": "B", "kind": "user"},
             ],
             "edges": [
                 {"source": "A", "target": "B", "edge_type": "invoke"},
@@ -70,10 +70,10 @@ def test_intentionally_broken_payload_fails_jsonschema_validation():
         jsonschema.validate(instance=bad_payload, schema=schema)
 
 
-def test_unknown_node_type_value_fails_jsonschema_validation():
+def test_unknown_node_kind_value_fails_jsonschema_validation():
     schema = workflow_definition_schema()
     payload = _valid_payload()
-    payload["topology"]["nodes"][0]["node_type"] = "unknown_value"
+    payload["topology"]["nodes"][0]["kind"] = "unknown_value"
     with pytest.raises(jsonschema.ValidationError):
         jsonschema.validate(instance=payload, schema=schema)
 

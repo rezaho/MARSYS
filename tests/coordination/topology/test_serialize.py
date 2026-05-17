@@ -1,12 +1,13 @@
 """Round-trip and structural tests for the topology serializer.
 
 Tests the public surface of ``marsys.coordination.topology.serialize`` and
-``marsys.coordination.serialize``: every NodeType / EdgeType / EdgePattern /
+``marsys.coordination.serialize``: every NodeKind / EdgeType / EdgePattern /
 PatternType round-trips losslessly under ``topology_equals``; the cross-
 reference validator catches dangling refs at construction time;
 ``UnknownToolError`` propagates from missing tool names; bidirectional edges
 consolidate to a single EdgeSpec; the JSON Schema export declares dialect
-2020-12; ``NonSerializableTopologyError`` fires on det-nodes.
+2020-12; deterministic-node topologies (Start/End/User) round-trip totally
+(Session-08 AC-59 reversal — ADR-008 Decision 8).
 """
 
 from __future__ import annotations
@@ -19,11 +20,10 @@ from marsys.coordination.topology.core import (
     EdgePattern,
     EdgeType,
     Node,
-    NodeType,
+    NodeKind,
     Topology,
 )
 from marsys.coordination.topology.exceptions import (
-    NonSerializableTopologyError,
     UnknownToolError,
 )
 from marsys.coordination.topology.patterns import PatternConfig, PatternType
@@ -68,25 +68,26 @@ def _api_key_env(monkeypatch):
 
 
 # ---------------------------------------------------------------------------
-# AC-12: NodeType round-trip
+# AC-1/AC-18/AC-20/AC-22: NodeKind round-trip (every kind, incl. det-nodes)
 # ---------------------------------------------------------------------------
 
 
 @pytest.mark.parametrize(
-    "node_type",
-    [NodeType.USER, NodeType.AGENT, NodeType.SYSTEM, NodeType.TOOL],
+    "kind",
+    [NodeKind.USER, NodeKind.AGENT, NodeKind.START, NodeKind.END],
 )
-def test_node_type_round_trip(node_type):
-    name = "User" if node_type == NodeType.USER else f"Node_{node_type.value}"
+def test_node_kind_round_trip(kind):
+    name = kind.name.capitalize() if kind is not NodeKind.AGENT else "Worker"
     original = Topology(
-        nodes=[Node(name=name, node_type=node_type)],
+        nodes=[Node(name=name, kind=kind)],
         edges=[],
     )
     spec = workflow_to_pydantic(None, original)
-    rehydrated = pydantic_to_topology(spec, tool_registry={})
+    rehydrated = pydantic_to_topology(spec, tool_registry={}, handler_registry={})
     assert topology_equals(original, rehydrated)
-    # The wire-shape enum value matches the framework's StrEnum value exactly.
-    assert spec.topology.nodes[0].node_type == node_type.value
+    # NodeSpec.kind is the closed NodeKind enum; its .value mirrors core.
+    assert spec.topology.nodes[0].kind is kind
+    assert spec.topology.nodes[0].kind.value == kind.value
 
 
 # ---------------------------------------------------------------------------
@@ -212,10 +213,10 @@ def test_topology_equals_returns_true_on_identical_topology():
     a = Topology(
         nodes=[
             Node(name="A", metadata={"k": "v"}),
-            Node(name="B", node_type=NodeType.SYSTEM),
+            Node(name="End", kind=NodeKind.END),
         ],
         edges=[
-            Edge(source="A", target="B", edge_type=EdgeType.QUERY, bidirectional=True),
+            Edge(source="A", target="End", edge_type=EdgeType.QUERY, bidirectional=True),
         ],
         metadata={"setup": "complete"},
     )
@@ -223,10 +224,10 @@ def test_topology_equals_returns_true_on_identical_topology():
     b = Topology(
         nodes=[
             Node(name="A", metadata={"k": "v"}),
-            Node(name="B", node_type=NodeType.SYSTEM),
+            Node(name="End", kind=NodeKind.END),
         ],
         edges=[
-            Edge(source="A", target="B", edge_type=EdgeType.QUERY, bidirectional=True),
+            Edge(source="A", target="End", edge_type=EdgeType.QUERY, bidirectional=True),
         ],
         metadata={"setup": "complete"},
     )
@@ -499,14 +500,17 @@ def test_cross_ref_validator_accepts_valid_payload():
 
 def test_enum_wire_values_match_framework_strenum():
     node_specs = [
-        NodeSpec(name="User", node_type="user"),
-        NodeSpec(name="A", node_type="agent"),
-        NodeSpec(name="S", node_type="system"),
-        NodeSpec(name="T", node_type="tool"),
+        NodeSpec(name="User", kind="user"),
+        NodeSpec(name="A", kind="agent"),
+        NodeSpec(name="Start", kind="start"),
+        NodeSpec(name="End", kind="end"),
     ]
     for spec in node_specs:
-        dumped = spec.model_dump()
-        assert dumped["node_type"] in {"user", "agent", "system", "tool"}
+        # kind is the closed NodeKind enum; its serialized wire value
+        # (JSON mode) is the lowercase string the cross-process contract uses.
+        dumped = spec.model_dump(mode="json")
+        assert dumped["kind"] in {"user", "agent", "start", "end"}
+        assert spec.kind.value == dumped["kind"]
 
     edge_spec = EdgeSpec(
         source="A", target="B", edge_type="invoke", pattern="alternating"
@@ -546,14 +550,20 @@ def test_model_json_schema_standalone_python_api_works():
 
 def test_workflow_definition_schema_returns_same_shape_as_model_json_schema():
     """AC-48: workflow_definition_schema() and WorkflowDefinition.model_json_schema()
-    expose the same JSON Schema body (modulo the $schema dialect URI that the
-    helper injects)."""
+    expose the same JSON Schema body, modulo the two keys the helper
+    intentionally injects: the ``$schema`` dialect URI and (Session 08,
+    ADR-008 / AC-49) ``x-wire-schema-version`` — the wire-version
+    discriminator so non-Python consumers detect the v2 ``kind`` shape vs the
+    v1 ``node_type`` shape from the document itself."""
+    from marsys.coordination.topology.serialize import WIRE_SCHEMA_VERSION
+
     helper_schema = workflow_definition_schema()
     raw_schema = WorkflowDefinition.model_json_schema()
-    # Remove the $schema field for comparison; the helper adds it explicitly.
-    helper_body = {k: v for k, v in helper_schema.items() if k != "$schema"}
-    raw_body = {k: v for k, v in raw_schema.items() if k != "$schema"}
+    _injected = {"$schema", "x-wire-schema-version"}
+    helper_body = {k: v for k, v in helper_schema.items() if k not in _injected}
+    raw_body = {k: v for k, v in raw_schema.items() if k not in _injected}
     assert helper_body == raw_body
+    assert helper_schema["x-wire-schema-version"] == WIRE_SCHEMA_VERSION
 
 
 def test_workflow_definition_works_without_explicit_agents_serialize_import():
@@ -609,45 +619,49 @@ def test_rehydrated_topology_has_indices_built():
 
 
 # ---------------------------------------------------------------------------
-# AC-59: NonSerializableTopologyError on DeterministicNode
+# AC-59 REVERSAL (Session-08; ADR-008 Decision 8 — explicit, surfaced spec
+# change, anti-pattern #1: NOT a silent test deletion). The Session-04 tests
+# below previously asserted ``pytest.raises(NonSerializableTopologyError)``
+# for deterministic-node serialization; they are INVERTED to assert a
+# *successful* round-trip. No skip/xfail. ``NonSerializableTopologyError`` no
+# longer exists; the wire is total over ``NodeKind``.
 # ---------------------------------------------------------------------------
 
 
 @pytest.mark.parametrize(
-    "det_class_name",
-    ["StartNode", "EndNode", "UserNode"],
+    "kind",
+    [NodeKind.START, NodeKind.END, NodeKind.USER],
 )
-def test_workflow_to_pydantic_rejects_all_deterministic_node_subclasses(det_class_name):
-    """AC-59: NonSerializableTopologyError fires on every DeterministicNode subclass."""
+def test_workflow_to_pydantic_serializes_all_deterministic_kinds(kind):
+    """AC-20/AC-56 (AC-59 reversal): a topology with a START/END/USER node
+    serializes AND round-trips — no rejection. The deterministic behaviour is
+    materialized from ``Node.kind`` at the analyzer seam (Option A), so
+    ``Topology.nodes`` is homogeneous ``Node`` and the wire captures every
+    kind by its discriminator."""
+    name = kind.name.capitalize()
+    original = Topology(nodes=[Node(name=name, kind=kind), Node(name="A")], edges=[])
+    spec = workflow_to_pydantic(None, original)
+    assert spec.topology.nodes  # serialized, did not raise
+    rehydrated = pydantic_to_topology(spec, tool_registry={}, handler_registry={})
+    assert topology_equals(original, rehydrated)
+    kinds = {n.name: n.kind for n in rehydrated.nodes}
+    assert kinds[name] is kind
+
+
+def test_topology_post_init_rejects_deterministic_node_instance():
+    """AC-8 (the inverted counterpart of the old ``test_unknown_node_subclass``
+    out-of-spec assertion): the OLD failure mode (a non-``Node`` node object
+    reaching ``workflow_to_pydantic``) is now structurally prevented at
+    ``Topology`` construction. ``Topology.__post_init__`` accepts ``Node``
+    only — passing a ``DeterministicNode`` instance into ``Topology.nodes`` is
+    no longer the supported construction path and raises ``TypeError``. A
+    START/END/USER node is expressed as ``Node(kind=...)`` (covered above)."""
     from marsys.coordination.execution import det_nodes
 
-    det_class = getattr(det_nodes, det_class_name)
-    det_node = det_class()
-    topology = Topology(nodes=[det_node, Node(name="A")], edges=[])
-    with pytest.raises(NonSerializableTopologyError) as exc:
-        workflow_to_pydantic(None, topology)
-    message = str(exc.value)
-    # AC-59: message names the offending node type and points at the workaround.
-    assert det_class_name in message
-    assert "drop" in message.lower() or "follow-up" in message.lower()
-
-
-def test_unknown_node_subclass_also_rejected():
-    """Custom Node subclasses with non-standard runtime state also raise."""
-    class CustomWeirdNode:
-        """A non-Node-non-DeterministicNode passed as a node — out of spec."""
-        name = "weird"
-        node_type = NodeType.AGENT
-        agent_ref = None
-        is_convergence_point = False
-        metadata = {}
-
-    # Topology.__post_init__ validates nodes; pass via the post-construction
-    # path so the error surfaces from workflow_to_pydantic, not from Topology.
-    topology = Topology(nodes=[Node(name="A")], edges=[])
-    topology.nodes.append(CustomWeirdNode())  # bypass __post_init__
-    with pytest.raises(NonSerializableTopologyError):
-        workflow_to_pydantic(None, topology)
+    for det_class_name in ("StartNode", "EndNode", "UserNode"):
+        det_class = getattr(det_nodes, det_class_name)
+        with pytest.raises(TypeError):
+            Topology(nodes=[det_class(), Node(name="A")], edges=[])
 
 
 # ---------------------------------------------------------------------------
@@ -699,3 +713,309 @@ def test_agent_spec_agent_model_is_model_config_spec_type():
     from marsys.agents.serialize import AgentSpec
     field_info = AgentSpec.model_fields["agent_model"]
     assert field_info.annotation is ModelConfigSpec
+
+
+# ---------------------------------------------------------------------------
+# AC-18/AC-19: NodeSpec.kind closed enum; node_type gone; extra="forbid"
+# ---------------------------------------------------------------------------
+
+
+def test_nodespec_has_kind_field_and_no_node_type():
+    """AC-18: NodeSpec.kind is the closed NodeKind; node_type is gone."""
+    fields = NodeSpec.model_fields
+    assert "kind" in fields
+    assert "node_type" not in fields
+    assert fields["kind"].annotation is NodeKind
+
+
+def test_nodespec_rejects_unknown_field():
+    """AC-19: extra='forbid' holds for NodeSpec."""
+    with pytest.raises(ValidationError):
+        NodeSpec(name="X", surprise="boom")
+
+
+def test_nodespec_rejects_removed_system_tool_kinds_with_migration_message():
+    """AC-46: a stored node with kind 'system'/'tool' is rejected at load
+    with a migration message — NOT silently coerced to 'agent'."""
+    for removed in ("system", "tool"):
+        with pytest.raises(ValidationError) as exc:
+            NodeSpec(name="X", kind=removed)
+        msg = str(exc.value)
+        assert removed in msg
+        assert "migrate" in msg.lower() or "no longer supported" in msg.lower()
+
+
+# ---------------------------------------------------------------------------
+# AC-21: NonSerializableTopologyError no longer exists / unreferenced
+# ---------------------------------------------------------------------------
+
+
+def test_non_serializable_topology_error_symbol_removed():
+    """AC-21: the symbol no longer exists in the exceptions module."""
+    import marsys.coordination.topology.exceptions as exc_mod
+
+    assert not hasattr(exc_mod, "NonSerializableTopologyError")
+
+
+# ---------------------------------------------------------------------------
+# AC-22/AC-23/AC-24: pydantic_to_topology handler_registry DI for USER nodes
+# ---------------------------------------------------------------------------
+
+
+def test_pydantic_to_topology_accepts_handler_registry_signature():
+    """AC-22: pydantic_to_topology(spec, tool_registry, handler_registry)."""
+    spec = WorkflowDefinition(
+        topology=TopologySpec(nodes=[NodeSpec(name="A")], edges=[]),
+        agents={},
+    )
+    topology = pydantic_to_topology(spec, tool_registry={}, handler_registry={})
+    assert topology.get_node("A") is not None
+
+
+def test_user_node_handler_resolved_from_handler_registry():
+    """AC-23: a USER node's handler is resolved from the injected
+    handler_registry (same DI pattern tools use via tool_registry)."""
+    def my_handler(*a, **k):  # pragma: no cover - identity sentinel
+        return "answer"
+
+    spec = WorkflowDefinition(
+        topology=TopologySpec(
+            nodes=[NodeSpec(name="U", kind=NodeKind.USER, metadata={"handler": "h1"})],
+            edges=[],
+        ),
+        agents={},
+    )
+    topology = pydantic_to_topology(
+        spec, tool_registry={}, handler_registry={"h1": my_handler}
+    )
+    user_node = topology.get_node("U")
+    assert user_node.kind is NodeKind.USER
+    # The resolved callable is stashed on the runtime-binding slot.
+    assert user_node.agent_ref is my_handler
+
+
+def test_missing_user_handler_raises_named_error_not_silent_none():
+    """AC-24: a USER node whose handler is absent from handler_registry
+    fails with a clear named error mirroring UnknownToolError — no silent
+    None binding."""
+    from marsys.coordination.topology.exceptions import UnknownHandlerError
+
+    spec = WorkflowDefinition(
+        topology=TopologySpec(
+            nodes=[NodeSpec(name="U", kind=NodeKind.USER, metadata={"handler": "missing"})],
+            edges=[],
+        ),
+        agents={},
+    )
+    with pytest.raises(UnknownHandlerError) as exc:
+        pydantic_to_topology(spec, tool_registry={}, handler_registry={})
+    msg = str(exc.value)
+    assert "missing" in msg
+    assert "U" in msg
+    assert "handler_registry" in msg
+
+
+def test_user_node_without_handler_key_keeps_legacy_path():
+    """AC-23 boundary: a USER node with no handler key does NOT raise (the
+    Orchestra binds its process-wide handler post-analysis)."""
+    spec = WorkflowDefinition(
+        topology=TopologySpec(
+            nodes=[NodeSpec(name="U", kind=NodeKind.USER)],
+            edges=[],
+        ),
+        agents={},
+    )
+    topology = pydantic_to_topology(spec, tool_registry={}, handler_registry={})
+    u = topology.get_node("U")
+    assert u.kind is NodeKind.USER
+    assert u.agent_ref is None
+
+
+# ---------------------------------------------------------------------------
+# AC-25/AC-26: topology_equals oracle keys on kind + is_convergence_point
+# ---------------------------------------------------------------------------
+
+
+def test_topology_equals_keys_on_kind_not_node_type():
+    """AC-25: node_key keys on kind — two topologies differing only in a
+    node's kind compare NOT equal."""
+    a = Topology(nodes=[Node(name="X", kind=NodeKind.AGENT)], edges=[])
+    b = Topology(nodes=[Node(name="X", kind=NodeKind.END)], edges=[])
+    assert not topology_equals(a, b)
+
+
+def test_topology_equals_includes_is_convergence_point():
+    """AC-26: two topologies differing only in a node's is_convergence_point
+    compare NOT equal under topology_equals."""
+    a = Topology(nodes=[Node(name="X", is_convergence_point=True)], edges=[])
+    b = Topology(nodes=[Node(name="X", is_convergence_point=False)], edges=[])
+    assert not topology_equals(a, b)
+    # Sanity: identical convergence flag still compares equal.
+    c = Topology(nodes=[Node(name="X", is_convergence_point=True)], edges=[])
+    assert topology_equals(a, c)
+
+
+# ---------------------------------------------------------------------------
+# AC-27/AC-28/AC-29: exhaustive round-trip matrix
+#   every NodeKind × every EdgeType × {none,bidirectional,alternating,
+#   symmetric} link mode + pattern-provenance + is_convergence_point=True.
+# ---------------------------------------------------------------------------
+
+_LINK_MODES = ["none", "bidirectional", "alternating", "symmetric"]
+
+
+@pytest.mark.parametrize("kind", list(NodeKind))
+@pytest.mark.parametrize("edge_type", list(EdgeType))
+@pytest.mark.parametrize("link_mode", _LINK_MODES)
+def test_round_trip_matrix_kind_edgetype_linkmode(kind, edge_type, link_mode):
+    """AC-27 + AC-29: for every NodeKind × EdgeType × link mode,
+    pydantic_to_topology(workflow_to_pydantic(t)) == t under the updated
+    (kind- + is_convergence_point-aware) topology_equals. The non-A node
+    carries the parametrized kind; A is set is_convergence_point=True so
+    AC-29 (convergence round-trips across the matrix) is exercised in every
+    cell."""
+    a = Node(name="A", is_convergence_point=True)
+    other_name = kind.name.capitalize() if kind is not NodeKind.AGENT else "B"
+    other = Node(name=other_name, kind=kind)
+
+    bidirectional = link_mode in ("bidirectional", "alternating", "symmetric")
+    pattern = None
+    if link_mode == "alternating":
+        pattern = EdgePattern.ALTERNATING
+    elif link_mode == "symmetric":
+        pattern = EdgePattern.SYMMETRIC
+
+    original = Topology(nodes=[a, other], edges=[])
+    if link_mode == "none":
+        original.add_edge(Edge(source="A", target=other_name, edge_type=edge_type))
+    else:
+        original.add_edge(
+            Edge(
+                source="A",
+                target=other_name,
+                edge_type=edge_type,
+                bidirectional=bidirectional,
+                pattern=pattern,
+            )
+        )
+
+    spec = workflow_to_pydantic(None, original)
+    rehydrated = pydantic_to_topology(spec, tool_registry={}, handler_registry={})
+    assert topology_equals(original, rehydrated)
+    # AC-29: the convergence flag survived the round-trip.
+    assert rehydrated.get_node("A").is_convergence_point is True
+
+
+@pytest.mark.parametrize("pattern_config", _all_pattern_configs())
+def test_round_trip_matrix_includes_pattern_provenance(pattern_config):
+    """AC-28: a topology carrying metadata['original_pattern'] round-trips
+    with that provenance preserved (equal under the updated oracle)."""
+    original = PatternConfigConverter.convert(pattern_config)
+    assert "original_pattern" in original.metadata
+    spec = workflow_to_pydantic(None, original)
+    rehydrated = pydantic_to_topology(spec, tool_registry={}, handler_registry={})
+    assert topology_equals(original, rehydrated)
+    assert rehydrated.metadata["original_pattern"] == original.metadata["original_pattern"]
+
+
+def test_round_trip_matrix_convergence_point_explicit_case():
+    """AC-29 explicit: a multi-node topology with is_convergence_point=True
+    on a node round-trips with full equality under the convergence-aware
+    oracle (the case the oracle change is for)."""
+    original = Topology(
+        nodes=[
+            Node(name="Start", kind=NodeKind.START),
+            Node(name="A"),
+            Node(name="B"),
+            Node(name="Sink", is_convergence_point=True),
+            Node(name="End", kind=NodeKind.END),
+        ],
+        edges=[],
+    )
+    for s, t in [("Start", "A"), ("Start", "B"), ("A", "Sink"), ("B", "Sink"), ("Sink", "End")]:
+        original.add_edge(Edge(source=s, target=t))
+    spec = workflow_to_pydantic(None, original)
+    rehydrated = pydantic_to_topology(spec, tool_registry={}, handler_registry={})
+    assert topology_equals(original, rehydrated)
+    assert rehydrated.get_node("Sink").is_convergence_point is True
+    # The convergence-aware oracle rejects a copy that flips only the flag.
+    flipped = pydantic_to_topology(
+        workflow_to_pydantic(None, original), tool_registry={}, handler_registry={}
+    )
+    flipped.get_node("Sink").is_convergence_point = False
+    assert not topology_equals(original, flipped)
+
+
+# ---------------------------------------------------------------------------
+# AC-45/AC-49/AC-55: load policy + schema version + reserved frozenset
+# ---------------------------------------------------------------------------
+
+
+def test_legacy_no_start_definition_deserializes_with_deprecation_warning():
+    """AC-45: a legacy stored WorkflowDefinition with no explicit Start node
+    still deserializes successfully AND emits a DeprecationWarning."""
+    import json
+
+    payload = json.dumps(
+        {
+            "topology": {
+                "nodes": [{"name": "A"}, {"name": "B"}],
+                "edges": [{"source": "A", "target": "B"}],
+                "metadata": {},
+                "rules": [],
+            },
+            "agents": {},
+        }
+    )
+    with pytest.warns(DeprecationWarning, match="(?i)no explicit Start"):
+        wd = WorkflowDefinition.model_validate_json(payload)
+    assert {n.name for n in wd.topology.nodes} == {"A", "B"}
+
+
+def test_definition_with_explicit_start_does_not_warn():
+    """AC-45 boundary: an explicit Start node suppresses the deprecation."""
+    import warnings
+
+    with warnings.catch_warnings():
+        warnings.simplefilter("error", DeprecationWarning)
+        WorkflowDefinition(
+            topology=TopologySpec(
+                nodes=[NodeSpec(name="Start", kind=NodeKind.START), NodeSpec(name="A")],
+                edges=[EdgeSpec(source="Start", target="A")],
+            ),
+            agents={},
+        )
+
+
+def test_wire_schema_version_is_bumped():
+    """AC-49: the wire schema version constant exists and is bumped past 1
+    (schema 1 was the implicit pre-S08 node_type shape)."""
+    from marsys.coordination.topology.serialize import WIRE_SCHEMA_VERSION
+
+    assert isinstance(WIRE_SCHEMA_VERSION, int)
+    assert WIRE_SCHEMA_VERSION >= 2
+
+
+def test_workflow_definition_schema_reflects_kind_not_node_type():
+    """AC-47: workflow_definition_schema() (dialect 2020-12) reflects 'kind',
+    not 'node_type'."""
+    schema = workflow_definition_schema()
+    assert schema["$schema"] == JSON_SCHEMA_DIALECT_2020_12
+    blob = repr(schema)
+    assert "node_type" not in blob
+    # NodeSpec's kind enum is referenced somewhere in the schema body.
+    defs = schema.get("$defs", schema.get("definitions", {}))
+    node_spec_schema = defs.get("NodeSpec", {})
+    assert "kind" in node_spec_schema.get("properties", {})
+
+
+def test_reserved_node_names_is_same_named_frozenset_derived_from_nodekind():
+    """AC-55: RESERVED_NODE_NAMES remains a module-level frozenset with the
+    same name/import path; its value is the non-AGENT NodeKinds lowercased.
+    Importing it does not raise."""
+    from marsys.coordination.topology.core import RESERVED_NODE_NAMES, NodeKind
+
+    assert isinstance(RESERVED_NODE_NAMES, frozenset)
+    expected = {k.value for k in NodeKind if k is not NodeKind.AGENT}
+    assert set(RESERVED_NODE_NAMES) == expected
+    assert set(RESERVED_NODE_NAMES) == {"start", "end", "user"}

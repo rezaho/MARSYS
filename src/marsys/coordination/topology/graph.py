@@ -40,7 +40,7 @@ class NodeInfo:
     """Information about a node (agent) in the topology graph."""
     name: str
     agent: Optional[Any] = None  # Reference to actual agent instance
-    node_type: Optional['NodeType'] = None  # Type of node (USER, AGENT, etc.)
+    kind: Optional['NodeKind'] = None  # Kind of node (USER, AGENT, etc.)
     incoming_edges: List[str] = field(default_factory=list)
     outgoing_edges: List[str] = field(default_factory=list)
     capabilities: List[str] = field(default_factory=list)
@@ -127,15 +127,15 @@ class TopologyGraph:
         self._v2_reach_cache: Dict[str, frozenset] = {}
         self._v2_preds_cache: Dict[str, frozenset] = {}
         
-    def add_node(self, name: str, agent: Optional[Any] = None, node_type: Optional['NodeType'] = None, **metadata) -> NodeInfo:
+    def add_node(self, name: str, agent: Optional[Any] = None, kind: Optional['NodeKind'] = None, **metadata) -> NodeInfo:
         """Add a node to the graph."""
         if name not in self.nodes:
             # Extract is_convergence_point from metadata if provided, otherwise use default (False)
             is_convergence = metadata.pop('is_convergence_point', False) if metadata else False
             self.nodes[name] = NodeInfo(
-                name=name, 
-                agent=agent, 
-                node_type=node_type, 
+                name=name,
+                agent=agent,
+                kind=kind,
                 metadata=metadata,
                 is_convergence_point=is_convergence
             )
@@ -363,13 +363,13 @@ class TopologyGraph:
             2. Manually specified entry (stored in metadata)
             3. Structurally detected node with no incoming edges
         """
-        from .core import NodeType
+        from .core import NodeKind
 
         # 1. User node always acts as the workflow boundary
         user_nodes = [
             node_name
             for node_name, node in self.nodes.items()
-            if node.node_type == NodeType.USER
+            if node.kind == NodeKind.USER
         ]
         
         if user_nodes:
@@ -440,11 +440,11 @@ class TopologyGraph:
             - user_node_name is None if no User node exists
             - entry_agent_name is the agent to start execution with
         """
-        from .core import NodeType
+        from .core import NodeKind
         
         user_nodes = [
             name for name, node in self.nodes.items()
-            if node.node_type == NodeType.USER
+            if node.kind == NodeKind.USER
         ]
         user_node: Optional[str] = None
         entry_agent: Optional[str] = None
@@ -599,10 +599,10 @@ class TopologyGraph:
                 4. Otherwise, raise error requiring explicit exit_points
         """
         # Auto-detect nodes with no outgoing edges
-        from .core import NodeType
+        from .core import NodeKind
         auto_detected = []
         for node_name, node in self.nodes.items():
-            if not node.outgoing_edges and node.node_type != NodeType.USER:
+            if not node.outgoing_edges and node.kind != NodeKind.USER:
                 auto_detected.append(node_name)
 
         # STRICT MODE (Orchestra.run with explicit topology)
@@ -633,7 +633,7 @@ class TopologyGraph:
                 return auto_detected
             else:
                 # NEW: Check for agents with edges to User nodes
-                user_exists = any(node.node_type == NodeType.USER for node in self.nodes.values())
+                user_exists = any(node.kind == NodeKind.USER for node in self.nodes.values())
                 if user_exists:
                     agents_with_user_edges = self.get_agents_with_user_access()
                     if agents_with_user_edges:
@@ -666,7 +666,7 @@ class TopologyGraph:
                 return manual_exits
             else:
                 # NEW: Check for agents with edges to User nodes
-                user_exists = any(node.node_type == NodeType.USER for node in self.nodes.values())
+                user_exists = any(node.kind == NodeKind.USER for node in self.nodes.values())
                 if user_exists:
                     agents_with_user_edges = self.get_agents_with_user_access()
                     if agents_with_user_edges:
@@ -704,15 +704,15 @@ class TopologyGraph:
             entry_agent: The agent that will receive tasks from User
             exit_agents: The agents that can return final responses to User
         """
-        from .core import NodeType
+        from .core import NodeKind
         
         # Check if User already exists
-        user_exists = any(node.node_type == NodeType.USER for node in self.nodes.values())
+        user_exists = any(node.kind == NodeKind.USER for node in self.nodes.values())
         if user_exists:
             return  # Nothing to do
-        
+
         # Add User node
-        self.add_node("User", node_type=NodeType.USER)
+        self.add_node("User", kind=NodeKind.USER)
         
         # Add User -> entry_agent edge
         self.add_edge(TopologyEdge(source="User", target=entry_agent))
@@ -760,9 +760,9 @@ class TopologyGraph:
         visited.add(from_agent)
 
         # Stop at USER nodes (workflow boundaries)
-        from .core import NodeType
+        from .core import NodeKind
         node = self.nodes.get(from_agent)
-        if (node and hasattr(node, 'node_type') and node.node_type == NodeType.USER) or from_agent.lower() == "user":
+        if (node and hasattr(node, 'kind') and node.kind == NodeKind.USER) or from_agent.lower() == "user":
             return False
 
         # Get all possible next agents from current position
@@ -795,17 +795,17 @@ class TopologyGraph:
     
     def get_agents_with_user_access(self) -> List[str]:
         """Get all agents that have edges to User nodes."""
-        from .core import NodeType
+        from .core import NodeKind
         agents_with_access = []
         
         for node_name, node in self.nodes.items():
-            if node.node_type == NodeType.USER:
+            if node.kind == NodeKind.USER:
                 continue  # Skip User nodes themselves
-            
+
             # Check if this agent has any edge to a User node
             for target in node.outgoing_edges:
                 target_node = self.nodes.get(target)
-                if target_node and target_node.node_type == NodeType.USER:
+                if target_node and target_node.kind == NodeKind.USER:
                     agents_with_access.append(node_name)
                     break
         
@@ -828,7 +828,7 @@ class TopologyGraph:
         Returns:
             True if the agent has access to User nodes or is an exit point, False otherwise
         """
-        from .core import NodeType
+        from .core import NodeKind
         
         # Get the agent node
         node = self.nodes.get(agent_name)
@@ -836,13 +836,13 @@ class TopologyGraph:
             return False
         
         # Skip if this is a User node itself
-        if node.node_type == NodeType.USER:
+        if node.kind == NodeKind.USER:
             return False
-        
+
         # Check if this agent has any edge to a User node
         for target in node.outgoing_edges:
             target_node = self.nodes.get(target)
-            if target_node and target_node.node_type == NodeType.USER:
+            if target_node and target_node.kind == NodeKind.USER:
                 return True
         
         # Also check if this agent is in the exit_points metadata
@@ -880,7 +880,7 @@ class TopologyGraph:
         """Check if `agent_name` has a direct outgoing edge to a registered UserNode det-node.
 
         Topology-gated `ask_user` schema reads this. Distinct from the legacy
-        has_user_access which inspects NodeType.USER and exit_points metadata."""
+        has_user_access which inspects NodeKind.USER and exit_points metadata."""
         from ..execution.det_nodes import UserNode
         node = self.nodes.get(agent_name)
         if not node:

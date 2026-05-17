@@ -36,6 +36,7 @@ raise :class:`UnknownToolError` rather than silently dropping.
 
 from __future__ import annotations
 
+import warnings
 from typing import Any, Callable, Dict, List, Literal, Optional
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
@@ -46,10 +47,10 @@ from .core import (
     EdgePattern,
     EdgeType,
     Node,
-    NodeType,
+    NodeKind,
     Topology,
 )
-from .exceptions import NonSerializableTopologyError, UnknownToolError
+from .exceptions import UnknownHandlerError, UnknownToolError
 from .patterns import PatternConfig, PatternType
 from ..serialize import ExecutionConfigSpec
 
@@ -61,6 +62,7 @@ __all__ = [
     "NodeSpec",
     "PatternConfigSpec",
     "TopologySpec",
+    "WIRE_SCHEMA_VERSION",
     "WorkflowDefinition",
     "pydantic_to_topology",
     "topology_equals",
@@ -69,6 +71,19 @@ __all__ = [
 ]
 
 JSON_SCHEMA_DIALECT_2020_12 = "https://json-schema.org/draft/2020-12/schema"
+
+# Wire schema version. Bumped to 2 by Session 08: the node discriminator
+# changed from the legacy ``node_type`` (open ``{user,agent,system,tool}``
+# literal) to the closed ``kind`` (``NodeKind`` = ``{agent,start,end,user}``)
+# — a breaking, NON-back-compatible value-set + field-name change. Schema 1
+# was the implicit pre-S08 ``node_type`` shape. No dual-field shim: the
+# version boundary is the contract (ADR-008 Decision 7 / §Migration).
+WIRE_SCHEMA_VERSION = 2
+
+# Vestigial pre-S08 node-type values dropped by the ``NodeKind`` model. A
+# stored document carrying one of these is rejected at load with a migration
+# message rather than silently coerced (ADR-008 Decision 7 / Alternative 5).
+_REMOVED_NODE_TYPE_VALUES = frozenset({"system", "tool"})
 
 
 class _DialectAnnotatingSchemaGenerator(GenerateJsonSchema):
@@ -84,7 +99,6 @@ class _DialectAnnotatingSchemaGenerator(GenerateJsonSchema):
         return json_schema
 
 
-NodeTypeLiteral = Literal["user", "agent", "system", "tool"]
 EdgeTypeLiteral = Literal["invoke", "notify", "query", "stream"]
 EdgePatternLiteral = Literal["alternating", "symmetric"]
 PatternTypeLiteral = Literal[
@@ -114,7 +128,7 @@ class NodeSpec(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     name: str
-    node_type: NodeTypeLiteral = "agent"
+    kind: NodeKind = NodeKind.AGENT
     agent_ref: Optional[str] = None
     is_convergence_point: bool = False
     metadata: Dict[str, Any] = Field(default_factory=dict)
@@ -124,6 +138,31 @@ class NodeSpec(BaseModel):
     def _non_empty_name(cls, value: str) -> str:
         if not value:
             raise ValueError("node name cannot be empty")
+        return value
+
+    @field_validator("kind", mode="before")
+    @classmethod
+    def _reject_removed_node_types(cls, value: Any) -> Any:
+        """Reject stored docs carrying a vestigial pre-S08 node type.
+
+        ``NodeKind`` dropped ``system``/``tool`` (never dispatched). A stored
+        ``WorkflowDefinition`` written against schema 1 that used one of these
+        is rejected at LOAD with an actionable migration message — NOT
+        silently coerced to ``agent`` (that would rescue a never-runnable
+        doc; ADR-008 Alternative 5). Legitimate ``NodeKind`` values pass
+        straight through to the enum coercion.
+        """
+        raw = value.value if isinstance(value, NodeKind) else value
+        if isinstance(raw, str) and raw.lower() in _REMOVED_NODE_TYPE_VALUES:
+            raise ValueError(
+                f"node kind '{raw}' is no longer supported (wire schema "
+                f"version {WIRE_SCHEMA_VERSION}). The 'system' and 'tool' "
+                f"node types were removed; the canonical NodeKind taxonomy "
+                f"is {{agent, start, end, user}}. Migrate this stored "
+                f"WorkflowDefinition: a 'system'/'tool' node was never "
+                f"dispatched, so re-author it as an 'agent' node or remove "
+                f"it, then re-store."
+            )
         return value
 
 
@@ -182,8 +221,25 @@ class WorkflowDefinition(BaseModel):
         node_names = {node.name for node in self.topology.nodes}
         agent_keys = set(self.agents.keys())
 
+        # Permissive v0.3 wire validator: a legacy stored definition with no
+        # explicit Start node still deserializes (the runtime shim synthesizes
+        # one), but emits a DeprecationWarning so callers migrate to an
+        # explicit Start before the v0.4 shim removal. (ADR-008 Decision 7;
+        # AC-45.)
+        if self.topology.nodes and not any(
+            node.kind is NodeKind.START for node in self.topology.nodes
+        ):
+            warnings.warn(
+                "WorkflowDefinition has no explicit Start node. A Start is "
+                "synthesized by the backward-compat shim at runtime, but this "
+                "shim is removed in v0.4 — add an explicit Start node "
+                "(kind='start') with an edge to your entry agent.",
+                DeprecationWarning,
+                stacklevel=2,
+            )
+
         for node in self.topology.nodes:
-            if node.node_type == "agent" and node.agent_ref is not None:
+            if node.kind is NodeKind.AGENT and node.agent_ref is not None:
                 if node.agent_ref not in agent_keys:
                     raise ValueError(
                         f"node '{node.name}' has agent_ref='{node.agent_ref}' "
@@ -213,17 +269,21 @@ class WorkflowDefinition(BaseModel):
 def topology_equals(a: Topology, b: Topology) -> bool:
     """Return ``True`` when two topologies are semantically equal.
 
-    Compares nodes by ``(name, node_type, metadata)``, edges as a multiset
-    over ``(source, target, edge_type, bidirectional, pattern, metadata)``,
-    and the topology-level ``metadata`` dict (which carries
+    Compares nodes by ``(name, kind, is_convergence_point, metadata)``, edges
+    as a multiset over ``(source, target, edge_type, bidirectional, pattern,
+    metadata)``, and the topology-level ``metadata`` dict (which carries
     ``metadata["original_pattern"]`` for pattern-built topologies).
     ``Edge.__eq__`` only compares ``(source, target, edge_type)`` so it is
     NOT safe as the round-trip-equality oracle; round-trip tests MUST use
     this helper.
+
+    ``is_convergence_point`` is in ``node_key`` (ADR-008 Decision 4 / P12):
+    the wire serializes + round-trips it, so an oracle blind to it could not
+    verify "full round-trip equality" for a convergence node.
     """
 
     def node_key(n: Node) -> tuple:
-        return (n.name, n.node_type.value, _frozen(n.metadata))
+        return (n.name, n.kind.value, n.is_convergence_point, _frozen(n.metadata))
 
     def edge_key(e: Edge) -> tuple:
         return (
@@ -271,24 +331,17 @@ def workflow_to_pydantic(orchestra: Any, topology: Topology) -> WorkflowDefiniti
     """
     from ...agents.serialize import agent_to_pydantic
     from ...agents.agents import Agent
-    from ..execution.det_nodes import DeterministicNode
     from ..serialize import execution_config_to_pydantic
 
+    # ``workflow_to_pydantic`` is TOTAL over the node model (ADR-008
+    # Decision 4): ``Topology.nodes`` is homogeneous ``Node`` (Option A —
+    # deterministic behaviour is materialized from ``Node.kind`` at the
+    # analyzer seam, never stored in ``Topology.nodes``), so every
+    # ``NodeKind`` — including START/END/USER — serializes 1:1. The prior
+    # det-node serialization rejection (Session-04 AC-59) is intentionally
+    # removed (ADR-008 Decision 8); that exception no longer exists.
     nodes: List[NodeSpec] = []
     for node in topology.nodes:
-        if isinstance(node, DeterministicNode):
-            raise NonSerializableTopologyError(
-                f"Topology contains a DeterministicNode ('{type(node).__name__}' "
-                f"named '{getattr(node, 'name', '?')}'). Det-nodes carry execution-"
-                f"runtime state beyond what NodeSpec captures. Drop the det-node "
-                f"before serializing, or extend WorkflowDefinition to cover "
-                f"det-nodes in a follow-up PR."
-            )
-        if not isinstance(node, Node):
-            raise NonSerializableTopologyError(
-                f"Topology contains a node of type {type(node).__name__} which "
-                f"the wire shape does not capture."
-            )
         agent_ref_name: Optional[str] = None
         if node.agent_ref is not None:
             # node.agent_ref may be a live Agent instance or a string name.
@@ -300,7 +353,7 @@ def workflow_to_pydantic(orchestra: Any, topology: Topology) -> WorkflowDefiniti
         nodes.append(
             NodeSpec(
                 name=node.name,
-                node_type=node.node_type.value,
+                kind=node.kind,
                 agent_ref=agent_ref_name,
                 is_convergence_point=node.is_convergence_point,
                 metadata=dict(node.metadata),
@@ -321,8 +374,6 @@ def workflow_to_pydantic(orchestra: Any, topology: Topology) -> WorkflowDefiniti
     agents_by_name: Dict[str, "AgentSpec"] = {}
     seen_agent_names: set = set()
     for node in topology.nodes:
-        if not isinstance(node, Node):
-            continue
         ref = node.agent_ref
         # Try to resolve live agent instances; agent_ref strings are
         # resolved against the orchestra registry.
@@ -420,6 +471,7 @@ def _consolidate_edges(edges: List[Edge]) -> List[EdgeSpec]:
 def pydantic_to_topology(
     spec: WorkflowDefinition,
     tool_registry: Dict[str, Callable],
+    handler_registry: Optional[Dict[str, Callable]] = None,
 ) -> Topology:
     """Hydrate a runnable :class:`Topology` from a :class:`WorkflowDefinition`.
 
@@ -428,22 +480,52 @@ def pydantic_to_topology(
     each ``NodeSpec.agent_ref`` to a live ``Agent`` materialized by
     :func:`pydantic_to_agents`. Raises :class:`UnknownToolError` when any
     agent spec references a tool name not in ``tool_registry``.
+
+    ``handler_registry`` is the dependency-injection seam for ``USER`` nodes,
+    exactly mirroring ``tool_registry`` for agent tools (ADR-008 Decision 4):
+    a ``USER`` ``NodeSpec`` that declares a handler key in
+    ``metadata["handler"]`` has that name resolved to a live callable here
+    and stashed on the node's runtime-binding slot (``Node.agent_ref`` — the
+    same non-serialized slot agents use; the handler *name* round-trips via
+    ``metadata["handler"]``, never the callable). Because USER is the
+    analyzer's legacy carve-out (it stays a regular ``NodeInfo`` and the
+    shim registers the ``UserNode``), the runtime binding happens in
+    :meth:`Orchestra._bind_user_node_handlers` post-shim, which prefers this
+    explicitly-injected per-node handler over the process-wide one. A handler
+    key absent from ``handler_registry`` raises :class:`UnknownHandlerError`
+    (no silent ``None`` — that would yield a ``UserNode`` that fails opaquely
+    at first invocation). A ``USER`` node with no handler key falls back to
+    the Orchestra's process-wide ``UserNodeHandler``.
     """
     from ...agents.serialize import pydantic_to_agents
 
     agents = pydantic_to_agents(spec, tool_registry)
     agents_by_name = {agent.name: agent for agent in agents}
+    handler_registry = handler_registry or {}
 
     nodes: List[Node] = []
     for node_spec in spec.topology.nodes:
-        agent_obj: Any = None
-        if node_spec.agent_ref is not None:
-            agent_obj = agents_by_name.get(node_spec.agent_ref)
+        runtime_binding: Any = None
+        if node_spec.kind is NodeKind.AGENT and node_spec.agent_ref is not None:
+            runtime_binding = agents_by_name.get(node_spec.agent_ref)
+        elif node_spec.kind is NodeKind.USER:
+            handler_key = node_spec.metadata.get("handler")
+            if handler_key is not None:
+                if handler_key not in handler_registry:
+                    raise UnknownHandlerError(
+                        f"USER node '{node_spec.name}' references handler "
+                        f"'{handler_key}' which is not in handler_registry "
+                        f"(have: {sorted(handler_registry)}). Supply the "
+                        f"handler via the handler_registry parameter of "
+                        f"pydantic_to_topology; the runtime never binds a "
+                        f"None handler."
+                    )
+                runtime_binding = handler_registry[handler_key]
         nodes.append(
             Node(
                 name=node_spec.name,
-                node_type=NodeType(node_spec.node_type),
-                agent_ref=agent_obj,
+                kind=node_spec.kind,
+                agent_ref=runtime_binding,
                 is_convergence_point=node_spec.is_convergence_point,
                 metadata=dict(node_spec.metadata),
             )
@@ -483,6 +565,11 @@ def workflow_definition_schema() -> Dict[str, Any]:
     URI before returning so a future Pydantic version that silently shifts
     the dialect default fails fast rather than breaking every non-Python
     consumer at runtime.
+
+    The current :data:`WIRE_SCHEMA_VERSION` is embedded as a top-level
+    ``x-wire-schema-version`` keyword so a non-Python consumer can detect the
+    incompatible Session-08 ``kind`` shape (v2) vs the pre-Session-08
+    ``node_type`` shape (v1) from the schema document itself.
     """
     # Force AgentSpec resolution + WorkflowDefinition.model_rebuild() if a
     # caller imports topology.serialize without also importing agents.serialize.
@@ -498,6 +585,7 @@ def workflow_definition_schema() -> Dict[str, Any]:
             f"contract is JSON Schema 2020-12; a Pydantic upgrade has "
             f"likely changed the default. Pin Pydantic or update consumers."
         )
+    schema["x-wire-schema-version"] = WIRE_SCHEMA_VERSION
     return schema
 
 

@@ -113,26 +113,28 @@ class TestLegacyUserShim:
             "flows": ["User -> Helper", "Helper -> User"],
         })
         graph = _build_graph(canonical)
-        # Force a legacy User(Node) presence by adding a USER-typed node manually.
-        # The string converter currently treats "User" as a regular Node with
-        # NodeType.USER (not a det-node), which is exactly the legacy case.
-        from marsys.coordination.topology.core import NodeType
-        if "User" in graph.nodes:
-            graph.nodes["User"].node_type = NodeType.USER
+        # Force a legacy User(Node) presence by setting the USER kind on the
+        # graph node manually. The string converter treats "User" as a
+        # regular Node with NodeKind.USER (not a det-node) — the legacy case.
+        from marsys.coordination.topology.core import NodeKind
+        # Premise of this test: the string converter put a regular "User"
+        # graph node in place. Assert it — a setup regression must fail
+        # loudly, not silently skip the assertions below.
+        assert "User" in graph.nodes, sorted(graph.nodes)
+        graph.nodes["User"].kind = NodeKind.USER
 
         with warnings.catch_warnings(record=True) as caught:
             warnings.simplefilter("always")
             _shim(graph, canonical)
 
-        if any(
-            getattr(graph.nodes["User"], "node_type", None) == NodeType.USER
-            for _ in [None]
-        ):
-            assert any(isinstance(n, UserNode) for n in graph.det_nodes.values())
-            assert any(
-                "User(Node)" in str(w.message) and issubclass(w.category, DeprecationWarning)
-                for w in caught
-            )
+        # Unconditional (replaces a `for _ in [None]` guard that could pass
+        # vacuously): a legacy USER-kind regular node triggers UserNode
+        # det-node registration + the deprecation warning.
+        assert any(isinstance(n, UserNode) for n in graph.det_nodes.values())
+        assert any(
+            "User(Node)" in str(w.message) and issubclass(w.category, DeprecationWarning)
+            for w in caught
+        )
 
     def test_no_user_no_warning(self):
         canonical = StringNotationConverter.convert({
