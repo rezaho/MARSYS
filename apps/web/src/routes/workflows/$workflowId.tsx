@@ -422,17 +422,25 @@ function CanvasInner(): ReactElement {
     // empty (sensible default); replace is destructive. The pattern modal
     // disables "empty_canvas" when the canvas has nodes.
     const replaces = mode === "replace" || mode === "empty_canvas";
+    // Every preset is a complete runnable shape: it owns its single Start
+    // node + the edge into its entry agent (see pattern-presets.ts). The
+    // canvas only has to keep "exactly one Start" — a graph-combination
+    // concern that belongs here, in the inserter.
     if (replaces) {
-      const rfNodes: Node<CanvasNodeData>[] = newNodes.map((n) => ({
-        id: n.name,
-        type: "spren",
-        position: { x: 0, y: 0 },
-        data: {
-          name: n.name,
-          kind: (n.kind ?? "agent") as NodeKind,
-          agentRefAgentId: n.agent_ref ?? undefined,
-        },
-      }));
+      const rfNodes: Node<CanvasNodeData>[] = newNodes.map((n) => {
+        const kind = (n.kind ?? "agent") as NodeKind;
+        return {
+          id: n.name,
+          type: "spren",
+          position: { x: 0, y: 0 },
+          deletable: !isStartKind(kind),
+          data: {
+            name: n.name,
+            kind,
+            agentRefAgentId: n.agent_ref ?? undefined,
+          },
+        };
+      });
       const rfEdges: Edge<CanvasEdgeData>[] = newEdges.map((e, i) => ({
         id: `e-${e.source}-${e.target}-${i}`,
         source: e.source,
@@ -440,47 +448,40 @@ function CanvasInner(): ReactElement {
         type: "spren",
         data: { bidirectional: Boolean(e.bidirectional) },
       }));
-      // A destructive replace wipes the seeded Start. Re-inject the single
-      // non-deletable Start (the canvas-wide entry invariant) and wire it
-      // to the preset's entry node so the result stays runnable.
-      const startNode: Node<CanvasNodeData> = {
-        id: "Start",
-        type: "spren",
-        position: { x: 0, y: 0 },
-        deletable: false,
-        data: { name: "Start", kind: "start" },
-      };
-      const entry = newNodes[0]?.name;
-      const startEdges: Edge<CanvasEdgeData>[] = entry
-        ? [
-            {
-              id: `e-Start-${entry}-seed`,
-              source: "Start",
-              target: entry,
-              type: "spren",
-              data: { bidirectional: false },
-            },
-          ]
-        : [];
-      const allNodes = [startNode, ...rfNodes];
-      const allEdges = [...startEdges, ...rfEdges];
-      setNodes(autoLayout(allNodes, allEdges));
-      setEdges(allEdges);
+      setNodes(autoLayout(rfNodes, rfEdges));
+      setEdges(rfEdges);
       setAgents(newAgents);
     } else {
+      // Merge into the existing canvas. It already has its single Start —
+      // drop the preset's Start and retarget the preset's Start-out edges
+      // onto the canvas Start so we never end up with two.
+      const existingStart = nodes.find((nd) => isStartKind(nd.data.kind));
+      const presetStartName = newNodes.find(
+        (n) => (n.kind ?? "agent") === "start",
+      )?.name;
+      const mergeNodes = existingStart
+        ? newNodes.filter((n) => (n.kind ?? "agent") !== "start")
+        : newNodes;
       const startIndex = nodes.length;
-      const rfNodes: Node<CanvasNodeData>[] = newNodes.map((n, i) => ({
-        id: `node-${startIndex + i}-${n.name}`,
-        type: "spren",
-        position: { x: 200 + (i % 4) * 240, y: 200 + Math.floor(i / 4) * 140 },
-        data: {
-          name: n.name,
-          kind: (n.kind ?? "agent") as NodeKind,
-          agentRefAgentId: n.agent_ref ?? undefined,
-        },
-      }));
+      const rfNodes: Node<CanvasNodeData>[] = mergeNodes.map((n, i) => {
+        const kind = (n.kind ?? "agent") as NodeKind;
+        return {
+          id: `node-${startIndex + i}-${n.name}`,
+          type: "spren",
+          position: { x: 200 + (i % 4) * 240, y: 200 + Math.floor(i / 4) * 140 },
+          deletable: !isStartKind(kind),
+          data: {
+            name: n.name,
+            kind,
+            agentRefAgentId: n.agent_ref ?? undefined,
+          },
+        };
+      });
       const idByName = new Map<string, string>();
       rfNodes.forEach((n) => idByName.set(n.data.name, n.id));
+      if (existingStart && presetStartName) {
+        idByName.set(presetStartName, existingStart.id);
+      }
       const rfEdges: Edge<CanvasEdgeData>[] = newEdges.map((e, i) => ({
         id: `e-merge-${i}-${e.source}-${e.target}`,
         source: idByName.get(e.source) ?? e.source,

@@ -105,6 +105,23 @@ function agentNode(name: string): NodeSpec {
   };
 }
 
+/**
+ * Every pattern is a complete, runnable shape: it owns its single Start
+ * node and the edge into its entry agent. (Merge-into-an-existing-canvas
+ * deduplication is the inserter's concern, not the generator's.)
+ */
+const START_NAME = "Start";
+
+function startNode(): NodeSpec {
+  return {
+    name: START_NAME,
+    kind: "start",
+    agent_ref: null,
+    is_convergence_point: false,
+    metadata: {},
+  };
+}
+
 function edge(source: string, target: string, bidirectional = false): EdgeSpec {
   return {
     source,
@@ -134,8 +151,10 @@ function hubAndSpoke(n: number): PatternResult {
   const nodes: NodeSpec[] = [];
   const edges: EdgeSpec[] = [];
 
+  nodes.push(startNode());
   agents["Hub"] = blankAgent("Hub");
   nodes.push(agentNode("Hub"));
+  edges.push(edge(START_NAME, "Hub"));
 
   const spokeCount = Math.max(2, n - 1);
   for (let i = 1; i <= spokeCount; i++) {
@@ -152,11 +171,13 @@ function pipeline(n: number): PatternResult {
   const nodes: NodeSpec[] = [];
   const edges: EdgeSpec[] = [];
 
+  nodes.push(startNode());
   for (let i = 1; i <= n; i++) {
     const name = `Agent ${i}`;
     agents[name] = blankAgent(name);
     nodes.push(agentNode(name));
-    if (i > 1) edges.push(edge(`Agent ${i - 1}`, name));
+    if (i === 1) edges.push(edge(START_NAME, name));
+    else edges.push(edge(`Agent ${i - 1}`, name));
   }
   return { nodes, edges, agents };
 }
@@ -169,8 +190,10 @@ function hierarchical(n: number): PatternResult {
   const nodes: NodeSpec[] = [];
   const edges: EdgeSpec[] = [];
 
+  nodes.push(startNode());
   agents["Root"] = blankAgent("Root");
   nodes.push(agentNode("Root"));
+  edges.push(edge(START_NAME, "Root"));
 
   const leaves = Math.max(2, n - 2);
   const managers = Math.min(Math.ceil(leaves / 2), Math.max(1, n - 1 - leaves));
@@ -196,12 +219,14 @@ function mesh(n: number): PatternResult {
   const edges: EdgeSpec[] = [];
   const names: string[] = [];
 
+  nodes.push(startNode());
   for (let i = 1; i <= n; i++) {
     const name = `Agent ${i}`;
     agents[name] = blankAgent(name);
     nodes.push(agentNode(name));
     names.push(name);
   }
+  if (names.length > 0) edges.push(edge(START_NAME, names[0]));
   for (let i = 0; i < names.length; i++) {
     for (let j = i + 1; j < names.length; j++) {
       edges.push(edge(names[i], names[j], true));
