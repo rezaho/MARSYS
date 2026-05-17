@@ -12,14 +12,14 @@ class UnknownToolError(ValueError):
     """
 
 
-class NonSerializableTopologyError(ValueError):
-    """A topology contains a node whose runtime state cannot be captured by ``NodeSpec``.
+class UnknownHandlerError(ValueError):
+    """A ``USER`` node's handler key was not in the supplied ``handler_registry``.
 
-    Currently raised when ``workflow_to_pydantic`` encounters a
-    :class:`marsys.coordination.execution.det_nodes.DeterministicNode`
-    (StartNode, EndNode, UserNode). Det-nodes carry execution-runtime state
-    beyond the four ``NodeType`` values the wire shape exposes; serializing
-    them would produce a partial spec. Drop the det-node from the topology
-    before serializing, or open a follow-up PR to extend the spec to cover
-    det-nodes explicitly.
+    Hard failure mirroring :class:`UnknownToolError`: a ``USER`` node carries a
+    handler binding (the human-I/O callable) referenced by name on the wire,
+    exactly as agent tools are. When :func:`pydantic_to_topology` cannot
+    resolve that name from the caller-supplied ``handler_registry`` it raises
+    this rather than silently binding ``None`` (which would yield a UserNode
+    that fails opaquely at first invocation). The message names the node and
+    points callers at the ``handler_registry`` parameter.
     """
