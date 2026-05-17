@@ -728,6 +728,14 @@ This is precisely the "Future cleanup commitment (post-Framework Session 04)" se
 - `packages/spren/src/spren/runs/materialize.py`: simplified the `_build_execution_config` aggui block to unconditional `from marsys.coordination.aggui.config import AGGUIConfig; config.aggui = AGGUIConfig(enabled=True)`. The prior `try/except ImportError` + `hasattr` + "Framework 06 not yet present" branches were defensive code for a now-impossible case (AG-UI is core; `marsys.coordination.aggui` is merged) — removed per CLAUDE.md anti-pattern #5 + SP-006. Docstring corrected (it claimed AG-UI was optional/future).
 - **Verified**: `uv sync` installs `ag-ui-protocol==0.1.18`; `from ag_ui.core import BaseEvent` imports; the probe's `POST /v1/runs` now returns **201** `{"schema_version":1,"run_id":...,"status":"queued"}` (was 500). Materializer suite 10 passed / 1 pre-existing-env deselected. **Commit**: pending (bundle with RUN-3a + RUN-3d triage).
 
+> ⛔ **SUPERSEDED 2026-05-16 — DO NOT ACT ON RUN-3d / RUN-3e / "Node-model redesign" / PALETTE Start-End below.**
+> Root cause was wrong. Real cause: Spren hand-rolls a Pydantic mirror that diverged from the framework's
+> canonical Session-04 wire shape, and `materialize.py:181` drops `topology.metadata` (entry/exit) the framework
+> shim needs. Proven by `packages/framework/benchmarks/GAIA/test_parallel_tracing_canonical_anthropic.py`
+> (Success: True on Spren's exact path). "Emit DeterministicNode instances" is refuted; PRODUCT-BUG-001 auto-dissolves.
+> **Authoritative plan + full remaining-task ledger:** `sessions/08-canonical-workflow-reframe.md`. Text below is
+> retained only as the audit trail of how the wrong conclusion was reached.
+
 ### WF-BUG-RUN-3d — ⭐ NEW (surfaced by RUN-3a+3c fixes) — visual-builder topologies have no explicit Start node → framework topology validation fails
 
 **Status**: this is the **manifestation of WF-BUG-PALETTE-1 on the Run path** — not a separate root cause. Empirically confirmed it is now the next Run blocker (run *creates* fine, then *fails during execution*).
