@@ -449,6 +449,39 @@ class Orchestra:
             # Default to string notation if all values are strings
             return StringNotationConverter.convert(topology_dict)
 
+    @staticmethod
+    def _bind_user_node_handlers(topology_graph, process_wide_handler=None) -> None:
+        """Bind a handler to every ``UserNode`` det-node on the graph (call
+        post-shim).
+
+        Resolution order, per ``UserNode``:
+          1. An explicitly-injected per-node handler — the ``handler_registry``
+             DI seam. ``pydantic_to_topology`` resolves a USER ``NodeSpec``'s
+             ``metadata["handler"]`` to a callable and stashes it on the
+             node's runtime-binding slot (``Node.agent_ref``); the analyzer's
+             USER carve-out carries that onto ``NodeInfo.agent``. A per-node
+             handler binds even when no process-wide handler is set.
+          2. Else ``process_wide_handler`` (the Orchestra's
+             ``_user_node_handler``).
+          3. Else nothing — ``det.handler`` stays ``None`` and
+             ``UserNode.on_single_invoke`` fails with its existing clear
+             error (unchanged behaviour).
+
+        Static + explicit-args so the handler-DI wiring is unit-testable
+        without constructing a full Orchestra run.
+        """
+        from .execution.det_nodes import UserNode
+
+        graph_nodes = getattr(topology_graph, "nodes", None) or {}
+        for det in (getattr(topology_graph, "det_nodes", None) or {}).values():
+            if not isinstance(det, UserNode):
+                continue
+            info = graph_nodes.get(det.name)
+            per_node = getattr(info, "agent", None) if info is not None else None
+            handler = per_node if callable(per_node) else process_wide_handler
+            if handler is not None:
+                det.handler = handler
+
     # REMOVE-IN-V0.4: entire _apply_legacy_topology_shim method translates legacy
     # entry_point / exit_points / User(Node)-as-terminal patterns into explicit
     # Start / End / User det-node edges. After v0.4, users specify det-nodes
@@ -475,7 +508,7 @@ class Orchestra:
         """
         import warnings
         from .execution.det_nodes import EndNode, StartNode, UserNode
-        from .topology.core import NodeType
+        from .topology.core import NodeKind
         from .topology.graph import TopologyEdge
 
         # Merge canonical (user-specified, e.g. entry_point) with
@@ -522,7 +555,7 @@ class Orchestra:
                     topology_graph.add_edge(TopologyEdge(exit_agent, "End"))
 
         legacy_user_present = any(
-            getattr(node, "node_type", None) == NodeType.USER
+            getattr(node, "kind", None) == NodeKind.USER
             for node in topology_graph.nodes.values()
         )
         existing_user_det = any(
@@ -545,7 +578,7 @@ class Orchestra:
             if topology_graph.get_start_node() is None:
                 user_node_names = {
                     name for name, node in topology_graph.nodes.items()
-                    if getattr(node, "node_type", None) == NodeType.USER
+                    if getattr(node, "kind", None) == NodeKind.USER
                 }
                 entry_targets: list[str] = []
                 for u_name in user_node_names:
@@ -570,7 +603,7 @@ class Orchestra:
             # "agent → End" edge so terminate_workflow gating works.
             user_node_names = {
                 name for name, node in topology_graph.nodes.items()
-                if getattr(node, "node_type", None) == NodeType.USER
+                if getattr(node, "kind", None) == NodeKind.USER
             }
             agents_with_user_edge: list[str] = []
             for name, node in topology_graph.nodes.items():
@@ -639,7 +672,7 @@ class Orchestra:
             execution_config: Configuration controlling cleanup behavior
         """
         from ..agents.registry import AgentRegistry
-        from ..coordination.topology.core import NodeType
+        from ..coordination.topology.core import NodeKind
 
         if not execution_config or not getattr(execution_config, 'auto_cleanup_agents', True):
             logger.debug("Auto-cleanup disabled by config")
@@ -653,7 +686,7 @@ class Orchestra:
         # Get all agent nodes from topology
         agent_nodes = [
             node for node in canonical_topology.nodes
-            if node.node_type == NodeType.AGENT
+            if node.kind == NodeKind.AGENT
         ]
 
         logger.debug(f"Auto-cleanup: processing {len(agent_nodes)} agent nodes")
@@ -1012,14 +1045,12 @@ class Orchestra:
             # can find it. Cleared in the finally block below.
             self._active_orchestrators[session_id] = orchestrator
 
-            # Bind UserNodeHandler to any UserNode det-node on the graph
-            # (post-shim). Without a bound handler, UserNode.on_single_invoke
-            # fails with a clear error.
-            if self._user_node_handler is not None:
-                from .execution.det_nodes import UserNode
-                for det in (self.topology_graph.det_nodes or {}).values():
-                    if isinstance(det, UserNode):
-                        det.handler = self._user_node_handler
+            # Bind handlers to every UserNode det-node (post-shim): prefer an
+            # explicitly-injected per-node handler (handler_registry DI seam)
+            # over the process-wide handler.
+            self._bind_user_node_handlers(
+                self.topology_graph, self._user_node_handler
+            )
 
             # Resolve the workflow entry point. Topologies that include a
             # StartNode (the new explicit entry) drive themselves; legacy
