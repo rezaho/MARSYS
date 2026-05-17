@@ -8,7 +8,7 @@ full topology definitions.
 from typing import Dict, List
 import logging
 
-from ..core import Topology, Node, Edge, EdgePattern, NodeType
+from ..core import Topology, Node, Edge, EdgePattern, NodeKind
 from ..patterns import PatternConfig, PatternType
 from ...rules.basic_rules import ParallelRule, TimeoutRule
 
@@ -67,7 +67,7 @@ class PatternConfigConverter:
         topology = Topology()
         
         # Add User node
-        topology.add_node(Node(name="User", node_type=NodeType.USER))
+        topology.add_node(Node(name="User", kind=NodeKind.USER))
         
         # Add hub
         hub_name = config.params["hub"]
@@ -115,7 +115,7 @@ class PatternConfigConverter:
         topology = Topology()
         
         # Add User node
-        topology.add_node(Node(name="User", node_type=NodeType.USER))
+        topology.add_node(Node(name="User", kind=NodeKind.USER))
         
         # Handle different input formats
         if "tree" in config.params:
@@ -173,7 +173,7 @@ class PatternConfigConverter:
         topology = Topology()
         
         # Add User node
-        topology.add_node(Node(name="User", node_type=NodeType.USER))
+        topology.add_node(Node(name="User", kind=NodeKind.USER))
         
         stages = config.params["stages"]
         parallel_within_stage = config.params.get("parallel_within_stage", False)
@@ -230,7 +230,7 @@ class PatternConfigConverter:
         
         # Add User node if needed
         if "entry_point" in config.metadata:
-            topology.add_node(Node(name="User", node_type=NodeType.USER))
+            topology.add_node(Node(name="User", kind=NodeKind.USER))
             entry_point = config.metadata["entry_point"]
             if entry_point in agents:
                 topology.add_edge(Edge(source="User", target=entry_point))
@@ -245,7 +245,7 @@ class PatternConfigConverter:
         topology = Topology()
         
         # Add User node
-        topology.add_node(Node(name="User", node_type=NodeType.USER))
+        topology.add_node(Node(name="User", kind=NodeKind.USER))
         
         center = config.params["center"]
         points = config.params["points"]
@@ -295,7 +295,7 @@ class PatternConfigConverter:
         
         # Add User node if needed
         if "entry_point" in config.metadata:
-            topology.add_node(Node(name="User", node_type=NodeType.USER))
+            topology.add_node(Node(name="User", kind=NodeKind.USER))
             entry_point = config.metadata["entry_point"]
             if entry_point in agents:
                 topology.add_edge(Edge(source="User", target=entry_point))
@@ -310,7 +310,7 @@ class PatternConfigConverter:
         topology = Topology()
         
         # Add User node
-        topology.add_node(Node(name="User", node_type=NodeType.USER))
+        topology.add_node(Node(name="User", kind=NodeKind.USER))
         
         broadcaster = config.params["broadcaster"]
         receivers = config.params["receivers"]

@@ -9,7 +9,7 @@ import re
 from typing import Any, Optional, Tuple, Union, TYPE_CHECKING
 import logging
 
-from ..core import Node, Edge, NodeType, EdgeType, EdgePattern
+from ..core import Node, Edge, NodeKind, EdgeType, EdgePattern
 
 if TYPE_CHECKING:
     from ...rules.rules_engine import Rule
@@ -26,80 +26,74 @@ EDGE_PATTERNS = {
 }
 
 
-def parse_node(node: Union[str, Node, Any]) -> Any:
+def parse_node(node: Union[str, Node, Any]) -> Node:
     """
-    Parse various node formats into a Node or DeterministicNode object.
+    Parse various node formats into a uniform :class:`Node`.
 
     Args:
         node: Can be:
-            - String: Node name (e.g., "Agent1" or "User"). The reserved
-              names "Start" and "End" auto-resolve to StartNode and EndNode
-              det-node instances (used by the unified-barrier orchestrator).
-              "User" remains a regular Node(NodeType.USER) for backward
-              compatibility with existing topologies.
+            - String: Node name (e.g., "Agent1"). The reserved names
+              "Start"/"End"/"User" resolve to ``Node(kind=START/END/USER)``;
+              every other string is ``Node(kind=AGENT)``. The deterministic
+              behaviour instance for a ``START``/``END``/``USER`` node is
+              materialized later, at the analyzer seam — NOT here.
             - Node: Returned as-is.
-            - DeterministicNode (StartNode / EndNode / UserNode): returned
-              as-is.
             - Agent instance: Uses agent.name attribute.
             - Dict: {"name": "...", "type": "...", "metadata": {...}}.
 
     Returns:
-        Node or DeterministicNode instance. Callers must isinstance-check
-        if they need to distinguish (the topology analyzer does this and
-        registers DeterministicNodes on the graph via register_det_node).
+        A :class:`Node`. This function NEVER returns a ``DeterministicNode``
+        instance — ``Topology.nodes`` is homogeneous ``Node`` (Option A); the
+        deterministic behaviour is materialized from ``Node.kind`` at
+        ``TopologyAnalyzer._add_nodes`` via the single-sourced registry.
 
     Raises:
         ValueError: If node format is invalid.
     """
-    # Det-node instance — passed through.
-    from ...execution.det_nodes import DeterministicNode, RESERVED_DETNODE_NAMES
-    if isinstance(node, DeterministicNode):
-        return node
-
     if isinstance(node, Node):
         return node
 
     if isinstance(node, str):
-        # Reserved det-node names: "Start" -> StartNode, "End" -> EndNode.
-        # "User" is intentionally kept as Node(USER) for backward
-        # compatibility — existing topologies use User as entry/exit/Q&A
-        # via the legacy code path.
-        if node in RESERVED_DETNODE_NAMES and node != "User":
-            cls = RESERVED_DETNODE_NAMES[node]
-            return cls()
-        # Detect "User" string and create User node type (legacy behavior).
-        node_type = NodeType.USER if node.lower() == "user" else NodeType.AGENT
-        return Node(name=node, node_type=node_type)
-    
+        # Reserved names map to their NodeKind; everything else is an agent.
+        # The string→kind lookup is derived from the single-sourced
+        # behaviour registry (no second hand-maintained spelling).
+        from ...execution.det_nodes import RESERVED_NAME_TO_KIND
+
+        kind = RESERVED_NAME_TO_KIND.get(node, NodeKind.AGENT)
+        return Node(name=node, kind=kind)
+
     if isinstance(node, dict):
         # Parse from dictionary
         name = node.get("name")
         if not name:
             raise ValueError("Node dictionary must have 'name' field")
-        
-        node_type = node.get("type", "agent")
-        if isinstance(node_type, str):
-            node_type = NodeType(node_type.lower())
-        
+
+        # Canonical key is "kind" (matches Topology.to_dict and the unified
+        # taxonomy); "type" is accepted as a legacy alias so pre-Session-08
+        # dict-form callers keep working (no behaviour regression).
+        kind = node.get("kind", node.get("type", "agent"))
+        if isinstance(kind, str):
+            kind = NodeKind(kind.lower())
+
         # Support explicit opt-in via dictionary
         is_convergence = node.get("is_convergence_point", False)  # Default to False
-        
+
         return Node(
             name=name,
-            node_type=node_type,
+            kind=kind,
             is_convergence_point=is_convergence,
             metadata=node.get("metadata", {})
         )
-    
+
     # Try to extract from agent instance
     if hasattr(node, 'name'):
         return Node(
             name=node.name,
-            node_type=NodeType.AGENT,
+            kind=NodeKind.AGENT,
             agent_ref=node,
             metadata={"agent_class": node.__class__.__name__}
         )
-    
+
     raise ValueError(f"Cannot parse node from {type(node)}: {node}")
 
 

@@ -86,6 +86,12 @@ infers terminal intent from `agent → User` legacy edges and synthesizes
   superseded by `has_edge_to_endnode` and `has_edge_to_usernode`.
 - `src/marsys/coordination/topology/graph.py:auto_inject_user_node` —
   legacy auto-injection driven by `auto_inject_user=True` metadata.
+- `src/marsys/coordination/topology/analyzer.py:_add_nodes` — the
+  `node.kind is not NodeKind.USER` carve-out (Session 08, ADR-008): USER
+  stays a regular `NodeInfo(kind=USER)` so the shim above performs the
+  legacy-User translation + `UserNode` registration. At v0.4, delete the
+  carve-out so USER joins the generic kind→behaviour materialization branch
+  (no dispatch restructure — the comment at that site is the exact recipe).
 
 **Migration recipe**:
 

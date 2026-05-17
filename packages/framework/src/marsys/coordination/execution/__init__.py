@@ -7,11 +7,13 @@ runtime / step executor / coordination event types.
 
 from ..events import BranchCompletedEvent, BranchCreatedEvent
 from .det_nodes import (
+    NODE_KIND_BEHAVIOUR,
+    RESERVED_NAME_TO_KIND,
     DeterministicNode,
     EndNode,
-    RESERVED_DETNODE_NAMES,
     StartNode,
     UserNode,
+    behaviour_for_kind,
 )
 from .deterministic_runtime import DeterministicRuntime
 from .orchestrator import Orchestrator
@@ -56,7 +58,9 @@ __all__ = [
     "StartNode",
     "EndNode",
     "UserNode",
-    "RESERVED_DETNODE_NAMES",
+    "NODE_KIND_BEHAVIOUR",
+    "RESERVED_NAME_TO_KIND",
+    "behaviour_for_kind",
     # Runtimes
     "RealRuntime",
     "DeterministicRuntime",

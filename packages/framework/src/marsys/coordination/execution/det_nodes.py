@@ -17,13 +17,17 @@ Det-nodes interact with the orchestrator only through the narrow
 explicit and the API surface minimal.
 
 Reserved names: a topology referring to the string "Start", "End", or
-"User" auto-resolves to the corresponding det-node class via
-`RESERVED_DETNODE_NAMES`.
+"User" resolves to the corresponding `NodeKind` via the single authoritative
+`NODE_KIND_BEHAVIOUR` registry (the one source of truth for the kind↔class
+↔reserved-name relationship). The deterministic behaviour instance is
+materialized from `NodeKind` at the analyzer seam.
 """
 from __future__ import annotations
 
 from abc import ABC, abstractmethod
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, Dict, Type
+
+from ..topology.core import NodeKind
 
 if TYPE_CHECKING:
     from .orchestrator_types import Barrier, Branch, DetNodeContext
@@ -168,14 +172,41 @@ class UserNode(DeterministicNode):
         ctx.enqueue_user_interaction(placeholder, prompt=request, resume_agent=resume_agent)
 
 
-# Reserved-name registry: maps a reserved string name to the det-node class.
-# Used by the topology converters when resolving string-form node specs like:
-#   topology = {"agents": ["Start", "A", "End"], "flows": [...]}
-RESERVED_DETNODE_NAMES: dict[str, type[DeterministicNode]] = {
-    StartNode.RESERVED_NAME: StartNode,
-    EndNode.RESERVED_NAME: EndNode,
-    UserNode.RESERVED_NAME: UserNode,
+# --- Single source of truth -------------------------------------------------
+#
+# ``NODE_KIND_BEHAVIOUR`` is THE authoritative ``NodeKind → behaviour-class``
+# map. Every other lookup (the parse_node reserved-name carve-out, the
+# analyzer's kind→instance materialization, the reserved-name string set in
+# topology.core) derives from it — adding a new deterministic kind is one
+# enum value + one behaviour class + one entry here, with no dispatch-site
+# edits (extension-open; ADR-008 Decision 2 / AC-9/10/11).
+#
+# ``RESERVED_NODE_NAMES`` in ``topology.core`` is derived from ``NodeKind``
+# directly (the non-AGENT kinds); this registry binds those kinds to the
+# classes that run them and exposes the name↔kind mapping derived from each
+# class's ``RESERVED_NAME`` attribute.
+NODE_KIND_BEHAVIOUR: Dict[NodeKind, Type[DeterministicNode]] = {
+    NodeKind.START: StartNode,
+    NodeKind.END: EndNode,
+    NodeKind.USER: UserNode,
 }
+
+# Derived: reserved string name → NodeKind (e.g. "Start" → NodeKind.START).
+# Used by ``parse_node`` to map a string node spec to a uniform Node(kind=).
+# Single-sourced from NODE_KIND_BEHAVIOUR + each class's RESERVED_NAME — NOT a
+# second hand-maintained dict.
+RESERVED_NAME_TO_KIND: Dict[str, NodeKind] = {
+    cls.RESERVED_NAME: kind for kind, cls in NODE_KIND_BEHAVIOUR.items()
+}
+
+
+def behaviour_for_kind(kind: NodeKind) -> Type[DeterministicNode]:
+    """Return the deterministic behaviour class bound to ``kind``.
+
+    Raises ``KeyError`` for ``NodeKind.AGENT`` (agents are LLM-driven, not
+    deterministic) — callers branch on ``kind`` before materializing.
+    """
+    return NODE_KIND_BEHAVIOUR[kind]
 
 
 __all__ = [
@@ -183,5 +214,7 @@ __all__ = [
     "StartNode",
     "EndNode",
     "UserNode",
-    "RESERVED_DETNODE_NAMES",
+    "NODE_KIND_BEHAVIOUR",
+    "RESERVED_NAME_TO_KIND",
+    "behaviour_for_kind",
 ]
