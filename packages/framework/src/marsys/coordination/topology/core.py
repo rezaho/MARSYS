@@ -17,16 +17,28 @@ if TYPE_CHECKING:
 logger = logging.getLogger(__name__)
 
 
-class NodeType(Enum):
-    """Types of nodes in the topology."""
-    USER = "user"
+class NodeKind(Enum):
+    """The canonical kind of a topology node — the single discriminator that
+    determines what executes it. ``AGENT`` is LLM-driven (carries an
+    ``agent_ref``); ``START``/``END``/``USER`` are deterministic control
+    nodes whose behaviour lives in the framework classes selected from this
+    kind (see ``execution.det_nodes``). This enum is the canonical taxonomy:
+    the wire ``NodeSpec.kind`` mirrors it 1:1 and every boundary derives
+    from it.
+    """
     AGENT = "agent"
-    SYSTEM = "system"
-    TOOL = "tool"
+    START = "start"
+    END = "end"
+    USER = "user"
 
 
-# Reserved node names that cannot be used for agents
-RESERVED_NODE_NAMES = frozenset({"user", "system", "tool"})  # lowercase for case-insensitive
+# Reserved node names that cannot be used for agents. Derived from NodeKind
+# (the non-AGENT kinds) so the set can never drift from the taxonomy. Kept as
+# a module-level frozenset with this exact name and import path — external
+# consumers (e.g. Spren's validator) import the value.
+RESERVED_NODE_NAMES = frozenset(
+    k.value for k in NodeKind if k is not NodeKind.AGENT
+)  # {"start", "end", "user"} — lowercase, case-insensitive
 
 
 class EdgeType(Enum):
@@ -45,25 +57,31 @@ class EdgePattern(Enum):
 
 @dataclass
 class Node:
-    """A node in the topology graph."""
+    """A node in the topology graph.
+
+    ``kind`` is the single node-kind discriminator (``NodeKind``). A node is
+    uniform data: ``START``/``END``/``USER`` nodes are plain ``Node``s with
+    the corresponding ``kind`` — their deterministic behaviour is materialized
+    from ``kind`` at the analyzer seam, not stored here.
+    """
     name: str
-    node_type: NodeType = NodeType.AGENT
+    kind: NodeKind = NodeKind.AGENT
     agent_ref: Optional[Any] = None  # Reference to actual agent instance
     is_convergence_point: bool = False  # Default to NOT convergence point - will be detected dynamically
     metadata: Dict[str, Any] = field(default_factory=dict)
-    
+
     def __post_init__(self):
         """Validate node."""
         if not self.name:
             raise ValueError("Node name cannot be empty")
-        
-        # Convert string node_type to enum if needed
-        if isinstance(self.node_type, str):
-            self.node_type = NodeType(self.node_type.lower())
-    
+
+        # Convert string kind to enum if needed
+        if isinstance(self.kind, str):
+            self.kind = NodeKind(self.kind.lower())
+
     def __str__(self) -> str:
         """String representation."""
-        return f"Node({self.name}, type={self.node_type.value})"
+        return f"Node({self.name}, kind={self.kind.value})"
     
     def __eq__(self, other) -> bool:
         """Equality based on name."""
@@ -129,21 +147,6 @@ class Edge:
         return hash((self.source, self.target, self.edge_type))
 
 
-class User(Node):
-    """
-    Represents a User node in the topology.
-    
-    User nodes are special nodes that represent human interaction points.
-    They serve as entry points for tasks and destinations for final responses.
-    """
-    def __init__(self, name: str = "User", metadata: Dict[str, Any] = None):
-        super().__init__(
-            name=name,
-            node_type=NodeType.USER,
-            metadata=metadata or {}
-        )
-
-
 @dataclass
 class Topology:
     """
@@ -164,14 +167,12 @@ class Topology:
     
     def __post_init__(self):
         """Validate and index the topology."""
-        # Validate types — accept Node and DeterministicNode (the unified-
-        # barrier orchestrator path uses StartNode/EndNode/UserNode as
-        # explicit topology nodes alongside agent Nodes).
-        from ..execution.det_nodes import DeterministicNode
-        if not all(isinstance(node, (Node, DeterministicNode)) for node in self.nodes):
-            raise TypeError(
-                "All nodes must be Node or DeterministicNode instances"
-            )
+        # Validate types — Topology.nodes is homogeneous: every element is a
+        # Node. Start/End/User are Nodes with the corresponding NodeKind;
+        # their DeterministicNode behaviour instance is materialized at the
+        # analyzer seam, never stored here.
+        if not all(isinstance(node, Node) for node in self.nodes):
+            raise TypeError("All nodes must be Node instances")
         if not all(isinstance(edge, Edge) for edge in self.edges):
             raise TypeError("All edges must be Edge instances")
         # Note: We can't check Rule type here due to circular import
@@ -226,8 +227,8 @@ class Topology:
         # Check if node already exists
         if parsed_node.name in self._node_index:
             logger.warning(f"Node '{parsed_node.name}' already exists, updating")
-            self.update_node(parsed_node.name, 
-                           node_type=parsed_node.node_type,
+            self.update_node(parsed_node.name,
+                           kind=parsed_node.kind,
                            agent_ref=parsed_node.agent_ref,
                            metadata=parsed_node.metadata)
             return self._node_index[parsed_node.name]
@@ -281,7 +282,7 @@ class Topology:
         
         Args:
             name: Node name
-            **kwargs: Properties to update (node_type, agent_ref, metadata)
+            **kwargs: Properties to update (kind, agent_ref, metadata)
             
         Returns:
             True if updated, False if node not found
@@ -488,7 +489,7 @@ class Topology:
             "nodes": [
                 {
                     "name": node.name,
-                    "type": node.node_type.value,
+                    "kind": node.kind.value,
                     "metadata": node.metadata
                 }
                 for node in self.nodes
