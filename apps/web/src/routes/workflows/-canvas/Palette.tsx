@@ -2,18 +2,17 @@
  * Left-edge node palette: drag-from / click to add a node to the canvas.
  *
  * Category model (locked — see docs/architecture/spren/11-node-model.md):
- *   - Agents: the standard Agent (active) + a specialized catalog
- *     (Browser / Code / … — frontend authoring presets; their tool- and
- *     instruction-templating is task #21, so they are listed but inactive
- *     here).
+ *   - Agents: the standard Agent (active). The specialized catalog
+ *     (Browser / Code / …) is listed but INACTIVE — the framework cannot
+ *     round-trip a specialized agent through `AgentSpec`/`pydantic_to_agents`
+ *     (P12), so a preset would be a non-runnable look-alike. Real support
+ *     is a framework backlog item (docs/implementation/framework/
+ *     v0.5-future.md), not a Spren UI task.
  *   - Core: Start (the single, default, non-deletable canvas entry — it
  *     always exists, so it is shown but not droppable), End and User
  *     (both droppable, 0..N).
  *   - Logic / Tools / Data: modeled but not yet wired — shown inactive
  *     ("soon"), non-droppable.
- *
- * Session 08 ships only this minimal category-aware palette; the full
- * specialized-agent card/detail UX is task #21.
  *
  * Active items use HTML5 drag-and-drop with a `application/spren-node-type`
  * payload (the `NodeKind`) that the canvas's `onDrop` reads.
@@ -32,9 +31,12 @@ const ACTIVE_CORE: { kind: NodeKind; label: string }[] = [
 ];
 
 /**
- * Specialized agents are authoring presets (AC-PALETTE-2): they compile to
- * a generic `kind="agent"` node + a templated `AgentSpec`. The templating
- * UX is task #21, so they are catalogued here but inactive.
+ * Catalogued but inactive: a specialized agent cannot round-trip through
+ * the framework wire (no `AgentSpec` class discriminator;
+ * `pydantic_to_agents` rebuilds the base `Agent`; the classes override
+ * `_run`/lifecycle). Listed so the product shape is visible; activated
+ * only once the framework backlog item lands. Supersedes AC-PALETTE-2's
+ * "preset" framing.
  */
 const SPECIALIZED_AGENTS = [
   "Browser",

@@ -68,7 +68,7 @@ frontend presentation; every node that reaches the wire is a framework
 
 | Category | Types | Becomes on the wire | v0.3 |
 |---|---|---|---|
-| **Agents** | generic Agent; specialized (Browser, Code, DataAnalysis, FileOperation, WebSearch, InteractiveElements, Learnable; future e.g. Guardrail) | `NodeSpec(kind="agent")` + an `AgentSpec` (specialized = a tool-/instruction-templated preset — see below) | **active** |
+| **Agents** | generic Agent (**active**); specialized — Browser, Code, DataAnalysis, FileOperation, WebSearch, InteractiveElements, Learnable; future e.g. Guardrail (**inactive**, see P12) | generic → `NodeSpec(kind="agent")` + an `AgentSpec`; specialized cannot round-trip (framework gap) so they are not droppable | generic **active** / specialized **inactive** |
 | **Core** | Start; End; User | `NodeSpec(kind="start" / "end" / "user")` — real persisted kind nodes | **active** |
 | **Tools** | (a) agent-attached tool; (b) tool-as-node | (a) entries in the `AgentSpec` tool list; (b) future framework node kind | **inactive** |
 | **Logic** | conditional (if/else); loop/while | future framework `NodeKind` members | **inactive** |
@@ -99,23 +99,44 @@ follows the framework roadmap: a category goes active when its
   (marsys `validate_workflow()`). Lint surfaces this pre-flight so the
   builder guides the user rather than failing at run time.
 
-### Specialized agents are a frontend preset, not a wire concept (P12)
+### Specialized agents are inactive in v0.3 — a framework wire gap, not a UI deferral (P12)
 
-Verified against framework primary source: the specialized agent classes
-(`BrowserAgent`, `CodeExecutionAgent`, …) exist but differ **only** by
-`__init__` tool-injection / prompt defaults. `AgentSpec`
-(`agents/serialize.py`, `extra="forbid"`) has **no class discriminator**;
-`pydantic_to_agents` hard-codes reconstruction to the base `Agent`;
-`BrowserAgent → AgentSpec → Agent` is lossy.
+> Corrected 2026-05-17. An earlier draft framed specialized agents as a
+> "frontend authoring preset (templated `AgentSpec`), UX deferred to
+> task #21". That was wrong and is retracted: the constraint is a
+> framework serialization-fidelity gap, and a templated-preset
+> approximation cannot actually *run* as the specialized agent.
 
-Therefore a specialized palette item is a **frontend authoring preset**:
-dropping it produces a generic `NodeSpec(kind="agent")` plus an
-`AgentSpec` whose tools / instruction are templated for that
-specialization. There is deliberately no `agent_class` wire field. This
-is a documented v0.3 limitation. The full specialized-agent
-card/detail/templating UX is **task #21**; Session 08 ships only the
-minimal category-aware palette (categories present, Start/End/User as
-real kind nodes, default non-deletable Start, multiple User allowed).
+Verified against framework primary source (READ-ONLY from this worktree):
+
+- `AgentSpec` (`agents/serialize.py:50-68`, `ConfigDict(extra="forbid")`)
+  mirrors only the **base** `Agent` constructor surface — there is **no**
+  field naming the agent class.
+- `pydantic_to_agents` (`serialize.py:158`) hard-codes `Agent(...)` (the
+  base class) for every spec; no class dispatch exists.
+- The specialized classes **override real execution behavior**, not just
+  `__init__`: e.g. `InteractiveElementsAgent._run`
+  (`browser_agent.py:332`, the core loop), `BrowserAgent._pre_step_hook`
+  (`:1969`), async construction (`create_safe` / `_initialize_browser`),
+  resource lifecycle (`close`/`cleanup`/`__del__`), ~30 browser-control
+  methods.
+
+So `BrowserAgent → AgentSpec → Agent` is **lossy**: a stored→materialized
+workflow reconstructs a base `Agent` with the same tools/instruction but
+none of the overridden behavior. A "preset" would therefore be a
+non-runnable look-alike — rejected (SP-007 spirit).
+
+**v0.3/v0.4 decision (2026-05-17, user-confirmed):** specialized-agent
+palette items render **inactive** ("coming soon"), exactly like
+Logic/Tools/Data — not droppable, not a preset. The generic Agent + Core
+are the only active Agent-category nodes. Truly supporting
+create-and-run requires a **framework change** (an `AgentSpec`
+class discriminator + registry dispatch in `pydantic_to_agents`, plus an
+async-construction story) — `packages/framework/` is TRUNK-CRITICAL and
+READ-ONLY here, so this is a framework backlog item, filed at
+[`docs/implementation/framework/v0.5-future.md`](../../implementation/framework/v0.5-future.md)
+("Specialized-agent round-trip — concrete blocker"). This supersedes the
+`AC-PALETTE-2` "preset" sub-clause for Session 08 and beyond.
 
 ### Tools — two distinct concepts (kept separate)
 
@@ -141,8 +162,8 @@ are active in v0.3.
 
 ## What v0.3 implements
 
-Active: **Agents** (generic agent node + the specialized catalog as
-distinct palette presets) and **Core** (Start/End/User as real
+Active: the **generic Agent** node and **Core** (Start/End/User as real
 `kind` nodes). This is exactly what unblocks Run (the RUN-3d fix, now
-the canonical-reframe). **Tools / Logic / Data**: modeled here, rendered
-inactive in the palette, no framework kind yet.
+the canonical-reframe). The **specialized-agent catalog** is shown but
+**inactive** (framework wire gap — P12), alongside **Tools / Logic /
+Data** which are modeled but have no framework kind yet.
