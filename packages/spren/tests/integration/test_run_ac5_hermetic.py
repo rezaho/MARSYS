@@ -203,7 +203,12 @@ async def test_canvas_run_reaches_provider_fails_only_there(tmp_path: Path, _fak
             timeout=90,
         )
     except asyncio.TimeoutError:  # pragma: no cover - network stall guard
-        pytest.skip("provider call did not return within 90s (network-bound)")
+        pytest.skip(
+            "provider call did not return within 90s (network-bound) — "
+            "the provider-reach assertion below is FORFEIT for this run; "
+            "AC-5b (no missing-Start warning) was already asserted pre-skip, "
+            "but a green-with-skip here is NOT full AC-5 hermetic coverage"
+        )
 
     # The bogus key (or an offline CI) fails at the provider/model
     # adapter, NOT at topology. Assert the negative so the gate holds

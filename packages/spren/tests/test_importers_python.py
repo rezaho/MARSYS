@@ -53,6 +53,53 @@ def test_valid_minimal_round_trip():
     assert defn.execution_config.user_interaction == "none"
 
 
+def test_importer_maps_start_end_user_to_kind_nodes():
+    """AC-9: a Start/End/User construct imports as a NodeSpec with the
+    matching `kind` — NOT an agent node named "Start"/"End"/"User"."""
+    src = """
+\"\"\"Kinded.\"\"\"
+from marsys.agents import Agent
+from marsys.models import ModelConfig
+from marsys.coordination.topology.core import Edge, Node, NodeKind, Topology
+def stub(): pass
+agent = Agent(
+    name="Worker",
+    goal="g",
+    instruction="i",
+    model_config=ModelConfig(type="api", name="gpt-4o", provider="openai"),
+    tools={"stub": stub},
+)
+topology = Topology(
+    nodes=[
+        Node(name="Start", kind=NodeKind.START),
+        Node(name="Worker", kind=NodeKind.AGENT, agent_ref="Worker"),
+        Node(name="Ask", kind=NodeKind.USER),
+        Node(name="End", kind=NodeKind.END),
+    ],
+    edges=[
+        Edge(source="Start", target="Worker"),
+        Edge(source="Worker", target="Ask"),
+        Edge(source="Ask", target="End"),
+    ],
+)
+"""
+    from marsys.coordination.topology.core import NodeKind
+
+    defn = parse_python_workflow(src).definition
+    by_name = {n.name: n for n in defn.topology.nodes}
+    assert by_name["Start"].kind is NodeKind.START
+    assert by_name["Worker"].kind is NodeKind.AGENT
+    assert by_name["Ask"].kind is NodeKind.USER
+    assert by_name["End"].kind is NodeKind.END
+    # control nodes are not agents and carry no agent binding
+    assert by_name["Start"].agent_ref is None
+    assert by_name["Ask"].agent_ref is None
+    assert by_name["End"].agent_ref is None
+    assert by_name["Worker"].agent_ref == "Worker"
+    # no node was silently turned into an agent named "Start"/"End"/"User"
+    assert set(by_name) == {"Start", "Worker", "Ask", "End"}
+
+
 def test_valid_with_constants_resolves_name_refs():
     result = parse_python_workflow(_read("valid_with_constants.py"))
     defn = result.definition
