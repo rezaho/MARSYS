@@ -16,6 +16,8 @@ test asserts equal.
 
 from __future__ import annotations
 
+import asyncio
+
 import pytest
 
 from marsys.coordination.topology.converters.pattern_converter import (
@@ -49,7 +51,7 @@ def test_hub_and_spoke_five_spokes_round_trip_with_parallel_rule():
     assert len(original.rules) >= 1
 
     spec = workflow_to_pydantic(None, original)
-    rehydrated = pydantic_to_topology(spec, tool_registry={})
+    rehydrated = asyncio.run(pydantic_to_topology(spec, tool_registry={}))
 
     assert topology_equals(original, rehydrated)
     assert len(rehydrated.nodes) == len(original.nodes)
@@ -77,7 +79,7 @@ def test_hierarchical_round_trip_preserves_tree_structure():
     )
     original = PatternConfigConverter.convert(config)
     spec = workflow_to_pydantic(None, original)
-    rehydrated = pydantic_to_topology(spec, tool_registry={})
+    rehydrated = asyncio.run(pydantic_to_topology(spec, tool_registry={}))
     assert topology_equals(original, rehydrated)
     # Tree edges: Lead→Designer, Lead→Engineer, Designer→Illustrator, Engineer→Backend, Engineer→Frontend, User→Lead
     assert len(rehydrated.edges) == len(original.edges)
@@ -87,7 +89,7 @@ def test_mesh_round_trip_preserves_bidirectional_fan_out():
     config = PatternConfig.mesh(agents=["A", "B", "C", "D"])
     original = PatternConfigConverter.convert(config)
     spec = workflow_to_pydantic(None, original)
-    rehydrated = pydantic_to_topology(spec, tool_registry={})
+    rehydrated = asyncio.run(pydantic_to_topology(spec, tool_registry={}))
     assert topology_equals(original, rehydrated)
     # Fully-connected mesh of 4 nodes: 6 unordered pairs, each bidirectional
     # yields 12 directed edges on the runtime side.
@@ -99,10 +101,10 @@ def test_serialization_is_idempotent_under_repeated_round_trip():
     once = PatternConfigConverter.convert(config)
 
     twice_spec = workflow_to_pydantic(None, once)
-    twice = pydantic_to_topology(twice_spec, tool_registry={})
+    twice = asyncio.run(pydantic_to_topology(twice_spec, tool_registry={}))
 
     thrice_spec = workflow_to_pydantic(None, twice)
-    thrice = pydantic_to_topology(thrice_spec, tool_registry={})
+    thrice = asyncio.run(pydantic_to_topology(thrice_spec, tool_registry={}))
 
     assert topology_equals(once, twice)
     assert topology_equals(twice, thrice)

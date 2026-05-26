@@ -8,6 +8,8 @@ and the ``is_convergence_point`` post-construction round-trip.
 
 from __future__ import annotations
 
+import asyncio
+
 import pytest
 
 from marsys.agents.agents import Agent
@@ -75,7 +77,7 @@ def test_agent_spec_minimal_construction():
         name="Worker",
         goal="do work",
         instruction="follow the plan",
-        agent_model=_model_config_spec(),
+        model=_model_config_spec(),
     )
     assert spec.name == "Worker"
     assert spec.tools == []
@@ -104,12 +106,12 @@ def test_pydantic_to_agents_resolves_tool_callables():
                 name="Worker",
                 goal="search",
                 instruction="search the web",
-                agent_model=_model_config_spec(),
+                model=_model_config_spec(),
                 tools=["web_search"],
             )
         },
     )
-    agents = pydantic_to_agents(spec, tool_registry={"web_search": web_search})
+    agents = asyncio.run(pydantic_to_agents(spec, tool_registry={"web_search": web_search}))
     assert len(agents) == 1
     assert "web_search" in agents[0].tools
     assert agents[0].tools["web_search"] is web_search
@@ -126,13 +128,13 @@ def test_pydantic_to_agents_raises_unknown_tool_error():
                 name="Worker",
                 goal="search",
                 instruction="search the web",
-                agent_model=_model_config_spec(),
+                model=_model_config_spec(),
                 tools=["web_search"],
             )
         },
     )
     with pytest.raises(UnknownToolError) as exc:
-        pydantic_to_agents(spec, tool_registry={})
+        asyncio.run(pydantic_to_agents(spec, tool_registry={}))
     msg = str(exc.value)
     assert "web_search" in msg
     assert "Worker" in msg
@@ -150,7 +152,7 @@ def test_pydantic_to_agents_empty_tools_no_registry_entry_needed():
                 name="Worker",
                 goal="do nothing",
                 instruction="be idle",
-                agent_model=_model_config_spec(),
+                model=_model_config_spec(),
                 tools=[],
             )
         },
@@ -159,7 +161,7 @@ def test_pydantic_to_agents_empty_tools_no_registry_entry_needed():
     # Agent may still carry framework-injected plan_* tools (these come from
     # PlanningConfig defaults, not from the spec's tools list); we assert
     # no user-supplied tools are present.
-    agents = pydantic_to_agents(spec, tool_registry={})
+    agents = asyncio.run(pydantic_to_agents(spec, tool_registry={}))
     assert len(agents) == 1
     user_tools = {
         name for name in agents[0].tools.keys()
@@ -173,7 +175,7 @@ def test_pydantic_to_agents_empty_tools_no_registry_entry_needed():
 # ---------------------------------------------------------------------------
 
 
-def test_agent_to_pydantic_populates_agent_model_from_runtime_config():
+def test_agent_to_pydantic_populates_model_from_runtime_config():
     runtime = _model_config()
     agent = Agent(
         name="X",
@@ -182,10 +184,10 @@ def test_agent_to_pydantic_populates_agent_model_from_runtime_config():
         model_config=runtime,
     )
     spec = agent_to_pydantic(agent)
-    assert isinstance(spec.agent_model, ModelConfigSpec)
-    assert spec.agent_model.type == "api"
-    assert spec.agent_model.name == "gpt-4o"
-    assert spec.agent_model.provider == "openai"
+    assert isinstance(spec.model, ModelConfigSpec)
+    assert spec.model.type == "api"
+    assert spec.model.name == "gpt-4o"
+    assert spec.model.provider == "openai"
 
 
 def test_runtime_model_config_from_spec_inspection_mode_preserves_fields_no_raise(monkeypatch):
@@ -324,12 +326,12 @@ def test_is_convergence_point_true_round_trip():
                 name="C",
                 goal="converge",
                 instruction="stop",
-                agent_model=_model_config_spec(),
+                model=_model_config_spec(),
                 is_convergence_point=True,
             ),
         },
     )
-    agents = pydantic_to_agents(spec, tool_registry={})
+    agents = asyncio.run(pydantic_to_agents(spec, tool_registry={}))
     assert agents[0]._is_convergence_point is True
 
 
@@ -344,12 +346,12 @@ def test_is_convergence_point_false_round_trip():
                 name="C",
                 goal="g",
                 instruction="i",
-                agent_model=_model_config_spec(),
+                model=_model_config_spec(),
                 is_convergence_point=False,
             ),
         },
     )
-    agents = pydantic_to_agents(spec, tool_registry={})
+    agents = asyncio.run(pydantic_to_agents(spec, tool_registry={}))
     assert agents[0]._is_convergence_point is False
 
 
@@ -364,12 +366,12 @@ def test_is_convergence_point_none_keeps_constructor_default():
                 name="C",
                 goal="g",
                 instruction="i",
-                agent_model=_model_config_spec(),
+                model=_model_config_spec(),
                 is_convergence_point=None,
             ),
         },
     )
-    agents = pydantic_to_agents(spec, tool_registry={})
+    agents = asyncio.run(pydantic_to_agents(spec, tool_registry={}))
     # The default set by Agent / BaseAgent for is_convergence_point is None
     # (per BaseAgent.__init__ default at agents.py:142). pydantic_to_agents
     # does not override on None.
@@ -388,7 +390,7 @@ def test_agent_spec_rejects_extra_field():
             name="X",
             goal="g",
             instruction="i",
-            agent_model=_model_config_spec(),
+            model=_model_config_spec(),
             unknown_field=42,
         )
 
@@ -422,7 +424,7 @@ def test_agent_round_trip_preserves_identity_fields():
     assert rehydrated_spec.instruction == spec.instruction
     assert rehydrated_spec.max_tokens == spec.max_tokens
     assert rehydrated_spec.allowed_peers == spec.allowed_peers
-    assert rehydrated_spec.agent_model.name == "gpt-4o"
+    assert rehydrated_spec.model.name == "gpt-4o"
 
     # Unregister the original so the registry has room for the rehydrated
     # Agent with the same name.
@@ -435,7 +437,7 @@ def test_agent_round_trip_preserves_identity_fields():
         ),
         agents={rehydrated_spec.name: rehydrated_spec},
     )
-    rehydrated_agents = pydantic_to_agents(workflow, tool_registry={})
+    rehydrated_agents = asyncio.run(pydantic_to_agents(workflow, tool_registry={}))
     assert len(rehydrated_agents) == 1
     re = rehydrated_agents[0]
     assert re.goal == original.goal

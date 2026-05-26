@@ -12,6 +12,8 @@ consolidate to a single EdgeSpec; the JSON Schema export declares dialect
 
 from __future__ import annotations
 
+import asyncio
+
 import pytest
 from pydantic import ValidationError
 
@@ -53,7 +55,7 @@ def _make_agent_spec(name: str = "Worker") -> dict:
         "name": name,
         "goal": "do work",
         "instruction": "follow the plan",
-        "agent_model": {"type": "api", "name": "gpt-4o", "provider": "openai"},
+        "model": {"type": "api", "name": "gpt-4o", "provider": "openai"},
         "tools": [],
     }
 
@@ -83,7 +85,7 @@ def test_node_kind_round_trip(kind):
         edges=[],
     )
     spec = workflow_to_pydantic(None, original)
-    rehydrated = pydantic_to_topology(spec, tool_registry={}, handler_registry={})
+    rehydrated = asyncio.run(pydantic_to_topology(spec, tool_registry={}, handler_registry={}))
     assert topology_equals(original, rehydrated)
     # NodeSpec.kind is the closed NodeKind enum; its .value mirrors core.
     assert spec.topology.nodes[0].kind is kind
@@ -110,7 +112,7 @@ def test_edge_type_pattern_round_trip(edge_type, edge_pattern):
         ],
     )
     spec = workflow_to_pydantic(None, original)
-    rehydrated = pydantic_to_topology(spec, tool_registry={})
+    rehydrated = asyncio.run(pydantic_to_topology(spec, tool_registry={}))
     assert topology_equals(original, rehydrated)
     assert spec.topology.edges[0].edge_type == edge_type.value
     assert spec.topology.edges[0].pattern == edge_pattern.value
@@ -148,7 +150,7 @@ def test_pattern_preset_round_trip(pattern_config):
     assert original.metadata["original_pattern"] == expected_provenance
 
     spec = workflow_to_pydantic(None, original)
-    rehydrated = pydantic_to_topology(spec, tool_registry={})
+    rehydrated = asyncio.run(pydantic_to_topology(spec, tool_registry={}))
     assert topology_equals(original, rehydrated)
 
     # The recovered provenance can rebuild an equivalent PatternConfig.
@@ -314,7 +316,7 @@ def test_bidirectional_rehydration_materializes_both_directions():
         ),
         agents={},
     )
-    rehydrated = pydantic_to_topology(spec, tool_registry={})
+    rehydrated = asyncio.run(pydantic_to_topology(spec, tool_registry={}))
     assert len(rehydrated.edges) == 2
     assert rehydrated.has_edge("A", "B")
     assert rehydrated.has_edge("B", "A")
@@ -328,9 +330,9 @@ def test_bidirectional_round_trip_is_fixed_point():
     original.add_edge(Edge(source="A", target="B", bidirectional=True))
 
     spec_once = workflow_to_pydantic(None, original)
-    rehydrated_once = pydantic_to_topology(spec_once, tool_registry={})
+    rehydrated_once = asyncio.run(pydantic_to_topology(spec_once, tool_registry={}))
     spec_twice = workflow_to_pydantic(None, rehydrated_once)
-    rehydrated_twice = pydantic_to_topology(spec_twice, tool_registry={})
+    rehydrated_twice = asyncio.run(pydantic_to_topology(spec_twice, tool_registry={}))
 
     assert len(spec_once.topology.edges) == len(spec_twice.topology.edges)
     assert len(rehydrated_once.edges) == len(rehydrated_twice.edges)
@@ -421,7 +423,7 @@ def test_pydantic_to_topology_raises_unknown_tool_error():
         },
     )
     with pytest.raises(UnknownToolError) as exc:
-        pydantic_to_topology(spec, tool_registry={})
+        asyncio.run(pydantic_to_topology(spec, tool_registry={}))
     msg = str(exc.value)
     assert "web_search" in msg
     assert "Worker" in msg
@@ -437,7 +439,7 @@ def test_empty_tools_list_does_not_require_registry_entry():
         agents={"Worker": _make_agent_spec("Worker")},
     )
     # Empty tools, empty registry — succeeds.
-    topology = pydantic_to_topology(spec, tool_registry={})
+    topology = asyncio.run(pydantic_to_topology(spec, tool_registry={}))
     assert topology.get_node("W") is not None
 
 
@@ -611,7 +613,7 @@ def test_rehydrated_topology_has_indices_built():
         ),
         agents={},
     )
-    topology = pydantic_to_topology(spec, tool_registry={})
+    topology = asyncio.run(pydantic_to_topology(spec, tool_registry={}))
     # __post_init__ builds _node_index. get_node lookup proves it ran.
     assert topology.get_node("A") is not None
     assert topology.get_node("B") is not None
@@ -642,7 +644,7 @@ def test_workflow_to_pydantic_serializes_all_deterministic_kinds(kind):
     original = Topology(nodes=[Node(name=name, kind=kind), Node(name="A")], edges=[])
     spec = workflow_to_pydantic(None, original)
     assert spec.topology.nodes  # serialized, did not raise
-    rehydrated = pydantic_to_topology(spec, tool_registry={}, handler_registry={})
+    rehydrated = asyncio.run(pydantic_to_topology(spec, tool_registry={}, handler_registry={}))
     assert topology_equals(original, rehydrated)
     kinds = {n.name: n.kind for n in rehydrated.nodes}
     assert kinds[name] is kind
@@ -709,9 +711,9 @@ def test_model_config_spec_json_round_trip_omits_api_key():
     assert "api_key" not in json.loads(payload)
 
 
-def test_agent_spec_agent_model_is_model_config_spec_type():
+def test_agent_spec_model_is_model_config_spec_type():
     from marsys.agents.serialize import AgentSpec
-    field_info = AgentSpec.model_fields["agent_model"]
+    field_info = AgentSpec.model_fields["model"]
     assert field_info.annotation is ModelConfigSpec
 
 
@@ -768,7 +770,7 @@ def test_pydantic_to_topology_accepts_handler_registry_signature():
         topology=TopologySpec(nodes=[NodeSpec(name="A")], edges=[]),
         agents={},
     )
-    topology = pydantic_to_topology(spec, tool_registry={}, handler_registry={})
+    topology = asyncio.run(pydantic_to_topology(spec, tool_registry={}, handler_registry={}))
     assert topology.get_node("A") is not None
 
 
@@ -785,8 +787,10 @@ def test_user_node_handler_resolved_from_handler_registry():
         ),
         agents={},
     )
-    topology = pydantic_to_topology(
-        spec, tool_registry={}, handler_registry={"h1": my_handler}
+    topology = asyncio.run(
+        pydantic_to_topology(
+            spec, tool_registry={}, handler_registry={"h1": my_handler}
+        )
     )
     user_node = topology.get_node("U")
     assert user_node.kind is NodeKind.USER
@@ -808,7 +812,7 @@ def test_missing_user_handler_raises_named_error_not_silent_none():
         agents={},
     )
     with pytest.raises(UnknownHandlerError) as exc:
-        pydantic_to_topology(spec, tool_registry={}, handler_registry={})
+        asyncio.run(pydantic_to_topology(spec, tool_registry={}, handler_registry={}))
     msg = str(exc.value)
     assert "missing" in msg
     assert "U" in msg
@@ -825,7 +829,7 @@ def test_user_node_without_handler_key_keeps_legacy_path():
         ),
         agents={},
     )
-    topology = pydantic_to_topology(spec, tool_registry={}, handler_registry={})
+    topology = asyncio.run(pydantic_to_topology(spec, tool_registry={}, handler_registry={}))
     u = topology.get_node("U")
     assert u.kind is NodeKind.USER
     assert u.agent_ref is None
@@ -900,7 +904,7 @@ def test_round_trip_matrix_kind_edgetype_linkmode(kind, edge_type, link_mode):
         )
 
     spec = workflow_to_pydantic(None, original)
-    rehydrated = pydantic_to_topology(spec, tool_registry={}, handler_registry={})
+    rehydrated = asyncio.run(pydantic_to_topology(spec, tool_registry={}, handler_registry={}))
     assert topology_equals(original, rehydrated)
     # AC-29: the convergence flag survived the round-trip.
     assert rehydrated.get_node("A").is_convergence_point is True
@@ -913,7 +917,7 @@ def test_round_trip_matrix_includes_pattern_provenance(pattern_config):
     original = PatternConfigConverter.convert(pattern_config)
     assert "original_pattern" in original.metadata
     spec = workflow_to_pydantic(None, original)
-    rehydrated = pydantic_to_topology(spec, tool_registry={}, handler_registry={})
+    rehydrated = asyncio.run(pydantic_to_topology(spec, tool_registry={}, handler_registry={}))
     assert topology_equals(original, rehydrated)
     assert rehydrated.metadata["original_pattern"] == original.metadata["original_pattern"]
 
@@ -935,12 +939,14 @@ def test_round_trip_matrix_convergence_point_explicit_case():
     for s, t in [("Start", "A"), ("Start", "B"), ("A", "Sink"), ("B", "Sink"), ("Sink", "End")]:
         original.add_edge(Edge(source=s, target=t))
     spec = workflow_to_pydantic(None, original)
-    rehydrated = pydantic_to_topology(spec, tool_registry={}, handler_registry={})
+    rehydrated = asyncio.run(pydantic_to_topology(spec, tool_registry={}, handler_registry={}))
     assert topology_equals(original, rehydrated)
     assert rehydrated.get_node("Sink").is_convergence_point is True
     # The convergence-aware oracle rejects a copy that flips only the flag.
-    flipped = pydantic_to_topology(
-        workflow_to_pydantic(None, original), tool_registry={}, handler_registry={}
+    flipped = asyncio.run(
+        pydantic_to_topology(
+            workflow_to_pydantic(None, original), tool_registry={}, handler_registry={}
+        )
     )
     flipped.get_node("Sink").is_convergence_point = False
     assert not topology_equals(original, flipped)

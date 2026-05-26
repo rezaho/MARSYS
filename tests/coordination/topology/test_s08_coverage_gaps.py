@@ -17,6 +17,7 @@
 """
 from __future__ import annotations
 
+import asyncio
 import pathlib
 
 import pytest
@@ -82,7 +83,9 @@ def test_parse_node_never_returns_deterministic_node():
 
 def _round_trip_then_analyze(topo: Topology):
     spec = workflow_to_pydantic(None, topo)
-    rehydrated = pydantic_to_topology(spec, tool_registry={}, handler_registry={})
+    rehydrated = asyncio.run(
+        pydantic_to_topology(spec, tool_registry={}, handler_registry={})
+    )
     graph = TopologyAnalyzer().analyze(rehydrated)
     Orchestra._apply_legacy_topology_shim(None, graph, rehydrated)
     return graph

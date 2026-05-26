@@ -119,7 +119,7 @@ coordinator_spec = AgentSpec(
         "results, synthesize a final answer and call `terminate_workflow` "
         "with the synthesized answer."
     ),
-    agent_model=haiku_model_spec,
+    model=haiku_model_spec,
     memory_retention="session",
 )
 
@@ -132,7 +132,7 @@ researcher_spec = AgentSpec(
         "Coordinator by calling `invoke_agent` with target='Coordinator' and "
         "your findings as the request."
     ),
-    agent_model=haiku_model_spec,
+    model=haiku_model_spec,
     memory_retention="single_run",
 )
 
@@ -145,7 +145,7 @@ fact_checker_spec = AgentSpec(
         "Coordinator by calling `invoke_agent` with target='Coordinator' and "
         "your facts as the request."
     ),
-    agent_model=haiku_model_spec,
+    model=haiku_model_spec,
     memory_retention="single_run",
 )
 
@@ -165,9 +165,9 @@ fact_checker_spec = AgentSpec(
 
 topology_spec = TopologySpec(
     nodes=[
-        NodeSpec(name="Coordinator", node_type="agent", agent_ref="Coordinator"),
-        NodeSpec(name="Researcher", node_type="agent", agent_ref="Researcher"),
-        NodeSpec(name="FactChecker", node_type="agent", agent_ref="FactChecker"),
+        NodeSpec(name="Coordinator", kind="agent", agent_ref="Coordinator"),
+        NodeSpec(name="Researcher", kind="agent", agent_ref="Researcher"),
+        NodeSpec(name="FactChecker", kind="agent", agent_ref="FactChecker"),
     ],
     edges=[
         EdgeSpec(source="Coordinator", target="Researcher", edge_type="invoke"),
@@ -191,7 +191,9 @@ workflow = WorkflowDefinition(
 # workflow, so an empty tool registry is correct. This is the line that, pre
 # Session-07, silently produced agents with base_url=None/api_key=None for
 # provider="anthropic"; post-fix it resolves ANTHROPIC_API_KEY from the env.
-topology = pydantic_to_topology(workflow, tool_registry={})
+# pydantic_to_topology is async (ADR-009 / S09 B′); this top-level script
+# owns its own loop via asyncio.run (the caller-side contract).
+topology = asyncio.run(pydantic_to_topology(workflow, tool_registry={}))
 
 
 async def main():
