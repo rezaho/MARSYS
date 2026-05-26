@@ -94,7 +94,7 @@ planner = AgentSpec(
         "off to the Writer by calling `invoke_agent` with target='Writer' and "
         "the outline as the request."
     ),
-    agent_model=haiku,
+    model=haiku,
     memory_retention="single_run",
 )
 writer = AgentSpec(
@@ -104,7 +104,7 @@ writer = AgentSpec(
         "Given an outline, write a tight ~5-sentence explainer. When finished, "
         "call `terminate_workflow` with the explainer as the final answer."
     ),
-    agent_model=haiku,
+    model=haiku,
     memory_retention="single_run",
 )
 
@@ -153,7 +153,14 @@ print("STAGE 3  reloaded from disk; det-node kinds intact ✓")
 # tool_registry / handler_registry are the DI seams (empty here: no custom
 # tools, no explicit per-USER-node handler).
 # =========================================================================
-topology = pydantic_to_topology(reloaded, tool_registry={}, handler_registry={})
+# `pydantic_to_topology` is async (ADR-009 / S09 option B′): hydration is
+# intrinsically async because a workflow may declare a specialized agent
+# (e.g. BrowserAgent) only constructible via its async `create_safe`. There
+# is no sync variant — an async caller `await`s it; this top-level script
+# owns its own loop via asyncio.run (the caller-side contract).
+topology = asyncio.run(
+    pydantic_to_topology(reloaded, tool_registry={}, handler_registry={})
+)
 print(f"STAGE 4  hydrated runnable Topology: "
       f"{[ (n.name, n.kind.value) for n in topology.nodes ]}")
 

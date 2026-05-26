@@ -39,6 +39,11 @@ class DataAnalysisAgent(Agent):
     - Any task requiring iterative Python experimentation
     """
 
+    # Stable wire key for the specialized-agent serializer (S09 / ADR-009);
+    # AGENT_KIND_REGISTRY is the single source, this is its per-class
+    # declaration. Do not rename without a wire-schema bump.
+    WIRE_KIND = "data_analysis"
+
     def __init__(
         self,
         model_config: ModelConfig,
@@ -65,6 +70,16 @@ class DataAnalysisAgent(Agent):
             filesystem: Optional shared RunFileSystem for unified path resolution
             **kwargs: Additional Agent arguments
         """
+        # As-given declarative inputs for serialization (S09 / ADR-009). The
+        # resolved cwd / RunFileSystem / CodeExecutionConfig are NOT captured —
+        # re-derived on hydrate exactly as below.
+        self._wire_params = {
+            "goal": goal,
+            "instruction": instruction,
+            "base_directory": str(base_directory) if base_directory is not None else None,
+            "working_directory": working_directory,
+        }
+
         if goal is None:
             goal = "Act as a data scientist - explore, analyze, model, and solve problems using Python and available tools"
 

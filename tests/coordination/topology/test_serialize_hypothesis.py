@@ -8,6 +8,8 @@ PatternConfigs; each generated input is round-tripped through
 
 from __future__ import annotations
 
+import asyncio
+
 import pytest
 from hypothesis import HealthCheck, given, settings
 
@@ -37,7 +39,7 @@ def _api_key_env(monkeypatch):
 )
 def test_random_topology_round_trips(topology):
     spec = workflow_to_pydantic(None, topology)
-    rehydrated = pydantic_to_topology(spec, tool_registry={})
+    rehydrated = asyncio.run(pydantic_to_topology(spec, tool_registry={}))
     assert topology_equals(topology, rehydrated)
 
 
@@ -50,7 +52,7 @@ def test_random_topology_round_trips(topology):
 def test_random_pattern_round_trips(pattern_config):
     topology = PatternConfigConverter.convert(pattern_config)
     spec = workflow_to_pydantic(None, topology)
-    rehydrated = pydantic_to_topology(spec, tool_registry={})
+    rehydrated = asyncio.run(pydantic_to_topology(spec, tool_registry={}))
     assert topology_equals(topology, rehydrated)
 
     # Recovered provenance rebuilds an equivalent PatternConfig.

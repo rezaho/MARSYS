@@ -76,9 +76,12 @@ JSON_SCHEMA_DIALECT_2020_12 = "https://json-schema.org/draft/2020-12/schema"
 # changed from the legacy ``node_type`` (open ``{user,agent,system,tool}``
 # literal) to the closed ``kind`` (``NodeKind`` = ``{agent,start,end,user}``)
 # — a breaking, NON-back-compatible value-set + field-name change. Schema 1
-# was the implicit pre-S08 ``node_type`` shape. No dual-field shim: the
-# version boundary is the contract (ADR-008 Decision 7 / §Migration).
-WIRE_SCHEMA_VERSION = 2
+# was the implicit pre-S08 ``node_type`` shape. Bumped to 3 by Session 09
+# (ADR-009): ``AgentSpec`` gained the ``kind``/``params`` specialized-agent
+# discriminator and renamed ``agent_model`` → ``model`` — a breaking
+# field-set + field-name change. No dual-field shim: the version boundary
+# is the contract (ADR-008 Decision 7 / §Migration; ADR-009 Decision 6).
+WIRE_SCHEMA_VERSION = 3
 
 # Vestigial pre-S08 node-type values dropped by the ``NodeKind`` model. A
 # stored document carrying one of these is rejected at load with a migration
@@ -468,12 +471,17 @@ def _consolidate_edges(edges: List[Edge]) -> List[EdgeSpec]:
 # ---------------------------------------------------------------------------
 
 
-def pydantic_to_topology(
+async def pydantic_to_topology(
     spec: WorkflowDefinition,
     tool_registry: Dict[str, Callable],
     handler_registry: Optional[Dict[str, Callable]] = None,
 ) -> Topology:
     """Hydrate a runnable :class:`Topology` from a :class:`WorkflowDefinition`.
+
+    **Async, single entrypoint** (ADR-009 Decision 4 / option B′): hydration
+    is intrinsically async because a workflow may declare a specialized agent
+    (e.g. ``BrowserAgent``) that is only fully constructible via its async
+    ``create_safe``. There is no sync variant — callers ``await`` this.
 
     Constructs ``Topology(nodes=..., edges=...)`` via the canonical path so
     ``Topology.__post_init__`` runs (rebuilds indices, validates). Resolves
@@ -499,7 +507,7 @@ def pydantic_to_topology(
     """
     from ...agents.serialize import pydantic_to_agents
 
-    agents = pydantic_to_agents(spec, tool_registry)
+    agents = await pydantic_to_agents(spec, tool_registry)
     agents_by_name = {agent.name: agent for agent in agents}
     handler_registry = handler_registry or {}
 

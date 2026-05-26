@@ -23,6 +23,11 @@ logger = logging.getLogger(__name__)
 class FileOperationAgent(Agent):
     """Specialized agent for file operations and optional shell commands."""
 
+    # Stable wire key for the specialized-agent serializer (S09 / ADR-009);
+    # AGENT_KIND_REGISTRY is the single source, this is its per-class
+    # declaration. Do not rename without a wire-schema bump.
+    WIRE_KIND = "file_operation"
+
     def __init__(
         self,
         model_config: ModelConfig,
@@ -59,6 +64,19 @@ class FileOperationAgent(Agent):
             compaction_model_config: Optional ModelConfig for a separate compaction model.
             **kwargs: Additional Agent arguments
         """
+        # As-given declarative inputs for serialization (S09 / ADR-009). The
+        # resolved cwd / RunFileSystem are NOT captured — re-derived on hydrate.
+        self._wire_params = {
+            "goal": goal,
+            "instruction": instruction,
+            "enable_shell": enable_shell,
+            "working_directory": working_directory,
+            "base_directory": str(base_directory) if base_directory is not None else None,
+            "allowed_shell_commands": allowed_shell_commands,
+            "blocked_shell_patterns": blocked_shell_patterns,
+            "shell_timeout_default": shell_timeout_default,
+        }
+
         # Build default goal
         if goal is None:
             shell_status = "with shell execution" if enable_shell else "file operations only"

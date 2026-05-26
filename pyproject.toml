@@ -157,6 +157,7 @@ markers = [
     "asyncio: mark test as an asyncio test",
     "cheap: marks tests that hit a cheap paid model (Claude Haiku 4.5 by default); requires ANTHROPIC_API_KEY. Runs in the CI smoke job.",
     "network: marks tests that require network access",
+    "browser: marks tests that launch a real browser via Playwright (deselect with '-m \"not browser\"'); requires Playwright + a launchable Chromium",
 ]
 
 [tool.black]
