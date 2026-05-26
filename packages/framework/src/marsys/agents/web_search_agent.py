@@ -15,6 +15,12 @@ logger = logging.getLogger(__name__)
 class WebSearchAgent(Agent):
     """Specialized agent for web and scholarly search across multiple sources."""
 
+    # Stable wire key for the specialized-agent serializer (S09 / ADR-009).
+    # The single source binding kind → class is AGENT_KIND_REGISTRY; this is
+    # the per-class declaration it derives from (the det_nodes RESERVED_NAME
+    # analog). Do not rename without a wire-schema bump.
+    WIRE_KIND = "web_search"
+
     def __init__(
         self,
         model_config: ModelConfig,
@@ -77,6 +83,18 @@ class WebSearchAgent(Agent):
             )
             ```
         """
+
+        # Capture the as-given declarative inputs for serialization BEFORE any
+        # mutation/defaulting below (S09 / ADR-009). Secrets (the API keys) are
+        # deliberately excluded — they are re-resolved from env on hydrate.
+        self._wire_params = {
+            "goal": goal,
+            "instruction": instruction,
+            "search_mode": search_mode,
+            "search_types": search_types,
+            "enabled_tools": enabled_tools,
+            "include_google": include_google,
+        }
 
         # Default search types to text only if not specified
         if search_types is None:

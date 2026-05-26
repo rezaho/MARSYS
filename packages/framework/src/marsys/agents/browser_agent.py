@@ -514,6 +514,13 @@ class BrowserAgent(Agent):
     - Form filling and submission
     """
 
+    # Stable wire key for the specialized-agent serializer (S09 / ADR-009).
+    # AGENT_KIND_REGISTRY is the single source binding kind → class; this is
+    # its per-class declaration (the det_nodes RESERVED_NAME analog). Hydrate
+    # routes this kind through the async create_safe factory. Do not rename
+    # without a wire-schema bump.
+    WIRE_KIND = "browser"
+
     @staticmethod
     def _validate_and_resolve_detection_mode(element_detection_mode: str, vision_model_config: Optional[ModelConfig], model_config: ModelConfig, auto_screenshot: bool, agent_name: str) -> ElementDetectionMode:
         """
@@ -870,6 +877,32 @@ class BrowserAgent(Agent):
             memory_config: Optional ManagedMemoryConfig for compaction settings.
             compaction_model_config: Optional ModelConfig for a separate compaction model.
         """
+        # As-given declarative inputs for serialization (S09 / ADR-009),
+        # captured before goal/instruction/mode are transformed below so the
+        # round-trip re-derives the resolved forms instead of double-applying
+        # them. filesystem/tools are runtime objects and are NOT captured;
+        # nested ModelConfig is converted to ModelConfigSpec by the serializer.
+        self._wire_params = {
+            "goal": goal,
+            "instruction": instruction,
+            "mode": mode,
+            "headless": headless,
+            "viewport_width": viewport_width,
+            "viewport_height": viewport_height,
+            "tmp_dir": tmp_dir,
+            "browser_channel": browser_channel,
+            "vision_model_config": vision_model_config,
+            "auto_screenshot": auto_screenshot,
+            "element_detection_mode": element_detection_mode,
+            "timeout": timeout,
+            "memory_type": memory_type,
+            "session_path": session_path,
+            "show_mouse_helper": show_mouse_helper,
+            "downloads_subdir": downloads_subdir,
+            "downloads_virtual_dir": downloads_virtual_dir,
+            "fetch_file_tool_name": fetch_file_tool_name,
+        }
+
         # Validate and normalize mode
         mode_lower = mode.lower()
         if mode_lower not in ("primitive", "advanced"):
