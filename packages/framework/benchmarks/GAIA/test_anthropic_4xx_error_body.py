@@ -98,20 +98,22 @@ solo = AgentSpec(
         "Answer the user's question in one sentence, then call "
         "`terminate_workflow` with your answer."
     ),
-    agent_model=bad_temp_spec,
+    model=bad_temp_spec,
     memory_retention="single_run",
 )
 
 workflow = WorkflowDefinition(
     topology=TopologySpec(
-        nodes=[NodeSpec(name="Solo", node_type="agent", agent_ref="Solo")],
+        nodes=[NodeSpec(name="Solo", kind="agent", agent_ref="Solo")],
         edges=[],
         metadata={"entry_point": "Solo", "exit_points": ["Solo"]},
     ),
     agents={"Solo": solo},
 )
 
-topology = pydantic_to_topology(workflow, tool_registry={})
+# pydantic_to_topology is async (ADR-009 / S09 B′); this top-level script
+# owns its own loop via asyncio.run (the caller-side contract).
+topology = asyncio.run(pydantic_to_topology(workflow, tool_registry={}))
 
 
 def _error_lines_from_run_log() -> list:

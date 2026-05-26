@@ -37,7 +37,7 @@ def _valid_payload() -> dict:
                 "name": "Worker",
                 "goal": "do work",
                 "instruction": "follow the plan",
-                "agent_model": {
+                "model": {
                     "type": "api",
                     "name": "gpt-4o",
                     "provider": "openai",
