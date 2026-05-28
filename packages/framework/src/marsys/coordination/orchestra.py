@@ -959,6 +959,18 @@ class Orchestra:
                 },
             ))
 
+        # Pre-bind ``result`` so the ``finally`` block at line ~1193
+        # can read ``if result is not None`` cleanly when a
+        # ``BaseException`` (notably ``asyncio.CancelledError``) aborts
+        # the try-body before either the success-path assignment
+        # (line ~1141) or the ``except Exception`` assignment
+        # (line ~1184) runs. Without the pre-bind, the finally raises
+        # ``UnboundLocalError`` which then masks the original
+        # ``CancelledError`` for every caller — including consumers
+        # that rely on ``except asyncio.CancelledError`` for clean
+        # cancel handling (Spren's run lifecycle is the in-tree
+        # example).
+        result: Optional[OrchestraResult] = None
         try:
             from .config import ConvergencePolicyConfig, ExecutionConfig
             from .execution.orchestrator import Orchestrator
@@ -1137,6 +1149,24 @@ class Orchestra:
                 },
             )
 
+        except asyncio.CancelledError:
+            # Cooperative cancel is a first-class exit path: re-raise so
+            # the caller's ``except asyncio.CancelledError`` handler fires
+            # (Spren's run lifecycle persists the run as ``cancelled``).
+            # The ``finally`` below still runs (trace finalize + writer
+            # drain + AGGUI close); its ``if result is not None`` guard
+            # skips the tracing-metadata branch cleanly because the
+            # pre-bind keeps ``result`` ``None`` on this path.
+            #
+            # Defensively explicit even though the broad ``except
+            # Exception`` below would not match (``CancelledError`` is
+            # ``BaseException`` in Python 3.8+): the explicit clause
+            # documents intent at the failure site and prevents a future
+            # refactor from widening the catch to ``BaseException`` and
+            # silently swallowing cancellation. Matches the framework's
+            # own pattern in ``status/manager.py`` and the NDJSON writer
+            # drain loop.
+            raise
         except Exception as e:
             logger.error(f"Orchestration failed: {e}")
             duration = time.time() - start_time
