@@ -1455,6 +1455,14 @@ class Orchestra:
 
         logger.info("resume_session: resuming session %s", session_id)
         start_time = time.time()
+        # If anything is added to this finally that reads a try-scoped
+        # local (e.g. a ``workflow``-derived value, or a future tracing-
+        # metadata branch like execute()'s ``if result is not None``),
+        # pre-bind it before the try. ``asyncio.CancelledError`` is
+        # ``BaseException`` and would skip both the assignment and any
+        # broad ``except Exception``, leaving the finally to raise
+        # ``UnboundLocalError`` which masks the original cancel — the
+        # bug pattern execute() carried until line ~993 was hardened.
         try:
             workflow = await orchestrator.resume()
         finally:
