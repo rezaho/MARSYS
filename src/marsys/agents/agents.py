@@ -1691,9 +1691,9 @@ class BaseAgent(ABC):
         # Extract model kwargs for logging
         model_kwargs = context.get("model_kwargs", {})
 
-        # Forward TraceContext into the model call so capture_llm_call
-        # at the wrapper layer emits full-payload LLM events. ``None``
-        # outside Orchestra — the helper bypasses cleanly.
+        # Forward TraceContext into the model call so emit_llm_call at the
+        # wrapper layer emits full-payload LLM events. ``None`` outside
+        # Orchestra — the helper bypasses cleanly.
         trace_ctx = context.get("trace_ctx")
         if trace_ctx is not None:
             model_kwargs = dict(model_kwargs)

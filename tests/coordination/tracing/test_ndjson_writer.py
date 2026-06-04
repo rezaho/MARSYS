@@ -390,7 +390,7 @@ async def test_writer_errors_do_not_trigger_5_strike_unsubscribe(config):
         "BranchCompletedEvent",
         "AgentCompleteEvent",
         "ToolCallEvent",
-        "GenerationEvent",
+        "LLMCallEvent",
         "FinalResponseEvent",
     ):
         listeners = bus.listeners.get(event_type, [])

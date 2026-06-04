@@ -3,8 +3,8 @@
 Built once in ``step_executor`` at step boundary and propagated explicitly
 via the ``trace_ctx`` kwarg through the agent → model wrapper chain.
 This avoids the implicit-state cost of ContextVars while still giving the
-``capture_llm_call`` helper everything it needs to correlate an LLM call
-with its parent step span.
+``emit_llm_call`` capture helper everything it needs to correlate an LLM
+call with its parent step span.
 """
 
 from __future__ import annotations
@@ -20,8 +20,8 @@ class TraceContext:
     ``kind`` distinguishes a normal generation call from a compaction call so
     the collector can place each into the correct span kind. ``captured`` is
     the re-entrancy guard: an outer wrapper sets it to ``True`` before
-    delegating to an inner wrapper, so the inner ``capture_llm_call`` skips
-    re-emission and only one request/response pair lands per LLM invocation.
+    delegating to an inner wrapper, so the inner ``emit_llm_call`` bypasses
+    and only one ``LLMCallEvent`` lands per LLM invocation.
     """
 
     step_span_id: str
@@ -35,8 +35,8 @@ class TraceContext:
     def child(self, *, kind: Optional[str] = None) -> "TraceContext":
         """Derive a child context, e.g. ``parent.child(kind="compaction")``.
 
-        ``captured`` is reset to ``False`` so the child call gets its own
-        request/response pair.
+        ``captured`` is reset to ``False`` so the child call emits its own
+        ``LLMCallEvent``.
         """
         return replace(self, kind=kind or self.kind, captured=False)
 

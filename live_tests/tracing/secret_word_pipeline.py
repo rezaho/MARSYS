@@ -3,9 +3,10 @@
 PURPOSE
   End-to-end verification of the Phase-1 capture layer (full LLM payloads
   via the model-wrapper context manager) and the Phase-2 OTel exporter
-  (LangSmith / Phoenix / Langfuse fan-out). Five agents collaborate to
-  discover the secret word "MARS" so the trace exercises the full
-  spectrum of span kinds — execution, branch, step, generation,
+  (OTLP/HTTP fan-out to any OTLP-aware backend; the --langsmith / --langfuse
+  flags are convenience presets for two such backends). Five agents
+  collaborate to discover the secret word "MARS" so the trace exercises the
+  full spectrum of span kinds — execution, branch, step, generation,
   compaction (when triggered), tool, with convergence links.
 
 EXERCISES
@@ -18,7 +19,7 @@ EXERCISES
   * coordination.tracing.writers.ndjson_writer.NDJSONTraceWriter — local
     source-of-truth file
   * coordination.tracing.writers.otel_writer.OtelTraceWriter — opt-in OTel
-    export to LangSmith via OTLP/HTTP using gen_ai.* semconv
+    export over OTLP/HTTP using gen_ai.* semconv
   * coordination.orchestra.Orchestra.run — TracingConfig.sinks plumbing,
     finalize-block close timeout
 
@@ -46,10 +47,16 @@ KEY ARGS
                       generated under ./_runs/secret_word/<timestamp>/.
   --max-steps N       Orchestra max_steps. Default 30.
   --print-tree        Pretty-print the reconstructed TraceTree.
-  --langsmith         Enable OTel export to LangSmith. Reads LANGSMITH_API_KEY
-                      / LANGSMITH_PROJECT / LANGSMITH_OTEL_ENDPOINT from env.
-                      Without this flag, OtelTraceWriter is not wired —
-                      NDJSON-only run.
+  --langsmith         Enable OTel export using the LangSmith preset. Reads
+                      LANGSMITH_API_KEY / LANGSMITH_PROJECT /
+                      LANGSMITH_OTEL_ENDPOINT from env.
+  --langfuse          Enable OTel export using the Langfuse preset. Reads
+                      LANGFUSE_PUBLIC_KEY / LANGFUSE_SECRET_KEY /
+                      LANGFUSE_BASE_URL from env. Combinable with --langsmith.
+                      With neither flag, OtelTraceWriter is not wired —
+                      NDJSON-only run. Both presets just build the same
+                      vendor-neutral OtelTraceWriter with a different
+                      endpoint + auth header.
   --provider {openrouter,azure}
                       LLM provider. Default 'openrouter'. 'azure' reads
                       AZURE_OPENAI_{API_KEY,ENDPOINT,DEPLOYMENT} and routes
@@ -67,7 +74,7 @@ OUTPUTS
   Exit code                            0 = all checks passed, 1 otherwise
 
   Summary keys: output_dir, trace_file, log_file, all_checks_passed,
-  checks (per-check bool), capture_stats, langsmith_enabled.
+  checks (per-check bool), capture_stats, otel_export_enabled.
 
 REQUIREMENTS
   * For --provider=openrouter (default): OPENROUTER_API_KEY (or
@@ -302,10 +309,11 @@ def _build_model_config(args: argparse.Namespace) -> "ModelConfig":
 # ── OTel sink builder (opt-in) ──────────────────────────────────────────────
 
 
-def _build_otel_sink() -> Any:
-    """Build an OtelTraceWriter from LangSmith env vars. Returns None
-    when LANGSMITH_API_KEY is missing — callers should treat that as
-    "OTel export disabled."
+def _build_langsmith_sink() -> Any:
+    """Build an OtelTraceWriter for the LangSmith preset from LANGSMITH_* env
+    vars. Returns None when LANGSMITH_API_KEY is missing — callers treat that
+    as "this preset disabled." The writer itself is vendor-neutral; this just
+    supplies the matching endpoint + auth header.
     """
     api_key = os.getenv("LANGSMITH_API_KEY")
     if not api_key:
@@ -327,6 +335,35 @@ def _build_otel_sink() -> Any:
             "Langsmith-Project": project,
         },
         service_name=project,
+    )
+
+
+def _build_langfuse_sink() -> Any:
+    """Build an OtelTraceWriter for Langfuse from LANGFUSE_* env vars.
+
+    Returns None when the keypair is missing. Langfuse speaks OTLP/HTTP
+    at ``{base}/api/public/otel/v1/traces`` and authenticates with HTTP
+    Basic using ``base64(public_key:secret_key)`` — the *same*
+    vendor-neutral OtelTraceWriter, only the endpoint + auth header
+    differ from LangSmith. This is exactly the "does it work out of the
+    box on a second backend" check.
+    """
+    public_key = os.getenv("LANGFUSE_PUBLIC_KEY")
+    secret_key = os.getenv("LANGFUSE_SECRET_KEY")
+    if not (public_key and secret_key):
+        return None
+    base_url = os.getenv("LANGFUSE_BASE_URL", "https://cloud.langfuse.com").rstrip("/")
+    endpoint = f"{base_url}/api/public/otel/v1/traces"
+
+    import base64
+
+    auth = base64.b64encode(f"{public_key}:{secret_key}".encode("ascii")).decode("ascii")
+    from marsys.coordination.tracing import OtelTraceWriter
+
+    return OtelTraceWriter(
+        endpoint=endpoint,
+        headers={"Authorization": f"Basic {auth}"},
+        service_name=os.getenv("LANGFUSE_PROJECT", "marsys"),
     )
 
 
@@ -413,7 +450,7 @@ def verify_run(
     *,
     result: Any,
     trace_file: Optional[Path],
-    langsmith_enabled: bool,
+    otel_enabled: bool,
 ) -> Dict[str, Any]:
     """Build a structured pass/fail report covering Phase 1 + Phase 2."""
     checks: Dict[str, Dict[str, Any]] = {}
@@ -494,11 +531,11 @@ def verify_run(
     }
 
     # Phase-2 OTel: only assertable here as "no exception logged"; real
-    # vendor verification (visible trace in LangSmith UI) is manual.
-    if langsmith_enabled:
-        checks["langsmith_export_attempted"] = {
+    # backend verification (visible trace in the platform UI) is manual.
+    if otel_enabled:
+        checks["otel_export_attempted"] = {
             "ok": True,  # presence of OtelTraceWriter is verified via wiring
-            "detail": "OtelTraceWriter wired; check LangSmith UI manually",
+            "detail": "OtelTraceWriter wired; check the backend UI manually",
         }
 
     return {"checks": checks, "capture_stats": stats}
@@ -547,6 +584,11 @@ def parse_args() -> argparse.Namespace:
                         "both env defaults.")
     p.add_argument("--langsmith", action="store_true",
                    help="Enable OTel export to LangSmith. Requires LANGSMITH_API_KEY in env.")
+    p.add_argument("--langfuse", action="store_true",
+                   help="Enable OTel export to Langfuse. Requires LANGFUSE_PUBLIC_KEY / "
+                        "LANGFUSE_SECRET_KEY in env (LANGFUSE_BASE_URL optional, defaults "
+                        "to https://cloud.langfuse.com). Can be combined with --langsmith "
+                        "to fan out to both backends from the same run.")
     p.add_argument("--print-tree", action="store_true",
                    help="Pretty-print the reconstructed TraceTree.")
     return p.parse_args()
@@ -574,6 +616,7 @@ async def run(args: argparse.Namespace) -> int:
     print(f"Task:            {args.task!r}")
     print(f"Provider:        {args.provider}")
     print(f"LangSmith:       {args.langsmith}")
+    print(f"Langfuse:        {args.langfuse}")
 
     model_config = _build_model_config(args)
     print(f"Model:           {model_config.name}")
@@ -581,16 +624,26 @@ async def run(args: argparse.Namespace) -> int:
         print(f"Endpoint:        {model_config.base_url}")
 
     sinks: List[Any] = []
-    otel_sink = None
     if args.langsmith:
-        otel_sink = _build_otel_sink()
-        if otel_sink is None:
-            print("WARNING: --langsmith passed but LANGSMITH_API_KEY not set; skipping OTel export.")
+        ls_sink = _build_langsmith_sink()
+        if ls_sink is None:
+            print("WARNING: --langsmith passed but LANGSMITH_API_KEY not set; skipping LangSmith export.")
         else:
-            sinks.append(otel_sink)
+            sinks.append(ls_sink)
             print(
                 f"OTel -> LangSmith enabled (project={os.getenv('LANGSMITH_PROJECT', 'default')!r})"
             )
+    if args.langfuse:
+        lf_sink = _build_langfuse_sink()
+        if lf_sink is None:
+            print("WARNING: --langfuse passed but LANGFUSE_PUBLIC_KEY/LANGFUSE_SECRET_KEY not set; skipping Langfuse export.")
+        else:
+            sinks.append(lf_sink)
+            print(
+                f"OTel -> Langfuse enabled "
+                f"(base={os.getenv('LANGFUSE_BASE_URL', 'https://cloud.langfuse.com')!r})"
+            )
+    otel_enabled = len(sinks) > 0
 
     _ = _build_agents(model_config)
     # Agents register themselves on AgentRegistry via __init__.
@@ -608,7 +661,6 @@ async def run(args: argparse.Namespace) -> int:
                 tracing=TracingConfig(
                     enabled=True,
                     output_dir=str(output_dir),
-                    capture_full_input=True,        # Phase-1 full payload
                     include_message_content=True,
                     sinks=sinks,                    # Phase-2 OTel (opt-in)
                 ),
@@ -641,7 +693,7 @@ async def run(args: argparse.Namespace) -> int:
     report = verify_run(
         result=result,
         trace_file=trace_file,
-        langsmith_enabled=otel_sink is not None,
+        otel_enabled=otel_enabled,
     )
     print()
     print("=" * 60)
@@ -656,7 +708,7 @@ async def run(args: argparse.Namespace) -> int:
         "output_dir": str(output_dir),
         "trace_file": str(trace_file) if trace_file else None,
         "log_file": str(log_file),
-        "langsmith_enabled": otel_sink is not None,
+        "otel_export_enabled": otel_enabled,
         "all_checks_passed": all(c["ok"] for c in report["checks"].values()),
         "checks": {k: v["ok"] for k, v in report["checks"].items()},
         "capture_stats": report.get("capture_stats"),

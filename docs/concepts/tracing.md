@@ -27,7 +27,6 @@ from marsys.coordination.tracing.config import TracingConfig
 config = TracingConfig(
     enabled=True,
     output_dir="./traces",
-    include_generation_details=True,   # token counts, model metadata
     include_message_content=True,       # final response summary on root
     include_tool_results=True,          # tool args and result summaries
 )

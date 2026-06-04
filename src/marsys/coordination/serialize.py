@@ -84,10 +84,8 @@ class TracingConfigSpec(BaseModel):
 
     enabled: bool = False
     output_dir: str = "./traces"
-    include_generation_details: bool = True
     include_message_content: bool = True
     include_tool_results: bool = True
-    capture_full_input: bool = False
 
 
 class ExecutionConfigSpec(BaseModel):
@@ -200,10 +198,8 @@ def _tracing_to_spec(tracing: TracingConfig) -> TracingConfigSpec:
     return TracingConfigSpec(
         enabled=tracing.enabled,
         output_dir=tracing.output_dir,
-        include_generation_details=tracing.include_generation_details,
         include_message_content=tracing.include_message_content,
         include_tool_results=tracing.include_tool_results,
-        capture_full_input=tracing.capture_full_input,
     )
 
 
@@ -211,10 +207,8 @@ def _spec_to_tracing(spec: TracingConfigSpec) -> TracingConfig:
     return TracingConfig(
         enabled=spec.enabled,
         output_dir=spec.output_dir,
-        include_generation_details=spec.include_generation_details,
         include_message_content=spec.include_message_content,
         include_tool_results=spec.include_tool_results,
-        capture_full_input=spec.capture_full_input,
     )
 
 

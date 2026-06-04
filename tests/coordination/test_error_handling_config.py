@@ -123,13 +123,14 @@ class TestAdapterRetryLoop:
         ok_response = MagicMock()
         ok_response.status_code = 200
         ok_response.json.return_value = {
-            "choices": [{
-                "message": {"role": "assistant", "content": "hi"},
-                "finish_reason": "stop",
-                "index": 0,
+            "output": [{
+                "type": "message",
+                "role": "assistant",
+                "status": "completed",
+                "content": [{"type": "output_text", "text": "hi"}],
             }],
             "model": "gpt-test",
-            "usage": {"prompt_tokens": 5, "completion_tokens": 1, "total_tokens": 6},
+            "usage": {"input_tokens": 5, "output_tokens": 1, "total_tokens": 6},
         }
         ok_response.raise_for_status = MagicMock()
 
@@ -161,13 +162,14 @@ class TestAdapterRetryLoop:
             else:
                 response.status_code = 200
                 response.json.return_value = {
-                    "choices": [{
-                        "message": {"role": "assistant", "content": "ok"},
-                        "finish_reason": "stop",
-                        "index": 0,
+                    "output": [{
+                        "type": "message",
+                        "role": "assistant",
+                        "status": "completed",
+                        "content": [{"type": "output_text", "text": "ok"}],
                     }],
                     "model": "gpt-test",
-                    "usage": {"prompt_tokens": 5, "completion_tokens": 1, "total_tokens": 6},
+                    "usage": {"input_tokens": 5, "output_tokens": 1, "total_tokens": 6},
                 }
                 response.raise_for_status = MagicMock()
             return response
@@ -207,13 +209,14 @@ class TestAdapterRetryLoop:
             else:
                 response.status_code = 200
                 response.json.return_value = {
-                    "choices": [{
-                        "message": {"role": "assistant", "content": "ok"},
-                        "finish_reason": "stop",
-                        "index": 0,
+                    "output": [{
+                        "type": "message",
+                        "role": "assistant",
+                        "status": "completed",
+                        "content": [{"type": "output_text", "text": "ok"}],
                     }],
                     "model": "gpt-test",
-                    "usage": {"prompt_tokens": 5, "completion_tokens": 1, "total_tokens": 6},
+                    "usage": {"input_tokens": 5, "output_tokens": 1, "total_tokens": 6},
                 }
                 response.raise_for_status = MagicMock()
             return response

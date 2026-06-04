@@ -2,7 +2,7 @@
 
 PURPOSE
   Adapted from ``examples/example_01_Deep_Research.py`` (User node
-  removed for reproducibility) with tracing + Azure + LangSmith wired
+  removed for reproducibility) with tracing + Azure + OTel export wired
   in. Produces orders of magnitude more events than
   ``secret_word_pipeline.py`` and exercises tracing dimensions that
   smoke test doesn't: AgentPool fan-out, compaction spans (large
@@ -325,9 +325,9 @@ def collect_capture_stats(root: Dict[str, Any]) -> Dict[str, Any]:
         return v is not None and v != [] and v != {}
 
     # A "produced output" span has either text content or tool calls (or both).
-    # A pure tool-call response correctly carries content=None — that's how
-    # LangSmith renders the AI-message bubble. Counting such turns as
-    # "missing payload" is a verifier bug, not a capture bug.
+    # A pure tool-call response correctly carries content=None — that's the
+    # OpenAI shape a chat-UI renders as the AI-message bubble. Counting such
+    # turns as "missing payload" is a verifier bug, not a capture bug.
     def _produced_output(s: Dict[str, Any]) -> bool:
         return _has_attr(s, "response_content") or _has_attr(s, "response_tool_calls")
 
@@ -351,7 +351,7 @@ def verify_run(
     *,
     result: Any,
     trace_file: Optional[Path],
-    langsmith_enabled: bool,
+    otel_enabled: bool,
     browser_pool_size: int,
 ) -> Dict[str, Any]:
     checks: Dict[str, Dict[str, Any]] = {}
@@ -426,10 +426,10 @@ def verify_run(
         "detail": f"with={stats['gens_with_sampling_params']}/{stats['generation_count']}",
     }
 
-    if langsmith_enabled:
-        checks["langsmith_export_attempted"] = {
+    if otel_enabled:
+        checks["otel_export_attempted"] = {
             "ok": True,
-            "detail": "OtelTraceWriter wired; check LangSmith UI manually",
+            "detail": "OtelTraceWriter wired; check the backend UI manually",
         }
 
     return {"checks": checks, "capture_stats": stats}
@@ -535,7 +535,6 @@ async def run(args: argparse.Namespace) -> int:
                 tracing=TracingConfig(
                     enabled=True,
                     output_dir=str(output_dir),
-                    capture_full_input=True,
                     include_message_content=True,
                     sinks=sinks,
                 ),
@@ -569,7 +568,7 @@ async def run(args: argparse.Namespace) -> int:
     report = verify_run(
         result=result,
         trace_file=trace_file,
-        langsmith_enabled=otel_sink is not None,
+        otel_enabled=otel_sink is not None,
         browser_pool_size=args.browser_pool_size,
     )
     print()
@@ -585,7 +584,7 @@ async def run(args: argparse.Namespace) -> int:
         "output_dir": str(output_dir),
         "trace_file": str(trace_file) if trace_file else None,
         "log_file": str(log_file),
-        "langsmith_enabled": otel_sink is not None,
+        "otel_export_enabled": otel_sink is not None,
         "all_checks_passed": all(c["ok"] for c in report["checks"].values()),
         "checks": {k: v["ok"] for k, v in report["checks"].items()},
         "capture_stats": report.get("capture_stats"),
