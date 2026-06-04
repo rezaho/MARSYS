@@ -19,7 +19,7 @@ from marsys.coordination.tracing.collector import TraceCollector
 from marsys.coordination.tracing.config import TracingConfig
 from marsys.coordination.tracing.events import (
     ExecutionStartEvent,
-    GenerationEvent,
+    LLMCallEvent,
     ValidationDecisionEvent,
     ConvergenceEvent,
 )
@@ -57,12 +57,17 @@ async def emit_step(event_bus, session_id, branch_id, agent_name, step_number, s
         session_id=session_id, branch_id=branch_id, agent_name=agent_name,
         step_number=step_number, step_span_id=step_span_id,
     ))
-    await event_bus.emit(GenerationEvent(
+    await event_bus.emit(LLMCallEvent(
         session_id=session_id, branch_id=branch_id, agent_name=agent_name,
-        step_number=step_number, step_span_id=step_span_id,
-        model_name=model_name, provider=provider,
-        prompt_tokens=prompt_tokens, completion_tokens=completion_tokens,
-        response_time_ms=1000.0, finish_reason="stop",
+        step_span_id=step_span_id,
+        model_name=model_name, provider=provider, kind="generation",
+        status="ok", content="response",
+        response_metadata={
+            "usage": {"prompt_tokens": prompt_tokens,
+                      "completion_tokens": completion_tokens},
+            "finish_reason": "stop",
+        },
+        duration_ms=1000.0,
     ))
     if tool_name:
         await event_bus.emit(ToolCallEvent(
@@ -166,9 +171,10 @@ class TestGenerationSpans:
         gen = gen_spans[0]
         assert gen.attributes["model_name"] == "gpt-4o"
         assert gen.attributes["provider"] == "openai"
-        assert gen.attributes["prompt_tokens"] == 200
-        assert gen.attributes["completion_tokens"] == 100
-        assert gen.attributes["response_time_ms"] == 1000.0
+        usage = gen.attributes["response_metadata"]["usage"]
+        assert usage["prompt_tokens"] == 200
+        assert usage["completion_tokens"] == 100
+        assert gen.duration_ms == 1000.0
 
     @pytest.mark.asyncio
     async def test_generation_timing_contained_in_step(self, event_bus, collector):

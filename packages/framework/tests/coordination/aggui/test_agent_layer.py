@@ -157,7 +157,6 @@ async def test_trace_collector_handler_stores_assistant_content_when_enabled(tmp
         enabled=True,
         output_dir=str(tmp_path),
         include_message_content=True,
-        capture_full_input=True,
     )
     collector = TraceCollector(event_bus=bus, config=cfg, sinks=[])
 
@@ -216,7 +215,6 @@ async def test_trace_collector_handler_respects_include_message_content_false(tm
         enabled=True,
         output_dir=str(tmp_path),
         include_message_content=False,
-        capture_full_input=True,
     )
     collector = TraceCollector(event_bus=bus, config=cfg, sinks=[])
 

@@ -126,10 +126,18 @@ test = [
 # OTLP/HTTP trace exporter (OtelTraceWriter) — LangSmith / Langfuse /
 # Phoenix / Jaeger / Tempo / Datadog. Without this extra the class is
 # importable but raises ImportError on instantiation.
+#
+# Upper-bounded at <2.0: OtelTraceWriter constructs SDK spans through
+# private internals (opentelemetry.sdk.trace._Span,
+# TracerProvider._active_span_processor, Tracer._instrumentation_scope) to
+# inject deterministic span IDs — see ADR-009 D7. A 2.0 refactor of those
+# underscore APIs would break export, so a major bump must be a deliberate
+# bump-and-verify, not a silent transitive upgrade. The api/sdk/exporter
+# ship on one lockstep 1.x train, so all three are capped together.
 tracing-otel = [
-    "opentelemetry-api>=1.27.0",
-    "opentelemetry-sdk>=1.27.0",
-    "opentelemetry-exporter-otlp-proto-http>=1.27.0",
+    "opentelemetry-api>=1.27.0,<2.0",
+    "opentelemetry-sdk>=1.27.0,<2.0",
+    "opentelemetry-exporter-otlp-proto-http>=1.27.0,<2.0",
 ]
 
 [project.urls]

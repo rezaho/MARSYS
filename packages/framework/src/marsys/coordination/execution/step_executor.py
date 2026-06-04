@@ -251,7 +251,8 @@ class StepExecutor:
         # Full-input capture lives in ``Agent._run`` (emits
         # ``AgentMessagesPreparedEvent`` at the model-dispatch site).
         # ``tracing_enabled`` is read here to decide whether to build a
-        # ``TraceContext`` for the ``capture_llm_call`` wrapper layer.
+        # ``TraceContext`` for the model-wrapper capture helper
+        # (``emit_llm_call``).
         execution_config_obj = context.get("execution_config")
         tracing_cfg = getattr(execution_config_obj, "tracing", None) if execution_config_obj else None
         tracing_enabled = bool(tracing_cfg and getattr(tracing_cfg, "enabled", False))
@@ -274,7 +275,7 @@ class StepExecutor:
         context["step_span_id"] = step_span_id
 
         # Build a TraceContext only when tracing is on. When disabled,
-        # ``capture_llm_call`` bypasses on a None trace_ctx — same
+        # ``emit_llm_call`` bypasses on a None trace_ctx — same
         # code path as raw model usage outside Orchestra.
         if tracing_enabled:
             from ..tracing.trace_context import TraceContext
@@ -331,7 +332,7 @@ class StepExecutor:
                     "session_id": step_context.session_id,  # Required for planning events emission
                     "branch_id": step_context.branch_id,  # For consistent event tracking
                     "step_span_id": step_span_id,  # so the agent can stamp AgentMessagesPreparedEvent with the correct span
-                    "trace_ctx": trace_ctx,         # picked up by capture_llm_call at the model-wrapper layer
+                    "trace_ctx": trace_ctx,         # picked up by emit_llm_call at the model-wrapper layer
                 }
 
                 # Mark as continuation if this is a tool continuation
@@ -676,12 +677,11 @@ class StepExecutor:
                         step_result.saved_context = saved_context
                         logger.debug(f"Extracted saved context from {agent_name}: {list(saved_context.keys())}")
 
-                # Generation spans are now emitted by the model-wrapper
-                # capture helper (LLMRequestEvent / LLMResponseEvent),
-                # which carries the full payload. The legacy
-                # GenerationEvent emit here would produce a duplicate
-                # span; the dataclass + handler are kept for any
-                # external consumer still emitting it.
+                # Generation spans are emitted by the model-wrapper capture
+                # helper (a single LLMCallEvent per call) which carries the
+                # full payload. The legacy GenerationEvent dataclass is kept
+                # only for out-of-tree emitters — this repo neither emits it
+                # nor subscribes to it (see TraceCollector.IGNORED_EVENTS).
 
                 # Emit completion event
                 if self.event_bus:

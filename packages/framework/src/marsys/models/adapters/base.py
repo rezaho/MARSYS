@@ -465,16 +465,50 @@ class AsyncBaseAPIAdapter(APIProviderAdapter):
             self._session = aiohttp.ClientSession(connector=connector)
         return self._session
 
+    def _trace_call_base(self, messages: List[Dict], **kwargs) -> Dict[str, Any]:
+        """Build the per-call input snapshot shared by every attempt's event.
+
+        Captured once before the request so an adapter that mutates the message
+        list can't pollute the record. ``start`` is supplied separately at each
+        emit point (per-attempt timing).
+        """
+        from marsys.coordination.tracing.capture import extract_sampling_params
+        return dict(
+            model_name=getattr(self, "model_name", "unknown"),
+            provider=getattr(self, "provider", None) or self._provider_name() or "unknown",
+            messages=list(messages) if isinstance(messages, list) else messages,
+            tools=kwargs.get("tools"),
+            images=kwargs.get("images"),
+            sampling_params=extract_sampling_params(kwargs),
+        )
+
     async def arun(self, messages: List[Dict], **kwargs) -> HarmonizedResponse:
         """
         Execute async API request.
 
-        If streaming is enabled, delegates to arun_streaming().
-        Otherwise uses standard async request/response flow.
+        If streaming is enabled, delegates to arun_streaming() with a single
+        terminal trace event (streaming has no retry loop). Otherwise uses the
+        standard async request/response flow, which emits one event per attempt.
         """
+        # ``trace_ctx`` rides in as a kwarg and is popped here so it never leaks
+        # into ``format_request_payload``; the standard path receives it back as
+        # an explicit parameter.
+        trace_ctx = kwargs.pop("trace_ctx", None)
         if self.streaming:
-            return await self.arun_streaming(messages, **kwargs)
-        return await self._arun_standard(messages, **kwargs)
+            from marsys.coordination.tracing.capture import emit_llm_call
+            base = self._trace_call_base(messages, **kwargs)
+            start = time.time()
+            try:
+                result = await self.arun_streaming(messages, **kwargs)
+            except BaseException as e:
+                await emit_llm_call(trace_ctx, **base, start=start, error=e)
+                raise
+            if isinstance(result, ErrorResponse):
+                await emit_llm_call(trace_ctx, **base, start=start, error=result)
+            else:
+                await emit_llm_call(trace_ctx, **base, start=start, response=result)
+            return result
+        return await self._arun_standard(messages, trace_ctx=trace_ctx, **kwargs)
 
     async def arun_streaming(self, messages: List[Dict], **kwargs) -> HarmonizedResponse:
         """
@@ -489,15 +523,29 @@ class AsyncBaseAPIAdapter(APIProviderAdapter):
             f"{self.__class__.__name__} has streaming=True but does not implement arun_streaming()"
         )
 
-    async def _arun_standard(self, messages: List[Dict], **kwargs) -> HarmonizedResponse:
-        """Async sibling of ``_run_standard``. Same retry semantics, same config source."""
+    async def _arun_standard(
+        self, messages: List[Dict], trace_ctx: Any = None, **kwargs
+    ) -> HarmonizedResponse:
+        """Async sibling of ``_run_standard``. Same retry semantics, same config source.
+
+        Emits one ``LLMCallEvent`` per attempt: a ``status="error"`` event at each
+        retried failure, a ``status="ok"`` event when an attempt succeeds, and a
+        terminal error event in the ``except`` handler (exhausted retries, other
+        4xx, and network/unexpected errors all funnel there). ``trace_ctx`` is an
+        explicit parameter (not in ``kwargs``) so it never reaches
+        ``format_request_payload``; emission no-ops when it is ``None``.
+        """
         import aiohttp
         import asyncio
+
+        from marsys.coordination.tracing.capture import emit_llm_call
 
         provider = self._provider_name()
         params = _resolve_retry_params(self.error_config, provider)
         max_retries = params["max_retries"]
         attempts: List[Dict[str, Any]] = []
+        # Input snapshot shared by every attempt's event (full input every time).
+        trace_base = self._trace_call_base(messages, **kwargs)
 
         for attempt in range(max_retries + 1):
             response = None
@@ -560,6 +608,11 @@ class AsyncBaseAPIAdapter(APIProviderAdapter):
                                 f"Server error {response_status} from {self.model_name}. "
                                 f"Retry {attempt + 1}/{max_retries} after {delay:.1f}s"
                             )
+                            await emit_llm_call(
+                                trace_ctx, **trace_base, start=attempt_start,
+                                error_type="ServerError",
+                                error_message=f"Server error {response_status}",
+                            )
                             await asyncio.sleep(delay)
                             continue
                         else:
@@ -607,6 +660,11 @@ class AsyncBaseAPIAdapter(APIProviderAdapter):
                                 f"Rate limit (429) from {self.model_name}. "
                                 f"Retry {attempt + 1}/{max_retries} after {delay:.1f}s"
                             )
+                            await emit_llm_call(
+                                trace_ctx, **trace_base, start=attempt_start,
+                                error_type="RateLimitError",
+                                error_message=f"Rate limit ({response_status})",
+                            )
                             await asyncio.sleep(delay)
                             continue
                         else:
@@ -642,19 +700,59 @@ class AsyncBaseAPIAdapter(APIProviderAdapter):
 
                 harmonized = self.harmonize_response(raw_response, request_start_time)
                 _attach_retry_attempts(harmonized, attempts)
+                await emit_llm_call(
+                    trace_ctx, **trace_base, start=attempt_start, response=harmonized
+                )
                 return harmonized
 
             except aiohttp.ClientError as e:
                 try:
-                    return self.handle_api_error(e, response=err_response)
+                    result = self.handle_api_error(e, response=err_response)
                 except Exception as api_error:
+                    await emit_llm_call(
+                        trace_ctx, **trace_base, start=attempt_start, error=api_error
+                    )
                     raise api_error
+                if isinstance(result, ErrorResponse):
+                    await emit_llm_call(
+                        trace_ctx, **trace_base, start=attempt_start, error=result
+                    )
+                else:
+                    # handle_api_error recovered a real response — record success.
+                    await emit_llm_call(
+                        trace_ctx, **trace_base, start=attempt_start, response=result
+                    )
+                return result
 
             except Exception as e:
                 try:
-                    return self.handle_api_error(e, response=err_response)
+                    result = self.handle_api_error(e, response=err_response)
                 except Exception as api_error:
+                    await emit_llm_call(
+                        trace_ctx, **trace_base, start=attempt_start, error=api_error
+                    )
                     raise api_error
+                if isinstance(result, ErrorResponse):
+                    await emit_llm_call(
+                        trace_ctx, **trace_base, start=attempt_start, error=result
+                    )
+                else:
+                    # handle_api_error recovered a real response — record success.
+                    await emit_llm_call(
+                        trace_ctx, **trace_base, start=attempt_start, response=result
+                    )
+                return result
+
+            except BaseException as e:
+                # CancelledError (and any other BaseException) isn't caught by
+                # the handlers above; record the in-flight attempt before it
+                # propagates — mirroring the streaming and local-adapter paths.
+                # ``emit_llm_call`` records CancelledError as status="cancelled"
+                # and shields its own emit, so the cancellation is never masked.
+                await emit_llm_call(
+                    trace_ctx, **trace_base, start=attempt_start, error=e
+                )
+                raise
 
     async def cleanup(self):
         """

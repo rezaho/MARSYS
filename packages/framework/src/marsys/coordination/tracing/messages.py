@@ -1,7 +1,7 @@
 """Content-addressed message blob store for full-input trace capture.
 
-When ``TracingConfig.capture_full_input`` is enabled, the tracing collector
-captures every message sent to a model on each agent step and stores the
+When tracing is enabled, the tracing collector captures every message sent
+to a model on each agent step and stores the
 canonical-JSON-serialized form in a sidecar directory under the trace
 output (``{output_dir}/messages/<sha256>.json``). Each step span carries
 an ``input_messages_ref`` attribute pointing into the store; readers

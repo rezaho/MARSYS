@@ -65,38 +65,42 @@ class ConvergenceEvent(StatusEvent):
 
 
 @dataclass
-class LLMRequestEvent(StatusEvent):
-    """Emitted by the model-wrapper capture helper just before an LLM call.
+class LLMCallEvent(StatusEvent):
+    """Emitted once per LLM call, after it returns (or fails/cancels).
 
-    Carries the full request payload — message list, advertised tool schemas,
-    sampling parameters — so the trace records exactly what the model saw,
-    not a reconstruction. Pairs with ``LLMResponseEvent`` via ``request_id``.
+    A single self-contained record of the whole call — captured at the
+    model-wrapper layer so the payload is the literal kwargs the wrapper
+    handed to the adapter (recording-not-reconstruction; the trace matches
+    the wire by definition). Carries:
+
+    * **Input** — ``messages`` (full history sent), advertised ``tools``,
+      ``sampling_params``, ``images`` — snapshotted at call start.
+    * **Output** — ``content``, ``thinking``, ``reasoning``, structured
+      ``tool_calls``, provider ``response_metadata``.
+    * **Identity / timing** — ``model_name`` / ``provider`` / ``kind``,
+      ``start_time`` (epoch seconds at call start) and ``duration_ms``.
+
+    ``status="error"`` is used when the underlying call raised, and
+    ``status="cancelled"`` when it was cancelled (carrying
+    ``error_type="CancelledError"``). On those paths the input fields are
+    still populated (so the prompt that triggered the failure is recorded)
+    while ``content`` / ``tool_calls`` are left empty. The collector flattens
+    a cancelled call to an "error" span status; the cancellation detail
+    survives on these event fields.
     """
     step_span_id: str = ""
-    request_id: str = ""
+    request_id: str = ""                 # unique per call (incl. each retry)
     agent_name: str = ""
     model_name: str = ""
     provider: str = ""
     kind: str = "generation"             # "generation" | "compaction"
+    # Input payload (snapshotted at call start).
     messages: List[Dict[str, Any]] = field(default_factory=list)
     tools: Optional[List[Dict[str, Any]]] = None
     sampling_params: Dict[str, Any] = field(default_factory=dict)
     images: Optional[List[Any]] = None
-
-
-@dataclass
-class LLMResponseEvent(StatusEvent):
-    """Emitted by the model-wrapper capture helper after an LLM call returns.
-
-    Carries the full response payload — content, thinking, reasoning,
-    structured tool calls, provider metadata — keyed back to the matching
-    ``LLMRequestEvent`` by ``request_id``. ``status="error"`` is used when
-    the underlying call raised; in that case the error fields are populated
-    and ``content``/``tool_calls`` are left empty.
-    """
-    step_span_id: str = ""
-    request_id: str = ""
-    status: str = "ok"                   # "ok" | "error"
+    # Outcome.
+    status: str = "ok"                   # "ok" | "error" | "cancelled"
     role: Optional[str] = None
     content: Optional[str] = None
     thinking: Optional[str] = None
@@ -104,6 +108,9 @@ class LLMResponseEvent(StatusEvent):
     reasoning_details: Optional[Dict[str, Any]] = None
     tool_calls: List[Dict[str, Any]] = field(default_factory=list)
     response_metadata: Dict[str, Any] = field(default_factory=dict)
+    # Timing.
+    start_time: float = 0.0              # epoch seconds at call start
     duration_ms: Optional[float] = None
+    # Failure detail (status != "ok").
     error_type: Optional[str] = None
     error_message: Optional[str] = None

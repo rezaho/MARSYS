@@ -1,13 +1,32 @@
 """OpenTelemetry exporter for MARSYS spans, shipping ``gen_ai.*`` semconv.
 
-Vendor-neutral export channel: a single configuration ships traces to
-LangSmith, Langfuse, Phoenix, Jaeger, Tempo, Datadog, or any other
-OTLP-aware backend. Implements ``TelemetrySink`` and runs alongside
+Vendor-neutral export channel: one configuration ships traces over OTLP/HTTP
+to any OTLP-aware backend (common LLM-observability and general tracing
+platforms all accept this). Implements ``TelemetrySink`` and runs alongside
 ``NDJSONTraceWriter`` (NDJSON remains the local source of truth).
 
 The OTel SDK ships under the ``tracing-otel`` extra; imports are lazy so
 this module stays importable without it (instantiation is the only
 failure point).
+
+Design note — strictly vendor-neutral, no single-vendor attributes:
+We emit only published, cross-vendor conventions — the OTel ``gen_ai.*``
+semconv plus OpenInference (``input.value``/``output.value``,
+``openinference.span.kind``, ``llm.input_messages.*``) and OpenLLMetry
+(``llm.request.functions.*``). No attribute keyed to a single product's
+namespace. Each surface is something multiple backends consume; together
+they give rich LLM rendering on platforms that read any of them, while the
+data stays complete on those that read only the base ``gen_ai.*`` keys.
+
+Known, accepted limitation (do NOT "fix" by adding product-specific keys):
+some backends render their rich *generation* chat view only from their own
+native input/output attribute, not from the standard ``gen_ai.*`` /
+OpenInference keys. On those, our neutral attributes still populate the
+observation's input/output completely (all data present and queryable), but
+the platform may show it as raw attributes rather than chat bubbles. This is
+inherent to how such a backend ingests OTLP, not a gap in what we emit.
+Neutrality was chosen over emitting a product-specific attribute; keep it
+that way unless that trade-off is explicitly revisited.
 """
 
 from __future__ import annotations
@@ -22,6 +41,7 @@ from typing import Any, Dict, List, Optional, Tuple, TYPE_CHECKING
 from ..sink import TelemetrySink
 
 if TYPE_CHECKING:
+    from ..messages import MessageStore
     from ..types import Span
 
 logger = logging.getLogger(__name__)
@@ -110,10 +130,11 @@ class OtelTraceWriter(TelemetrySink):
     ):
         """Construct the OTel exporter.
 
-        ``endpoint`` is the OTLP/HTTP traces URL (e.g.
-        ``https://api.smith.langchain.com/otel/v1/traces``). Required
-        unless ``_exporter_override`` is set (test seam: pass an
-        ``InMemorySpanExporter`` to assert mappings without network).
+        ``endpoint`` is the backend's OTLP/HTTP traces URL (e.g.
+        ``https://<host>/otel/v1/traces``); ``headers`` carries whatever auth
+        that backend expects. Required unless ``_exporter_override`` is set
+        (test seam: pass an ``InMemorySpanExporter`` to assert mappings
+        without network).
         """
         try:
             from opentelemetry.sdk.resources import Resource
@@ -151,8 +172,17 @@ class OtelTraceWriter(TelemetrySink):
 
         self._tracer = self._provider.get_tracer("marsys.tracing")
         self._closed = False
+        # Set via bind_message_store() when the collector has a store. Used to
+        # rehydrate ref-only generation spans (Option B) — OTLP can't follow a
+        # content-addressed pointer, so we resolve it to literal content here.
+        self._message_store: Optional['MessageStore'] = None
 
     # ── TelemetrySink ───────────────────────────────────────────────
+
+    def bind_message_store(self, store: 'MessageStore') -> None:
+        """Receive the collector's message store so ``*_ref`` attributes can be
+        rehydrated to inline content at publish time (Option B)."""
+        self._message_store = store
 
     async def publish_span(self, span: 'Span') -> None:
         """Export one MARSYS span as one OTel span.
@@ -165,7 +195,7 @@ class OtelTraceWriter(TelemetrySink):
         if self._closed:
             return
         try:
-            loop = asyncio.get_event_loop()
+            loop = asyncio.get_running_loop()
             await loop.run_in_executor(None, self._emit_span, span)
         except Exception as e:  # noqa: BLE001
             logger.error("OtelTraceWriter.publish_span failed: %s", e, exc_info=True)
@@ -176,7 +206,7 @@ class OtelTraceWriter(TelemetrySink):
             return
         self._closed = True
         try:
-            loop = asyncio.get_event_loop()
+            loop = asyncio.get_running_loop()
             await loop.run_in_executor(None, self._provider.force_flush, 5000)
             await loop.run_in_executor(None, self._provider.shutdown)
         except Exception as e:  # noqa: BLE001
@@ -242,10 +272,12 @@ class OtelTraceWriter(TelemetrySink):
         Each kind maps onto:
           1. ``gen_ai.*`` semconv (vendor-neutral)
           2. ``input.value`` / ``output.value`` + mime types (OpenInference)
-          3. ``langsmith.span.kind`` / ``openinference.span.kind`` so UIs
-             can badge the span as LLM / TOOL / CHAIN
-          4. Indexed prompt/completion attributes plus a single-blob
-             ``gen_ai.completion`` (LangSmith reads the blob form)
+          3. ``openinference.span.kind`` so UIs can badge the span as
+             LLM / TOOL / CHAIN. The OTel GenAI semconv has no stable
+             span-typing attribute yet, so this cross-vendor OpenInference
+             key fills the gap — no product-specific attribute is emitted.
+          4. Indexed prompt/completion attributes plus single-blob
+             ``gen_ai.prompt`` / ``gen_ai.completion`` (GenAI-semconv readers)
           5. ``marsys.*`` for everything else
         """
         attrs = span.attributes or {}
@@ -279,18 +311,23 @@ class OtelTraceWriter(TelemetrySink):
         *,
         kind: str,
     ) -> None:
-        """Generation / compaction → ``gen_ai.*`` + LangSmith rendering attrs.
+        """Generation / compaction → ``gen_ai.*`` + OpenInference rendering attrs.
 
-        Three independent surfaces are emitted on the same span because
-        different backends key off different things and the GenAI semconv
-        is in flux:
-        - Per-message events (``gen_ai.{role}.message``, ``gen_ai.choice``)
-        - Indexed prompt/tool attributes (``gen_ai.prompt.{i}.*``, ...)
+        Multiple attribute surfaces are emitted on the same span because
+        different backends key off different conventions and the GenAI
+        semconv content layer is still in flux:
+        - OpenInference I/O (``input.value`` / ``output.value``) — the
+          generic input/output panels
+        - Indexed prompt/tool attributes (``gen_ai.prompt.{i}.*``, ...) and
+          OpenInference ``llm.input_messages.*`` for chat-bubble rendering
         - JSON-blob fallbacks (``gen_ai.prompt``, ``gen_ai.tools``,
-          ``gen_ai.completion``)
+          ``gen_ai.completion``) for backends that read only the blobs
+
+        Note: no ``gen_ai.{role}.message`` / ``gen_ai.choice`` *events* are
+        emitted — see ``_add_events`` for why they break some backends'
+        chat rendering.
         """
         sdk_span.set_attribute("gen_ai.operation.name", kind)
-        sdk_span.set_attribute("langsmith.span.kind", "LLM")
         sdk_span.set_attribute("openinference.span.kind", "LLM")
 
         if attrs.get("provider"):
@@ -322,35 +359,50 @@ class OtelTraceWriter(TelemetrySink):
             )
 
         # Indexed prompt + tool attributes for chat-bubble rendering.
-        # The OpenInference ``llm.input_messages.*`` scheme is what
-        # LangSmith reads; ``gen_ai.prompt.*`` is kept for Phoenix /
-        # OpenLLMetry compatibility.
-        messages = attrs.get("input_messages") or []
-        tools = attrs.get("tools") or []
+        # The OpenInference ``llm.input_messages.*`` scheme and the indexed
+        # ``gen_ai.prompt.*`` scheme are emitted in parallel; backends read
+        # one or the other.
+        #
+        # Prefer inline content when present (no store, or fallback path);
+        # otherwise rehydrate the content-addressed ref the collector wrote in
+        # its place (Option B). OTLP can't follow a CAS pointer, so resolving
+        # here is what keeps full content flowing to OTLP backends.
+        messages = attrs.get("input_messages")
+        if not messages:
+            messages = self._resolve_ref_messages(attrs.get("input_messages_ref"))
+        tools = attrs.get("tools")
+        if tools is None:
+            tools = self._resolve_ref_tools(attrs.get("tools_ref"))
+        tools = tools or []
         self._emit_indexed_prompt_attrs(sdk_span, messages)
         self._emit_openinference_input_messages(sdk_span, messages)
-        self._emit_indexed_tool_attrs(sdk_span, tools)
+        self._emit_tool_attrs(sdk_span, tools)
 
-        # JSON-blob fallbacks for backends that don't parse the indexed
-        # pattern (and for LangSmith's completion panel).
-        if messages:
-            self._safe_set(sdk_span, "gen_ai.prompt", _safe_json(messages))
+        # Serialize the prompt list once: it feeds both the GenAI-semconv blob
+        # (``gen_ai.prompt``) and the OpenInference input panel (``input.value``).
+        # ``_safe_json`` over a full history (sort_keys) is not cheap — don't
+        # pay for it twice.
+        messages_json = _safe_json(messages) if messages else None
+        if messages_json is not None:
+            self._safe_set(sdk_span, "gen_ai.prompt", messages_json)
         if tools:
             self._safe_set(sdk_span, "gen_ai.tools", _safe_json(tools))
 
-        # Single-blob completion only — LangSmith ignores the blob when
-        # indexed gen_ai.completion.{n}.* exists and renders an empty
-        # output panel for content=null+tool_calls (the common
-        # tool-using-agent shape).
+        # Build + serialize the assistant output message once: the same blob
+        # backs both ``gen_ai.completion`` and the OpenInference ``output.value``
+        # panel (``_build_output_message`` yields exactly the {role, content,
+        # tool_calls, thinking?} shape both want).
+        output_blob = self._build_output_message(attrs)
+        output_json = _safe_json(output_blob) if output_blob is not None else None
+
+        # Single-blob completion only — we deliberately skip indexed
+        # ``gen_ai.completion.{n}.*``. Some renderers ignore the blob once
+        # the indexed form exists and then show an empty output panel for
+        # the content=null+tool_calls shape (common for tool-using agents);
+        # the blob populates it reliably. (Under this guard ``output_blob`` is
+        # always present, so ``output_json`` is non-None.)
         if attrs.get("response_content") is not None or attrs.get("response_tool_calls"):
-            completion_blob: Dict[str, Any] = {
-                "role": attrs.get("response_role") or "assistant",
-                "content": attrs.get("response_content"),
-                "tool_calls": attrs.get("response_tool_calls") or [],
-            }
-            if attrs.get("response_thinking"):
-                completion_blob["thinking"] = attrs["response_thinking"]
-            self._safe_set(sdk_span, "gen_ai.completion", _safe_json(completion_blob))
+            self._safe_set(sdk_span, "gen_ai.completion", output_json)
 
         if span.status == "error":
             err_type = attrs.get("error_type") or "Unknown"
@@ -364,18 +416,72 @@ class OtelTraceWriter(TelemetrySink):
                 "error_message": err_msg,
             }))
 
-        # OpenInference-style I/O for LangSmith's generic input/output
-        # panels, in parallel with the gen_ai.* attributes above.
-        if messages:
-            self._safe_set(sdk_span, "input.value", _safe_json(messages))
+        # OpenInference-style I/O for the generic input/output panels, in
+        # parallel with the gen_ai.* attributes above (reusing the blobs
+        # serialized above).
+        if messages_json is not None:
+            self._safe_set(sdk_span, "input.value", messages_json)
             self._safe_set(sdk_span, "input.mime_type", "application/json")
-        output_blob = self._build_output_message(attrs)
-        if output_blob is not None:
-            self._safe_set(sdk_span, "output.value", _safe_json(output_blob))
+        if output_json is not None:
+            self._safe_set(sdk_span, "output.value", output_json)
             self._safe_set(sdk_span, "output.mime_type", "application/json")
 
+    def _resolve_ref_messages(
+        self, ref: Optional[Dict[str, Any]],
+    ) -> List[Dict[str, Any]]:
+        """Rehydrate inline messages from a content-addressed ``input_messages_ref``.
+
+        Option B: the collector emits the ref (not inline content) whenever a
+        ``MessageStore`` is configured. Returns ``[]`` when there's no ref, no
+        store bound, or the lookup raises — never raises, since a rehydration
+        miss must not break export.
+
+        A blob that is individually missing from the store is replaced with a
+        visible placeholder rather than dropped, so the chat history stays
+        positionally aligned (dropping it would orphan a tool reply from its
+        assistant turn); the miss is logged.
+        """
+        if not ref or self._message_store is None:
+            return []
+        try:
+            resolved = self._message_store.reconstruct(ref)
+        except Exception as e:  # noqa: BLE001
+            logger.debug("Could not rehydrate input_messages_ref: %s", e)
+            return []
+        missing = sum(1 for m in resolved if not isinstance(m, dict))
+        if missing:
+            logger.warning(
+                "input_messages_ref rehydration: %d/%d message blob(s) missing "
+                "from the store; substituting placeholders to keep alignment",
+                missing, len(resolved),
+            )
+        return [
+            m if isinstance(m, dict)
+            else {"role": "system", "content": "[message blob unavailable]"}
+            for m in resolved
+        ]
+
+    def _resolve_ref_tools(
+        self, ref: Optional[Dict[str, Any]],
+    ) -> Optional[List[Dict[str, Any]]]:
+        """Rehydrate tool schemas from a ``tools_ref``.
+
+        The collector wraps the tool list in a single ``tool_schema`` blob
+        (see ``TraceCollector._handle_llm_call``), so the resolved list has one
+        entry whose ``content`` is the tools. ``None`` when unresolvable.
+        """
+        if not ref or self._message_store is None:
+            return None
+        try:
+            resolved = self._message_store.reconstruct(ref)
+        except Exception as e:  # noqa: BLE001
+            logger.debug("Could not rehydrate tools_ref: %s", e)
+            return None
+        if resolved and isinstance(resolved[0], dict):
+            return resolved[0].get("content")
+        return None
+
     def _map_tool_attributes(self, sdk_span: Any, attrs: Dict[str, Any]) -> None:
-        sdk_span.set_attribute("langsmith.span.kind", "TOOL")
         sdk_span.set_attribute("openinference.span.kind", "TOOL")
         if attrs.get("tool_name"):
             sdk_span.set_attribute("gen_ai.tool.name", str(attrs["tool_name"]))
@@ -383,8 +489,9 @@ class OtelTraceWriter(TelemetrySink):
             self._safe_set(sdk_span, "marsys.agent.name", attrs["agent_name"])
         arguments = attrs.get("arguments")
         if arguments is not None:
-            self._safe_set(sdk_span, "gen_ai.tool.arguments", _safe_json(arguments))
-            self._safe_set(sdk_span, "input.value", _safe_json(arguments))
+            args_json = _safe_json(arguments)
+            self._safe_set(sdk_span, "gen_ai.tool.arguments", args_json)
+            self._safe_set(sdk_span, "input.value", args_json)
             self._safe_set(sdk_span, "input.mime_type", "application/json")
         result_summary = attrs.get("result_summary")
         if result_summary is not None:
@@ -397,7 +504,6 @@ class OtelTraceWriter(TelemetrySink):
     def _map_step_attributes(
         self, sdk_span: Any, span: 'Span', attrs: Dict[str, Any],
     ) -> None:
-        sdk_span.set_attribute("langsmith.span.kind", "CHAIN")
         sdk_span.set_attribute("openinference.span.kind", "CHAIN")
         for k in ("agent_name", "step_number", "action_type", "success"):
             if attrs.get(k) is not None:
@@ -419,7 +525,6 @@ class OtelTraceWriter(TelemetrySink):
     def _map_branch_attributes(
         self, sdk_span: Any, span: 'Span', attrs: Dict[str, Any],
     ) -> None:
-        sdk_span.set_attribute("langsmith.span.kind", "CHAIN")
         sdk_span.set_attribute("openinference.span.kind", "CHAIN")
         for k in ("branch_id", "branch_name", "source_agent",
                   "trigger_type", "total_steps", "success"):
@@ -443,7 +548,6 @@ class OtelTraceWriter(TelemetrySink):
                 self._safe_set(sdk_span, "output.mime_type", out_mime)
 
     def _map_execution_attributes(self, sdk_span: Any, attrs: Dict[str, Any]) -> None:
-        sdk_span.set_attribute("langsmith.span.kind", "CHAIN")
         sdk_span.set_attribute("openinference.span.kind", "CHAIN")
         if attrs.get("task_summary"):
             self._safe_set(sdk_span, "marsys.task_summary", attrs["task_summary"])
@@ -461,21 +565,23 @@ class OtelTraceWriter(TelemetrySink):
                 self._safe_set(sdk_span, "output.value", out_val)
                 self._safe_set(sdk_span, "output.mime_type", out_mime)
 
-    # ── indexed-attribute helpers (LangSmith chat-bubble rendering) ─
+    # ── indexed-attribute helpers (chat-bubble rendering) ──────────
 
     @staticmethod
     def _emit_indexed_prompt_attrs(
         sdk_span: Any, messages: List[Dict[str, Any]],
     ) -> None:
-        """Emit ``gen_ai.prompt.{i}.role`` / ``.content`` so LangSmith
-        renders each turn as a chat bubble.
+        """Emit ``gen_ai.prompt.{i}.role`` / ``.content`` so backends render
+        each history turn as a chat bubble.
 
-        Special-cases the assistant turn with empty/null content +
-        tool_calls (common shape for tool-using agents whose previous
-        response is now in history): embeds a JSON snapshot of the tool
-        calls into the content string so the bubble has something to
-        display, since LangSmith's input panel doesn't render the
-        structured ``tool_calls.{j}.*`` sub-attributes as chips.
+        Assistant turns carrying tool calls are emitted as structured
+        ``gen_ai.prompt.{i}.tool_calls.{j}.*`` attributes in the OpenAI wire
+        shape: ``id`` + ``type`` plus a nested ``function.name`` /
+        ``function.arguments`` (arguments kept as a JSON *string*, never
+        double-encoded). The nested layout is what OTel ingestions map to
+        tool-call chips — a flat ``.name`` / ``.arguments`` leaves the chip
+        unrendered. It's the OpenAI standard and matches our OpenInference
+        emission, so it's vendor-neutral.
         """
         for i, msg in enumerate(messages):
             if not isinstance(msg, dict):
@@ -486,23 +592,14 @@ class OtelTraceWriter(TelemetrySink):
             content = msg.get("content")
             tool_calls = msg.get("tool_calls") or []
 
-            if (
-                (content is None or content == "")
-                and tool_calls
-                and role == "assistant"
-            ):
-                rendered_calls = []
-                for tc in tool_calls:
-                    if not isinstance(tc, dict):
-                        continue
-                    fn = tc.get("function") or {}
-                    name = fn.get("name") or tc.get("name") or "?"
-                    args = fn.get("arguments") if fn else tc.get("arguments")
-                    if not isinstance(args, str):
-                        args = _safe_json(args)
-                    rendered_calls.append({"name": name, "arguments": args})
-                content = _safe_json({"tool_calls": rendered_calls})
-
+            # Null content (the OpenAI shape for a tool-call-only assistant
+            # turn) becomes "". OTel scalars can't be null, and — verified
+            # against real backends — OMITTING the content attribute can make
+            # an ingestion unable to classify the message (it reconstructs
+            # each turn from the indexed gen_ai.prompt.{i}.* attrs and expects
+            # content present). Some backends additionally won't render
+            # input-history tool-call chips from any attribute, so "" is the
+            # most broadly-renderable state.
             if content is None:
                 sdk_span.set_attribute(f"gen_ai.prompt.{i}.content", "")
             elif isinstance(content, str):
@@ -526,17 +623,23 @@ class OtelTraceWriter(TelemetrySink):
                 if not isinstance(tc, dict):
                     continue
                 fn = tc.get("function") or {}
+                tc_prefix = f"gen_ai.prompt.{i}.tool_calls.{j}"
+                sdk_span.set_attribute(f"{tc_prefix}.id", str(tc.get("id") or ""))
                 sdk_span.set_attribute(
-                    f"gen_ai.prompt.{i}.tool_calls.{j}.id", str(tc.get("id") or "")
+                    f"{tc_prefix}.type", str(tc.get("type") or "function")
                 )
                 sdk_span.set_attribute(
-                    f"gen_ai.prompt.{i}.tool_calls.{j}.name",
+                    f"{tc_prefix}.function.name",
                     str(fn.get("name") or tc.get("name") or ""),
                 )
-                sdk_span.set_attribute(
-                    f"gen_ai.prompt.{i}.tool_calls.{j}.arguments",
-                    _safe_json(fn.get("arguments") if fn else tc.get("arguments")),
-                )
+                # OpenAI's tool_call.arguments is already a JSON string — pass
+                # it through. Only stringify object-shaped args; never
+                # double-encode an existing string (double-encoding breaks the
+                # backends that parse arguments as JSON).
+                args = fn.get("arguments") if fn else tc.get("arguments")
+                if not isinstance(args, str):
+                    args = _safe_json(args) if args is not None else ""
+                sdk_span.set_attribute(f"{tc_prefix}.function.arguments", args)
 
     @staticmethod
     def _emit_openinference_input_messages(
@@ -544,11 +647,11 @@ class OtelTraceWriter(TelemetrySink):
     ) -> None:
         """Emit ``llm.input_messages.{i}.message.*`` per OpenInference.
 
-        LangSmith reads these (when ``openinference.span.kind=LLM`` is
-        set) to render the input chat panel — assistant turns with
-        tool_calls become proper tool-call chips even when ``content``
-        is null. Parallel ``gen_ai.prompt.*`` attrs remain for
-        non-OpenInference backends.
+        Backends that read OpenInference (when ``openinference.span.kind=LLM``
+        is set) use these to render the input chat panel — assistant turns
+        with tool_calls become proper tool-call chips even when ``content``
+        is null. Parallel ``gen_ai.prompt.*`` attrs remain for backends that
+        read the GenAI semconv instead.
         """
         for i, msg in enumerate(messages):
             if not isinstance(msg, dict):
@@ -591,11 +694,23 @@ class OtelTraceWriter(TelemetrySink):
                 sdk_span.set_attribute(f"{tc_prefix}.function.arguments", args)
 
     @staticmethod
-    def _emit_indexed_tool_attrs(
+    def _emit_tool_attrs(
         sdk_span: Any, tools: List[Dict[str, Any]],
     ) -> None:
-        """Per-tool definition attributes — emit both GenAI semconv and
-        OpenLLMetry's pattern for cross-backend compatibility."""
+        """Emit tool definitions across three published, vendor-neutral surfaces
+        (no product-specific key — see ADR-009 D8), each in its own correct form:
+
+        - **OTel GenAI semconv** — ``gen_ai.tool.definitions``: a *single*
+          JSON-string array of flattened ``{type, name, description, parameters}``
+          definitions (the semconv's Tool Definitions shape; there is no indexed
+          ``gen_ai.request.tools.{i}.*`` attribute).
+        - **OpenInference** — ``llm.tools.{i}.tool.json_schema``: the whole tool
+          definition (OpenAI tool-calling format) as a JSON string per tool. This
+          is the surface OpenInference-reading backends render their available-
+          tools panel from, parallel to the ``llm.input_messages.*`` we emit.
+        - **OpenLLMetry** — ``llm.request.functions.{i}.{name,description,parameters}``.
+        """
+        gen_ai_defs: List[Dict[str, Any]] = []
         for i, tool in enumerate(tools):
             if not isinstance(tool, dict):
                 continue
@@ -603,14 +718,34 @@ class OtelTraceWriter(TelemetrySink):
             name = fn.get("name") or tool.get("name") or ""
             description = fn.get("description") or tool.get("description") or ""
             parameters = fn.get("parameters") or tool.get("parameters")
-            for prefix in ("gen_ai.request.tools", "llm.request.functions"):
-                sdk_span.set_attribute(f"{prefix}.{i}.name", str(name))
-                if description:
-                    sdk_span.set_attribute(f"{prefix}.{i}.description", str(description))
-                if parameters is not None:
-                    sdk_span.set_attribute(
-                        f"{prefix}.{i}.parameters", _safe_json(parameters)
-                    )
+
+            # OpenLLMetry per-function attributes.
+            prefix = f"llm.request.functions.{i}"
+            sdk_span.set_attribute(f"{prefix}.name", str(name))
+            if description:
+                sdk_span.set_attribute(f"{prefix}.description", str(description))
+            if parameters is not None:
+                sdk_span.set_attribute(f"{prefix}.parameters", _safe_json(parameters))
+
+            # OpenInference: the full tool schema (OpenAI format) as one JSON string.
+            sdk_span.set_attribute(
+                f"llm.tools.{i}.tool.json_schema", _safe_json(tool)
+            )
+
+            # Accumulate the flattened GenAI-semconv definition.
+            gen_ai_def: Dict[str, Any] = {
+                "type": tool.get("type") or "function",
+                "name": str(name),
+            }
+            if description:
+                gen_ai_def["description"] = str(description)
+            if parameters is not None:
+                gen_ai_def["parameters"] = parameters
+            gen_ai_defs.append(gen_ai_def)
+
+        # OTel GenAI semconv: one JSON-string array of all tool definitions.
+        if gen_ai_defs:
+            sdk_span.set_attribute("gen_ai.tool.definitions", _safe_json(gen_ai_defs))
 
     # ── derived I/O for non-LLM spans ──────────────────────────────
 
@@ -663,13 +798,20 @@ class OtelTraceWriter(TelemetrySink):
         return first_input, last_output
 
     def _add_events(self, sdk_span: Any, span: 'Span') -> None:
-        """Emit ``gen_ai.{role}.message`` events per captured turn plus a
-        ``gen_ai.choice`` event for the response. Backends that prefer
-        events over attributes (Phoenix, Langfuse) read these instead.
-        """
-        attrs = span.attributes or {}
-        provider = str(attrs.get("provider") or "")
+        """Emit MARSYS span events (validation_decision, error, …) and
+        mirror ``error`` events as OTel-semconv ``exception`` events.
 
+        We deliberately do NOT emit ``gen_ai.{role}.message`` /
+        ``gen_ai.choice`` events. Backends that read those events for the LLM
+        I/O panels rank them above the cleaner attribute surfaces, and
+        span-event attributes can't carry a structured message/tool-call
+        payload — so the panels render as raw JSON with
+        ``gen_ai.message.content`` keys instead of chat bubbles. Prompt /
+        completion content ships instead via the vendor-neutral attribute
+        surfaces in ``_map_llm_attributes`` (``input.value`` /
+        ``output.value`` for OpenInference readers; ``gen_ai.prompt`` /
+        ``gen_ai.completion`` blobs for GenAI-semconv readers).
+        """
         # MARSYS-emitted span events (validation_decision, error, …).
         for ev in span.events or []:
             try:
@@ -680,55 +822,26 @@ class OtelTraceWriter(TelemetrySink):
                 )
             except Exception as e:  # noqa: BLE001
                 logger.debug("Skipping unexportable span event: %s", e)
-
-        if span.kind not in ("generation", "compaction"):
-            return
-
-        for msg in attrs.get("input_messages") or []:
-            if not isinstance(msg, dict):
-                continue
-            role = msg.get("role") or "user"
-            event_name = f"gen_ai.{role}.message"
-            content = msg.get("content")
-            try:
-                sdk_span.add_event(
-                    name=event_name,
-                    attributes={
-                        "gen_ai.system": provider,
-                        "gen_ai.message.role": role,
-                        "gen_ai.message.content": _safe_json(content) if not isinstance(content, str) else content,
-                    },
-                    timestamp=int(span.start_time * 1e9),
-                )
-            except Exception as e:  # noqa: BLE001
-                logger.debug("Skipping unexportable input message: %s", e)
-
-        meta = attrs.get("response_metadata") or {}
-        if span.status == "ok" and (
-            attrs.get("response_content") is not None
-            or attrs.get("response_tool_calls")
-        ):
-            choice_payload = {
-                "finish_reason": meta.get("finish_reason"),
-                "message": {
-                    "role": attrs.get("response_role") or "assistant",
-                    "content": attrs.get("response_content"),
-                    "tool_calls": attrs.get("response_tool_calls") or [],
-                },
-            }
-            if attrs.get("response_thinking"):
-                choice_payload["message"]["thinking"] = attrs["response_thinking"]
-            try:
-                sdk_span.add_event(
-                    name="gen_ai.choice",
-                    attributes={
-                        "gen_ai.system": provider,
-                        "gen_ai.choice": _safe_json(choice_payload),
-                    },
-                    timestamp=int((span.end_time or time.time()) * 1e9),
-                )
-            except Exception as e:  # noqa: BLE001
-                logger.debug("Skipping unexportable choice event: %s", e)
+            # Mirror ``error`` events as OTel-semconv ``exception`` events so
+            # backends that read ``exception.type``/``exception.message``/
+            # ``exception.stacktrace`` populate their error-detail panels.
+            # The original ``error`` event stays in place for MARSYS-aware
+            # consumers.
+            if ev.get("name") == "error":
+                ev_attrs = ev.get("attributes") or {}
+                exc_attrs = {
+                    "exception.type": ev_attrs.get("error_class") or "Unknown",
+                    "exception.message": ev_attrs.get("error_message") or "",
+                    "exception.stacktrace": ev_attrs.get("traceback") or "",
+                }
+                try:
+                    sdk_span.add_event(
+                        name="exception",
+                        attributes=self._coerce_attributes(exc_attrs),
+                        timestamp=int(ev["timestamp"] * 1e9) if "timestamp" in ev else None,
+                    )
+                except Exception as e:  # noqa: BLE001
+                    logger.debug("Skipping unexportable exception event: %s", e)
 
     def _build_output_message(self, attrs: Dict[str, Any]) -> Optional[Dict[str, Any]]:
         """Assemble a single OpenAI-Chat-Completion-style assistant message
@@ -736,10 +849,10 @@ class OtelTraceWriter(TelemetrySink):
         nothing to ship.
 
         This dict must contain ONLY ``{role, content, tool_calls,
-        thinking}`` — adding fields like ``finish_reason`` or ``usage``
-        flips LangSmith's renderer from "AI message bubble with tool-call
-        chips" to "raw JSON Fields panel". ``finish_reason`` is shipped
-        separately on ``gen_ai.response.finish_reasons``; usage on
+        thinking}`` — adding fields like ``finish_reason`` or ``usage`` can
+        flip a renderer from "AI message bubble with tool-call chips" to a
+        "raw JSON fields" panel. ``finish_reason`` is shipped separately on
+        ``gen_ai.response.finish_reasons``; usage on
         ``gen_ai.usage.{input,output}_tokens``.
         """
         content = attrs.get("response_content")

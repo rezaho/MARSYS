@@ -224,13 +224,13 @@ Non-terminal error (run continues).
 
 ## `marsys.generation.metadata`
 
-Cost/latency metadata that doesn't fit AG-UI's lifecycle events.
+Cost/latency metadata that doesn't fit AG-UI's lifecycle events. ``kind`` distinguishes an ordinary generation from a memory-compaction LLM call (both ride this one Custom event as sibling kinds).
 
 ### JSON Schema
 
 ```json
 {
-  "description": "Cost/latency metadata that doesn't fit AG-UI's lifecycle events.",
+  "description": "Cost/latency metadata that doesn't fit AG-UI's lifecycle events.\n\n``kind`` distinguishes an ordinary generation from a memory-compaction\nLLM call (both ride this one Custom event as sibling kinds).",
   "properties": {
     "completion_tokens": {
       "anyOf": [
@@ -255,6 +255,11 @@ Cost/latency metadata that doesn't fit AG-UI's lifecycle events.
       ],
       "default": null,
       "title": "Finish Reason"
+    },
+    "kind": {
+      "default": "generation",
+      "title": "Kind",
+      "type": "string"
     },
     "model": {
       "title": "Model",

@@ -1,8 +1,9 @@
 """Full-input capture (Phase 3) — live-run smoke check.
 
 PURPOSE
-  End-to-end verification that ``TracingConfig.capture_full_input`` works
-  correctly against a real Anthropic Haiku-4.5 model: every step span
+  End-to-end verification that full-input capture (always on when tracing
+  is enabled) works correctly against a real Anthropic Haiku-4.5 model:
+  every step span
   carries an ``input_messages_ref`` attribute, the ``messages/`` sidecar
   directory is populated with content-addressed blobs, the system-prompt
   blob dedups across steps, append-only steps produce single-op patches,
@@ -19,9 +20,8 @@ EXERCISES
   * coordination.tracing.collector.TraceCollector — _handle_agent_start
     full-input capture path, _handle_branch_created prefix inheritance,
     redaction-before-hashing
-  * coordination.tracing.config.TracingConfig.capture_full_input flag
-  * coordination.execution.step_executor.StepExecutor._serialize_input_messages
-    — agent.memory + request → list of dicts
+  * coordination.tracing.collector.TraceCollector._build_message_store
+    — always-on store (no opt-in flag)
 
 TOPOLOGY
   Researcher --(invoke)--> FactChecker --(invoke)--> Researcher
@@ -491,7 +491,6 @@ async def run(args: argparse.Namespace) -> int:
                     enabled=True,
                     output_dir=str(output_dir),
                     include_message_content=True,
-                    capture_full_input=True,
                 ),
             ),
             max_steps=args.max_steps,
