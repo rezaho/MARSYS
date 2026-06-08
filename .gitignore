@@ -113,24 +113,8 @@ BRAINDUMP.md
 .bak/
 slides/
 
-# Workspace artifacts (Spren umbrella)
-node_modules/
-apps/*/dist/
-apps/desktop/target/
-target/
-apps/desktop/gen/
-packages/spren/src/spren/_webui/
-**/routeTree.gen.ts
-playwright-report/
-test-results/
-**/*.tsbuildinfo
-
 # AI agent session bookkeeping (local-only — implementer skill writes a
 # session-start sha here for the implementation-reviewer to use)
 .claude/
 **/.claude/
 
-# Spren type-gen pipeline (Session 02): the snapshot is regenerated on every
-# `pnpm --filter @marsys/spren-web build` from a transient sidecar. The
-# generated *.ts file IS tracked.
-apps/web/openapi-snapshot.json

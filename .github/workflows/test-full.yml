@@ -9,14 +9,16 @@ name: Test (full)
 #      Skipped (success) when the secret isn't available.
 #
 # Like ``test-smoke.yml``, live-tests under
-# ``packages/framework/live_tests/`` are NOT pytest-collected and
+# ``live_tests/`` are NOT pytest-collected and
 # require OAuth (subscription credentials), not API keys; they never
 # run from CI.
 on:
   push:
     branches: [main]
     paths:
-      - 'packages/framework/**'
+      - 'src/**'
+      - 'tests/**'
+      - 'pyproject.toml'
       - '.github/workflows/test-full.yml'
       - 'Justfile'
   schedule:
@@ -39,11 +41,11 @@ jobs:
           python-version: '3.12'
       - uses: astral-sh/setup-uv@v3
       - name: Install framework deps
-        run: uv sync --extra test --package marsys
+        run: uv sync --extra test
       - name: Run offline tests
         # Excludes ``cheap`` — those land in the next job behind a key gate.
         run: |
-          uv run --package marsys pytest packages/framework/tests \
+          uv run pytest tests \
             -m "not cheap" --tb=short
 
   cheap:
@@ -59,7 +61,7 @@ jobs:
       - uses: astral-sh/setup-uv@v3
       - uses: extractions/setup-just@v2
       - name: Install framework deps
-        run: uv sync --extra test --package marsys
+        run: uv sync --extra test
       - name: Run cheap-tier tests
         env:
           ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}

@@ -11,6 +11,10 @@ install:
 test:
     uv run pytest
 
+# Run only the cheap-tier (API-gated) integration tests
+test-cheap:
+    uv run pytest -m cheap
+
 # Lint
 lint:
     uv run flake8 src tests

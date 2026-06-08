@@ -13,13 +13,15 @@ name: Test (smoke)
 #   running pytest. No false-red on PRs that legitimately can't run
 #   paid tests.
 #
-# Note: live-tests under ``packages/framework/live_tests/`` use OAuth
+# Note: live-tests under ``live_tests/`` use OAuth
 # (subscription credentials in ``~/.marsys/credentials.json``), NOT API
 # keys, and are NOT pytest-collected — they never run here.
 on:
   pull_request:
     paths:
-      - 'packages/framework/**'
+      - 'src/**'
+      - 'tests/**'
+      - 'pyproject.toml'
       - '.github/workflows/test-smoke.yml'
       - 'Justfile'
 
@@ -47,7 +49,7 @@ jobs:
         uses: extractions/setup-just@v2
 
       - name: Install framework deps
-        run: uv sync --extra test --package marsys
+        run: uv sync --extra test
 
       - name: Run cheap-tier framework tests
         env:
