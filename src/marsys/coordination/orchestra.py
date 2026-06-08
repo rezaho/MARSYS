@@ -213,8 +213,9 @@ class Orchestra:
         """Default snapshot root.
 
         Honors `MARSYS_DATA_DIR` env var if set; otherwise uses
-        `~/.marsys/runs`. Spren overrides via the `storage_backend=`
-        constructor argument so on-disk paths match Spren's data model.
+        `~/.marsys/runs`. A downstream consumer overrides via the
+        `storage_backend=` constructor argument so on-disk paths match
+        its own data model.
         """
         import os
         env_root = os.environ.get("MARSYS_DATA_DIR")
@@ -968,8 +969,8 @@ class Orchestra:
         # ``UnboundLocalError`` which then masks the original
         # ``CancelledError`` for every caller — including consumers
         # that rely on ``except asyncio.CancelledError`` for clean
-        # cancel handling (Spren's run lifecycle is the in-tree
-        # example).
+        # cancel handling (a downstream daemon's run lifecycle is the
+        # canonical example).
         result: Optional[OrchestraResult] = None
         try:
             from .config import ConvergencePolicyConfig, ExecutionConfig
@@ -1152,7 +1153,7 @@ class Orchestra:
         except asyncio.CancelledError:
             # Cooperative cancel is a first-class exit path: re-raise so
             # the caller's ``except asyncio.CancelledError`` handler fires
-            # (Spren's run lifecycle persists the run as ``cancelled``).
+            # (a downstream daemon's run lifecycle persists the run as ``cancelled``).
             # The ``finally`` below still runs (trace finalize + writer
             # drain + AGGUI close); its ``if result is not None`` guard
             # skips the tracing-metadata branch cleanly because the
@@ -1525,9 +1526,9 @@ class Orchestra:
         Reads each snapshot's JSON header (just enough to extract
         ``session_id``, ``workflow_id``, ``paused_at``, ``framework_version``
         and the file size) — the rest of the snapshot body is not parsed.
-        Used by Spren v0.4-29 on daemon startup to populate the
-        run-inspector UI's paused tab; used by Cloud on node-spinup to
-        discover runs that need to migrate.
+        Used by a downstream daemon on startup to populate a
+        run-inspector UI's paused tab; used by a hosted control plane on
+        node-spinup to discover runs that need to migrate.
         """
         entries = await self.storage_backend.list_with_metadata()
         results: List[PausedSessionMetadata] = []

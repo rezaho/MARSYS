@@ -212,7 +212,7 @@ NDJSONTraceWriter(
 
 ### NDJSONTraceReader
 
-Streaming reader with tail-follow support. Used for live consumption (Spren SSE, hosted observability) and post-mortem analysis.
+Streaming reader with tail-follow support. Used for live consumption (SSE UIs, hosted observability) and post-mortem analysis.
 
 **Import:**
 ```python

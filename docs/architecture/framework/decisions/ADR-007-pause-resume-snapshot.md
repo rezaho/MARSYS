@@ -7,7 +7,7 @@
 
 ## Context
 
-Spren v0.4-29 (run-inspector pause/resume UI + REST endpoints + meta-agent tools) and MARSYS Cloud's managed long-runs both need to pause an in-flight workflow, persist its state, and later resume from that state — possibly in a different process. The current `Orchestra.pause_session` / `resume_session` methods are stubs (`pause_session` writes a snapshot in the dead `ExecutionBranch` shape; `resume_session` returns a placeholder `OrchestraResult` with a `# TODO: Implement proper state restoration` marker).
+Downstream consumers — a run-inspector pause/resume UI with REST endpoints, and a hosted control plane's managed long-runs — both need to pause an in-flight workflow, persist its state, and later resume from that state — possibly in a different process. The current `Orchestra.pause_session` / `resume_session` methods are stubs (`pause_session` writes a snapshot in the dead `ExecutionBranch` shape; `resume_session` returns a placeholder `OrchestraResult` with a `# TODO: Implement proper state restoration` marker).
 
 The legacy `coordination/state/state_manager.py` (`StateSnapshot` dataclass, `_serialize_branches` / `_deserialize_branches` helpers, `StateManager.save_session` / `load_session` / `pause_execution` / `resume_execution`) targets the dead `ExecutionBranch` shape from `coordination/branches/types.py` — built before the unified-barrier orchestrator landed (ADR-005). It cannot be patched in place because the orchestrator's mutable state is now a different shape (`branches: dict[str, Branch]` + `barriers: dict[str, Barrier]` + `runnable: deque[str]` + `_fire_queue: list[str]` + `convergence_barriers: dict[str, str]` + `_completed_emitted: set[str]` + `_user_interactions: deque` + `_user_interaction_inflight: bool`).
 
@@ -25,7 +25,7 @@ Reading the orchestrator's mutable state from outside the class would require ex
 
 ### Why `Orchestra` must hold a reference to the running orchestrator
 
-`Orchestra.execute()` constructs `Orchestrator` as a local variable (orchestra.py:856). External callers (Spren's REST endpoint handler, Cloud's pause-on-autoscale event handler) call `Orchestra.pause_session(session_id)` from a different async task than the one awaiting `execute()`. Without a `dict[session_id, Orchestrator]` lookup on `Orchestra`, `pause_session` has no way to reach the live orchestrator.
+`Orchestra.execute()` constructs `Orchestrator` as a local variable (orchestra.py:856). External callers (a REST endpoint handler, a hosted control plane's pause-on-autoscale event handler) call `Orchestra.pause_session(session_id)` from a different async task than the one awaiting `execute()`. Without a `dict[session_id, Orchestrator]` lookup on `Orchestra`, `pause_session` has no way to reach the live orchestrator.
 
 ## Decision
 
@@ -189,14 +189,14 @@ Deferred: the field doesn't exist anywhere in the framework. Adding it touches t
 
 ### Operational
 
-- **Snapshot retention**: 30-day default sweeper runs once on `Orchestra.__init__`. Long-running daemons that never reconstruct `Orchestra` won't sweep automatically; either re-construct periodically or call `expire_older_than` directly. This is acceptable for v0.3 since the dominant use case (Spren daemon) re-constructs `Orchestra` on each run.
+- **Snapshot retention**: 30-day default sweeper runs once on `Orchestra.__init__`. Long-running daemons that never reconstruct `Orchestra` won't sweep automatically; either re-construct periodically or call `expire_older_than` directly. This is acceptable for v0.3 since the dominant use case (a long-running consumer daemon) re-constructs `Orchestra` on each run.
 - **Atomic-write durability**: `os.replace` + `fsync(parent_dir_fd)` is correct on POSIX. On Windows, parent-dir fsync is a no-op, but `os.replace` is atomic per `MoveFileEx` semantics. Tested via simulated mid-write crash.
 - **At-least-once tool calls**: paused-then-resumed runs may re-execute tool calls in-flight at pause time. Documented as user responsibility. Tools that mutate external state non-idempotently (e.g., charge a credit card, send an email) need user-side mitigation. A future small PR can add `is_idempotent: bool` on tool registry; out of scope here.
 - **Skipped scheduled events on resume**: barriers with `policy.timeout` deadlines crossed during the paused interval are skipped on resume and logged at WARNING. Users who want re-anchored deadlines must re-set them explicitly post-resume.
 
 ### Performance
 
-- Snapshot serialization: O(branches + barriers) deep-copy plus JSON encode. On typical Spren workflows (<100 branches, <50 barriers, <1MB total memory), pause should complete in <50ms. Documented in test assertions for the multi-consumer test.
+- Snapshot serialization: O(branches + barriers) deep-copy plus JSON encode. On typical consumer workflows (<100 branches, <50 barriers, <1MB total memory), pause should complete in <50ms. Documented in test assertions for the multi-consumer test.
 - Quiesce wait: bounded by the longest in-flight tick (typically one LLM call: 1-30s). Pause response time is therefore dominated by LLM latency, not framework overhead. Acceptable for the user-pause use case.
 
 ### Future-proofing (the "design seams")

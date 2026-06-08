@@ -11,8 +11,9 @@ Boundary: vendor-*neutral* sinks ship in-framework — `NDJSONTraceWriter`
 conventions: `gen_ai.*` semconv, OpenInference, OpenLLMetry). Vendor-
 *specific* presets — a product's endpoint, auth headers, env-var wiring, or
 any attribute keyed to a single product's namespace — live outside the
-framework, in the caller or a dedicated adapter package (spren.telemetry,
-marsys-langsmith, marsys-phoenix, marsys-langfuse). See
+framework, in the caller or a dedicated adapter package (a downstream
+consumer's telemetry adapter, marsys-langsmith, marsys-phoenix,
+marsys-langfuse). See
 `live_tests/tracing/secret_word_pipeline.py` for caller-side LangSmith /
 Langfuse presets built on top of the generic `OtelTraceWriter`.
 """

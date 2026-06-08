@@ -13,14 +13,6 @@ This directory holds architecture documentation for the **marsys Python framewor
 - `components/*.yaml` — component registry (one YAML per TRUNK-CRITICAL or TRUNK-STABLE component)
 - `decisions/ADR-*.md` — architecture decision records
 
-## Sibling products
-
-The marsys framework has three sibling apps that consume it:
-
-- **Spren** (open-source personal AI assistant) — separate repo at [`github.com/rezaho/spren`](https://github.com/rezaho/spren). Spren's own architecture docs live in that repo at `docs/architecture/`.
-- **MARSYS Cloud** (proprietary) — separate repo at `~/research_projects/MARSYS_Cloud/`.
-- **MARSYS Studio** (proprietary) — separate repo at `~/research_projects/MARSYS_Studio/`.
-
 ## Status of these docs in source control
 
 These docs are currently **not committed** (`docs/architecture/` is gitignored — see `.gitignore`). They are local-only working docs for the project team and AI agents. Public user documentation lives at `docs/api/`, `docs/concepts/`, `docs/guides/`, etc., which are tracked.

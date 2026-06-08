@@ -207,7 +207,7 @@ class WorkflowDefinition(BaseModel):
     must be a key of ``agents``, and every ``EdgeSpec.source`` / ``EdgeSpec.target``
     must match a ``NodeSpec.name``. Failures raise Pydantic ``ValidationError``
     at storage time rather than at ``Orchestra.run()`` time, which is where
-    Spren and the AST importer were silently shipping broken topologies before.
+    downstream consumers and the AST importer were silently shipping broken topologies before.
     """
 
     model_config = ConfigDict(extra="forbid")

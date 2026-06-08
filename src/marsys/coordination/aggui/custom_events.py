@@ -1,7 +1,7 @@
 """Pydantic models for every ``marsys.*`` AG-UI ``Custom`` event's ``value`` payload.
 
-The AG-UI protocol's ``Custom`` event is an escape hatch (per AG-UI docs + Spren
-SP-004). MARSYS uses it for framework-internal lifecycle events with no AG-UI
+The AG-UI protocol's ``Custom`` event is an escape hatch (per AG-UI docs).
+MARSYS uses it for framework-internal lifecycle events with no AG-UI
 counterpart: branch / parallel-group / convergence / error / resource-limit /
 user-interaction / memory-compaction.
 

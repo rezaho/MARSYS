@@ -8,7 +8,7 @@ class AGGUIConfig:
     """Configuration for the AG-UI translator.
 
     Off by default — the translator is an optional add-on consumed by AG-UI-speaking
-    UIs (Spren, MARSYS Cloud, Studio, third-party clients). Framework users running
+    UIs (SSE clients, hosted control planes, third-party clients). Framework users running
     raw ``python my_workflow.py`` typically leave this off.
 
     Requires the optional ``aggui`` extras: ``pip install 'marsys[aggui]'``.

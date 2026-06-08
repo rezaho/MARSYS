@@ -1,7 +1,7 @@
 """SSE wire-format helper for AG-UI events.
 
-Thin wrapper around ``ag_ui.encoder.EventEncoder``. Saves consumers (Spren,
-MARSYS Cloud, Studio, third-party AG-UI clients) from re-importing the encoder.
+Thin wrapper around ``ag_ui.encoder.EventEncoder``. Saves consumers (SSE UIs,
+hosted control planes, third-party AG-UI clients) from re-importing the encoder.
 """
 
 from __future__ import annotations

@@ -46,12 +46,12 @@ The constructor reality (primary source) forces three non-obvious decisions: spe
 ### Scope boundaries
 
 **In**: Decisions 1–7 for the 5 `Agent`-subtree specialized agents; registry + CI test; `*ParamsSpec`; async hydrate + in-repo caller migration; schema 2→3; ADR-009; CHANGELOG/DEPRECATIONS; a runnable round-trip example.
-**Out**: `LearnableAgent` (Decision 7); Spren mirror update + stored-data migration (contracted Spren-side follow-up); Session-10 credential/`runnable` collapse; new specialized classes; edge/pattern semantics; v0.4 shim removal.
+**Out**: `LearnableAgent` (Decision 7); downstream hand-mirror update + stored-data migration (a consumer-side follow-up); Session-10 credential/`runnable` collapse; new specialized classes; edge/pattern semantics; v0.4 shim removal.
 
 ## Consequences
 
 - **Positive**: specialized agents losslessly round-trip as their subclass; one single-sourced agent taxonomy mirroring the node axis; the hydrate API is honest about being async and structurally cannot mis-route on unparsed contents; no secret and no machine-specific path ever reaches the wire; adding a specialized agent is one declaration.
-- **Negative**: `WIRE_SCHEMA_VERSION` 2→3 + `agent_model`→`model` break the wire contract → Spren mirror + suite diverge until its contracted follow-up; every in-repo sync hydrate caller migrates to async; `LearnableAgent` stays unserializable (explicit, documented).
+- **Negative**: `WIRE_SCHEMA_VERSION` 2→3 + `agent_model`→`model` break the wire contract → any downstream hand-mirror + its suite diverge until a consumer-side follow-up; every in-repo sync hydrate caller migrates to async; `LearnableAgent` stays unserializable (explicit, documented).
 - **Recorded limitation**: hydrate synthesizes the constructor call and filters kwargs to the callee's signature (`_accepted_kwargs`). A fixed-signature specialized factory receives only the base-surface kwargs it declares; a base `AgentSpec` field it does not expose is not round-tripped for that subclass. Concretely, `BrowserAgent` does not carry `bidirectional_peers` — neither `BrowserAgent.__init__` nor `create_safe` accepts it, so it cannot be set non-default through the class in the first place. This is a property of that class's own constructor contract, surfaced here, not a silent serializer drop. The sync subclasses (which take `**kwargs`) round-trip the full base surface.
 - **Risks**: a subclass routed through a `params`-only path silently regressing the base surface → explicit additive-round-trip acceptance criterion + characterization regression pin; a `*ParamsSpec` leaking a non-JSON/secret field → per-subclass characterization from real `__init__` + a secrets-off-wire test; a missed sync caller → grep-confirmed caller set + full-suite green vs S08 baseline; BrowserAgent hydrating browser-unready → an explicit async-path test asserting browser-readiness.
 
@@ -67,4 +67,4 @@ The constructor reality (primary source) forces three non-obvious decisions: spe
 
 ## Migration & backward-compat
 
-`kind="agent"` default ⇒ every existing v2 `AgentSpec` is byte-identical in behaviour; no stored-spec migration for base agents. The wire is breaking for `agent_model`→`model` and the schema-version 2→3 — the version boundary is the contract (no dual-field shim — anti-pattern: legacy retention). Framework ships the new shape; Spren migrates its mirror + store in its own contracted PR. In-repo sync hydrate callers move to async in this session.
+`kind="agent"` default ⇒ every existing v2 `AgentSpec` is byte-identical in behaviour; no stored-spec migration for base agents. The wire is breaking for `agent_model`→`model` and the schema-version 2→3 — the version boundary is the contract (no dual-field shim — anti-pattern: legacy retention). Framework ships the new shape; any downstream consumer migrates its hand-mirror + store in its own follow-up. In-repo sync hydrate callers move to async in this session.

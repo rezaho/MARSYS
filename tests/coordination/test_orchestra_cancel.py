@@ -19,14 +19,13 @@ silently corrupted the cancel contract:
    At line ~1222 ``if result is not None:`` reads the unbound local
    and raises ``UnboundLocalError``.
 5. The ``UnboundLocalError`` MASKS the original ``CancelledError`` —
-   callers that have ``except asyncio.CancelledError`` (notably
-   Spren's run lifecycle) are silently routed around their handler
-   and see the bug string instead.
+   callers that have ``except asyncio.CancelledError`` (notably a
+   downstream daemon's run lifecycle) are silently routed around their
+   handler and see the bug string instead.
 
-Spren's existing test (``test_runs_lifecycle.py``'s
-``test_lifecycle_honors_cancelling_in_exception_branch``) uses a
-``_StubOrchestra`` with no ``try/finally``, so it cannot catch this
-class of regression. This test fills that gap at the framework level.
+A downstream consumer's own lifecycle test that uses a stub orchestra
+with no ``try/finally`` cannot catch this class of regression. This test
+fills that gap at the framework level.
 
 Design
 ------

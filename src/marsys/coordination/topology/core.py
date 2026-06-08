@@ -35,7 +35,7 @@ class NodeKind(Enum):
 # Reserved node names that cannot be used for agents. Derived from NodeKind
 # (the non-AGENT kinds) so the set can never drift from the taxonomy. Kept as
 # a module-level frozenset with this exact name and import path — external
-# consumers (e.g. Spren's validator) import the value.
+# consumers (e.g. a downstream validator) import the value.
 RESERVED_NODE_NAMES = frozenset(
     k.value for k in NodeKind if k is not NodeKind.AGENT
 )  # {"start", "end", "user"} — lowercase, case-insensitive

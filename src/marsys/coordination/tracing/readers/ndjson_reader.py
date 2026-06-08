@@ -32,7 +32,7 @@ class NDJSONVersionError(ValueError):
 class NDJSONTraceReader:
     """Streaming NDJSON trace reader with tail-follow support.
 
-    Not Spren-specific. Any consumer that wants line-by-line access to a
+    Not consumer-specific. Any consumer that wants line-by-line access to a
     streaming trace uses this reader.
     """
 

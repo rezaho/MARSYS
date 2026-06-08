@@ -263,7 +263,7 @@ class ExecutionConfig:
 
     # AG-UI translator configuration. Off by default. When enabled, the framework
     # wires an EventBus → AG-UI translator alongside the trace collector so
-    # consumers (Spren SSE, MARSYS Cloud, Studio, third-party AG-UI clients) can
+    # consumers (SSE UIs, hosted control planes, third-party AG-UI clients) can
     # iterate live events via ``orchestra.aggui_translator``. Requires the
     # optional ``aggui`` extras (``pip install 'marsys[aggui]'``).
     aggui: 'AGGUIConfig' = field(default_factory=lambda: AGGUIConfig())
