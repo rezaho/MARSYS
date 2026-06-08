@@ -78,7 +78,11 @@ class ResourceLimitValue(BaseModel):
 
 
 class GenerationMetadataValue(BaseModel):
-    """Cost/latency metadata that doesn't fit AG-UI's lifecycle events."""
+    """Cost/latency metadata that doesn't fit AG-UI's lifecycle events.
+
+    ``kind`` distinguishes an ordinary generation from a memory-compaction
+    LLM call (both ride this one Custom event as sibling kinds).
+    """
 
     model: str
     provider: str
@@ -86,6 +90,7 @@ class GenerationMetadataValue(BaseModel):
     completion_tokens: Optional[int] = None
     reasoning_tokens: Optional[int] = None
     finish_reason: Optional[str] = None
+    kind: str = "generation"  # "generation" | "compaction"
 
 
 # ── Branch / orchestration events ──────────────────────────────────────

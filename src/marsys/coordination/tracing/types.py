@@ -23,6 +23,7 @@ class Span:
       - branch: branch_id, branch_name, source_agent, target_agents, trigger_type
       - step: agent_name, step_number, action_type, next_agents, success
       - generation: model_name, provider, prompt_tokens, completion_tokens, response_time_ms
+      - compaction: same attributes as generation (memory-compaction LLM call)
       - tool: tool_name, arguments, result_summary
 
     Validation decisions are captured as events on step spans (not separate spans).
@@ -33,7 +34,7 @@ class Span:
     parent_span_id: Optional[str]
     trace_id: str
     name: str
-    kind: str  # execution | branch | step | generation | tool
+    kind: str  # execution | branch | step | generation | compaction | tool
     start_time: float
     end_time: Optional[float] = None
     duration_ms: Optional[float] = None

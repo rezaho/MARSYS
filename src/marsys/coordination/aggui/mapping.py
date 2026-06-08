@@ -67,6 +67,7 @@ from ..tracing.events import (
     ConvergenceEvent,
     ExecutionStartEvent,
     GenerationEvent,
+    LLMCallEvent,
     ValidationDecisionEvent,
 )
 from ...agents.memory import MemoryResetEvent
@@ -286,18 +287,47 @@ def map_agent_thinking(
     yield ReasoningMessageEndEvent(message_id=message_id)
 
 
-def map_generation(
-    event: GenerationEvent, ctx: "AGGUITranslator"
+def map_llm_call(
+    event: LLMCallEvent, ctx: "AGGUITranslator"
 ) -> Iterable[BaseEvent]:
+    """Generation/compaction cost metadata for the AG-UI stream.
+
+    The ``LLMCallEvent`` is self-contained — it carries ``model_name`` /
+    ``provider`` / ``kind`` alongside the token counts + finish_reason — so no
+    correlation/state is needed here. A compaction LLM call rides the same
+    ``marsys.generation.metadata`` event with ``kind="compaction"``.
+
+    Errors/cancellations carry no usable cost metadata — they surface via the
+    span status and ``ErrorEvent`` — so they yield nothing.
+    """
+    if event.status != "ok":
+        return
+
+    meta = event.response_metadata or {}
+    usage = meta.get("usage") if isinstance(meta.get("usage"), dict) else {}
+
+    def _tok(*keys: str) -> Optional[int]:
+        # Token counts may be nested under ``usage`` or top-level, and use
+        # either chat-completions (``prompt_tokens``) or Responses-API
+        # (``input_tokens``) names depending on the adapter.
+        for k in keys:
+            v = (usage or {}).get(k)
+            if v is None:
+                v = meta.get(k)
+            if v is not None:
+                return v
+        return None
+
     yield _make_custom(
         "marsys.generation.metadata",
         {
-            "model": event.model_name,
-            "provider": event.provider,
-            "prompt_tokens": event.prompt_tokens,
-            "completion_tokens": event.completion_tokens,
-            "reasoning_tokens": event.reasoning_tokens,
-            "finish_reason": event.finish_reason,
+            "model": event.model_name or meta.get("model") or "",
+            "provider": event.provider or meta.get("provider") or "",
+            "prompt_tokens": _tok("prompt_tokens", "input_tokens"),
+            "completion_tokens": _tok("completion_tokens", "output_tokens"),
+            "reasoning_tokens": _tok("reasoning_tokens"),
+            "finish_reason": meta.get("finish_reason"),
+            "kind": event.kind or "generation",
         },
     )
 
@@ -579,12 +609,15 @@ def map_compaction(
 # ── Buckets ─────────────────────────────────────────────────────────────
 
 
-INTERNAL_ONLY: set = {AgentMessagesPreparedEvent, MemoryResetEvent}
+INTERNAL_ONLY: set = {AgentMessagesPreparedEvent, MemoryResetEvent, GenerationEvent}
 """Events deliberately dropped — not consumer-facing.
 
 * ``AgentMessagesPreparedEvent`` — raw input messages; consumed by TraceCollector for
   content-addressed capture (commit ``d2b600e``). Sending to the UI would duplicate.
 * ``MemoryResetEvent`` — framework-internal recovery; not user-visible.
+* ``GenerationEvent`` — legacy metadata-only event this repo never emits; generation
+  metadata reaches the UI from the full-payload ``LLMCallEvent`` instead. The class
+  is kept for out-of-tree emitters, so it stays registered but unmapped.
 """
 
 NOT_YET_EMITTED: set = {ValidationDecisionEvent, BranchEvent}
@@ -606,7 +639,7 @@ DISPATCH: dict = {
     # Generation / text content
     AssistantMessageEvent: map_assistant_message,
     AgentThinkingEvent: map_agent_thinking,
-    GenerationEvent: map_generation,
+    LLMCallEvent: map_llm_call,
     # Tool calls
     ToolCallEvent: map_tool_call,
     # Branch / orchestration

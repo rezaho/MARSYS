@@ -248,10 +248,15 @@ class StepExecutor:
         step_span_id = str(uuid.uuid4())
         step_number = context.get("step_number", 0)
 
-        # Emit start event if event_bus is available. Full-input capture
-        # (Phase 3) is now driven by ``Agent._run`` emitting a separate
-        # ``AgentMessagesPreparedEvent`` at the model-dispatch site —
-        # see agents.py:_run.
+        # Full-input capture lives in ``Agent._run`` (emits
+        # ``AgentMessagesPreparedEvent`` at the model-dispatch site).
+        # ``tracing_enabled`` is read here to decide whether to build a
+        # ``TraceContext`` for the model-wrapper capture helper
+        # (``emit_llm_call``).
+        execution_config_obj = context.get("execution_config")
+        tracing_cfg = getattr(execution_config_obj, "tracing", None) if execution_config_obj else None
+        tracing_enabled = bool(tracing_cfg and getattr(tracing_cfg, "enabled", False))
+
         if self.event_bus:
             from ..status.events import AgentStartEvent
 
@@ -268,6 +273,22 @@ class StepExecutor:
 
         # Store span ID in context for downstream use (tool executor, generation event)
         context["step_span_id"] = step_span_id
+
+        # Build a TraceContext only when tracing is on. When disabled,
+        # ``emit_llm_call`` bypasses on a None trace_ctx — same
+        # code path as raw model usage outside Orchestra.
+        if tracing_enabled:
+            from ..tracing.trace_context import TraceContext
+            trace_ctx = TraceContext(
+                step_span_id=step_span_id,
+                branch_id=context.get("branch_id"),
+                agent_name=agent_name,
+                session_id=context.get("session_id", "unknown"),
+                event_bus=self.event_bus,
+            )
+        else:
+            trace_ctx = None
+        context["trace_ctx"] = trace_ctx
 
         # Create step context
         step_context = StepContext(
@@ -310,7 +331,8 @@ class StepExecutor:
                     "step_number": step_context.step_number,  # Pass step_number for planning triggers
                     "session_id": step_context.session_id,  # Required for planning events emission
                     "branch_id": step_context.branch_id,  # For consistent event tracking
-                    "step_span_id": step_span_id,  # Required so the agent can stamp tracing events with the correct span (Part A — full-input capture)
+                    "step_span_id": step_span_id,  # so the agent can stamp AgentMessagesPreparedEvent with the correct span
+                    "trace_ctx": trace_ctx,         # picked up by emit_llm_call at the model-wrapper layer
                 }
 
                 # Mark as continuation if this is a tool continuation
@@ -655,29 +677,11 @@ class StepExecutor:
                         step_result.saved_context = saved_context
                         logger.debug(f"Extracted saved context from {agent_name}: {list(saved_context.keys())}")
 
-                # Emit generation event BEFORE completion (collector closes span on complete)
-                if self.event_bus and step_result.response:
-                    response_meta = getattr(step_result.response, 'response_metadata', None)
-                    if response_meta:
-                        from ..tracing.events import GenerationEvent
-                        usage = response_meta.get("usage") or {}
-                        response_time = response_meta.get("response_time")
-                        await self.event_bus.emit(GenerationEvent(
-                            session_id=context.get("session_id", "unknown"),
-                            branch_id=context.get("branch_id"),
-                            agent_name=agent_name,
-                            step_number=step_number,
-                            step_span_id=step_span_id,
-                            model_name=response_meta.get("model", ""),
-                            provider=response_meta.get("provider", ""),
-                            prompt_tokens=usage.get("prompt_tokens"),
-                            completion_tokens=usage.get("completion_tokens"),
-                            reasoning_tokens=usage.get("reasoning_tokens"),
-                            response_time_ms=response_time * 1000 if response_time else None,
-                            finish_reason=response_meta.get("finish_reason"),
-                            has_thinking=response_meta.get("has_thinking", False),
-                            has_tool_calls=bool(step_result.tool_calls),
-                        ))
+                # Generation spans are emitted by the model-wrapper capture
+                # helper (a single LLMCallEvent per call) which carries the
+                # full payload. The legacy GenerationEvent dataclass is kept
+                # only for out-of-tree emitters — this repo neither emits it
+                # nor subscribes to it (see TraceCollector.IGNORED_EVENTS).
 
                 # Emit completion event
                 if self.event_bus:

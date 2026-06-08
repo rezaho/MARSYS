@@ -14,6 +14,24 @@ from marsys.models.utils import apply_tools_template, parse_local_model_tool_cal
 
 logger = logging.getLogger(__name__)
 
+
+def _local_trace_base(adapter, messages, *, tools=None, images=None, **kwargs):
+    """Build the input snapshot for a local adapter's ``LLMCallEvent``.
+
+    ``provider`` prefers the value the model set (``"huggingface"`` / ``"vllm"``),
+    falling back to the class-derived ``backend`` for standalone adapter use.
+    """
+    from marsys.coordination.tracing.capture import extract_sampling_params
+    return dict(
+        model_name=getattr(adapter, "model_name", "unknown"),
+        provider=getattr(adapter, "provider", None) or getattr(adapter, "backend", None) or "local",
+        messages=list(messages) if isinstance(messages, list) else messages,
+        tools=tools,
+        images=images,
+        sampling_params=extract_sampling_params(kwargs),
+    )
+
+
 # --- Utilities for Local Models ---
 
 
@@ -352,37 +370,52 @@ class HuggingFaceLLMAdapter(LocalProviderAdapter):
     ) -> HarmonizedResponse:
         """Async LLM inference - wraps sync in thread."""
         import asyncio
+        import time
 
-        raw_result = await asyncio.to_thread(
-            self.run,
-            messages=messages,
-            json_mode=json_mode,
-            max_tokens=max_tokens,
-            tools=tools,
-            images=images,
-            **kwargs,
+        from marsys.coordination.tracing.capture import emit_llm_call, extract_sampling_params
+
+        trace_ctx = kwargs.pop("trace_ctx", None)
+        trace_base = _local_trace_base(
+            self, messages, tools=tools, images=images,
+            json_mode=json_mode, max_tokens=max_tokens, **kwargs,
         )
-
-        # Convert parsed tool calls to ToolCall objects
-        tool_calls = [
-            ToolCall(
-                id=tc.get("id", ""),
-                type=tc.get("type", "function"),
-                function=tc.get("function", {}),
+        start = time.time()
+        try:
+            raw_result = await asyncio.to_thread(
+                self.run,
+                messages=messages,
+                json_mode=json_mode,
+                max_tokens=max_tokens,
+                tools=tools,
+                images=images,
+                **kwargs,
             )
-            for tc in raw_result.get("tool_calls", [])
-        ]
 
-        return HarmonizedResponse(
-            role=raw_result.get("role", "assistant"),
-            content=raw_result.get("content"),
-            thinking=raw_result.get("thinking"),
-            tool_calls=tool_calls,
-            metadata=ResponseMetadata(
-                provider="huggingface",
-                model=self.model.config.name_or_path if hasattr(self.model, 'config') else self.model_name,
-            ),
-        )
+            # Convert parsed tool calls to ToolCall objects
+            tool_calls = [
+                ToolCall(
+                    id=tc.get("id", ""),
+                    type=tc.get("type", "function"),
+                    function=tc.get("function", {}),
+                )
+                for tc in raw_result.get("tool_calls", [])
+            ]
+
+            response = HarmonizedResponse(
+                role=raw_result.get("role", "assistant"),
+                content=raw_result.get("content"),
+                thinking=raw_result.get("thinking"),
+                tool_calls=tool_calls,
+                metadata=ResponseMetadata(
+                    provider="huggingface",
+                    model=self.model.config.name_or_path if hasattr(self.model, 'config') else self.model_name,
+                ),
+            )
+        except BaseException as e:
+            await emit_llm_call(trace_ctx, **trace_base, start=start, error=e)
+            raise
+        await emit_llm_call(trace_ctx, **trace_base, start=start, response=response)
+        return response
 
 
 class HuggingFaceVLMAdapter(LocalProviderAdapter):
@@ -537,38 +570,53 @@ class HuggingFaceVLMAdapter(LocalProviderAdapter):
     ) -> HarmonizedResponse:
         """Async VLM inference - wraps sync in thread."""
         import asyncio
+        import time
 
-        raw_result = await asyncio.to_thread(
-            self.run,
-            messages=messages,
-            json_mode=json_mode,
-            max_tokens=max_tokens,
-            tools=tools,
-            images=images,
-            role=role,
-            **kwargs,
+        from marsys.coordination.tracing.capture import emit_llm_call
+
+        trace_ctx = kwargs.pop("trace_ctx", None)
+        trace_base = _local_trace_base(
+            self, messages, tools=tools, images=images,
+            json_mode=json_mode, max_tokens=max_tokens, **kwargs,
         )
-
-        # Convert parsed tool calls to ToolCall objects
-        tool_calls = [
-            ToolCall(
-                id=tc.get("id", ""),
-                type=tc.get("type", "function"),
-                function=tc.get("function", {}),
+        start = time.time()
+        try:
+            raw_result = await asyncio.to_thread(
+                self.run,
+                messages=messages,
+                json_mode=json_mode,
+                max_tokens=max_tokens,
+                tools=tools,
+                images=images,
+                role=role,
+                **kwargs,
             )
-            for tc in raw_result.get("tool_calls", [])
-        ]
 
-        return HarmonizedResponse(
-            role=raw_result.get("role", "assistant"),
-            content=raw_result.get("content"),
-            thinking=raw_result.get("thinking"),
-            tool_calls=tool_calls,
-            metadata=ResponseMetadata(
-                provider="huggingface",
-                model=self.model.config.name_or_path if hasattr(self.model, 'config') else self.model_name,
-            ),
-        )
+            # Convert parsed tool calls to ToolCall objects
+            tool_calls = [
+                ToolCall(
+                    id=tc.get("id", ""),
+                    type=tc.get("type", "function"),
+                    function=tc.get("function", {}),
+                )
+                for tc in raw_result.get("tool_calls", [])
+            ]
+
+            response = HarmonizedResponse(
+                role=raw_result.get("role", "assistant"),
+                content=raw_result.get("content"),
+                thinking=raw_result.get("thinking"),
+                tool_calls=tool_calls,
+                metadata=ResponseMetadata(
+                    provider="huggingface",
+                    model=self.model.config.name_or_path if hasattr(self.model, 'config') else self.model_name,
+                ),
+            )
+        except BaseException as e:
+            await emit_llm_call(trace_ctx, **trace_base, start=start, error=e)
+            raise
+        await emit_llm_call(trace_ctx, **trace_base, start=start, response=response)
+        return response
 
 
 class VLLMAdapter(LocalProviderAdapter):
@@ -748,26 +796,41 @@ class VLLMAdapter(LocalProviderAdapter):
         This wraps sync in asyncio.to_thread for non-blocking behavior.
         """
         import asyncio
+        import time
 
-        raw_result = await asyncio.to_thread(
-            self.run,
-            messages=messages,
-            json_mode=json_mode,
-            max_tokens=max_tokens,
-            tools=tools,
-            images=images,
-            **kwargs,
-        )
+        from marsys.coordination.tracing.capture import emit_llm_call
 
-        return HarmonizedResponse(
-            role=raw_result.get("role", "assistant"),
-            content=raw_result.get("content"),
-            thinking=raw_result.get("thinking"),
-            tool_calls=[],
-            metadata=ResponseMetadata(
-                provider="vllm",
-                model=self.model_name,
-            ),
+        trace_ctx = kwargs.pop("trace_ctx", None)
+        trace_base = _local_trace_base(
+            self, messages, tools=tools, images=images,
+            json_mode=json_mode, max_tokens=max_tokens, **kwargs,
         )
+        start = time.time()
+        try:
+            raw_result = await asyncio.to_thread(
+                self.run,
+                messages=messages,
+                json_mode=json_mode,
+                max_tokens=max_tokens,
+                tools=tools,
+                images=images,
+                **kwargs,
+            )
+
+            response = HarmonizedResponse(
+                role=raw_result.get("role", "assistant"),
+                content=raw_result.get("content"),
+                thinking=raw_result.get("thinking"),
+                tool_calls=[],
+                metadata=ResponseMetadata(
+                    provider="vllm",
+                    model=self.model_name,
+                ),
+            )
+        except BaseException as e:
+            await emit_llm_call(trace_ctx, **trace_base, start=start, error=e)
+            raise
+        await emit_llm_call(trace_ctx, **trace_base, start=start, response=response)
+        return response
 
 

@@ -1019,7 +1019,10 @@ class SummarizationProcessor(CompactionProcessor):
         # Single model call returns everything (including user_request_summary)
         t0 = time.time()
         summary_json = await self._run_compaction_model(
-            compaction_messages, compaction_model, compact_cfg
+            compaction_messages,
+            compaction_model,
+            compact_cfg,
+            trace_ctx=runtime.get("trace_ctx") if runtime else None,
         )
         compaction_elapsed = time.time() - t0
 
@@ -1143,8 +1146,14 @@ class SummarizationProcessor(CompactionProcessor):
         compaction_messages: List[Dict[str, Any]],
         model: Any,
         compact_cfg: Any,
+        trace_ctx: Optional[Any] = None,
     ) -> Optional[Dict[str, Any]]:
-        """Run the compaction model on pre-built messages and parse JSON output."""
+        """Run the compaction model on pre-built messages and parse JSON output.
+
+        ``trace_ctx`` is forwarded as ``child(kind="compaction")`` so the
+        captured call lands as a compaction-kind span. ``None`` outside
+        traced runs.
+        """
         try:
             kwargs: Dict[str, Any] = {
                 "messages": compaction_messages,
@@ -1157,6 +1166,9 @@ class SummarizationProcessor(CompactionProcessor):
                 kwargs["response_schema"] = COMPACTION_OUTPUT_SCHEMA
             except Exception:
                 pass
+
+            if trace_ctx is not None:
+                kwargs["trace_ctx"] = trace_ctx.child(kind="compaction")
 
             if hasattr(model, "arun"):
                 response = await model.arun(**kwargs)

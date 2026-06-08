@@ -435,6 +435,12 @@ Return a JSON array of objects with "box_2d" and "label" fields only.
             temperature = getattr(self._model_config, "temperature", 0.1) if hasattr(self, "_model_config") else 0.1
             top_p = getattr(self._model_config, "top_p", 1.0) if hasattr(self, "_model_config") else 1.0
 
+            # Pass-through trace_ctx so browser-agent calls aren't
+            # silently uncaptured by the model-wrapper helper.
+            for _passthrough_key in ("trace_ctx",):
+                if _passthrough_key in kwargs:
+                    api_model_kwargs[_passthrough_key] = kwargs[_passthrough_key]
+
             # Call the model asynchronously for better performance
             raw_model_output = await self.model.arun(
                 messages=messages,

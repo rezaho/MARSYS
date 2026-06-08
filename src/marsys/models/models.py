@@ -386,6 +386,10 @@ class BaseLocalModel:
         self.model_name = model_name
         self.model_class = model_class
         self.backend = backend
+        # Identity attribute — used by the tracing capture helper. Local
+        # models have no vendor; the backend ("huggingface" | "vllm") is the
+        # meaningful provider id, mirroring BaseAPIModel.provider.
+        self.provider = backend
 
         # Create adapter using factory
         self.adapter = LocalAdapterFactory.create_adapter(
@@ -396,6 +400,9 @@ class BaseLocalModel:
             thinking_budget=thinking_budget,
             **kwargs,
         )
+        # The adapter emits the trace event and needs the canonical provider
+        # id (the backend), which it doesn't otherwise carry.
+        self.adapter.provider = self.provider
 
     def run(
         self,
@@ -449,6 +456,8 @@ class BaseLocalModel:
 
         Returns HarmonizedResponse for compatibility with the Agent framework.
         """
+        # Trace emission lives in the adapter now; ``trace_ctx`` rides through in
+        # ``kwargs`` and the adapter's ``arun`` pops it and emits the event.
         result = await self.adapter.arun(
             messages=messages,
             json_mode=json_mode,
@@ -519,6 +528,10 @@ class BaseAPIModel:
         self._response_processor = response_processor
         self.thinking_budget = thinking_budget  # Store thinking_budget as instance attribute
         self.reasoning_effort = reasoning_effort  # Store reasoning_effort as instance attribute
+        # Identity attributes — used by the tracing capture helper. Owned
+        # at the model layer because adapters don't carry ``provider``.
+        self.model_name = model_name
+        self.provider = provider
 
         # Resolve OAuth profile to credentials_path for OAuth providers
         if provider in ("openai-oauth", "anthropic-oauth"):
@@ -550,6 +563,10 @@ class BaseAPIModel:
             reasoning_effort=reasoning_effort,
             **kwargs,
         )
+        # The adapter emits the trace event and reports the provider in error
+        # fallbacks, but adapters don't otherwise carry ``provider`` — set it.
+        if self.adapter is not None:
+            self.adapter.provider = provider
 
         # Try to create async adapter if available
         self.async_adapter = None
@@ -569,15 +586,12 @@ class BaseAPIModel:
                     base_url=base_url,
                     **kwargs  # Pass through any provider-specific kwargs
                 )
+                # Async adapter is the one that actually emits the trace event.
+                self.async_adapter.provider = provider
 
     # REMOVED: _robust_json_loads method - moved to src/utils/parsing.py
     # REMOVED: _close_json_braces method - moved to src/utils/parsing.py
     # REMOVED: parse_model_response method - action parsing handled in coordination validation
-
-    @property
-    def provider(self) -> str:
-        """Get the provider name from the adapter."""
-        return self.adapter.__class__.__name__.replace("Adapter", "").lower()
 
     def run(
         self,
@@ -741,9 +755,15 @@ class BaseAPIModel:
         ):
             kwargs["reasoning_effort"] = self.reasoning_effort
 
+        import asyncio
+
+        # Trace emission lives in the adapter now. Pop ``trace_ctx`` here and
+        # forward it to the async adapter, which emits one event per attempt.
+        # The sync fallback path stays untraced (sync ``run`` can't await emit).
+        trace_ctx = kwargs.pop("trace_ctx", None)
         if self.async_adapter:
             # Use native async adapter for best performance
-            adapter_response = await self.async_adapter.arun(
+            response = await self.async_adapter.arun(
                 messages=messages,
                 json_mode=json_mode,
                 response_schema=response_schema,
@@ -751,14 +771,16 @@ class BaseAPIModel:
                 temperature=temperature,
                 top_p=top_p,
                 tools=tools,
+                trace_ctx=trace_ctx,
                 **kwargs
             )
 
             # Log model output for debugging/analysis
-            logger.debug(f"Model {self.async_adapter.model_name} response: {adapter_response}")
+            logger.debug(f"Model {self.async_adapter.model_name} response: {response}")
 
-            # Check if response is an ErrorResponse
-            if isinstance(adapter_response, ErrorResponse):
+            # Check if response is an ErrorResponse. The adapter already emitted
+            # the terminal error event; this raise is pure control flow.
+            if isinstance(response, ErrorResponse):
                 # Use ModelAPIError with classification instead of generic ModelError
                 from marsys.agents.exceptions import ModelAPIError
 
@@ -768,34 +790,31 @@ class BaseAPIModel:
                 retry_after = None
                 suggested_action = None
 
-                if hasattr(adapter_response, "classification") and isinstance(adapter_response.classification, dict):
-                    classification = adapter_response.classification.get("category")
-                    is_retryable = adapter_response.classification.get("is_retryable", False)
-                    retry_after = adapter_response.classification.get("retry_after")
-                    suggested_action = adapter_response.classification.get("suggested_action")
+                if hasattr(response, "classification") and isinstance(response.classification, dict):
+                    classification = response.classification.get("category")
+                    is_retryable = response.classification.get("is_retryable", False)
+                    retry_after = response.classification.get("retry_after")
+                    suggested_action = response.classification.get("suggested_action")
 
                 raise ModelAPIError(
-                    message=f"API Error: {adapter_response.error}",
-                    provider=adapter_response.provider,
-                    api_error_code=adapter_response.error_code,
-                    api_error_type=adapter_response.error_type,
+                    message=f"API Error: {response.error}",
+                    provider=response.provider,
+                    api_error_code=response.error_code,
+                    api_error_type=response.error_type,
                     classification=classification,
                     is_retryable=is_retryable,
                     retry_after=retry_after,
                     suggested_action=suggested_action,
-                    status_code=getattr(adapter_response, "status_code", None),
-                    raw_response={"error": adapter_response.error},
+                    status_code=getattr(response, "status_code", None),
+                    raw_response={"error": response.error},
                 )
 
             # Apply post-processing if configured
-            if self._response_processor and adapter_response.content:
-                adapter_response.content = self._response_processor(adapter_response.content)
-
-            return adapter_response
+            if self._response_processor and response.content:
+                response.content = self._response_processor(response.content)
         else:
-            # Fallback: run sync adapter in thread executor
-            import asyncio
-            loop = asyncio.get_event_loop()
+            # Fallback: run sync adapter in thread executor (untraced)
+            loop = asyncio.get_running_loop()
 
             # Create a wrapper function that calls the sync method
             def sync_run():
@@ -811,7 +830,8 @@ class BaseAPIModel:
                 )
 
             # Execute in thread pool to avoid blocking
-            return await loop.run_in_executor(None, sync_run)
+            response = await loop.run_in_executor(None, sync_run)
+        return response
 
     async def cleanup(self):
         """Clean up async resources."""
@@ -855,6 +875,14 @@ class PeftHead:
             )
         self.model = model
         self.peft_head = None
+        # Identity attribute for the tracing capture helper. PeftHead only
+        # wraps training-capable HuggingFace adapters (the gate above rejects
+        # vLLM), so the canonical provider is always "huggingface" — matching
+        # BaseLocalModel rather than the adapter's class-name-derived
+        # ``backend`` property ("huggingfacellm" / "huggingfacevlm"). The wrapped
+        # adapter is the one that emits the trace event, so give it the same id.
+        self.provider = "huggingface"
+        self.model.provider = self.provider
 
     def prepare_peft_model(
         self,
@@ -999,6 +1027,9 @@ class PeftHead:
         Returns:
             HarmonizedResponse for compatibility with the Agent framework.
         """
+        # Trace emission lives in the wrapped adapter. ``self.model`` is the
+        # adapter, whose ``arun`` pops ``trace_ctx`` (rides through in kwargs)
+        # and emits the event — so this wrapper just delegates.
         if self.peft_head is not None:
             # Temporarily swap in PEFT model for inference
             original_model = self.model.model

@@ -6,8 +6,8 @@ Covers:
   cross-trace dedup, atomic writes.
 - ``build_input_messages_ref`` ref shape (history / base / patch).
 - ``diff_history`` append-only optimization and divergent fallback.
-- Collector integration: ``capture_full_input`` enables blob writes and
-  attaches ``input_messages_ref`` to the step span.
+- Collector integration: enabling tracing writes blobs and attaches
+  ``input_messages_ref`` to the step span (always on; no opt-in flag).
 - Branch fork inheritance: child branch's first step diffs against the
   parent branch's last history.
 - Redaction: secrets in messages are scrubbed before hashing/storage.
@@ -202,8 +202,9 @@ def _open_step(bus, *, session_id, branch_id, agent_name, step_number, step_span
 
 class TestCollectorFullInputCapture:
     @pytest.mark.asyncio
-    async def test_capture_disabled_by_default(self, tmp_path):
-        """capture_full_input=False → no input_messages_ref attribute, no messages dir."""
+    async def test_capture_on_by_default(self, tmp_path):
+        """Tracing enabled → full-input capture is automatic (Option A): the
+        step span gets an input_messages_ref and blobs are written."""
         bus = EventBus()
         cfg = TracingConfig(enabled=True, output_dir=str(tmp_path))
         collector = TraceCollector(event_bus=bus, config=cfg, sinks=[])
@@ -215,20 +216,20 @@ class TestCollectorFullInputCapture:
         await bus.emit(AgentMessagesPreparedEvent(
             session_id="s", agent_name="A",
             step_number=1, step_span_id="step-1",
-            messages=[{"role": "user", "content": "ignored"}],
+            messages=[{"role": "user", "content": "captured"}],
         ))
         await asyncio.sleep(0.05)
 
         span = collector.step_spans["step-1"]
-        assert "input_messages_ref" not in span.attributes
-        # No messages directory created — capture is disabled.
-        assert not (tmp_path / "messages").exists()
+        assert "input_messages_ref" in span.attributes
+        # The dedup sidecar directory is created on first blob write.
+        assert (tmp_path / "messages").exists()
 
     @pytest.mark.asyncio
     async def test_capture_attaches_ref_and_writes_blobs(self, tmp_path):
         bus = EventBus()
         cfg = TracingConfig(
-            enabled=True, output_dir=str(tmp_path), capture_full_input=True,
+            enabled=True, output_dir=str(tmp_path),
         )
         collector = TraceCollector(event_bus=bus, config=cfg, sinks=[])
 
@@ -264,7 +265,7 @@ class TestCollectorFullInputCapture:
         """Heavy-payload mitigation: the bus retains the event shell with messages=None."""
         bus = EventBus()
         cfg = TracingConfig(
-            enabled=True, output_dir=str(tmp_path), capture_full_input=True,
+            enabled=True, output_dir=str(tmp_path),
         )
         collector = TraceCollector(event_bus=bus, config=cfg, sinks=[])
 
@@ -291,7 +292,7 @@ class TestCollectorFullInputCapture:
     async def test_redaction_applied_before_hashing(self, tmp_path):
         bus = EventBus()
         cfg = TracingConfig(
-            enabled=True, output_dir=str(tmp_path), capture_full_input=True,
+            enabled=True, output_dir=str(tmp_path),
         )
         collector = TraceCollector(event_bus=bus, config=cfg, sinks=[])
 
@@ -324,7 +325,7 @@ class TestCollectorFullInputCapture:
         """A repeated system prompt across two steps stores one blob."""
         bus = EventBus()
         cfg = TracingConfig(
-            enabled=True, output_dir=str(tmp_path), capture_full_input=True,
+            enabled=True, output_dir=str(tmp_path),
         )
         collector = TraceCollector(event_bus=bus, config=cfg, sinks=[])
 
@@ -372,7 +373,7 @@ class TestCollectorFullInputCapture:
         """
         bus = EventBus()
         cfg = TracingConfig(
-            enabled=True, output_dir=str(tmp_path), capture_full_input=True,
+            enabled=True, output_dir=str(tmp_path),
         )
         collector = TraceCollector(event_bus=bus, config=cfg, sinks=[])
 
@@ -454,7 +455,7 @@ class TestCollectorFullInputCapture:
         """
         bus = EventBus()
         cfg = TracingConfig(
-            enabled=True, output_dir=str(tmp_path), capture_full_input=True,
+            enabled=True, output_dir=str(tmp_path),
         )
         collector = TraceCollector(event_bus=bus, config=cfg, sinks=[])
 
@@ -519,7 +520,7 @@ class TestCollectorFullInputCapture:
         """One AgentMessagesPreparedEvent per model dispatch (Acceptance Part A.3)."""
         bus = EventBus()
         cfg = TracingConfig(
-            enabled=True, output_dir=str(tmp_path), capture_full_input=True,
+            enabled=True, output_dir=str(tmp_path),
         )
         collector = TraceCollector(event_bus=bus, config=cfg, sinks=[])
 
@@ -575,7 +576,7 @@ class TestCollectorFullInputCapture:
 
         bus = EventBus()
         cfg = TracingConfig(
-            enabled=True, output_dir=str(tmp_path), capture_full_input=True,
+            enabled=True, output_dir=str(tmp_path),
         )
         writer = NDJSONTraceWriter(cfg)
         collector = TraceCollector(event_bus=bus, config=cfg, sinks=[writer])

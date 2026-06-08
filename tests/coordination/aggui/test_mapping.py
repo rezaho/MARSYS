@@ -59,6 +59,7 @@ from marsys.coordination.tracing.events import (
     ConvergenceEvent,
     ExecutionStartEvent,
     GenerationEvent,
+    LLMCallEvent,
 )
 
 
@@ -270,27 +271,70 @@ def test_map_agent_thinking_skips_empty(ctx):
     assert _collect(_mapping.map_agent_thinking(event, ctx)) == []
 
 
-def test_map_generation_yields_custom_metadata(ctx):
-    event = GenerationEvent(
-        session_id="s1",
-        agent_name="A",
-        step_number=1,
-        step_span_id="span1",
-        model_name="claude-opus-4-7",
-        provider="anthropic",
-        prompt_tokens=100,
-        completion_tokens=50,
-        reasoning_tokens=10,
-        response_time_ms=500.0,
-        finish_reason="stop",
-        has_thinking=True,
-        has_tool_calls=False,
+def test_generation_event_is_internal_only_not_dispatched(ctx):
+    """Legacy ``GenerationEvent`` is kept for out-of-tree emitters but this
+    repo never emits it and the translator never surfaces it — generation
+    metadata reaches the UI from ``LLMCallEvent`` instead."""
+    assert GenerationEvent in _mapping.INTERNAL_ONLY
+    assert GenerationEvent not in _mapping.DISPATCH
+
+
+# ── LLM call (self-contained generation metadata) ───────────────────────
+
+
+def test_map_llm_call_emits_generation_metadata_from_self(ctx):
+    """No correlation state: model/provider/kind are carried on the event."""
+    event = LLMCallEvent(
+        session_id="s1", request_id="r1", status="ok",
+        model_name="claude-opus-4-7", provider="anthropic", kind="generation",
+        response_metadata={
+            "usage": {"prompt_tokens": 100, "completion_tokens": 50,
+                      "reasoning_tokens": 10},
+            "finish_reason": "stop",
+        },
     )
-    out = _collect(_mapping.map_generation(event, ctx))
+    out = _collect(_mapping.map_llm_call(event, ctx))
     assert isinstance(out[0], CustomEvent)
     assert out[0].name == "marsys.generation.metadata"
-    assert out[0].value["model"] == "claude-opus-4-7"
-    assert out[0].value["prompt_tokens"] == 100
+    v = out[0].value
+    assert v["model"] == "claude-opus-4-7"
+    assert v["provider"] == "anthropic"
+    assert v["prompt_tokens"] == 100
+    assert v["completion_tokens"] == 50
+    assert v["reasoning_tokens"] == 10
+    assert v["finish_reason"] == "stop"
+    assert v["kind"] == "generation"
+
+
+def test_map_llm_call_compaction_rides_as_sibling_kind(ctx):
+    event = LLMCallEvent(
+        session_id="s1", request_id="r2", status="ok",
+        model_name="m", provider="p", kind="compaction",
+        response_metadata={"usage": {"prompt_tokens": 5, "completion_tokens": 2}},
+    )
+    out = _collect(_mapping.map_llm_call(event, ctx))
+    assert out[0].value["kind"] == "compaction"
+
+
+def test_map_llm_call_reads_responses_api_token_names(ctx):
+    """input_tokens/output_tokens (Responses API) map to prompt/completion."""
+    event = LLMCallEvent(
+        session_id="s1", request_id="r3", status="ok",
+        model_name="m", provider="p", kind="generation",
+        response_metadata={"usage": {"input_tokens": 7, "output_tokens": 3}},
+    )
+    v = _collect(_mapping.map_llm_call(event, ctx))[0].value
+    assert v["prompt_tokens"] == 7
+    assert v["completion_tokens"] == 3
+
+
+def test_map_llm_call_error_yields_nothing(ctx):
+    event = LLMCallEvent(
+        session_id="s1", request_id="r4", status="error",
+        model_name="m", provider="p", kind="generation",
+        error_type="TimeoutError", error_message="took too long",
+    )
+    assert _collect(_mapping.map_llm_call(event, ctx)) == []
 
 
 # ── Tool calls ─────────────────────────────────────────────────────────

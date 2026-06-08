@@ -1,9 +1,10 @@
-"""Multi-consumer test: three fake vendor sinks all see the same span tree.
+"""Multi-consumer test: three differently-shaped fake sinks all see the same span tree.
 
-Proves the protocol genuinely fits LangSmith / Phoenix / Spren-shaped
-adapters in parallel. Each fake sink translates the framework's Span into
-its own target shape; all three see identical content; secrets carried in
-ToolCallEvent.arguments are redacted in every adapter's view.
+Proves the TelemetrySink protocol genuinely fits adapters with different
+target shapes in parallel — a `create_run`-style client, an OTel-span-dict
+adapter, and a raw `to_dict()` poster. Each fake sink translates the
+framework's Span into its own shape; all three see identical content;
+secrets carried in ToolCallEvent.arguments are redacted in every view.
 """
 from __future__ import annotations
 
@@ -27,11 +28,12 @@ from marsys.coordination.tracing import (
 from marsys.models import ModelConfig
 
 
-# ── Vendor-shape fake sinks ────────────────────────────────────────────────
+# ── Differently-shaped fake sinks ──────────────────────────────────────────
 
 
-class FakeLangSmithSink(TelemetrySink):
-    """Records LangSmith-shaped Client.create_run calls per closed span."""
+class FakeClientRunSink(TelemetrySink):
+    """Records `create_run`-style client calls per closed span (run_type /
+    parent_run_id / inputs / outputs shape)."""
 
     def __init__(self) -> None:
         self.runs: List[Dict[str, Any]] = []
@@ -53,8 +55,9 @@ class FakeLangSmithSink(TelemetrySink):
         self.closed = True
 
 
-class FakePhoenixSink(TelemetrySink):
-    """Records OTel-shaped span dicts per closed span (Phoenix-flavoured)."""
+class FakeOtelSpanSink(TelemetrySink):
+    """Records OTel-shaped span dicts per closed span (span_id / parent_id /
+    uppercased kind / status shape)."""
 
     def __init__(self) -> None:
         self.spans: List[Dict[str, Any]] = []
@@ -76,8 +79,9 @@ class FakePhoenixSink(TelemetrySink):
         self.closed = True
 
 
-class FakeSprenSink(TelemetrySink):
-    """Records the protocol's calls verbatim (Spren posts span.to_dict() over HTTP)."""
+class FakeRawDictSink(TelemetrySink):
+    """Records the protocol's calls verbatim (an adapter that posts
+    span.to_dict() over HTTP)."""
 
     def __init__(self) -> None:
         self.payloads: List[Dict[str, Any]] = []
@@ -154,15 +158,15 @@ def _topology() -> dict:
 
 
 @pytest.mark.asyncio
-async def test_three_vendor_sinks_all_see_same_span_tree(tmp_path):
+async def test_three_sink_shapes_all_see_same_span_tree(tmp_path):
     AgentRegistry._test_agents = [_Coord()]
 
-    langsmith = FakeLangSmithSink()
-    phoenix = FakePhoenixSink()
-    spren = FakeSprenSink()
+    client_run = FakeClientRunSink()
+    otel_span = FakeOtelSpanSink()
+    raw_dict = FakeRawDictSink()
     tracing = TracingConfig(
         enabled=True, output_dir=str(tmp_path),
-        sinks=[langsmith, phoenix, spren],
+        sinks=[client_run, otel_span, raw_dict],
     )
     cfg = ExecutionConfig(tracing=tracing)
 
@@ -172,36 +176,36 @@ async def test_three_vendor_sinks_all_see_same_span_tree(tmp_path):
     assert result.success, f"orchestration failed: {result.error}"
 
     # Same span count across all three fake sinks.
-    assert len(langsmith.runs) == len(phoenix.spans) == len(spren.payloads)
-    assert len(langsmith.runs) > 0
+    assert len(client_run.runs) == len(otel_span.spans) == len(raw_dict.payloads)
+    assert len(client_run.runs) > 0
 
     # Same span_ids in the same order.
-    ls_ids = [r["attributes"].get("span_id") for r in langsmith.runs]
-    ph_ids = [s["span_id"] for s in phoenix.spans]
-    sp_ids = [p["span_id"] for p in spren.payloads]
-    assert ph_ids == sp_ids
-    # LangSmith doesn't emit span_id directly, so just check shape consistency
-    # via parent_run_id (parent_span_id) alignment.
-    assert [r["parent_run_id"] for r in langsmith.runs] == [
-        s["parent_id"] for s in phoenix.spans
+    cr_ids = [r["attributes"].get("span_id") for r in client_run.runs]
+    os_ids = [s["span_id"] for s in otel_span.spans]
+    rd_ids = [p["span_id"] for p in raw_dict.payloads]
+    assert os_ids == rd_ids
+    # The client-run shape doesn't emit span_id directly, so just check shape
+    # consistency via parent_run_id (parent_span_id) alignment.
+    assert [r["parent_run_id"] for r in client_run.runs] == [
+        s["parent_id"] for s in otel_span.spans
     ]
 
     # All three sinks closed.
-    assert langsmith.closed
-    assert phoenix.closed
-    assert spren.closed
+    assert client_run.closed
+    assert otel_span.closed
+    assert raw_dict.closed
 
 
 @pytest.mark.asyncio
 async def test_secret_in_tool_arguments_redacted_in_all_three_sinks(tmp_path):
     AgentRegistry._test_agents = [_Coord()]
 
-    langsmith = FakeLangSmithSink()
-    phoenix = FakePhoenixSink()
-    spren = FakeSprenSink()
+    client_run = FakeClientRunSink()
+    otel_span = FakeOtelSpanSink()
+    raw_dict = FakeRawDictSink()
     tracing = TracingConfig(
         enabled=True, output_dir=str(tmp_path),
-        sinks=[langsmith, phoenix, spren],
+        sinks=[client_run, otel_span, raw_dict],
     )
     cfg = ExecutionConfig(tracing=tracing)
 
@@ -220,14 +224,14 @@ async def test_secret_in_tool_arguments_redacted_in_all_three_sinks(tmp_path):
                 result_dicts.append(attrs)
         return result_dicts
 
-    ls_tool_attrs = _tool_span_args(langsmith.runs)
-    ph_tool_attrs = _tool_span_args(phoenix.spans)
-    sp_tool_attrs = _tool_span_args(spren.payloads)
+    cr_tool_attrs = _tool_span_args(client_run.runs)
+    os_tool_attrs = _tool_span_args(otel_span.spans)
+    rd_tool_attrs = _tool_span_args(raw_dict.payloads)
 
-    assert ls_tool_attrs and ph_tool_attrs and sp_tool_attrs
+    assert cr_tool_attrs and os_tool_attrs and rd_tool_attrs
 
     # The tool span's `arguments` field should have the api_key redacted.
-    for attrs in (*ls_tool_attrs, *ph_tool_attrs, *sp_tool_attrs):
+    for attrs in (*cr_tool_attrs, *os_tool_attrs, *rd_tool_attrs):
         args = attrs.get("arguments")
         if args is None:
             continue  # config.include_tool_results may be False; not a leak

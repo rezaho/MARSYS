@@ -22,7 +22,6 @@ from marsys.coordination.tracing.config import TracingConfig
 TracingConfig(
     enabled: bool = False,
     output_dir: str = "./traces",
-    include_generation_details: bool = True,
     include_message_content: bool = True,
     include_tool_results: bool = True,
 )
@@ -33,7 +32,6 @@ TracingConfig(
 |-----------|------|-------------|---------|
 | `enabled` | `bool` | Enable trace collection | `False` |
 | `output_dir` | `str` | Directory for trace NDJSON files | `"./traces"` |
-| `include_generation_details` | `bool` | Include token counts and model metadata in generation spans | `True` |
 | `include_message_content` | `bool` | Include the final response summary on the root execution span | `True` |
 | `include_tool_results` | `bool` | Include tool arguments and result summaries in tool spans | `True` |
 
