@@ -1,0 +1,3030 @@
+
+<!doctype html>
+<html lang="en" class="no-js">
+  <head>
+    
+      <meta charset="utf-8">
+      <meta name="viewport" content="width=device-width,initial-scale=1">
+      
+        <meta name="description" content="A powerful framework for creating, orchestrating, and training collaborative AI agents">
+      
+      
+        <meta name="author" content="Your Name">
+      
+      
+        <link rel="canonical" href="https://marsys.ai/architecture/framework/decisions/ADR-009-full-payload-llm-tracing/">
+      
+      
+      
+      
+        
+      
+      
+      <link rel="icon" href="../../../../assets/images/favicon.png">
+      <meta name="generator" content="mkdocs-1.6.1, mkdocs-material-9.7.6">
+    
+    
+      
+        <title>ADR-009: Full-payload LLM trace capture & vendor-neutral OTel export - MARSYS - Multi-Agent Reasoning Systems</title>
+      
+    
+    
+      <link rel="stylesheet" href="../../../../assets/stylesheets/main.484c7ddc.min.css">
+      
+        
+        <link rel="stylesheet" href="../../../../assets/stylesheets/palette.ab4e12ef.min.css">
+      
+      
+
+
+    
+    
+      
+    
+    
+      
+        
+        
+        <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+        <link rel="stylesheet" href="https://fonts.googleapis.com/css?family=Roboto:300,300i,400,400i,700,700i%7CRoboto+Mono:400,400i,700,700i&display=fallback">
+        <style>:root{--md-text-font:"Roboto";--md-code-font:"Roboto Mono"}</style>
+      
+    
+    
+      <link rel="stylesheet" href="../../../../assets/_mkdocstrings.css">
+    
+      <link rel="stylesheet" href="../../../../assets/css/main.css">
+    
+    <script>__md_scope=new URL("../../../..",location),__md_hash=e=>[...e].reduce(((e,_)=>(e<<5)-e+_.charCodeAt(0)),0),__md_get=(e,_=localStorage,t=__md_scope)=>JSON.parse(_.getItem(t.pathname+"."+e)),__md_set=(e,_,t=localStorage,a=__md_scope)=>{try{t.setItem(a.pathname+"."+e,JSON.stringify(_))}catch(e){}}</script>
+    
+      
+  
+
+
+  
+  
+
+<script id="__analytics">function __md_analytics(){function e(){dataLayer.push(arguments)}window.dataLayer=window.dataLayer||[],e("js",new Date),e("config","YOUR_MEASUREMENT_ID"),document.addEventListener("DOMContentLoaded",(function(){document.forms.search&&document.forms.search.query.addEventListener("blur",(function(){this.value&&e("event","search",{search_term:this.value})}));document$.subscribe((function(){var t=document.forms.feedback;if(void 0!==t)for(var a of t.querySelectorAll("[type=submit]"))a.addEventListener("click",(function(a){a.preventDefault();var n=document.location.pathname,d=this.getAttribute("data-md-value");e("event","feedback",{page:n,data:d}),t.firstElementChild.disabled=!0;var r=t.querySelector(".md-feedback__note [data-md-value='"+d+"']");r&&(r.hidden=!1)})),t.hidden=!1})),location$.subscribe((function(t){e("config","YOUR_MEASUREMENT_ID",{page_path:t.pathname})}))}));var t=document.createElement("script");t.async=!0,t.src="https://www.googletagmanager.com/gtag/js?id=YOUR_MEASUREMENT_ID",document.getElementById("__analytics").insertAdjacentElement("afterEnd",t)}</script>
+  
+    <script>"undefined"!=typeof __md_analytics&&__md_analytics()</script>
+  
+
+    
+    
+  </head>
+  
+  
+    
+    
+      
+    
+    
+    
+    
+    <body dir="ltr" data-md-color-scheme="default" data-md-color-primary="indigo" data-md-color-accent="indigo">
+  
+    
+    <input class="md-toggle" data-md-toggle="drawer" type="checkbox" id="__drawer" autocomplete="off">
+    <input class="md-toggle" data-md-toggle="search" type="checkbox" id="__search" autocomplete="off">
+    <label class="md-overlay" for="__drawer"></label>
+    <div data-md-component="skip">
+      
+        
+        <a href="#adr-009-full-payload-llm-trace-capture-vendor-neutral-otel-export" class="md-skip">
+          Skip to content
+        </a>
+      
+    </div>
+    <div data-md-component="announce">
+      
+    </div>
+    
+    
+      
+
+  
+
+<header class="md-header md-header--shadow md-header--lifted" data-md-component="header">
+  <nav class="md-header__inner md-grid" aria-label="Header">
+    <a href="../../../.." title="MARSYS - Multi-Agent Reasoning Systems" class="md-header__button md-logo" aria-label="MARSYS - Multi-Agent Reasoning Systems" data-md-component="logo">
+      
+  
+  <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M12 2a2 2 0 0 1 2 2c0 .74-.4 1.39-1 1.73V7h1a7 7 0 0 1 7 7h1a1 1 0 0 1 1 1v3a1 1 0 0 1-1 1h-1v1a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-1H2a1 1 0 0 1-1-1v-3a1 1 0 0 1 1-1h1a7 7 0 0 1 7-7h1V5.73c-.6-.34-1-.99-1-1.73a2 2 0 0 1 2-2M7.5 13A2.5 2.5 0 0 0 5 15.5 2.5 2.5 0 0 0 7.5 18a2.5 2.5 0 0 0 2.5-2.5A2.5 2.5 0 0 0 7.5 13m9 0a2.5 2.5 0 0 0-2.5 2.5 2.5 2.5 0 0 0 2.5 2.5 2.5 2.5 0 0 0 2.5-2.5 2.5 2.5 0 0 0-2.5-2.5"/></svg>
+
+    </a>
+    <label class="md-header__button md-icon" for="__drawer">
+      
+      <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M3 6h18v2H3zm0 5h18v2H3zm0 5h18v2H3z"/></svg>
+    </label>
+    <div class="md-header__title" data-md-component="header-title">
+      <div class="md-header__ellipsis">
+        <div class="md-header__topic">
+          <span class="md-ellipsis">
+            MARSYS - Multi-Agent Reasoning Systems
+          </span>
+        </div>
+        <div class="md-header__topic" data-md-component="header-topic">
+          <span class="md-ellipsis">
+            
+              ADR-009: Full-payload LLM trace capture &amp; vendor-neutral OTel export
+            
+          </span>
+        </div>
+      </div>
+    </div>
+    
+      
+        <form class="md-header__option" data-md-component="palette">
+  
+    
+    
+    
+    <input class="md-option" data-md-color-media="" data-md-color-scheme="default" data-md-color-primary="indigo" data-md-color-accent="indigo"  aria-label="Switch to dark mode"  type="radio" name="__palette" id="__palette_0">
+    
+      <label class="md-header__button md-icon" title="Switch to dark mode" for="__palette_1" hidden>
+        <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M12 8a4 4 0 0 0-4 4 4 4 0 0 0 4 4 4 4 0 0 0 4-4 4 4 0 0 0-4-4m0 10a6 6 0 0 1-6-6 6 6 0 0 1 6-6 6 6 0 0 1 6 6 6 6 0 0 1-6 6m8-9.31V4h-4.69L12 .69 8.69 4H4v4.69L.69 12 4 15.31V20h4.69L12 23.31 15.31 20H20v-4.69L23.31 12z"/></svg>
+      </label>
+    
+  
+    
+    
+    
+    <input class="md-option" data-md-color-media="" data-md-color-scheme="slate" data-md-color-primary="indigo" data-md-color-accent="indigo"  aria-label="Switch to light mode"  type="radio" name="__palette" id="__palette_1">
+    
+      <label class="md-header__button md-icon" title="Switch to light mode" for="__palette_0" hidden>
+        <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M12 18c-.89 0-1.74-.2-2.5-.55C11.56 16.5 13 14.42 13 12s-1.44-4.5-3.5-5.45C10.26 6.2 11.11 6 12 6a6 6 0 0 1 6 6 6 6 0 0 1-6 6m8-9.31V4h-4.69L12 .69 8.69 4H4v4.69L.69 12 4 15.31V20h4.69L12 23.31 15.31 20H20v-4.69L23.31 12z"/></svg>
+      </label>
+    
+  
+</form>
+      
+    
+    
+      <script>var palette=__md_get("__palette");if(palette&&palette.color){if("(prefers-color-scheme)"===palette.color.media){var media=matchMedia("(prefers-color-scheme: light)"),input=document.querySelector(media.matches?"[data-md-color-media='(prefers-color-scheme: light)']":"[data-md-color-media='(prefers-color-scheme: dark)']");palette.color.media=input.getAttribute("data-md-color-media"),palette.color.scheme=input.getAttribute("data-md-color-scheme"),palette.color.primary=input.getAttribute("data-md-color-primary"),palette.color.accent=input.getAttribute("data-md-color-accent")}for(var[key,value]of Object.entries(palette.color))document.body.setAttribute("data-md-color-"+key,value)}</script>
+    
+    
+    
+      
+      
+        <label class="md-header__button md-icon" for="__search">
+          
+          <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M9.5 3A6.5 6.5 0 0 1 16 9.5c0 1.61-.59 3.09-1.56 4.23l.27.27h.79l5 5-1.5 1.5-5-5v-.79l-.27-.27A6.52 6.52 0 0 1 9.5 16 6.5 6.5 0 0 1 3 9.5 6.5 6.5 0 0 1 9.5 3m0 2C7 5 5 7 5 9.5S7 14 9.5 14 14 12 14 9.5 12 5 9.5 5"/></svg>
+        </label>
+        <div class="md-search" data-md-component="search" role="dialog">
+  <label class="md-search__overlay" for="__search"></label>
+  <div class="md-search__inner" role="search">
+    <form class="md-search__form" name="search">
+      <input type="text" class="md-search__input" name="query" aria-label="Search" placeholder="Search" autocapitalize="off" autocorrect="off" autocomplete="off" spellcheck="false" data-md-component="search-query" required>
+      <label class="md-search__icon md-icon" for="__search">
+        
+        <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M9.5 3A6.5 6.5 0 0 1 16 9.5c0 1.61-.59 3.09-1.56 4.23l.27.27h.79l5 5-1.5 1.5-5-5v-.79l-.27-.27A6.52 6.52 0 0 1 9.5 16 6.5 6.5 0 0 1 3 9.5 6.5 6.5 0 0 1 9.5 3m0 2C7 5 5 7 5 9.5S7 14 9.5 14 14 12 14 9.5 12 5 9.5 5"/></svg>
+        
+        <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M20 11v2H8l5.5 5.5-1.42 1.42L4.16 12l7.92-7.92L13.5 5.5 8 11z"/></svg>
+      </label>
+      <nav class="md-search__options" aria-label="Search">
+        
+          <a href="javascript:void(0)" class="md-search__icon md-icon" title="Share" aria-label="Share" data-clipboard data-clipboard-text="" data-md-component="search-share" tabindex="-1">
+            
+            <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M18 16.08c-.76 0-1.44.3-1.96.77L8.91 12.7c.05-.23.09-.46.09-.7s-.04-.47-.09-.7l7.05-4.11c.54.5 1.25.81 2.04.81a3 3 0 0 0 3-3 3 3 0 0 0-3-3 3 3 0 0 0-3 3c0 .24.04.47.09.7L8.04 9.81C7.5 9.31 6.79 9 6 9a3 3 0 0 0-3 3 3 3 0 0 0 3 3c.79 0 1.5-.31 2.04-.81l7.12 4.15c-.05.21-.08.43-.08.66 0 1.61 1.31 2.91 2.92 2.91s2.92-1.3 2.92-2.91A2.92 2.92 0 0 0 18 16.08"/></svg>
+          </a>
+        
+        <button type="reset" class="md-search__icon md-icon" title="Clear" aria-label="Clear" tabindex="-1">
+          
+          <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M19 6.41 17.59 5 12 10.59 6.41 5 5 6.41 10.59 12 5 17.59 6.41 19 12 13.41 17.59 19 19 17.59 13.41 12z"/></svg>
+        </button>
+      </nav>
+      
+        <div class="md-search__suggest" data-md-component="search-suggest"></div>
+      
+    </form>
+    <div class="md-search__output">
+      <div class="md-search__scrollwrap" tabindex="0" data-md-scrollfix>
+        <div class="md-search-result" data-md-component="search-result">
+          <div class="md-search-result__meta">
+            Initializing search
+          </div>
+          <ol class="md-search-result__list" role="presentation"></ol>
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
+      
+    
+    
+      <div class="md-header__source">
+        <a href="https://github.com/rezaho/MARS" title="Go to repository" class="md-source" data-md-component="source">
+  <div class="md-source__icon md-icon">
+    
+    <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512"><!--! Font Awesome Free 7.1.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2025 Fonticons, Inc.--><path d="M173.9 397.4c0 2-2.3 3.6-5.2 3.6-3.3.3-5.6-1.3-5.6-3.6 0-2 2.3-3.6 5.2-3.6 3-.3 5.6 1.3 5.6 3.6m-31.1-4.5c-.7 2 1.3 4.3 4.3 4.9 2.6 1 5.6 0 6.2-2s-1.3-4.3-4.3-5.2c-2.6-.7-5.5.3-6.2 2.3m44.2-1.7c-2.9.7-4.9 2.6-4.6 4.9.3 2 2.9 3.3 5.9 2.6 2.9-.7 4.9-2.6 4.6-4.6-.3-1.9-3-3.2-5.9-2.9M252.8 8C114.1 8 8 113.3 8 252c0 110.9 69.8 205.8 169.5 239.2 12.8 2.3 17.3-5.6 17.3-12.1 0-6.2-.3-40.4-.3-61.4 0 0-70 15-84.7-29.8 0 0-11.4-29.1-27.8-36.6 0 0-22.9-15.7 1.6-15.4 0 0 24.9 2 38.6 25.8 21.9 38.6 58.6 27.5 72.9 20.9 2.3-16 8.8-27.1 16-33.7-55.9-6.2-112.3-14.3-112.3-110.5 0-27.5 7.6-41.3 23.6-58.9-2.6-6.5-11.1-33.3 2.6-67.9 20.9-6.5 69 27 69 27 20-5.6 41.5-8.5 62.8-8.5s42.8 2.9 62.8 8.5c0 0 48.1-33.6 69-27 13.7 34.7 5.2 61.4 2.6 67.9 16 17.7 25.8 31.5 25.8 58.9 0 96.5-58.9 104.2-114.8 110.5 9.2 7.9 17 22.9 17 46.4 0 33.7-.3 75.4-.3 83.6 0 6.5 4.6 14.4 17.3 12.1C436.2 457.8 504 362.9 504 252 504 113.3 391.5 8 252.8 8M105.2 352.9c-1.3 1-1 3.3.7 5.2 1.6 1.6 3.9 2.3 5.2 1 1.3-1 1-3.3-.7-5.2-1.6-1.6-3.9-2.3-5.2-1m-10.8-8.1c-.7 1.3.3 2.9 2.3 3.9 1.6 1 3.6.7 4.3-.7.7-1.3-.3-2.9-2.3-3.9-2-.6-3.6-.3-4.3.7m32.4 35.6c-1.6 1.3-1 4.3 1.3 6.2 2.3 2.3 5.2 2.6 6.5 1 1.3-1.3.7-4.3-1.3-6.2-2.2-2.3-5.2-2.6-6.5-1m-11.4-14.7c-1.6 1-1.6 3.6 0 5.9s4.3 3.3 5.6 2.3c1.6-1.3 1.6-3.9 0-6.2-1.4-2.3-4-3.3-5.6-2"/></svg>
+  </div>
+  <div class="md-source__repository">
+    MARSYS
+  </div>
+</a>
+      </div>
+    
+  </nav>
+  
+    
+      
+<nav class="md-tabs" aria-label="Tabs" data-md-component="tabs">
+  <div class="md-grid">
+    <ul class="md-tabs__list">
+      
+        
+  
+  
+  
+  
+    <li class="md-tabs__item">
+      <a href="../../../.." class="md-tabs__link">
+        
+  
+  
+    
+  
+  Home
+
+      </a>
+    </li>
+  
+
+      
+        
+  
+  
+  
+  
+    
+    
+      <li class="md-tabs__item">
+        <a href="../../../../getting-started/" class="md-tabs__link">
+          
+  
+  
+  Getting Started
+
+        </a>
+      </li>
+    
+  
+
+      
+        
+  
+  
+  
+  
+    
+    
+      <li class="md-tabs__item">
+        <a href="../../../../concepts/overview/" class="md-tabs__link">
+          
+  
+  
+  Concepts
+
+        </a>
+      </li>
+    
+  
+
+      
+        
+  
+  
+  
+  
+    
+    
+      <li class="md-tabs__item">
+        <a href="../../../../api/overview/" class="md-tabs__link">
+          
+  
+  
+  API Reference
+
+        </a>
+      </li>
+    
+  
+
+      
+        
+  
+  
+  
+  
+    <li class="md-tabs__item">
+      <a href="../../../../use-cases/" class="md-tabs__link">
+        
+  
+  
+    
+  
+  Use Cases
+
+      </a>
+    </li>
+  
+
+      
+        
+  
+  
+  
+  
+    
+    
+      <li class="md-tabs__item">
+        <a href="../../../../guides/built-in-tools/" class="md-tabs__link">
+          
+  
+  
+  Guides
+
+        </a>
+      </li>
+    
+  
+
+      
+        
+  
+  
+  
+  
+    <li class="md-tabs__item">
+      <a href="../../../../contributing/" class="md-tabs__link">
+        
+  
+  
+    
+  
+  Contributing
+
+      </a>
+    </li>
+  
+
+      
+        
+  
+  
+  
+  
+    
+    
+      <li class="md-tabs__item">
+        <a href="../../../../project/overview/" class="md-tabs__link">
+          
+  
+  
+  Project
+
+        </a>
+      </li>
+    
+  
+
+      
+    </ul>
+  </div>
+</nav>
+    
+  
+</header>
+    
+    <div class="md-container" data-md-component="container">
+      
+      
+        
+      
+      <main class="md-main" data-md-component="main">
+        <div class="md-main__inner md-grid">
+          
+            
+              
+              <div class="md-sidebar md-sidebar--primary" data-md-component="sidebar" data-md-type="navigation" >
+                <div class="md-sidebar__scrollwrap">
+                  <div class="md-sidebar__inner">
+                    
+
+
+  
+
+
+  
+
+<nav class="md-nav md-nav--primary md-nav--lifted md-nav--integrated" aria-label="Navigation" data-md-level="0">
+  <label class="md-nav__title" for="__drawer">
+    <a href="../../../.." title="MARSYS - Multi-Agent Reasoning Systems" class="md-nav__button md-logo" aria-label="MARSYS - Multi-Agent Reasoning Systems" data-md-component="logo">
+      
+  
+  <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M12 2a2 2 0 0 1 2 2c0 .74-.4 1.39-1 1.73V7h1a7 7 0 0 1 7 7h1a1 1 0 0 1 1 1v3a1 1 0 0 1-1 1h-1v1a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-1H2a1 1 0 0 1-1-1v-3a1 1 0 0 1 1-1h1a7 7 0 0 1 7-7h1V5.73c-.6-.34-1-.99-1-1.73a2 2 0 0 1 2-2M7.5 13A2.5 2.5 0 0 0 5 15.5 2.5 2.5 0 0 0 7.5 18a2.5 2.5 0 0 0 2.5-2.5A2.5 2.5 0 0 0 7.5 13m9 0a2.5 2.5 0 0 0-2.5 2.5 2.5 2.5 0 0 0 2.5 2.5 2.5 2.5 0 0 0 2.5-2.5 2.5 2.5 0 0 0-2.5-2.5"/></svg>
+
+    </a>
+    MARSYS - Multi-Agent Reasoning Systems
+  </label>
+  
+    <div class="md-nav__source">
+      <a href="https://github.com/rezaho/MARS" title="Go to repository" class="md-source" data-md-component="source">
+  <div class="md-source__icon md-icon">
+    
+    <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512"><!--! Font Awesome Free 7.1.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2025 Fonticons, Inc.--><path d="M173.9 397.4c0 2-2.3 3.6-5.2 3.6-3.3.3-5.6-1.3-5.6-3.6 0-2 2.3-3.6 5.2-3.6 3-.3 5.6 1.3 5.6 3.6m-31.1-4.5c-.7 2 1.3 4.3 4.3 4.9 2.6 1 5.6 0 6.2-2s-1.3-4.3-4.3-5.2c-2.6-.7-5.5.3-6.2 2.3m44.2-1.7c-2.9.7-4.9 2.6-4.6 4.9.3 2 2.9 3.3 5.9 2.6 2.9-.7 4.9-2.6 4.6-4.6-.3-1.9-3-3.2-5.9-2.9M252.8 8C114.1 8 8 113.3 8 252c0 110.9 69.8 205.8 169.5 239.2 12.8 2.3 17.3-5.6 17.3-12.1 0-6.2-.3-40.4-.3-61.4 0 0-70 15-84.7-29.8 0 0-11.4-29.1-27.8-36.6 0 0-22.9-15.7 1.6-15.4 0 0 24.9 2 38.6 25.8 21.9 38.6 58.6 27.5 72.9 20.9 2.3-16 8.8-27.1 16-33.7-55.9-6.2-112.3-14.3-112.3-110.5 0-27.5 7.6-41.3 23.6-58.9-2.6-6.5-11.1-33.3 2.6-67.9 20.9-6.5 69 27 69 27 20-5.6 41.5-8.5 62.8-8.5s42.8 2.9 62.8 8.5c0 0 48.1-33.6 69-27 13.7 34.7 5.2 61.4 2.6 67.9 16 17.7 25.8 31.5 25.8 58.9 0 96.5-58.9 104.2-114.8 110.5 9.2 7.9 17 22.9 17 46.4 0 33.7-.3 75.4-.3 83.6 0 6.5 4.6 14.4 17.3 12.1C436.2 457.8 504 362.9 504 252 504 113.3 391.5 8 252.8 8M105.2 352.9c-1.3 1-1 3.3.7 5.2 1.6 1.6 3.9 2.3 5.2 1 1.3-1 1-3.3-.7-5.2-1.6-1.6-3.9-2.3-5.2-1m-10.8-8.1c-.7 1.3.3 2.9 2.3 3.9 1.6 1 3.6.7 4.3-.7.7-1.3-.3-2.9-2.3-3.9-2-.6-3.6-.3-4.3.7m32.4 35.6c-1.6 1.3-1 4.3 1.3 6.2 2.3 2.3 5.2 2.6 6.5 1 1.3-1.3.7-4.3-1.3-6.2-2.2-2.3-5.2-2.6-6.5-1m-11.4-14.7c-1.6 1-1.6 3.6 0 5.9s4.3 3.3 5.6 2.3c1.6-1.3 1.6-3.9 0-6.2-1.4-2.3-4-3.3-5.6-2"/></svg>
+  </div>
+  <div class="md-source__repository">
+    MARSYS
+  </div>
+</a>
+    </div>
+  
+  <ul class="md-nav__list" data-md-scrollfix>
+    
+      
+      
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../../.." class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Home
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    
+    
+    
+    
+      
+      
+        
+      
+    
+    
+    <li class="md-nav__item md-nav__item--nested">
+      
+        
+        
+        <input class="md-nav__toggle md-toggle " type="checkbox" id="__nav_2" >
+        
+          
+          <label class="md-nav__link" for="__nav_2" id="__nav_2_label" tabindex="0">
+            
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Getting Started
+  
+
+    
+  </span>
+  
+  
+
+            <span class="md-nav__icon md-icon"></span>
+          </label>
+        
+        <nav class="md-nav" data-md-level="1" aria-labelledby="__nav_2_label" aria-expanded="false">
+          <label class="md-nav__title" for="__nav_2">
+            <span class="md-nav__icon md-icon"></span>
+            
+  
+    Getting Started
+  
+
+          </label>
+          <ul class="md-nav__list" data-md-scrollfix>
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../../../getting-started/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Introduction
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../../../getting-started/installation/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Installation
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../../../getting-started/quick-start/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Quick Start
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../../../getting-started/first-agent/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Your First Agent
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../../../getting-started/configuration/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Configuration
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+          </ul>
+        </nav>
+      
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    
+    
+    
+    
+      
+      
+        
+      
+    
+    
+    <li class="md-nav__item md-nav__item--nested">
+      
+        
+        
+        <input class="md-nav__toggle md-toggle " type="checkbox" id="__nav_3" >
+        
+          
+          <label class="md-nav__link" for="__nav_3" id="__nav_3_label" tabindex="0">
+            
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Concepts
+  
+
+    
+  </span>
+  
+  
+
+            <span class="md-nav__icon md-icon"></span>
+          </label>
+        
+        <nav class="md-nav" data-md-level="1" aria-labelledby="__nav_3_label" aria-expanded="false">
+          <label class="md-nav__title" for="__nav_3">
+            <span class="md-nav__icon md-icon"></span>
+            
+  
+    Concepts
+  
+
+          </label>
+          <ul class="md-nav__list" data-md-scrollfix>
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../../../concepts/overview/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Overview
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    
+    
+    
+    
+      
+      
+        
+      
+    
+    
+    <li class="md-nav__item md-nav__item--nested">
+      
+        
+        
+        <input class="md-nav__toggle md-toggle " type="checkbox" id="__nav_3_2" >
+        
+          
+          <label class="md-nav__link" for="__nav_3_2" id="__nav_3_2_label" tabindex="0">
+            
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Core Components
+  
+
+    
+  </span>
+  
+  
+
+            <span class="md-nav__icon md-icon"></span>
+          </label>
+        
+        <nav class="md-nav" data-md-level="2" aria-labelledby="__nav_3_2_label" aria-expanded="false">
+          <label class="md-nav__title" for="__nav_3_2">
+            <span class="md-nav__icon md-icon"></span>
+            
+  
+    Core Components
+  
+
+          </label>
+          <ul class="md-nav__list" data-md-scrollfix>
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../../../concepts/agents/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Agents
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../../../concepts/memory/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Memory
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../../../concepts/tools/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Tools
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../../../concepts/run-filesystem/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Run Filesystem
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../../../concepts/models/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Models
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../../../concepts/registry/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Registry
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../../../concepts/messages/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Messages
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../../../concepts/communication/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Communication
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../../../concepts/coordination-tools/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Coordination Tools
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../../../concepts/planning/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Planning
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+          </ul>
+        </nav>
+      
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    
+    
+    
+    
+      
+      
+        
+      
+    
+    
+    <li class="md-nav__item md-nav__item--nested">
+      
+        
+        
+        <input class="md-nav__toggle md-toggle " type="checkbox" id="__nav_3_3" >
+        
+          
+          <label class="md-nav__link" for="__nav_3_3" id="__nav_3_3_label" tabindex="0">
+            
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Specialized Agents
+  
+
+    
+  </span>
+  
+  
+
+            <span class="md-nav__icon md-icon"></span>
+          </label>
+        
+        <nav class="md-nav" data-md-level="2" aria-labelledby="__nav_3_3_label" aria-expanded="false">
+          <label class="md-nav__title" for="__nav_3_3">
+            <span class="md-nav__icon md-icon"></span>
+            
+  
+    Specialized Agents
+  
+
+          </label>
+          <ul class="md-nav__list" data-md-scrollfix>
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../../../concepts/specialized-agents/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Overview
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../../../concepts/browser-automation/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Browser Agent
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+          </ul>
+        </nav>
+      
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    
+    
+    
+    
+      
+      
+        
+      
+    
+    
+    <li class="md-nav__item md-nav__item--nested">
+      
+        
+        
+        <input class="md-nav__toggle md-toggle " type="checkbox" id="__nav_3_4" >
+        
+          
+          <label class="md-nav__link" for="__nav_3_4" id="__nav_3_4_label" tabindex="0">
+            
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Advanced Topics
+  
+
+    
+  </span>
+  
+  
+
+            <span class="md-nav__icon md-icon"></span>
+          </label>
+        
+        <nav class="md-nav" data-md-level="2" aria-labelledby="__nav_3_4_label" aria-expanded="false">
+          <label class="md-nav__title" for="__nav_3_4">
+            <span class="md-nav__icon md-icon"></span>
+            
+  
+    Advanced Topics
+  
+
+          </label>
+          <ul class="md-nav__list" data-md-scrollfix>
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../../../concepts/advanced/topology/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Topology
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../../../concepts/det-nodes/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Det-nodes
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../../../concepts/state-management/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    State Management
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    
+    
+    
+    
+      
+      
+        
+      
+    
+    
+    <li class="md-nav__item md-nav__item--nested">
+      
+        
+        
+        <input class="md-nav__toggle md-toggle " type="checkbox" id="__nav_3_4_4" >
+        
+          
+          <label class="md-nav__link" for="__nav_3_4_4" id="__nav_3_4_4_label" tabindex="0">
+            
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Observability
+  
+
+    
+  </span>
+  
+  
+
+            <span class="md-nav__icon md-icon"></span>
+          </label>
+        
+        <nav class="md-nav" data-md-level="3" aria-labelledby="__nav_3_4_4_label" aria-expanded="false">
+          <label class="md-nav__title" for="__nav_3_4_4">
+            <span class="md-nav__icon md-icon"></span>
+            
+  
+    Observability
+  
+
+          </label>
+          <ul class="md-nav__list" data-md-scrollfix>
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../../../concepts/tracing/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Tracing
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+          </ul>
+        </nav>
+      
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../../../concepts/error-handling/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Error Handling
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../../../concepts/learning-agents/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Learning Agents
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../../../concepts/custom-agents/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Custom Agents
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+          </ul>
+        </nav>
+      
+    </li>
+  
+
+              
+            
+          </ul>
+        </nav>
+      
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    
+    
+    
+    
+      
+      
+        
+      
+    
+    
+    <li class="md-nav__item md-nav__item--nested">
+      
+        
+        
+        <input class="md-nav__toggle md-toggle " type="checkbox" id="__nav_4" >
+        
+          
+          <label class="md-nav__link" for="__nav_4" id="__nav_4_label" tabindex="0">
+            
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    API Reference
+  
+
+    
+  </span>
+  
+  
+
+            <span class="md-nav__icon md-icon"></span>
+          </label>
+        
+        <nav class="md-nav" data-md-level="1" aria-labelledby="__nav_4_label" aria-expanded="false">
+          <label class="md-nav__title" for="__nav_4">
+            <span class="md-nav__icon md-icon"></span>
+            
+  
+    API Reference
+  
+
+          </label>
+          <ul class="md-nav__list" data-md-scrollfix>
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../../../api/overview/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Overview
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    
+    
+    
+    
+      
+      
+        
+      
+    
+    
+    <li class="md-nav__item md-nav__item--nested">
+      
+        
+        
+        <input class="md-nav__toggle md-toggle " type="checkbox" id="__nav_4_2" >
+        
+          
+          <label class="md-nav__link" for="__nav_4_2" id="__nav_4_2_label" tabindex="0">
+            
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Core APIs
+  
+
+    
+  </span>
+  
+  
+
+            <span class="md-nav__icon md-icon"></span>
+          </label>
+        
+        <nav class="md-nav" data-md-level="2" aria-labelledby="__nav_4_2_label" aria-expanded="false">
+          <label class="md-nav__title" for="__nav_4_2">
+            <span class="md-nav__icon md-icon"></span>
+            
+  
+    Core APIs
+  
+
+          </label>
+          <ul class="md-nav__list" data-md-scrollfix>
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../../../api/orchestra/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Orchestra
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../../../api/agent-class/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Agent Class
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../../../api/models/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Models
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+          </ul>
+        </nav>
+      
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    
+    
+    
+    
+      
+      
+        
+      
+    
+    
+    <li class="md-nav__item md-nav__item--nested">
+      
+        
+        
+        <input class="md-nav__toggle md-toggle " type="checkbox" id="__nav_4_3" >
+        
+          
+          <label class="md-nav__link" for="__nav_4_3" id="__nav_4_3_label" tabindex="0">
+            
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Coordination
+  
+
+    
+  </span>
+  
+  
+
+            <span class="md-nav__icon md-icon"></span>
+          </label>
+        
+        <nav class="md-nav" data-md-level="2" aria-labelledby="__nav_4_3_label" aria-expanded="false">
+          <label class="md-nav__title" for="__nav_4_3">
+            <span class="md-nav__icon md-icon"></span>
+            
+  
+    Coordination
+  
+
+          </label>
+          <ul class="md-nav__list" data-md-scrollfix>
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../../../api/topology/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Topology
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../../../api/execution/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Execution
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../../../api/configuration/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Configuration
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../../../api/validation/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Validation
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../../../api/rules/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Rules
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+          </ul>
+        </nav>
+      
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    
+    
+    
+    
+      
+      
+        
+      
+    
+    
+    <li class="md-nav__item md-nav__item--nested">
+      
+        
+        
+        <input class="md-nav__toggle md-toggle " type="checkbox" id="__nav_4_4" >
+        
+          
+          <label class="md-nav__link" for="__nav_4_4" id="__nav_4_4_label" tabindex="0">
+            
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Data Management
+  
+
+    
+  </span>
+  
+  
+
+            <span class="md-nav__icon md-icon"></span>
+          </label>
+        
+        <nav class="md-nav" data-md-level="2" aria-labelledby="__nav_4_4_label" aria-expanded="false">
+          <label class="md-nav__title" for="__nav_4_4">
+            <span class="md-nav__icon md-icon"></span>
+            
+  
+    Data Management
+  
+
+          </label>
+          <ul class="md-nav__list" data-md-scrollfix>
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../../../api/state/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    State
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../../../api/memory/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Memory
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    
+    
+    
+    
+      
+      
+        
+      
+    
+    
+    <li class="md-nav__item md-nav__item--nested">
+      
+        
+        
+        <input class="md-nav__toggle md-toggle " type="checkbox" id="__nav_4_4_3" >
+        
+          
+          <label class="md-nav__link" for="__nav_4_4_3" id="__nav_4_4_3_label" tabindex="0">
+            
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Observability
+  
+
+    
+  </span>
+  
+  
+
+            <span class="md-nav__icon md-icon"></span>
+          </label>
+        
+        <nav class="md-nav" data-md-level="3" aria-labelledby="__nav_4_4_3_label" aria-expanded="false">
+          <label class="md-nav__title" for="__nav_4_4_3">
+            <span class="md-nav__icon md-icon"></span>
+            
+  
+    Observability
+  
+
+          </label>
+          <ul class="md-nav__list" data-md-scrollfix>
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../../../api/tracing/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Tracing
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+          </ul>
+        </nav>
+      
+    </li>
+  
+
+              
+            
+          </ul>
+        </nav>
+      
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    
+    
+    
+    
+      
+      
+        
+      
+    
+    
+    <li class="md-nav__item md-nav__item--nested">
+      
+        
+        
+        <input class="md-nav__toggle md-toggle " type="checkbox" id="__nav_4_5" >
+        
+          
+          <label class="md-nav__link" for="__nav_4_5" id="__nav_4_5_label" tabindex="0">
+            
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Interaction
+  
+
+    
+  </span>
+  
+  
+
+            <span class="md-nav__icon md-icon"></span>
+          </label>
+        
+        <nav class="md-nav" data-md-level="2" aria-labelledby="__nav_4_5_label" aria-expanded="false">
+          <label class="md-nav__title" for="__nav_4_5">
+            <span class="md-nav__icon md-icon"></span>
+            
+  
+    Interaction
+  
+
+          </label>
+          <ul class="md-nav__list" data-md-scrollfix>
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../../../api/communication/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Communication
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../../../api/tools/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Tools
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+          </ul>
+        </nav>
+      
+    </li>
+  
+
+              
+            
+          </ul>
+        </nav>
+      
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../../../use-cases/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Use Cases
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    
+    
+    
+    
+      
+      
+        
+      
+    
+    
+    <li class="md-nav__item md-nav__item--nested">
+      
+        
+        
+        <input class="md-nav__toggle md-toggle " type="checkbox" id="__nav_6" >
+        
+          
+          <label class="md-nav__link" for="__nav_6" id="__nav_6_label" tabindex="0">
+            
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Guides
+  
+
+    
+  </span>
+  
+  
+
+            <span class="md-nav__icon md-icon"></span>
+          </label>
+        
+        <nav class="md-nav" data-md-level="1" aria-labelledby="__nav_6_label" aria-expanded="false">
+          <label class="md-nav__title" for="__nav_6">
+            <span class="md-nav__icon md-icon"></span>
+            
+  
+    Guides
+  
+
+          </label>
+          <ul class="md-nav__list" data-md-scrollfix>
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../../../guides/built-in-tools/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Built-in Tools
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../../../guides/specialized-tools/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Specialized Tools
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../../../guides/file-operations/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    File Operations
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../../../guides/multimodal-agents/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Multimodal Agents
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../../../guides/steering-and-error-recovery/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Steering and Error Recovery
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+          </ul>
+        </nav>
+      
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../../../contributing/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Contributing
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    
+    
+    
+    
+      
+      
+        
+      
+    
+    
+    <li class="md-nav__item md-nav__item--nested">
+      
+        
+        
+        <input class="md-nav__toggle md-toggle " type="checkbox" id="__nav_8" >
+        
+          
+          <label class="md-nav__link" for="__nav_8" id="__nav_8_label" tabindex="0">
+            
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Project
+  
+
+    
+  </span>
+  
+  
+
+            <span class="md-nav__icon md-icon"></span>
+          </label>
+        
+        <nav class="md-nav" data-md-level="1" aria-labelledby="__nav_8_label" aria-expanded="false">
+          <label class="md-nav__title" for="__nav_8">
+            <span class="md-nav__icon md-icon"></span>
+            
+  
+    Project
+  
+
+          </label>
+          <ul class="md-nav__list" data-md-scrollfix>
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../../../project/overview/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Project
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+          </ul>
+        </nav>
+      
+    </li>
+  
+
+    
+  </ul>
+</nav>
+                  </div>
+                </div>
+              </div>
+            
+            
+          
+          
+            <div class="md-content" data-md-component="content">
+              
+                
+
+
+
+  
+
+
+              
+              <article class="md-content__inner md-typeset">
+                
+                  
+
+
+  
+  
+
+
+<h1 id="adr-009-full-payload-llm-trace-capture-vendor-neutral-otel-export">ADR-009: Full-payload LLM trace capture &amp; vendor-neutral OTel export<a class="headerlink" href="#adr-009-full-payload-llm-trace-capture-vendor-neutral-otel-export" title="Permanent link">&para;</a></h1>
+<p><strong>Status</strong>: Accepted
+<strong>Date</strong>: 2026-06-04
+<strong>Implements</strong>: Framework tracing — full-payload LLM capture at the provider-adapter layer (one event per attempt), built on the streaming NDJSON span pipeline.
+<strong>Related</strong>: ADR-005 (unified-barrier algorithm — defines the <code>execution</code> / <code>branch</code> / <code>step</code> span tree this ADR populates with <code>generation</code> / <code>compaction</code> / <code>tool</code> children).</p>
+<h2 id="context">Context<a class="headerlink" href="#context" title="Permanent link">&para;</a></h2>
+<p>The streaming NDJSON tracing pipeline records <code>execution / branch / step / generation / tool / compaction</code> spans, but a generation span on its own carries only metadata: model name, provider, finish reason, token counts. The information that makes a trace <em>debuggable</em> — the input message list, advertised tool schemas, sampling parameters, response content, thinking, structured tool_calls, response metadata — is the LLM payload itself. With only metadata you can confirm a model call happened; you cannot tell why it produced what it did. LLM-observability backends are built around the full payload.</p>
+<p>This ADR covers capturing that payload faithfully and shipping it over a transport not tied to any one product. Three questions drive it:</p>
+<ol>
+<li><strong>Where in the call chain do we capture the payload?</strong> (§D1)</li>
+<li><strong>How do we propagate per-step correlation context — step span id, branch id, agent name, event bus — down to the capture point?</strong> (§D2)</li>
+<li><strong>What on-disk and remote storage formats do we use?</strong> (§D7)</li>
+</ol>
+<h2 id="decision">Decision<a class="headerlink" href="#decision" title="Permanent link">&para;</a></h2>
+<h3 id="d1-capture-inside-the-provider-adapter-recording-not-reconstruction-one-event-per-attempt">D1. Capture inside the provider adapter — recording, not reconstruction, one event per attempt<a class="headerlink" href="#d1-capture-inside-the-provider-adapter-recording-not-reconstruction-one-event-per-attempt" title="Permanent link">&para;</a></h3>
+<p>We record the literal request the adapter is about to send to (and the response it got back from) the provider, emitting directly from inside the adapter's <code>arun</code>/<code>_arun_standard</code>, rather than reconstructing the call at the step layer or wrapping the whole call once at the model-wrapper layer. Reconstruction is input-only by construction (the response hasn't happened yet) and drifts from the wire whenever a later layer mutates the call — system-prompt prepending, format processors injecting steering tools, retry rewrites, compaction. The trace and the wire silently desynchronize.</p>
+<p>The provider adapter is the right layer because it is where:</p>
+<ul>
+<li>the request payload is finalized (<code>format_request_payload</code> has run),</li>
+<li>sampling parameters are settled,</li>
+<li><strong>the retry loop actually sits</strong> (<code>AsyncBaseAPIAdapter._arun_standard</code>), so each attempt — a retried 5xx/429 or the final success — records its <em>own</em> event with its own timing, rather than the model wrapper collapsing the whole retry sequence into a single record. (<code>LLMCallEvent.request_id</code> is unique per attempt, which is what makes a retried call legible in the trace.)</li>
+<li>the success / error outcome of each attempt is known precisely (success after harmonization, error in the retry branches and the terminal <code>except</code>).</li>
+</ul>
+<p>Tool-internal LLM calls (<code>web_tools.py</code>, the <code>BrowserAgent</code> vision call) and memory compaction (<code>SummarizationProcessor._run_compaction_model</code>) all flow through a model wrapper into an adapter, so they are captured too — the model wrappers forward <code>trace_ctx</code> down (§D2) and the adapter emits. A step-level reconstruction misses all of these entirely.</p>
+<p>The accepted cost: the clean coordination/transport separation is broken — <code>models.adapters.base</code> and <code>models.adapters.local</code> lazy-import <code>coordination.tracing.capture</code>. (Previously the coupling sat on <code>models.models</code>; moving the emit into the adapter moves the import with it.) Every alternative we evaluated either misses call paths, introduces silent drift, or cannot see individual retry attempts.</p>
+<p><strong>Async-only, by construction.</strong> <code>emit_llm_call</code> is a coroutine, so capture lives only on the async paths (<code>AsyncBaseAPIAdapter._arun_standard</code> / <code>arun_streaming</code>, and each local adapter's <code>arun</code>). The synchronous <code>_run_standard</code> is not traced — and neither was it under the old wrapper design in any way that mattered. The one behavioural gap this opens is <code>BaseAPIModel.arun</code>'s <code>run_in_executor</code> fallback, taken only when a provider has no <code>Async*</code> adapter at all (none of the shipped providers); that path runs the sync adapter and is untraced. Documented in Consequences.</p>
+<h3 id="d2-explicit-tracecontext-kwarg-threading-no-contextvars">D2. Explicit <code>TraceContext</code> kwarg threading — no ContextVars<a class="headerlink" href="#d2-explicit-tracecontext-kwarg-threading-no-contextvars" title="Permanent link">&para;</a></h3>
+<p>The convenient approach is a set of <code>ContextVar</code>s (<code>_current_step_span_id</code>, <code>_current_branch_id</code>, <code>_current_agent_name</code>, <code>_current_session_id</code>, <code>_current_event_bus</code>, <code>_current_call_kind</code>, <code>_in_capture</code>) read off the running task so capture needs no signature changes. We reject it for three reasons:</p>
+<ul>
+<li><strong>Lifecycle on the honor system.</strong> <code>set</code> with no matching <code>reset</code> leaks state across tests and between concurrent runs; the mitigation (clearing in a <code>finally</code>) itself relies on every call site doing the right thing.</li>
+<li><strong>Test ergonomics.</strong> Any test touching the model/adapter layer would need fixtures resetting every var, or pytest-async's task-scoping bites.</li>
+<li><strong>Greppability.</strong> A named <code>TraceContext</code> field on <code>context</code> / <code>run_context</code> / <code>model_kwargs</code> is visible at every coordination hop; a <code>ContextVar</code> read at the bottom is not.</li>
+</ul>
+<p>(The <code>run_in_executor</code> thread-pool boundary, which <code>ContextVar</code>s do not cross, would have been the disqualifying reason under the old wrapper design — but capture now lives in the <em>async</em> adapter, on the same task as its caller, so <code>ContextVar</code>s would in fact have propagated on the traced path. The only executor hop left, <code>BaseAPIModel.arun</code>'s sync fallback, is untraced regardless (§D1). So the rejection now rests on the three reasons above, not on the executor boundary.)</p>
+<p>We thread a single <code>TraceContext</code> frozen dataclass explicitly instead. Crucially, the threading does not stop at the model wrapper: the wrapper forwards it one hop further into the adapter, where the emit happens:</p>
+<div class="language-text highlight"><pre><span></span><code><span id="__span-0-1"><a id="__codelineno-0-1" name="__codelineno-0-1" href="#__codelineno-0-1"></a>StepExecutor builds TraceContext(step_span_id, branch_id, agent_name, session_id, event_bus, kind=&quot;generation&quot;)
+</span><span id="__span-0-2"><a id="__codelineno-0-2" name="__codelineno-0-2" href="#__codelineno-0-2"></a>       │
+</span><span id="__span-0-3"><a id="__codelineno-0-3" name="__codelineno-0-3" href="#__codelineno-0-3"></a>       ▼
+</span><span id="__span-0-4"><a id="__codelineno-0-4" name="__codelineno-0-4" href="#__codelineno-0-4"></a>context[&quot;trace_ctx&quot;]  ──→  run_context[&quot;trace_ctx&quot;]
+</span><span id="__span-0-5"><a id="__codelineno-0-5" name="__codelineno-0-5" href="#__codelineno-0-5"></a>                                  │
+</span><span id="__span-0-6"><a id="__codelineno-0-6" name="__codelineno-0-6" href="#__codelineno-0-6"></a>                      agent.run_step(request, run_context)
+</span><span id="__span-0-7"><a id="__codelineno-0-7" name="__codelineno-0-7" href="#__codelineno-0-7"></a>                                  │
+</span><span id="__span-0-8"><a id="__codelineno-0-8" name="__codelineno-0-8" href="#__codelineno-0-8"></a>                                  ▼
+</span><span id="__span-0-9"><a id="__codelineno-0-9" name="__codelineno-0-9" href="#__codelineno-0-9"></a>                      model_kwargs[&quot;trace_ctx&quot;]
+</span><span id="__span-0-10"><a id="__codelineno-0-10" name="__codelineno-0-10" href="#__codelineno-0-10"></a>                                  │
+</span><span id="__span-0-11"><a id="__codelineno-0-11" name="__codelineno-0-11" href="#__codelineno-0-11"></a>                          agent._run(**model_kwargs)
+</span><span id="__span-0-12"><a id="__codelineno-0-12" name="__codelineno-0-12" href="#__codelineno-0-12"></a>                                  │
+</span><span id="__span-0-13"><a id="__codelineno-0-13" name="__codelineno-0-13" href="#__codelineno-0-13"></a>                                  ▼
+</span><span id="__span-0-14"><a id="__codelineno-0-14" name="__codelineno-0-14" href="#__codelineno-0-14"></a>                   model.arun(messages, ..., trace_ctx=trace_ctx)   # wrapper forwards, does not emit
+</span><span id="__span-0-15"><a id="__codelineno-0-15" name="__codelineno-0-15" href="#__codelineno-0-15"></a>                                  │
+</span><span id="__span-0-16"><a id="__codelineno-0-16" name="__codelineno-0-16" href="#__codelineno-0-16"></a>                                  ▼
+</span><span id="__span-0-17"><a id="__codelineno-0-17" name="__codelineno-0-17" href="#__codelineno-0-17"></a>              adapter.arun(messages, ..., trace_ctx=trace_ctx)      # pops it, emits per attempt
+</span><span id="__span-0-18"><a id="__codelineno-0-18" name="__codelineno-0-18" href="#__codelineno-0-18"></a>                                  │
+</span><span id="__span-0-19"><a id="__codelineno-0-19" name="__codelineno-0-19" href="#__codelineno-0-19"></a>                                  ▼
+</span><span id="__span-0-20"><a id="__codelineno-0-20" name="__codelineno-0-20" href="#__codelineno-0-20"></a>              emit_llm_call(trace_ctx, ..., response= | error= | error_type=)
+</span></code></pre></div>
+<p><code>Branch</code> already carried <code>step_span_id</code> through <code>context["step_span_id"]</code>, so this extends an existing pattern rather than inventing one. Compaction calls derive <code>trace_ctx.child(kind="compaction")</code> so they land as compaction-flavored spans without a separate plumbing path.</p>
+<p><strong>The implicit-kwargs caveat — what "explicit" does and does not buy.</strong> The chain is explicit and greppable in the <em>coordination</em> layers: <code>TraceContext</code> is a named field on <code>context</code> / <code>run_context</code> / <code>model_kwargs</code>. It is <strong>not</strong> advertised on any public <code>arun</code> signature — <code>trace_ctx</code> rides into the model wrappers as a <code>**kwargs</code> key, and from there into the adapters the same way. <code>BaseAPIModel.arun</code> pops it and forwards it explicitly to <code>async_adapter.arun(trace_ctx=…)</code>; <code>BaseLocalModel.arun</code> and <code>PeftHead.arun</code> forward it untouched in <code>**kwargs</code>; the terminal pop-and-emit happens in the adapter (<code>AsyncBaseAPIAdapter.arun</code> / <code>_arun_standard</code>, and each local adapter's <code>arun</code>). The compaction path reads it via <code>runtime.get("trace_ctx")</code>. So no public <code>arun</code> signature gains a <code>trace_ctx</code> parameter, and correct propagation is a <strong>load-bearing convention, not a type-enforced contract</strong>: every wrapper must forward it and every adapter must pop and emit, and nothing in code checks that. We accept that over a typed parameter to avoid changing the TRUNK-CRITICAL <code>arun</code> signatures — but it means the "no implicit data flow" advantage is <em>partial</em>: the coordination chain is visible; the two final hops (into the wrapper, then into the adapter) are implicit kwargs keys held in place by convention.</p>
+<p><strong>Re-entrancy guard — retained, currently dormant.</strong> <code>TraceContext.captured</code> (and <code>mark_captured()</code>) exist to prevent double-emit when one emitter delegates to another: an outer emitter forwards <code>trace_ctx.mark_captured()</code> and the inner <code>emit_llm_call</code> sees <code>captured=True</code> and bypasses. With emission consolidated at the single adapter layer, no path currently nests two emitters — <code>PeftHead.arun</code> and <code>BaseLocalModel.arun</code> each delegate to exactly one adapter <code>arun</code>, which is the sole emitter, so they forward a plain <code>trace_ctx</code> and the guard is not exercised. It is kept as forward-looking insurance for any future wrapper that wraps another emitting wrapper.</p>
+<h3 id="d3-direct-emits-at-each-outcome-point-not-a-decorator-not-a-context-manager">D3. Direct emits at each outcome point — not a decorator, not a context manager<a class="headerlink" href="#d3-direct-emits-at-each-outcome-point-not-a-decorator-not-a-context-manager" title="Permanent link">&para;</a></h3>
+<p>The adapter builds the per-call input snapshot once (<code>_trace_call_base</code>: model/provider identity, <code>list(messages)</code>, tools, images, sampling params) and then calls <code>emit_llm_call</code> <strong>directly at each outcome point</strong> in the retry loop, passing a fresh per-attempt <code>start</code> each time:</p>
+<div class="language-text highlight"><pre><span></span><code><span id="__span-1-1"><a id="__codelineno-1-1" name="__codelineno-1-1" href="#__codelineno-1-1"></a>trace_base = self._trace_call_base(messages, **kwargs)        # snapshot once
+</span><span id="__span-1-2"><a id="__codelineno-1-2" name="__codelineno-1-2" href="#__codelineno-1-2"></a>for attempt in range(max_retries + 1):
+</span><span id="__span-1-3"><a id="__codelineno-1-3" name="__codelineno-1-3" href="#__codelineno-1-3"></a>    attempt_start = time.time()
+</span><span id="__span-1-4"><a id="__codelineno-1-4" name="__codelineno-1-4" href="#__codelineno-1-4"></a>    try:
+</span><span id="__span-1-5"><a id="__codelineno-1-5" name="__codelineno-1-5" href="#__codelineno-1-5"></a>        ... POST ...
+</span><span id="__span-1-6"><a id="__codelineno-1-6" name="__codelineno-1-6" href="#__codelineno-1-6"></a>        if 5xx and attempt &lt; max:  emit(error_type=&quot;ServerError&quot;);  sleep; continue
+</span><span id="__span-1-7"><a id="__codelineno-1-7" name="__codelineno-1-7" href="#__codelineno-1-7"></a>        if 429 and attempt &lt; max:  emit(error_type=&quot;RateLimitError&quot;); sleep; continue
+</span><span id="__span-1-8"><a id="__codelineno-1-8" name="__codelineno-1-8" href="#__codelineno-1-8"></a>        harmonized = harmonize_response(...)
+</span><span id="__span-1-9"><a id="__codelineno-1-9" name="__codelineno-1-9" href="#__codelineno-1-9"></a>        emit(response=harmonized);  return harmonized              # success
+</span><span id="__span-1-10"><a id="__codelineno-1-10" name="__codelineno-1-10" href="#__codelineno-1-10"></a>    except (ClientError | Exception) as e:                          # terminal
+</span><span id="__span-1-11"><a id="__codelineno-1-11" name="__codelineno-1-11" href="#__codelineno-1-11"></a>        result = handle_api_error(e, ...)                           # ErrorResponse | recovered
+</span><span id="__span-1-12"><a id="__codelineno-1-12" name="__codelineno-1-12" href="#__codelineno-1-12"></a>        emit(error=result) if isinstance(result, ErrorResponse) else emit(response=result)
+</span><span id="__span-1-13"><a id="__codelineno-1-13" name="__codelineno-1-13" href="#__codelineno-1-13"></a>        return result
+</span></code></pre></div>
+<p><code>emit_llm_call</code> is the only helper — it builds, populates, and emits one <code>LLMCallEvent</code>, choosing <code>status</code> from its error inputs (<code>ok</code> / <code>error</code> / <code>cancelled</code>). It accepts an error three ways so a single helper serves every point: a raised exception (<code>error=exc</code>), an <code>ErrorResponse</code>-like carrier the adapter <em>returned</em> (<code>error=err_response</code>, recording the provider-native <code>error_type</code>/<code>error</code>), or an explicit <code>error_type</code>/<code>error_message</code> pair for a retry branch that has only a status code and no object. The local adapters (single attempt, no retry loop) use the same shape with one <code>try</code>/<code>except</code> around the <code>to_thread</code> call.</p>
+<p>A <strong>decorator</strong> was rejected — and the rejection was reaffirmed during implementation — because it hides the emit from the call site, needs introspection to forward kwargs across adapters with different <code>arun</code> signatures, and cannot place an emit <em>inside</em> the retry loop at each distinct attempt outcome (its whole premise is to wrap the call as one unit). A <strong>context manager</strong> was rejected because there is nothing to "open" at entry: the input snapshot is one local and each emit is terminal for its attempt; a <code>try</code>/<code>except</code> with explicit success/failure points expresses that more directly than <code>__aexit__</code>. There is deliberately no separate "begin" call.</p>
+<h3 id="d4-one-self-contained-llmcallevent-per-attempt-on-the-existing-event-bus">D4. One self-contained <code>LLMCallEvent</code> per attempt, on the existing event bus<a class="headerlink" href="#d4-one-self-contained-llmcallevent-per-attempt-on-the-existing-event-bus" title="Permanent link">&para;</a></h3>
+<p>Capture emits one self-contained <code>LLMCallEvent</code> per <em>attempt</em> — each carrying the full input snapshot, the outcome (response or error), and per-attempt timing — on the <code>AsyncEventBus</code> already wired into <code>Orchestra</code>. A call that retried twice and then succeeded yields three events (two <code>status="error"</code>, one <code>status="ok"</code>), each with its own <code>request_id</code>. The collector's <code>_handle_llm_call</code> builds, populates, and closes a generation/compaction span in a single handler and streams it via <code>_stream_span</code>; it already treats each event independently (opens and closes a fresh span, appends it to the step's children), so N attempts simply produce N generation spans under the step — no collector change was needed. No new sink is needed either — <code>NDJSONTraceWriter</code> and any user-supplied <code>TelemetrySink</code> (including <code>OtelTraceWriter</code>) already fan out from <code>_stream_span</code>.</p>
+<p>Self-contained per-attempt events rather than an open/close request-response pair, because:</p>
+<ul>
+<li><strong>Less downstream state.</strong> No request↔response correlation anywhere: no <code>request_id → open span</code> map in the collector, no correlation dict in the AG-UI translator. Each event is self-describing for every consumer, removing a class of in-memory state that must be cleaned up.</li>
+<li><strong>Faithful input capture preserved.</strong> The adapter snapshots the messages list before the request (<code>list(messages)</code>) into <code>trace_base</code> and reuses that snapshot for every attempt's emit, so an adapter or retry that mutates the list in place cannot pollute the recorded input — the recording-not-reconstruction property of §D1 holds, and every attempt records the same full input.</li>
+<li><strong>Retries are legible.</strong> Because each attempt emits, a trace shows the rewritten/retried calls as distinct spans rather than one opaque record — the original motivation for capturing where the retry loop lives (§D1).</li>
+<li><strong>Inputs survive failures.</strong> Each failure emit carries the captured inputs, so the prompt that triggered a failure is still recorded.</li>
+</ul>
+<p><strong>Accepted trade-off.</strong> A given attempt whose emit cannot complete leaves no record <em>for that attempt</em> (earlier attempts are already recorded). The sharp case is cancellation during event-loop shutdown — <code>emit_llm_call</code>'s cancel path is best-effort (<code>asyncio.shield</code> + swallow). A hard kill loses any in-memory state anyway, and the surviving window is narrow. A consequence is that the collector needs no open-LLM-span finalization backstop. Liveness ("a call is in flight") is not provided by this layer; derive it at the orchestration layer from step/agent events if needed.</p>
+<h3 id="d5-inputs-and-tool-schemas-content-addressed-ref-only-on-the-span">D5. Inputs and tool schemas: content-addressed, ref-only on the span<a class="headerlink" href="#d5-inputs-and-tool-schemas-content-addressed-ref-only-on-the-span" title="Permanent link">&para;</a></h3>
+<p>Full-input capture is <strong>always on when tracing is enabled</strong> — there is no opt-in flag. When the collector is constructed (only when <code>TracingConfig.enabled</code>), it builds a <code>MessageStore</code> (default <code>FilesystemMessageStore</code> under <code>output_dir/messages/</code>, or a user-supplied override). Input message lists and tool schemas are hashed into the store and the span carries <strong>only</strong> a content-addressed reference, never an inline copy:</p>
+<ul>
+<li><strong>Input messages</strong> → <code>input_messages_ref</code>: the ordered list of per-message content hashes (<code>history</code>), plus an optional <code>base</code>/<code>patch</code> diff against a prior resolved history (used on the step-span path for append-only sharing; the per-call generation span uses a flat history). Each unique message is stored once, so an append-only branch and its forks share their common prefix.</li>
+<li><strong>Tool schemas</strong> (30 KB+ for a full coordination-tools catalog, rarely changing between steps) → <code>tools_ref</code>, hashed through the same store via a synthetic <code>[{"role": "tool_schema", "content": tools}]</code> envelope, so a tool catalogue lands once across all steps.</li>
+</ul>
+<p>Identical content deduplicates across every trace sharing an <code>output_dir</code>. This keeps the on-disk NDJSON — the source of truth — compact: a span carries hashes, not payloads.</p>
+<p><strong>Sinks that cannot follow a content-addressed pointer rehydrate at publish time.</strong> The collector hands its store to each sink once, via <code>TelemetrySink.bind_message_store(store)</code> (a no-op by default). <code>OtelTraceWriter</code> overrides it: OTLP can't carry a CAS pointer, so the writer resolves <code>input_messages_ref</code> / <code>tools_ref</code> to literal content via <code>store.reconstruct(ref)</code> when building its attributes. Ref-aware consumers (the NDJSON writer, post-mortem <code>TraceTree.from_ndjson</code>) persist the ref verbatim and resolve lazily. Net result: one shape on the span (the ref), and each sink renders the shape it needs without the collector encoding any sink's format. (A defensive inline fallback exists if a collector is ever constructed with no store.)</p>
+<p>The removed <code>TracingConfig.capture_full_input</code> opt-in flag is what this design replaces: streaming NDJSON, content-addressed dedup, and ref-only spans resolved the disk-overhead concern it once guarded, and <code>SecretRedactor</code> (applied once at <code>_stream_span</code>) covers privacy. The flag never gated capture (only whether the store was built) and was deleted — capture + dedup are now unconditional when tracing is enabled.</p>
+<h3 id="d6-response-payload-kept-inline">D6. Response payload kept inline<a class="headerlink" href="#d6-response-payload-kept-inline" title="Permanent link">&para;</a></h3>
+<p>Response content / thinking / tool_calls stay inline on span attributes, not routed through <code>MessageStore</code>. Responses are typically modest and almost always unique per call; a second hashing surface doesn't pay for itself. Promote to the store later if NDJSON line sizes become a problem.</p>
+<h3 id="d7-keep-ndjson-default-add-an-opt-in-otel-sink-no-sqlite">D7. Keep NDJSON default, add an opt-in OTel sink, no SQLite<a class="headerlink" href="#d7-keep-ndjson-default-add-an-opt-in-otel-sink-no-sqlite" title="Permanent link">&para;</a></h3>
+<p>NDJSON vs SQLite as the local store, on the two axes that matter for this framework:</p>
+<ul>
+<li><strong>Compactness</strong> — wash. Both dedup heavy content (NDJSON via the sidecar <code>messages/</code> directory; SQLite via a <code>content</code> table). Zipped NDJSON is usually smaller than the equivalent SQLite file.</li>
+<li><strong>Concurrency</strong> — NDJSON wins decisively. File-per-trace + content-addressed sidecar means parallel branches and parallel <code>Orchestra.run()</code> invocations contend on <strong>nothing</strong>. SQLite's single-writer lock queues every parallel branch's span emission — a structural mismatch for a framework whose whole point is fan-out.</li>
+</ul>
+<p>Decision:</p>
+<ul>
+<li><strong>NDJSON is the default</strong> local store, wired in <code>Orchestra.__init__</code>.</li>
+<li><strong><code>OtelTraceWriter</code> is an opt-in <code>TelemetrySink</code></strong> under the <code>tracing-otel</code> extra, exporting over OTLP/HTTP using <code>gen_ai.*</code> semconv plus cross-vendor attribute surfaces (§D8), so one configuration works against any OTLP-aware backend.</li>
+<li><strong>No SQLite writer.</strong> No cross-run-SQL use case; OTLP export covers remote querying.</li>
+</ul>
+<p>Storage is two-layer: NDJSON locally for "what happened on this machine," an OTLP backend remotely for "let me actually look at it." NDJSON remains the durable record and is unaffected by backend outages.</p>
+<p><strong>Private-SDK-API dependency and its version cap.</strong> <code>OtelTraceWriter._emit_span</code> constructs SDK spans through underscore-private internals — <code>opentelemetry.sdk.trace._Span</code>, <code>TracerProvider._active_span_processor</code>, <code>Tracer._instrumentation_scope</code> — to inject the deterministic <code>blake2b(ulid)</code>→OTel-ID mapping. This is load-bearing: <code>tracer.start_span()</code> auto-allocates a random <code>span_id</code>, but children close and stream <em>before</em> their parents in the streaming close-order, so they must derive <code>parent.span_id</code> deterministically, and the public API offers no way to set a chosen ID. The cost is fragility — a future SDK refactor of those internals would break export, and because <code>publish_span</code> logs-and-swallows, it would break <em>silently</em> (NDJSON keeps working and masks it). Mitigation: the <code>tracing-otel</code> extra is pinned <code>&gt;=1.27.0,&lt;2.0</code> (api/sdk/exporter ship lockstep on the 1.x train) so a major SDK bump — the likely site of such a refactor — is a deliberate bump-and-verify, not a silent transitive upgrade. <strong>Migration trigger:</strong> if upstream adds a supported way to construct a span with a caller-chosen <code>span_id</code> (or a public <code>IdGenerator</code> seam that can map per-span), switch to it, delete the private-symbol imports, and raise the cap. Until then, treat any <code>opentelemetry-sdk</code> upgrade as gated on a green <code>test_otel_writer.py</code> (which asserts deterministic parent linking).</p>
+<h3 id="d8-vendor-neutral-attribute-mapping-multiple-standard-surfaces-no-product-specific-keys">D8. Vendor-neutral attribute mapping — multiple standard surfaces, no product-specific keys<a class="headerlink" href="#d8-vendor-neutral-attribute-mapping-multiple-standard-surfaces-no-product-specific-keys" title="Permanent link">&para;</a></h3>
+<p>The exporter emits <strong>only published, cross-vendor conventions</strong> and no attribute keyed to a single product's namespace. The GenAI-semconv <em>content</em> layer (prompts/completions) is still in flux and no two backends read the same convention as primary, so we emit the small union of standard surfaces and let each backend pick the one it understands:</p>
+<ul>
+<li><strong>OTel <code>gen_ai.*</code> semconv</strong> — operation name, model, sampling params, token usage, finish reason; indexed <code>gen_ai.prompt.{i}.*</code> and the single-blob <code>gen_ai.prompt</code> / <code>gen_ai.completion</code>; tool definitions as the single JSON-string array <code>gen_ai.tool.definitions</code> (the semconv shape — there is no <code>gen_ai.request.tools.{i}.*</code> attribute).</li>
+<li><strong>OpenInference</strong> — <code>input.value</code> / <code>output.value</code> (+ mime types), <code>llm.input_messages.{i}.message.*</code>, <code>llm.tools.{i}.tool.json_schema</code> (the available-tools panel), and <code>openinference.span.kind</code> (LLM / TOOL / CHAIN). The semconv has no stable span-typing attribute yet, so this cross-vendor key fills the gap.</li>
+<li><strong>OpenLLMetry</strong> — <code>llm.request.functions.{i}.*</code> for tool definitions.</li>
+</ul>
+<p>Specific neutrality decisions, each verified against real backend UIs:</p>
+<ul>
+<li><strong>No product-specific span-kind badge.</strong> Span typing uses the cross-vendor <code>openinference.span.kind</code>; backends that ignore a surface read another, so data is never lost.</li>
+<li><strong>No <code>gen_ai.{role}.message</code> / <code>gen_ai.choice</code> events.</strong> Some backends rank those events above the cleaner attribute surfaces, and span-event attributes can't carry a structured message/tool-call payload — they render as raw JSON. Prompt/completion content ships via attributes only.</li>
+<li><strong>Tool calls in the OpenAI wire shape.</strong> Indexed <code>gen_ai.prompt.{i}.tool_calls.{j}.*</code> use <code>id</code> + <code>type</code> + nested <code>function.name</code> / <code>function.arguments</code>, arguments kept as a JSON <em>string</em> (never double-encoded). The nested layout is what OTel ingestions map to tool-call chips; a flat <code>.name</code> / <code>.arguments</code> leaves the chip unrendered. This matches the OpenInference emission, so it's neutral.</li>
+<li><strong>Single-blob completion, not indexed.</strong> We ship <code>gen_ai.completion</code> as one blob and skip indexed <code>gen_ai.completion.{n}.*</code>: some renderers ignore the blob once the indexed form exists and then show an empty output panel for the <code>content=null + tool_calls</code> shape (common for tool-using agents). The output dict must contain only <code>{role, content, tool_calls, thinking}</code> — adding <code>finish_reason</code> / <code>usage</code> can flip a renderer to a raw-fields panel; those ship separately on <code>gen_ai.response.finish_reasons</code> and <code>gen_ai.usage.{input,output}_tokens</code>. A regression test asserts the key set never grows.</li>
+<li><strong>Null content represented as <code>""</code>.</strong> A tool-call-only assistant turn has <code>content: null</code> in the OpenAI shape, but OTel scalar attributes cannot be null. Omitting <code>gen_ai.prompt.{i}.content</code> can leave a backend unable to classify the turn, so null is coerced to <code>""</code>.</li>
+</ul>
+<p><strong>Accepted backend-rendering limitations (do NOT close them by adding product-specific keys):</strong></p>
+<ol>
+<li>Some backends render their rich <em>generation</em> chat view only from their own native input/output attribute, not from the standard <code>gen_ai.*</code> / OpenInference keys. On those, our neutral attributes still populate the observation's input/output completely (all data present and queryable); the platform may just show it as raw attributes rather than chat bubbles.</li>
+<li>Some backends do not render tool-call chips for assistant turns embedded in the <em>input history</em> (only for the live output), regardless of which standard convention carries them.</li>
+</ol>
+<p>Both are inherent to how those backends ingest OTLP, not gaps in what we emit. Neutrality was chosen over emitting any product-specific attribute.</p>
+<p><strong><code>TelemetrySink</code> boundary — why a concrete writer ships in-framework.</strong> <code>sink.py</code> states the framework "knows nothing about specific backends" and that vendor adapters live outside it. <code>OtelTraceWriter</code> is consistent with that: because it emits <em>only</em> the cross-vendor surfaces above, it is a vendor-<em>neutral</em> sink — the OTLP analogue of the bundled <code>NDJSONTraceWriter</code>, not a vendor adapter. Vendor-<em>specific</em> concerns (a product's endpoint, auth headers, env-var wiring, or any single-product attribute key) stay on the caller's side: the live test <code>secret_word_pipeline.py</code> builds LangSmith / Langfuse presets on top of the generic writer, and a published preset belongs in a dedicated package (<code>marsys-langsmith</code>, <code>marsys-langfuse</code>, or a downstream consumer's own telemetry package) — never in <code>src/marsys/</code>.</p>
+<h2 id="architecture">Architecture<a class="headerlink" href="#architecture" title="Permanent link">&para;</a></h2>
+<div class="language-text highlight"><pre><span></span><code><span id="__span-2-1"><a id="__codelineno-2-1" name="__codelineno-2-1" href="#__codelineno-2-1"></a>                Orchestra → step_executor builds TraceContext
+</span><span id="__span-2-2"><a id="__codelineno-2-2" name="__codelineno-2-2" href="#__codelineno-2-2"></a>                                    │
+</span><span id="__span-2-3"><a id="__codelineno-2-3" name="__codelineno-2-3" href="#__codelineno-2-3"></a>                                    ▼
+</span><span id="__span-2-4"><a id="__codelineno-2-4" name="__codelineno-2-4" href="#__codelineno-2-4"></a>              context[&quot;trace_ctx&quot;] ──→ run_context[&quot;trace_ctx&quot;]
+</span><span id="__span-2-5"><a id="__codelineno-2-5" name="__codelineno-2-5" href="#__codelineno-2-5"></a>                                            │
+</span><span id="__span-2-6"><a id="__codelineno-2-6" name="__codelineno-2-6" href="#__codelineno-2-6"></a>                              agent.run_step(request, run_context)
+</span><span id="__span-2-7"><a id="__codelineno-2-7" name="__codelineno-2-7" href="#__codelineno-2-7"></a>                                            │
+</span><span id="__span-2-8"><a id="__codelineno-2-8" name="__codelineno-2-8" href="#__codelineno-2-8"></a>                                            ▼
+</span><span id="__span-2-9"><a id="__codelineno-2-9" name="__codelineno-2-9" href="#__codelineno-2-9"></a>                                model_kwargs[&quot;trace_ctx&quot;]
+</span><span id="__span-2-10"><a id="__codelineno-2-10" name="__codelineno-2-10" href="#__codelineno-2-10"></a>                                            │
+</span><span id="__span-2-11"><a id="__codelineno-2-11" name="__codelineno-2-11" href="#__codelineno-2-11"></a>                                    agent._run(**model_kwargs)
+</span><span id="__span-2-12"><a id="__codelineno-2-12" name="__codelineno-2-12" href="#__codelineno-2-12"></a>                                            │
+</span><span id="__span-2-13"><a id="__codelineno-2-13" name="__codelineno-2-13" href="#__codelineno-2-13"></a>                                            ▼
+</span><span id="__span-2-14"><a id="__codelineno-2-14" name="__codelineno-2-14" href="#__codelineno-2-14"></a>                          model.arun(messages, ..., trace_ctx=...)   wrapper: forward only
+</span><span id="__span-2-15"><a id="__codelineno-2-15" name="__codelineno-2-15" href="#__codelineno-2-15"></a>                                            │
+</span><span id="__span-2-16"><a id="__codelineno-2-16" name="__codelineno-2-16" href="#__codelineno-2-16"></a>                                            ▼
+</span><span id="__span-2-17"><a id="__codelineno-2-17" name="__codelineno-2-17" href="#__codelineno-2-17"></a>                          adapter.arun(messages, ..., trace_ctx=...)
+</span><span id="__span-2-18"><a id="__codelineno-2-18" name="__codelineno-2-18" href="#__codelineno-2-18"></a>                                            │
+</span><span id="__span-2-19"><a id="__codelineno-2-19" name="__codelineno-2-19" href="#__codelineno-2-19"></a>                       ┌────────────────────┴────────────────────┐
+</span><span id="__span-2-20"><a id="__codelineno-2-20" name="__codelineno-2-20" href="#__codelineno-2-20"></a>                       │ trace_base = snapshot(msgs, tools, ...)  │  snapshot inputs once
+</span><span id="__span-2-21"><a id="__codelineno-2-21" name="__codelineno-2-21" href="#__codelineno-2-21"></a>                       │ for attempt in 0..max_retries:           │
+</span><span id="__span-2-22"><a id="__codelineno-2-22" name="__codelineno-2-22" href="#__codelineno-2-22"></a>                       │   t = time.time()                        │
+</span><span id="__span-2-23"><a id="__codelineno-2-23" name="__codelineno-2-23" href="#__codelineno-2-23"></a>                       │   ... POST ...                           │
+</span><span id="__span-2-24"><a id="__codelineno-2-24" name="__codelineno-2-24" href="#__codelineno-2-24"></a>                       │   5xx/429 &amp; retrying → emit(error_type=) │ ─▶ EventBus.emit(
+</span><span id="__span-2-25"><a id="__codelineno-2-25" name="__codelineno-2-25" href="#__codelineno-2-25"></a>                       │   success            → emit(response=r)  │      LLMCallEvent)
+</span><span id="__span-2-26"><a id="__codelineno-2-26" name="__codelineno-2-26" href="#__codelineno-2-26"></a>                       │   terminal except    → emit(error=…)     │   one self-contained
+</span><span id="__span-2-27"><a id="__codelineno-2-27" name="__codelineno-2-27" href="#__codelineno-2-27"></a>                       └────────────────────┬────────────────────┘   event PER ATTEMPT:
+</span><span id="__span-2-28"><a id="__codelineno-2-28" name="__codelineno-2-28" href="#__codelineno-2-28"></a>                                            │                        inputs + outcome +
+</span><span id="__span-2-29"><a id="__codelineno-2-29" name="__codelineno-2-29" href="#__codelineno-2-29"></a>                                            ▼                        per-attempt timing
+</span><span id="__span-2-30"><a id="__codelineno-2-30" name="__codelineno-2-30" href="#__codelineno-2-30"></a>                                    HarmonizedResponse | ErrorResponse
+</span><span id="__span-2-31"><a id="__codelineno-2-31" name="__codelineno-2-31" href="#__codelineno-2-31"></a>                                            │
+</span><span id="__span-2-32"><a id="__codelineno-2-32" name="__codelineno-2-32" href="#__codelineno-2-32"></a>                            ┌───────────────┴────────────┐
+</span><span id="__span-2-33"><a id="__codelineno-2-33" name="__codelineno-2-33" href="#__codelineno-2-33"></a>                            │ TraceCollector             │
+</span><span id="__span-2-34"><a id="__codelineno-2-34" name="__codelineno-2-34" href="#__codelineno-2-34"></a>                            │  _handle_llm_call:         │  (one span per event →
+</span><span id="__span-2-35"><a id="__codelineno-2-35" name="__codelineno-2-35" href="#__codelineno-2-35"></a>                            │   build generation span,   │   N attempts = N spans
+</span><span id="__span-2-36"><a id="__codelineno-2-36" name="__codelineno-2-36" href="#__codelineno-2-36"></a>                            │   route msgs + tools       │   under the step)
+</span><span id="__span-2-37"><a id="__codelineno-2-37" name="__codelineno-2-37" href="#__codelineno-2-37"></a>                            │   through MessageStore,     │
+</span><span id="__span-2-38"><a id="__codelineno-2-38" name="__codelineno-2-38" href="#__codelineno-2-38"></a>                            │   attach output, close,     │
+</span><span id="__span-2-39"><a id="__codelineno-2-39" name="__codelineno-2-39" href="#__codelineno-2-39"></a>                            │   _stream_span()            │
+</span><span id="__span-2-40"><a id="__codelineno-2-40" name="__codelineno-2-40" href="#__codelineno-2-40"></a>                            └───────────────┬────────────┘
+</span><span id="__span-2-41"><a id="__codelineno-2-41" name="__codelineno-2-41" href="#__codelineno-2-41"></a>                                            │  SecretRedactor runs once here
+</span><span id="__span-2-42"><a id="__codelineno-2-42" name="__codelineno-2-42" href="#__codelineno-2-42"></a>                                            ▼
+</span><span id="__span-2-43"><a id="__codelineno-2-43" name="__codelineno-2-43" href="#__codelineno-2-43"></a>                                    TelemetrySink fan-out
+</span><span id="__span-2-44"><a id="__codelineno-2-44" name="__codelineno-2-44" href="#__codelineno-2-44"></a>                                    (NDJSONTraceWriter + any user sinks,
+</span><span id="__span-2-45"><a id="__codelineno-2-45" name="__codelineno-2-45" href="#__codelineno-2-45"></a>                                     including OtelTraceWriter)
+</span></code></pre></div>
+<h3 id="trace-tree-shape-parallel-children-under-their-dispatching-step">Trace-tree shape: parallel children under their dispatching step<a class="headerlink" href="#trace-tree-shape-parallel-children-under-their-dispatching-step" title="Permanent link">&para;</a></h3>
+<p>A <code>branch</code> span nests under the <code>step</code> that dispatched it, not flat under the <code>execution</code> root — otherwise parallel fan-outs are spatially indistinguishable from sequential workflows in a backend UI. <code>BranchCreatedEvent.parent_step_span_id</code> (additive, optional) is threaded:</p>
+<div class="language-text highlight"><pre><span></span><code><span id="__span-3-1"><a id="__codelineno-3-1" name="__codelineno-3-1" href="#__codelineno-3-1"></a>RealRuntime.step → StepResult.step_span_id
+</span><span id="__span-3-2"><a id="__codelineno-3-2" name="__codelineno-3-2" href="#__codelineno-3-2"></a>       │
+</span><span id="__span-3-3"><a id="__codelineno-3-3" name="__codelineno-3-3" href="#__codelineno-3-3"></a>       ▼
+</span><span id="__span-3-4"><a id="__codelineno-3-4" name="__codelineno-3-4" href="#__codelineno-3-4"></a>Orchestrator._interpret → Branch.last_step_span_id
+</span><span id="__span-3-5"><a id="__codelineno-3-5" name="__codelineno-3-5" href="#__codelineno-3-5"></a>       │
+</span><span id="__span-3-6"><a id="__codelineno-3-6" name="__codelineno-3-6" href="#__codelineno-3-6"></a>       ▼
+</span><span id="__span-3-7"><a id="__codelineno-3-7" name="__codelineno-3-7" href="#__codelineno-3-7"></a>Orchestrator._handle_parallel_invoke → _spawn(parent_step_span_id=...)
+</span><span id="__span-3-8"><a id="__codelineno-3-8" name="__codelineno-3-8" href="#__codelineno-3-8"></a>       │
+</span><span id="__span-3-9"><a id="__codelineno-3-9" name="__codelineno-3-9" href="#__codelineno-3-9"></a>       ▼
+</span><span id="__span-3-10"><a id="__codelineno-3-10" name="__codelineno-3-10" href="#__codelineno-3-10"></a>BranchCreatedEvent(parent_step_span_id=...)
+</span><span id="__span-3-11"><a id="__codelineno-3-11" name="__codelineno-3-11" href="#__codelineno-3-11"></a>       │
+</span><span id="__span-3-12"><a id="__codelineno-3-12" name="__codelineno-3-12" href="#__codelineno-3-12"></a>       ▼
+</span><span id="__span-3-13"><a id="__codelineno-3-13" name="__codelineno-3-13" href="#__codelineno-3-13"></a>TraceCollector._handle_branch_created → parent = step_spans[parent_step_span_id] or trace.root_span
+</span></code></pre></div>
+<p>Entry / initial branches fall back to the execution root (correct for that case). Orchestrators that don't populate the field still produce valid traces; only the nested rendering degrades.</p>
+<h2 id="adapter-correctness-for-faithful-traces">Adapter correctness for faithful traces<a class="headerlink" href="#adapter-correctness-for-faithful-traces" title="Permanent link">&para;</a></h2>
+<p>Three adapter-level behaviors are part of this work because they directly determine what the trace records:</p>
+<ol>
+<li><strong><code>OpenAIAdapter.harmonize_response</code> defaults <code>content</code> to <code>None</code>, not <code>""</code>.</strong> OpenAI's convention — and what chat-UI renderers expect in the assistant bubble for tool-only responses — is <code>content: null</code> when the response is purely tool calls; an empty string flips some renderers to a raw-fields panel. <code>content</code> only becomes a string when a <code>message</code> item is present in the Responses-API output array.</li>
+<li><strong>Token-usage parsing tries Responses-API names first</strong> (<code>input_tokens</code> / <code>output_tokens</code> / <code>output_tokens_details.reasoning_tokens</code>) and falls back to chat-completions names (<code>prompt_tokens</code> / <code>completion_tokens</code> / <code>reasoning_tokens</code>). The Responses API moved reasoning-token accounting into a nested block; reading the flat names alone yields <code>null</code>.</li>
+<li><strong>Provider is a stored identity attribute, propagated onto the adapter that emits.</strong> <code>BaseAPIModel.provider</code> / <code>model_name</code> are set in <code>__init__</code> (a <code>@property</code> deriving the lowercased adapter class name produced non-canonical ids like <code>"asyncopenrouter"</code> that broke equality with the configured provider). Because the emit now happens <em>inside</em> the adapter, the model wrappers also stamp the canonical provider onto the adapter instance they create: <code>BaseAPIModel.__init__</code> sets <code>adapter.provider</code> and <code>async_adapter.provider</code>; <code>BaseLocalModel.__init__</code> sets <code>adapter.provider</code> from its <code>backend</code> (<code>"huggingface"</code> / <code>"vllm"</code>); <code>PeftHead.__init__</code> sets <code>self.model.provider = "huggingface"</code>. The adapter's <code>_trace_call_base</code> reads that attribute (falling back to <code>_provider_name()</code> / <code>backend</code> for standalone adapter use), so generation spans carry a real provider id rather than the class-name-derived one. Setting <code>adapter.provider</code> additionally fixes the long-standing <code>getattr(self, "provider", "unknown")</code> fallback in the adapter's own <code>ErrorResponse</code> construction.</li>
+</ol>
+<h2 id="consequences">Consequences<a class="headerlink" href="#consequences" title="Permanent link">&para;</a></h2>
+<ul>
+<li><strong>Positive:</strong></li>
+<li>Generation spans carry the full LLM payload — debugging matches the wire by definition.</li>
+<li>Retried calls are legible: each attempt is its own generation span with its own timing and <code>request_id</code>, instead of one opaque record per call.</li>
+<li>Compaction and tool-internal LLM calls (web_tools, browser-agent vision) land in the trace under the right step; previously invisible.</li>
+<li>One trace pipeline serves both local NDJSON and any OTLP backend; NDJSON is the source of truth and is unaffected by backend outages.</li>
+<li>The export is strictly vendor-neutral: rich LLM rendering on platforms that read any emitted standard surface, complete data on those that read only the base <code>gen_ai.*</code> keys, no lock-in.</li>
+<li>Adding a new provider adapter inherits capture for free (the emits live in the shared <code>AsyncBaseAPIAdapter._arun_standard</code>); a new local adapter follows a fixed pattern (snapshot + one <code>try</code>/<code>except</code> around the <code>to_thread</code> call); adding a new backend is a fixed pattern (<code>TelemetrySink</code> subclass).</li>
+<li>
+<p>Capture + dedup are automatic when tracing is enabled — no flag to forget, and the on-disk record stays deduped by default.</p>
+</li>
+<li>
+<p><strong>Negative:</strong></p>
+</li>
+<li><code>marsys.models.adapters.base</code> / <code>…adapters.local</code> lazy-import <code>marsys.coordination.tracing.capture</code>. The import is genuinely conditional (it fires only when an <code>arun</code> runs under a traced session), but the adapter layer is no longer a leaf module from tracing's perspective. (The coupling moved here from <code>models.models</code>, where it sat under the old wrapper design — it did not appear from nothing.)</li>
+<li>The emit boilerplate now lives in the adapter retry loop: ~4 emit sites in <code>_arun_standard</code> plus a terminal one for the streaming path, and one <code>try</code>/<code>except</code> in each of the three local adapters. The three model wrappers became thin (they only forward <code>trace_ctx</code>).</li>
+<li>A retried call produces several generation spans under one step rather than one. This is the intended visibility win, but consumers that assumed "one generation span per step" must handle N.</li>
+<li><code>BaseAPIModel.arun</code>'s <code>run_in_executor</code> sync fallback — reachable only for a provider with no <code>Async*</code> adapter (none ship today) — is untraced, because <code>emit_llm_call</code> is async and the emit now lives in the (skipped) async adapter. The old wrapper design happened to wrap that branch too; this is a narrow regression on an unreachable path.</li>
+<li>The OTel mapping emits several parallel attribute surfaces because no single backend reads only one consistently. Each surface is testable in isolation; the cost is mostly comment volume.</li>
+<li>The strict-output-shape invariant in <code>_build_output_message</code> is enforced by a regression test, not a type. The test is the gate against a future contributor adding <code>usage</code>/<code>finish_reason</code> and regressing shape-sensitive renderers.</li>
+<li>
+<p><code>trace_ctx</code> propagation through <code>**kwargs</code> is convention, not type-enforced (§D2), and now spans two hops (wrapper-forward, adapter-pop). A new wrapper that forgets to forward it, or a new adapter that forgets to pop-and-emit, silently drops capture for that path.</p>
+</li>
+<li>
+<p><strong>Risk:</strong></p>
+</li>
+<li>Backend rendering rules are documented by observation, not formal spec. If a backend changes its ingestion, the chat-bubble pragmatics in <code>_emit_indexed_prompt_attrs</code> may need to follow. Mitigation: live-test scripts under <code>live_tests/tracing/</code> exercise the path against real backends.</li>
+<li>The deterministic <code>ulid → blake2b → fixed-byte int</code> mapping has a theoretical collision rate of ~2⁻⁶⁴ for span ids, ~2⁻¹²⁸ for trace ids. Not a practical concern at our volumes; if they grow, switch to a 128-bit span id.</li>
+<li><code>OtelTraceWriter</code> depends on private OTel SDK internals (§D7). Mitigated by the <code>&lt;2.0</code> cap and a green-<code>test_otel_writer.py</code> gate on any SDK bump.</li>
+</ul>
+<h2 id="alternatives-rejected">Alternatives Rejected<a class="headerlink" href="#alternatives-rejected" title="Permanent link">&para;</a></h2>
+<ol>
+<li><strong>Reconstruction at the step layer instead of recording in the adapter.</strong> Rejected per §D1: drifts from the wire when format processors / retry rewrites mutate messages between assembly and POST, and misses tool-internal and compaction calls entirely.</li>
+<li><strong>One emit at the model-wrapper layer wrapping the whole adapter call</strong> (the previous design). Rejected per §D1/§D4: it sits <em>above</em> the retry loop, so it collapses every retry into a single record and can never show the individual attempts — the precise thing that makes a flaky/rate-limited call debuggable. Moving the emit into the adapter, where the loop lives, is what buys per-attempt visibility.</li>
+<li><strong><code>ContextVar</code>-based propagation.</strong> Rejected per §D2: lifecycle leaks, test fragility, and lost greppability. (The <code>run_in_executor</code> boundary, once the disqualifier, no longer applies now that capture is on the async adapter task — but the other reasons stand.)</li>
+<li><strong>A <code>@capture_arun</code> decorator on each adapter's <code>arun</code>.</strong> Rejected per §D3 and reaffirmed during implementation: it hides the emit, needs introspection to forward kwargs across adapters with different signatures, and — fatally — cannot emit <em>inside</em> the retry loop at each per-attempt outcome, since its premise is to wrap the call as one unit.</li>
+<li><strong>An open/close <code>LLMRequestEvent</code> + <code>LLMResponseEvent</code> pair.</strong> Rejected per §D4: forces request↔response correlation state into every consumer for no benefit the self-contained per-attempt event doesn't already provide.</li>
+<li><strong>SQLite as the primary on-disk store.</strong> Rejected per §D7: single-writer lock contention is a structural mismatch for parallel fan-out; NDJSON's file-per-trace + sidecar <code>messages/</code> has zero contention.</li>
+<li><strong>OTel as the only export channel (no NDJSON).</strong> Rejected: backend outages would lose the trace, rate limits during incidents would silently drop spans, and offline development needs a local store. NDJSON is durable; OTLP is the push channel.</li>
+<li><strong>Inline payload on every span (no content-addressed ref).</strong> Rejected per §D5: defeats the dedup the <code>MessageStore</code> exists to provide and bloats the NDJSON source of truth. Ref-only on the span + sink-side rehydration gives both compact storage and full content where a sink needs it.</li>
+<li><strong>Product-specific attributes/events to force a particular backend's rich rendering.</strong> Rejected per §D8: the two accepted rendering limitations could be closed by emitting one product's native input/output attribute, but that reintroduces vendor lock-in into a module whose explicit goal is neutrality. The complete data is present regardless; only some visual polish on specific backends is forgone.</li>
+</ol>
+<h2 id="verification">Verification<a class="headerlink" href="#verification" title="Permanent link">&para;</a></h2>
+<div class="language-text highlight"><pre><span></span><code><span id="__span-4-1"><a id="__codelineno-4-1" name="__codelineno-4-1" href="#__codelineno-4-1"></a>PYTHONPATH=src python -m pytest tests/coordination/tracing/ \
+</span><span id="__span-4-2"><a id="__codelineno-4-2" name="__codelineno-4-2" href="#__codelineno-4-2"></a>    --ignore=tests/coordination/tracing/test_streaming_integration.py
+</span></code></pre></div>
+<p>The tracing suite covers:</p>
+<ul>
+<li><code>test_capture_helper.py</code>, <code>test_collector_llm_handlers.py</code> — the <code>emit_llm_call</code> path and its three error shapes (exception, returned <code>ErrorResponse</code>, explicit <code>error_type</code>/<code>error_message</code>), snapshot-at-call-start, error/cancel input preservation, ref-only generation-span shaping, and the no-store inline fallback.</li>
+<li><code>test_adapter_emission.py</code> — per-attempt emission driven through <code>AsyncBaseAPIAdapter.arun</code> with a fake aiohttp session: a 500→200 retry emits one <code>status="error"</code> then one <code>status="ok"</code> (full input on both), a handled 4xx emits one error event with the provider-native <code>error_type</code>, and absent <code>trace_ctx</code> emits nothing.</li>
+<li><code>test_otel_writer.py</code> — construction guards, deterministic parent linking under streaming close-order, <code>gen_ai.*</code> mapping per kind, the OpenAI-wire tool-call shape, the single-blob completion + strict-output-shape invariant, the regression lock against <code>gen_ai.{role}.message</code> / <code>gen_ai.choice</code> events and any product-specific span-kind key, ref rehydration via a bound <code>MessageStore</code>, and error/exception status mapping.</li>
+<li><code>test_messages.py</code> — <code>MessageStore</code> round-trip, cross-trace dedup, diff-history, and always-on capture (no opt-in flag).</li>
+<li><code>test_multi_consumer.py</code> — the <code>TelemetrySink</code> protocol across differently-shaped adapters in parallel, with secrets redacted in every view.</li>
+</ul>
+<p>Live verification: <code>live_tests/tracing/secret_word_pipeline.py</code> exercises the capture + export invariants on a real LLM run (with <code>--langsmith</code> / <code>--langfuse</code> presets for two OTLP backends); <code>live_tests/tracing/deep_research.py</code> stress-tests <code>AgentPool</code> fan-out, compaction spans, and OTel batch flush; <code>live_tests/tracing/full_input_capture.py</code> verifies content-addressed capture end-to-end against a real model.</p>
+<h2 id="references">References<a class="headerlink" href="#references" title="Permanent link">&para;</a></h2>
+<ul>
+<li>Capture (emit helper): <code>coordination/tracing/capture.py</code> (<code>emit_llm_call</code>, <code>extract_sampling_params</code>), <code>coordination/tracing/trace_context.py</code> (<code>TraceContext</code>).</li>
+<li>Emit sites (adapter layer): <code>models/adapters/base.py</code> (<code>AsyncBaseAPIAdapter.arun</code> / <code>_arun_standard</code> / <code>_trace_call_base</code>), <code>models/adapters/local.py</code> (<code>_local_trace_base</code> + the three <code>arun</code> methods).</li>
+<li>Events / collector: <code>coordination/tracing/events.py</code> (<code>LLMCallEvent</code>), <code>coordination/tracing/collector.py</code> (<code>_handle_llm_call</code>, <code>_handle_branch_created</code>, <code>_build_message_store</code>).</li>
+<li>Storage / dedup: <code>coordination/tracing/messages.py</code> (<code>MessageStore</code>, <code>build_input_messages_ref</code>), <code>coordination/tracing/sink.py</code> (<code>TelemetrySink.bind_message_store</code>).</li>
+<li>Export: <code>coordination/tracing/writers/otel_writer.py</code>, <code>coordination/tracing/writers/ndjson_writer.py</code>.</li>
+<li>Config: <code>coordination/tracing/config.py</code> (<code>TracingConfig</code>; capture + dedup are unconditional when enabled — no opt-in flag).</li>
+<li>Wire-up / forwarding: <code>models/models.py</code> (the three <code>arun</code> wrappers forward <code>trace_ctx</code>; <code>__init__</code> stamps <code>adapter.provider</code>), <code>coordination/execution/step_executor.py</code> (<code>TraceContext</code> build), <code>agents/agents.py</code>, <code>agents/browser_agent.py</code>, <code>agents/memory_strategies.py</code>, <code>agents/memory.py</code> (forwarding).</li>
+<li>Tests: <code>tests/coordination/tracing/{test_capture_helper,test_adapter_emission,test_collector_llm_handlers,test_otel_writer,test_messages,test_multi_consumer}.py</code>.</li>
+<li>Live tests: <code>live_tests/tracing/{secret_word_pipeline,deep_research,full_input_capture}.py</code>.</li>
+<li>Span tree: <a href="../ADR-005-unified-barrier-algorithm/">ADR-005</a> (defines the <code>step</code> / <code>branch</code> / <code>execution</code> spans this ADR adds children to).</li>
+<li>CHANGELOG: <a href="../../../../packages/framework/CHANGELOG.md">packages/framework/CHANGELOG.md</a> (records the <code>capture_full_input</code> / <code>include_generation_details</code> removals).</li>
+</ul>
+
+
+
+
+
+
+
+
+
+  
+
+
+
+
+                
+              </article>
+            </div>
+          
+          
+  <script>var tabs=__md_get("__tabs");if(Array.isArray(tabs))e:for(var set of document.querySelectorAll(".tabbed-set")){var labels=set.querySelector(".tabbed-labels");for(var tab of tabs)for(var label of labels.getElementsByTagName("label"))if(label.innerText.trim()===tab){var input=document.getElementById(label.htmlFor);input.checked=!0;continue e}}</script>
+
+<script>var target=document.getElementById(location.hash.slice(1));target&&target.name&&(target.checked=target.name.startsWith("__tabbed_"))</script>
+        </div>
+        
+          <button type="button" class="md-top md-icon" data-md-component="top" hidden>
+  
+  <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M13 20h-2V8l-5.5 5.5-1.42-1.42L12 4.16l7.92 7.92-1.42 1.42L13 8z"/></svg>
+  Back to top
+</button>
+        
+      </main>
+      
+        <footer class="md-footer">
+  
+  <div class="md-footer-meta md-typeset">
+    <div class="md-footer-meta__inner md-grid">
+      <div class="md-copyright">
+  
+  
+    Made with
+    <a href="https://squidfunk.github.io/mkdocs-material/" target="_blank" rel="noopener">
+      Material for MkDocs
+    </a>
+  
+</div>
+      
+        
+<div class="md-social">
+  
+    
+    
+    
+    
+      
+      
+    
+    <a href="https://github.com/rezaho" target="_blank" rel="noopener" title="github.com" class="md-social__link">
+      <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512"><!--! Font Awesome Free 7.1.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2025 Fonticons, Inc.--><path d="M173.9 397.4c0 2-2.3 3.6-5.2 3.6-3.3.3-5.6-1.3-5.6-3.6 0-2 2.3-3.6 5.2-3.6 3-.3 5.6 1.3 5.6 3.6m-31.1-4.5c-.7 2 1.3 4.3 4.3 4.9 2.6 1 5.6 0 6.2-2s-1.3-4.3-4.3-5.2c-2.6-.7-5.5.3-6.2 2.3m44.2-1.7c-2.9.7-4.9 2.6-4.6 4.9.3 2 2.9 3.3 5.9 2.6 2.9-.7 4.9-2.6 4.6-4.6-.3-1.9-3-3.2-5.9-2.9M252.8 8C114.1 8 8 113.3 8 252c0 110.9 69.8 205.8 169.5 239.2 12.8 2.3 17.3-5.6 17.3-12.1 0-6.2-.3-40.4-.3-61.4 0 0-70 15-84.7-29.8 0 0-11.4-29.1-27.8-36.6 0 0-22.9-15.7 1.6-15.4 0 0 24.9 2 38.6 25.8 21.9 38.6 58.6 27.5 72.9 20.9 2.3-16 8.8-27.1 16-33.7-55.9-6.2-112.3-14.3-112.3-110.5 0-27.5 7.6-41.3 23.6-58.9-2.6-6.5-11.1-33.3 2.6-67.9 20.9-6.5 69 27 69 27 20-5.6 41.5-8.5 62.8-8.5s42.8 2.9 62.8 8.5c0 0 48.1-33.6 69-27 13.7 34.7 5.2 61.4 2.6 67.9 16 17.7 25.8 31.5 25.8 58.9 0 96.5-58.9 104.2-114.8 110.5 9.2 7.9 17 22.9 17 46.4 0 33.7-.3 75.4-.3 83.6 0 6.5 4.6 14.4 17.3 12.1C436.2 457.8 504 362.9 504 252 504 113.3 391.5 8 252.8 8M105.2 352.9c-1.3 1-1 3.3.7 5.2 1.6 1.6 3.9 2.3 5.2 1 1.3-1 1-3.3-.7-5.2-1.6-1.6-3.9-2.3-5.2-1m-10.8-8.1c-.7 1.3.3 2.9 2.3 3.9 1.6 1 3.6.7 4.3-.7.7-1.3-.3-2.9-2.3-3.9-2-.6-3.6-.3-4.3.7m32.4 35.6c-1.6 1.3-1 4.3 1.3 6.2 2.3 2.3 5.2 2.6 6.5 1 1.3-1.3.7-4.3-1.3-6.2-2.2-2.3-5.2-2.6-6.5-1m-11.4-14.7c-1.6 1-1.6 3.6 0 5.9s4.3 3.3 5.6 2.3c1.6-1.3 1.6-3.9 0-6.2-1.4-2.3-4-3.3-5.6-2"/></svg>
+    </a>
+  
+    
+    
+    
+    
+      
+      
+    
+    <a href="https://discord.gg/yourinvite" target="_blank" rel="noopener" title="discord.gg" class="md-social__link">
+      <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 576 512"><!--! Font Awesome Free 7.1.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2025 Fonticons, Inc.--><path d="M492.5 69.8c-.2-.3-.4-.6-.8-.7-38.1-17.5-78.4-30-119.7-37.1-.4-.1-.8 0-1.1.1s-.6.4-.8.8c-5.5 9.9-10.5 20.2-14.9 30.6-44.6-6.8-89.9-6.8-134.4 0-4.5-10.5-9.5-20.7-15.1-30.6-.2-.3-.5-.6-.8-.8s-.7-.2-1.1-.2C162.5 39 122.2 51.5 84.1 69c-.3.1-.6.4-.8.7C7.1 183.5-13.8 294.6-3.6 404.2c0 .3.1.5.2.8s.3.4.5.6c44.4 32.9 94 58 146.8 74.2.4.1.8.1 1.1 0s.7-.4.9-.7c11.3-15.4 21.4-31.8 30-48.8.1-.2.2-.5.2-.8s0-.5-.1-.8-.2-.5-.4-.6-.4-.3-.7-.4c-15.8-6.1-31.2-13.4-45.9-21.9-.3-.2-.5-.4-.7-.6s-.3-.6-.3-.9 0-.6.2-.9.3-.5.6-.7c3.1-2.3 6.2-4.7 9.1-7.1.3-.2.6-.4.9-.4s.7 0 1 .1c96.2 43.9 200.4 43.9 295.5 0 .3-.1.7-.2 1-.2s.7.2.9.4c2.9 2.4 6 4.9 9.1 7.2.2.2.4.4.6.7s.2.6.2.9-.1.6-.3.9-.4.5-.6.6c-14.7 8.6-30 15.9-45.9 21.8-.2.1-.5.2-.7.4s-.3.4-.4.7-.1.5-.1.8.1.5.2.8c8.8 17 18.8 33.3 30 48.8.2.3.6.6.9.7s.8.1 1.1 0c52.9-16.2 102.6-41.3 147.1-74.2.2-.2.4-.4.5-.6s.2-.5.2-.8c12.3-126.8-20.5-236.9-86.9-334.5zm-302 267.7c-29 0-52.8-26.6-52.8-59.2s23.4-59.2 52.8-59.2c29.7 0 53.3 26.8 52.8 59.2 0 32.7-23.4 59.2-52.8 59.2m195.4 0c-29 0-52.8-26.6-52.8-59.2s23.4-59.2 52.8-59.2c29.7 0 53.3 26.8 52.8 59.2 0 32.7-23.2 59.2-52.8 59.2"/></svg>
+    </a>
+  
+    
+    
+    
+    
+      
+      
+    
+    <a href="https://pypi.org/project/marsys" target="_blank" rel="noopener" title="pypi.org" class="md-social__link">
+      <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 448 512"><!--! Font Awesome Free 7.1.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2025 Fonticons, Inc.--><path d="M439.8 200.5c-7.7-30.9-22.3-54.2-53.4-54.2h-40.1v47.4c0 36.8-31.2 67.8-66.8 67.8H172.7c-29.2 0-53.4 25-53.4 54.3v101.8c0 29 25.2 46 53.4 54.3 33.8 9.9 66.3 11.7 106.8 0 26.9-7.8 53.4-23.5 53.4-54.3v-40.7H226.2v-13.6h160.2c31.1 0 42.6-21.7 53.4-54.2 11.2-33.5 10.7-65.7 0-108.6M286.2 444.7a20.4 20.4 0 1 1 0-40.7 20.4 20.4 0 1 1 0 40.7M167.8 248.1h106.8c29.7 0 53.4-24.5 53.4-54.3V91.9c0-29-24.4-50.7-53.4-55.6-35.8-5.9-74.7-5.6-106.8.1-45.2 8-53.4 24.7-53.4 55.6v40.7h106.9v13.6h-147c-31.1 0-58.3 18.7-66.8 54.2-9.8 40.7-10.2 66.1 0 108.6 7.6 31.6 25.7 54.2 56.8 54.2H101v-48.8c0-35.3 30.5-66.4 66.8-66.4m-6.6-183.4a20.4 20.4 0 1 1 0 40.8 20.4 20.4 0 1 1 0-40.8"/></svg>
+    </a>
+  
+</div>
+      
+    </div>
+  </div>
+</footer>
+      
+    </div>
+    <div class="md-dialog" data-md-component="dialog">
+      <div class="md-dialog__inner md-typeset"></div>
+    </div>
+    
+    
+    
+      
+      
+      <script id="__config" type="application/json">{"annotate": null, "base": "../../../..", "features": ["navigation.instant", "navigation.tracking", "navigation.sections", "navigation.top", "navigation.path", "navigation.tabs", "navigation.tabs.sticky", "toc.follow", "toc.integrate", "search.suggest", "search.highlight", "search.share", "content.tabs.link", "content.code.annotation", "content.code.copy", "content.tooltips"], "search": "../../../../assets/javascripts/workers/search.2c215733.min.js", "tags": null, "translations": {"clipboard.copied": "Copied to clipboard", "clipboard.copy": "Copy to clipboard", "search.result.more.one": "1 more on this page", "search.result.more.other": "# more on this page", "search.result.none": "No matching documents", "search.result.one": "1 matching document", "search.result.other": "# matching documents", "search.result.placeholder": "Type to start searching", "search.result.term.missing": "Missing", "select.version": "Select version"}, "version": null}</script>
+    
+    
+      <script src="../../../../assets/javascripts/bundle.79ae519e.min.js"></script>
+      
+        <script src="../../../../assets/js/main.js"></script>
+      
+    
+  </body>
+</html>
