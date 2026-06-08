@@ -126,7 +126,7 @@ def runtime_model_config_from_spec(
       result is NOT runnable until a key is attached. This is the
       storage/inspection contract — loading, validating, or displaying a
       stored spec on a machine without credentials (community templates,
-      MARSYS Cloud pre-deploy validation, persistence layers). It was the
+      hosted pre-deploy validation, persistence layers). It was the
       historical default; making it an explicit opt-in removes the footgun
       where a runtime caller silently received a dead config.
 

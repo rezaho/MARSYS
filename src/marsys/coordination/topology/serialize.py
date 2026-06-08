@@ -10,8 +10,8 @@ spec and the runtime objects.
 
 The JSON Schema of :class:`WorkflowDefinition` (dialect: JSON Schema 2020-12,
 Pydantic v2's default) is the source of truth for non-Python consumers —
-MARSYS Cloud's pre-deploy validator, CI integrations loading topology JSON
-from config files, the community workflow-template library, MARSYS Studio's
+a hosted pre-deploy validator, CI integrations loading topology JSON
+from config files, the community workflow-template library, a hosted builder's
 authoring UI. Use :func:`workflow_definition_schema` to fetch it with a
 fail-fast assertion on the dialect URI.
 

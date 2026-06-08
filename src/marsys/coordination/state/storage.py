@@ -1,7 +1,7 @@
 """Snapshot storage abstraction.
 
 The framework ships ``FileStorageBackend`` rooted at a caller-configured
-path; MARSYS Cloud's S3/GCS backends and CI integrations' artifact-store
+path; Hosted S3/GCS backends and CI integrations' artifact-store
 backends live in their own repos and satisfy ``StorageBackend`` purely
 structurally (no inheritance from a framework class).
 

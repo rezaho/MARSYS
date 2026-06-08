@@ -110,7 +110,7 @@ class StorageBackend(Protocol):
     async def expire_older_than(self, age: timedelta) -> int: ...
 ```
 
-`FileStorageBackend(root: Path)` ships in this PR — the only concrete implementation. Atomic-write semantics: temp-file-then-`os.replace` + `fsync(parent_dir_fd)` (POSIX; no-op on Windows). MARSYS Cloud's `S3StorageBackend` and CI integrations' artifact-store backend are out-of-scope follow-ups.
+`FileStorageBackend(root: Path)` ships in this PR — the only concrete implementation. Atomic-write semantics: temp-file-then-`os.replace` + `fsync(parent_dir_fd)` (POSIX; no-op on Windows). A hosted `S3StorageBackend` and CI integrations' artifact-store backend are out-of-scope follow-ups.
 
 ### 5. Removed surface (CHANGELOG-documented)
 
@@ -149,7 +149,7 @@ Auto-checkpoint while running (continuous snapshotting at orchestrator natural q
 
 ### Why `StorageBackend` is a Protocol (not an ABC)
 
-Cloud / CI integrations' backends will live outside the framework. Forcing them to inherit from a framework class creates a coupling (every cloud-side change to the backend would require coordinating with the framework's class hierarchy). Protocol satisfies the boundary purely structurally. The trade-off — `FileStorageBackend` doesn't formally announce its protocol satisfaction — is acceptable since `FileStorageBackend` ships in the same module as the Protocol and a unit test verifies satisfaction via a `runtime_checkable` Protocol or a duck-type assertion.
+Hosted / CI integrations' backends will live outside the framework. Forcing them to inherit from a framework class creates a coupling (every cloud-side change to the backend would require coordinating with the framework's class hierarchy). Protocol satisfies the boundary purely structurally. The trade-off — `FileStorageBackend` doesn't formally announce its protocol satisfaction — is acceptable since `FileStorageBackend` ships in the same module as the Protocol and a unit test verifies satisfaction via a `runtime_checkable` Protocol or a duck-type assertion.
 
 (The improver flagged a concern that the existing `StorageBackend` ABC was being broken by the Protocol switch; that concern was resolved by removing `CheckpointManager` and `StateManager` entirely — the only consumers of the legacy ABC's methods. With those gone, the new Protocol has no incompatibility.)
 
