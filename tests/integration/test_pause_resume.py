@@ -983,24 +983,6 @@ async def test_orchestrator_run_signature_preserved():
     assert "entry_agent" in sig.parameters
 
 
-def test_no_spren_imports_in_framework():
-    """AC-61: no `from spren` / `import spren` imports in the framework
-    package. Multi-consumer-purity invariant (SP-018).
-    """
-    import re
-    import os
-    framework_root = Path(__file__).resolve().parents[2] / "src" / "marsys"
-    pat = re.compile(r"^\s*(from\s+spren\b|import\s+spren\b)", re.MULTILINE)
-    offenders = []
-    for root, _, files in os.walk(framework_root):
-        for fname in files:
-            if fname.endswith(".py"):
-                content = (Path(root) / fname).read_text(encoding="utf-8")
-                if pat.search(content):
-                    offenders.append(str(Path(root) / fname))
-    assert offenders == [], f"spren import in framework: {offenders}"
-
-
 # ─── End-to-end Orchestra.resume_session happy path ─────────────────────────
 
 

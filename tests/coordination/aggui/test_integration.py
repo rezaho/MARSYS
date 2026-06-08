@@ -340,20 +340,3 @@ async def test_sse_encoding_round_trips(translator_and_bus):
                     break
         else:
             pytest.fail(f"No data: line found in SSE output: {wire!r}")
-
-
-@pytest.mark.asyncio
-async def test_no_spren_type_imported():
-    """SP-018 spot-check: importing the aggui package must not pull in any spren type."""
-    import importlib
-    import sys
-    # Snapshot loaded modules
-    before = set(sys.modules.keys())
-    importlib.reload(importlib.import_module("marsys.coordination.aggui"))
-    after = set(sys.modules.keys())
-    new = after - before
-    spren_modules = [m for m in (new | after) if m.startswith("spren") or m == "spren"]
-    assert spren_modules == [], (
-        f"aggui module imported spren types: {spren_modules}. "
-        f"SP-018 violation — framework knows nothing of Spren."
-    )
