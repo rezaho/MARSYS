@@ -53,6 +53,7 @@ class BranchState(BaseModel):
     created_at: float
     last_invoked_agent: Optional[str] = None
     consecutive_content_only: int = 0
+    last_step_span_id: Optional[str] = None
 
 
 class BarrierState(BaseModel):

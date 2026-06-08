@@ -1672,6 +1672,7 @@ class Orchestra:
             created_at=b.created_at,
             last_invoked_agent=b.last_invoked_agent,
             consecutive_content_only=b.consecutive_content_only,
+            last_step_span_id=b.last_step_span_id,
         )
 
     @staticmethod
@@ -1734,6 +1735,7 @@ class Orchestra:
                 created_at=s.created_at,
                 last_invoked_agent=s.last_invoked_agent,
                 consecutive_content_only=s.consecutive_content_only,
+                last_step_span_id=s.last_step_span_id,
             )
             for bid, s in snapshot.branches.items()
         }
