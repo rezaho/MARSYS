@@ -17,6 +17,7 @@ masked by the OAuth adapter (which constructs messages correctly):
 import json
 
 from marsys.models.adapters.anthropic import AnthropicAdapter
+from marsys.models.adapters.anthropic_oauth import AnthropicOAuthAdapter
 
 
 def _adapter() -> AnthropicAdapter:
@@ -112,3 +113,66 @@ def test_anthropic_format_request_payload_tool_branches_unaffected():
     assert tool_turn["role"] == "user"
     assert tool_turn["content"][0]["type"] == "tool_result"
     assert tool_turn["content"][0]["tool_use_id"] == "t1"
+
+
+# --- OAuth adapter: max_tokens None-sentinel contract (crash regression) ---
+# A live bug: callers forward per-call ``max_tokens=None`` (the framework's
+# "unset → use the adapter default" sentinel, see BaseAPIModel.run/arun). The
+# OAuth adapter used ``kwargs.get("max_tokens", self.max_tokens)`` —
+# ``dict.get`` returns a present-but-None value, so ``{"max_tokens": null}`` hit
+# the wire and Anthropic 400'd every turn ("max_tokens: Input should be a valid
+# integer"). The fix coalesces None to the adapter default, matching the sibling
+# AnthropicAdapter (which uses ``... or self.max_tokens``).
+
+
+def _oauth_adapter(max_tokens: int = 8192) -> AnthropicOAuthAdapter:
+    """Construct WITHOUT ``__init__`` (which loads OAuth credentials from disk).
+    ``format_request_payload`` reads only the config attrs set here."""
+    adapter = object.__new__(AnthropicOAuthAdapter)
+    adapter.model_name = "claude-haiku-4-5-20251001"
+    adapter.max_tokens = max_tokens
+    adapter.temperature = 0.7
+    adapter.enable_thinking = False
+    adapter.thinking_budget = 10000
+    return adapter
+
+
+def test_oauth_payload_none_max_tokens_falls_back_to_adapter_default():
+    """``max_tokens=None`` (the unset sentinel) must not reach the wire as
+    ``null``; the adapter substitutes its own default (a valid positive int)."""
+    payload = _oauth_adapter(max_tokens=8192).format_request_payload(
+        [{"role": "user", "content": "hi"}], max_tokens=None
+    )
+    assert payload["max_tokens"] == 8192
+    assert isinstance(payload["max_tokens"], int)
+
+
+def test_oauth_payload_absent_max_tokens_uses_adapter_default():
+    """No per-call override at all → adapter default (the key-absent path,
+    which already worked — pinned so the fix can't regress it)."""
+    payload = _oauth_adapter(max_tokens=8192).format_request_payload(
+        [{"role": "user", "content": "hi"}]
+    )
+    assert payload["max_tokens"] == 8192
+
+
+def test_oauth_payload_explicit_max_tokens_wins():
+    """An explicit positive per-call value is forwarded verbatim."""
+    payload = _oauth_adapter(max_tokens=8192).format_request_payload(
+        [{"role": "user", "content": "hi"}], max_tokens=512
+    )
+    assert payload["max_tokens"] == 512
+
+
+def test_oauth_and_plain_adapter_agree_on_none_max_tokens():
+    """Parity: both Anthropic adapters honor the same None→default contract, so
+    they can't drift apart again (this bug was the OAuth adapter alone diverging
+    from the plain one)."""
+    oauth = _oauth_adapter(max_tokens=4096).format_request_payload(
+        [{"role": "user", "content": "hi"}], max_tokens=None
+    )
+    plain = _adapter().format_request_payload(
+        [{"role": "user", "content": "hi"}], max_tokens=None
+    )
+    assert oauth["max_tokens"] == 4096
+    assert isinstance(plain["max_tokens"], int) and plain["max_tokens"] >= 1

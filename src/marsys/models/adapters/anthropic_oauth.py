@@ -461,7 +461,14 @@ class AnthropicOAuthAdapter(APIProviderAdapter):
         # Build payload
         payload = {
             "model": self.model_name,
-            "max_tokens": kwargs.get("max_tokens", self.max_tokens),
+            # `max_tokens` is Optional[int]=None in the model API's public
+            # signature — the framework's "unset → use the adapter default"
+            # sentinel. `dict.get(k, default)` returns a present-but-None value
+            # (the default only fires on key-absence), so a caller forwarding
+            # max_tokens=None would put `null` on the wire and Anthropic 400s
+            # ("max_tokens: Input should be a valid integer"). `or` coalesces
+            # None to self.max_tokens, matching the sibling AnthropicAdapter.
+            "max_tokens": kwargs.get("max_tokens") or self.max_tokens,
             "system": self._build_system_array(system_message),
             "messages": converted_messages,
             "stream": True,  # Always stream for OAuth
