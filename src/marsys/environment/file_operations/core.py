@@ -965,6 +965,124 @@ class FileOperationTools:
             result = await self.create_directory(path, parents, **kwargs)
             return result.to_dict()
 
+        async def file_operations_wrapper(
+            operation: str,
+            path: Union[str, Path],
+            content: Optional[str] = None,
+            encoding: str = "utf-8",
+            **kwargs,
+        ) -> Dict[str, Any]:
+            """
+            Single-call dispatcher for file ops: read / write / list / info /
+            edit / delete. All paths resolve through the configured
+            ``RunFileSystem`` (i.e. confined by ``LocalBackend.resolve()``).
+
+            Replaces the prior module-level ``file_operations`` function in
+            ``marsys.environment.tools`` which had an
+            ``os.environ["AGENT_WORKSPACE"]`` shim with no real confinement.
+
+            Args:
+                operation: One of ``"read"``, ``"write"``, ``"list"``,
+                    ``"info"``, ``"edit"``, ``"delete"``.
+                path: Virtual path (e.g. ``"./output/report.md"``).
+                content: REQUIRED when ``operation == "write"`` — the full
+                    text to write to ``path``. REQUIRED when
+                    ``operation == "edit"`` (or pass via the ``changes``
+                    kwarg) — a unified diff string or a
+                    ``{"search": ..., "replace": ...}`` dict. Omit (or
+                    pass ``None``) for ``read``, ``list``, ``info``,
+                    ``delete``. Calling ``write`` without ``content``
+                    returns a structured error and writes nothing.
+                encoding: File encoding for read/write text operations.
+                **kwargs: Forwarded to the underlying method
+                    (``read``: ``strategy``, ``start_line``, etc.;
+                    ``write``: ``mode``, ``create_parents``;
+                    ``edit``: ``changes``, ``edit_format``, ``dry_run``;
+                    ``list``: ``pattern``, ``recursive``).
+
+            Returns:
+                Dict with operation-specific keys. Errors are returned as
+                ``{"error": "<message>", "path": "<path>"}`` rather than
+                raising — keeps the LLM-facing tool surface stable.
+            """
+            op = operation.lower() if isinstance(operation, str) else ""
+            try:
+                if op == "read":
+                    result = await self.read(path, **kwargs)
+                    response = result.to_tool_response()
+                    return response.to_dict() if hasattr(response, "to_dict") else dict(response)
+                if op == "write":
+                    if content is None:
+                        return {
+                            "error": "Content required for write operation",
+                            "path": str(path),
+                        }
+                    write_kwargs = {
+                        k: v
+                        for k, v in kwargs.items()
+                        if k in ("mode", "create_parents")
+                    }
+                    write_kwargs["encoding"] = encoding
+                    result = await self.write(path, content, **write_kwargs)
+                    return result.to_dict()
+                if op == "list":
+                    infos = await self.list_files(path, **kwargs)
+                    return {
+                        "path": str(path),
+                        "items": [i.to_dict() for i in infos],
+                        "count": len(infos),
+                    }
+                if op == "info":
+                    resolved = self._resolve(path)
+                    host = resolved.host_path
+                    if not host.exists():
+                        return {
+                            "error": "Path does not exist",
+                            "path": resolved.virtual_path,
+                        }
+                    st = host.stat()
+                    return {
+                        "path": resolved.virtual_path,
+                        "size_bytes": st.st_size,
+                        "modified": st.st_mtime,
+                        "is_file": host.is_file(),
+                        "is_dir": host.is_dir(),
+                    }
+                if op == "edit":
+                    changes = kwargs.pop("changes", content)
+                    if changes is None:
+                        return {
+                            "error": (
+                                "Either 'content' or 'changes' kwarg "
+                                "required for edit operation"
+                            ),
+                            "path": str(path),
+                        }
+                    result = await self.edit(path, changes, **kwargs)
+                    return result.to_dict()
+                if op == "delete":
+                    if not self.config.enable_delete:
+                        return {
+                            "error": (
+                                "Delete operations are disabled in this "
+                                "configuration"
+                            ),
+                            "path": str(path),
+                        }
+                    result = await self.delete(path, **kwargs)
+                    return result.to_dict()
+                return {
+                    "error": (
+                        f"Unknown operation: {operation!r}. Use one of: "
+                        "read, write, list, info, edit, delete."
+                    ),
+                    "path": str(path),
+                }
+            except FileNotFoundError as exc:
+                return {"error": str(exc), "path": str(path)}
+            except (ValueError, PermissionError) as exc:
+                return {"error": str(exc), "path": str(path)}
+
         return {
             'read_file': read_file_wrapper,
             'write_file': write_file_wrapper,
@@ -974,6 +1092,7 @@ class FileOperationTools:
             'read_section': read_section_wrapper,
             'list_files': list_files_wrapper,
             'create_directory': create_directory_wrapper,
+            'file_operations': file_operations_wrapper,
         }
 
 

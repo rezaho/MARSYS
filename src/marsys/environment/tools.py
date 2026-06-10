@@ -24,8 +24,13 @@ from .web_tools import (
     extract_images,
     extract_links,
     extract_text_content,
-    read_file,
 )
+# ``read_file`` is intentionally NOT re-imported here. The Phase-2 cleanup
+# (mirroring the Phase-1 file_operations removal) dropped it from
+# ``AVAILABLE_TOOLS`` because the ``web_tools.read_file`` raw-``open()``
+# shape is unconfined. Callers that want the raw shape import from
+# ``marsys.environment.web_tools`` directly; the confined version lives
+# on ``FileOperationTools.get_tools()``.
 
 # Logger for the tool library
 tool_logger = logging.getLogger("ToolLibrary")
@@ -402,72 +407,15 @@ def calculate_math(
         return {"error": f"Calculation failed: {str(e)}"}
 
 
-async def file_operations(
-    operation: Literal["read", "write", "list", "info"],
-    path: str,
-    content: Optional[str] = None,
-    encoding: str = "utf-8",
-) -> Dict[str, Any]:
-    """Perform file system operations.
-
-    Args:
-        operation: Type of operation to perform
-        path: File or directory path
-        content: Content for write operations
-        encoding: File encoding
-
-    Returns:
-        Operation result with status and data
-    """
-    try:
-        # Security: Restrict to safe directory
-        safe_dir = os.environ.get("AGENT_WORKSPACE", "/tmp/agent_workspace")
-
-        # Ensure path is within safe directory
-        abs_path = os.path.abspath(os.path.join(safe_dir, path))
-        if not abs_path.startswith(os.path.abspath(safe_dir)):
-            return {"error": "Access denied: Path outside workspace"}
-
-        if operation == "read":
-            # Use asyncio for file operations
-            loop = asyncio.get_event_loop()
-            content = await loop.run_in_executor(
-                None, lambda: open(abs_path, "r", encoding=encoding).read()
-            )
-            return {"path": path, "content": content, "size": len(content)}
-
-        elif operation == "write":
-            if content is None:
-                return {"error": "Content required for write operation"}
-            os.makedirs(os.path.dirname(abs_path), exist_ok=True)
-            loop = asyncio.get_event_loop()
-            await loop.run_in_executor(
-                None, lambda: open(abs_path, "w", encoding=encoding).write(content)
-            )
-            return {"path": path, "written": len(content), "status": "success"}
-
-        elif operation == "list":
-            if os.path.isdir(abs_path):
-                items = os.listdir(abs_path)
-                return {"path": path, "items": items, "count": len(items)}
-            else:
-                return {"error": "Path is not a directory"}
-
-        elif operation == "info":
-            if os.path.exists(abs_path):
-                stat = os.stat(abs_path)
-                return {
-                    "path": path,
-                    "size": stat.st_size,
-                    "modified": datetime.fromtimestamp(stat.st_mtime).isoformat(),
-                    "is_file": os.path.isfile(abs_path),
-                    "is_dir": os.path.isdir(abs_path),
-                }
-            else:
-                return {"error": "Path does not exist"}
-
-    except Exception as e:
-        return {"error": f"File operation failed: {str(e)}"}
+# The legacy ``file_operations`` function that lived here (used an
+# ``os.environ["AGENT_WORKSPACE"]`` shim with no real path-confinement) was
+# removed. The single-call ``file_operations`` tool is now exposed by
+# ``FileOperationTools.get_tools()`` and goes through the configured
+# ``RunFileSystem`` (i.e. ``LocalBackend.resolve()`` traversal protection).
+# Consumers that previously imported ``file_operations`` from this module
+# or relied on ``AVAILABLE_TOOLS["file_operations"]`` should construct a
+# ``FileOperationTools(config=FileOperationConfig(run_filesystem=fs, ...))``
+# and pass ``.get_tools()`` into ``pydantic_to_topology``'s ``tool_registry``.
 
 
 def data_transform(
@@ -549,11 +497,22 @@ AVAILABLE_TOOLS = {
     "web_search": web_search,
     "fetch_url_content": fetch_url_content,
     "calculate_math": calculate_math,
-    "file_operations": file_operations,
+    # ``file_operations`` was removed from the default registry — it was an
+    # unconfined ``/tmp/agent_workspace`` shim. The proper confined version
+    # is exposed by ``FileOperationTools.get_tools()`` (which a host wires
+    # into a per-run ``tool_registry`` passed to ``pydantic_to_topology``).
     "data_transform": data_transform,
     # Web content tools
     "clean_and_extract_html": clean_and_extract_html,
-    "read_file": read_file,
+    # ``read_file`` (the ``web_tools.read_file`` raw ``open(file_path)`` shim)
+    # was removed from the default registry alongside ``file_operations``.
+    # Both were unconfined host-filesystem-reaching defaults — the same
+    # security hole, symmetric. The proper confined ``read_file`` is exposed
+    # by ``FileOperationTools.get_tools()`` (host wires it into a per-run
+    # ``tool_registry`` passed to ``pydantic_to_topology``). The function
+    # itself remains importable from ``marsys.environment.web_tools`` for any
+    # caller that wants the raw shape, but it is no longer offered as a
+    # default agent tool.
     "extract_links": extract_links,
     "extract_images": extract_images,
     "extract_text_content": extract_text_content,
