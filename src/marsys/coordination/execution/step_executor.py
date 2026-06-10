@@ -875,7 +875,24 @@ class StepExecutor:
         if not topology_graph:
             return CoordinationContext()
 
-        next_agents = topology_graph.get_next_agents(agent_name)
+        # ``next_agents`` should carry PEER agents only — det-nodes
+        # (Start / End / User) are routed via dedicated coordination
+        # tools (``terminate_workflow``, ``ask_user``), NOT via
+        # ``invoke_agent``. Filtering them here prevents two downstream
+        # bugs: (1) ``_build_peer_agent_instructions`` listing
+        # ``End 1`` as an "available peer agent" alongside the
+        # WORKFLOW COMPLETION block's instruction to call
+        # ``terminate_workflow`` — conflicting signal; (2)
+        # ``_build_invoke_agent_schema``'s lowercase-name filter at
+        # ``coordination_tools.py:107-110`` only matches exact
+        # ``("user", "start", "end")`` so a canvas-named ``End 1``
+        # leaked through and ended up in the ``invoke_agent`` enum.
+        raw_next = topology_graph.get_next_agents(agent_name)
+        is_det = getattr(topology_graph, 'is_det_node', None)
+        if callable(is_det):
+            next_agents = [n for n in raw_next if not is_det(n)]
+        else:
+            next_agents = raw_next
 
         can_terminate = (
             hasattr(topology_graph, 'has_edge_to_endnode')

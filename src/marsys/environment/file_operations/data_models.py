@@ -492,20 +492,67 @@ class EditResult:
         return f"EditResult(success=True, {self.hunks_applied}/{self.hunks_total} hunks, {self.lines_changed} lines changed)"
 
     def to_dict(self) -> Dict[str, Any]:
-        """Convert to dictionary representation for agent consumption."""
-        return {
-            "success": self.success,
-            "path": str(self.path) if self.path else None,
-            "hunks_applied": self.hunks_applied,
-            "hunks_total": self.hunks_total,
-            "lines_changed": self.lines_changed,
-            "dry_run": self.dry_run,
-            "preview": self.preview,
-            "warnings": self.warnings,
-            "error": self.error,
-            "strategy_used": self.strategy_used,
-            "diff_applied": self.diff_applied,
-        }
+        """Convert to dictionary representation for agent consumption.
+
+        Edit-specific fields (``hunks_applied`` / ``hunks_total`` /
+        ``dry_run`` / ``preview`` / ``strategy_used`` / ``diff_applied``)
+        are omitted when they sit at default values. This matters for
+        write operations, which never populate the edit-specific fields:
+        the old shape exposed ``{hunks_applied: 0, hunks_total: 0,
+        strategy_used: null, diff_applied: null, preview: null}`` next
+        to ``success: true``, which LLMs read as "0 hunks applied, no
+        strategy, no diff — the operation didn't actually take, retry."
+        Empirically observed: agent looped 16 times on successful
+        ``file_operations(write, ...)`` calls because the result shape
+        signalled failure despite ``success: true``.
+
+        ``path`` is POSIX-normalized (forward slashes) regardless of
+        host OS so the LLM sees the same virtual path it sent
+        (``./output/joke.md``) and not the OS-native rendering
+        (``output\\joke.md`` on Windows) which reads as a different
+        file and adds dissonance.
+        """
+        result: Dict[str, Any] = {"success": self.success}
+        if self.path is not None:
+            # Forward slashes for the LLM regardless of host OS — the
+            # virtual filesystem treats ``./output/joke.md`` and
+            # ``./output\\joke.md`` as equivalent, but the model sees
+            # them as different strings. Also restore the leading
+            # ``./`` prefix on relative paths: ``Path('./x')``
+            # collapses to ``Path('x')`` (Python normalization), so a
+            # round-trip through ``Path`` strips the prefix the agent
+            # sent. Preserving it keeps the input/output formats
+            # identical and avoids LLM dissonance.
+            posix = str(self.path).replace("\\", "/")
+            if (
+                not posix.startswith("./")
+                and not posix.startswith("/")
+                and not (len(posix) > 1 and posix[1] == ":")  # not a drive
+            ):
+                posix = "./" + posix
+            result["path"] = posix
+        if self.lines_changed != 0:
+            result["lines_changed"] = self.lines_changed
+        if self.error is not None:
+            result["error"] = self.error
+        # Edit-specific fields — only include when non-default so a
+        # write operation's response stays clean (success + path +
+        # lines_changed). A real edit operation that applied hunks or
+        # ran as dry_run / produced a diff will include them naturally.
+        if self.hunks_total > 0 or self.hunks_applied > 0:
+            result["hunks_applied"] = self.hunks_applied
+            result["hunks_total"] = self.hunks_total
+        if self.dry_run:
+            result["dry_run"] = self.dry_run
+        if self.preview is not None:
+            result["preview"] = self.preview
+        if self.warnings:
+            result["warnings"] = self.warnings
+        if self.strategy_used is not None:
+            result["strategy_used"] = self.strategy_used
+        if self.diff_applied is not None:
+            result["diff_applied"] = self.diff_applied
+        return result
 
 
 @dataclass
