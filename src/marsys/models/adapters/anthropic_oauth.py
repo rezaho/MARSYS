@@ -33,6 +33,8 @@ class AnthropicOAuthAdapter(APIProviderAdapter):
     - All requests must use streaming (for reliable SSE parsing)
 
     Supported models:
+    - claude-opus-4-8
+    - claude-opus-4-7
     - claude-opus-4-6
     - claude-sonnet-4-6
     - claude-opus-4-5-20251101
@@ -52,6 +54,8 @@ class AnthropicOAuthAdapter(APIProviderAdapter):
 
     # Supported models
     SUPPORTED_MODELS = [
+        "claude-opus-4-8",
+        "claude-opus-4-7",
         "claude-opus-4-6",
         "claude-sonnet-4-6",
         "claude-opus-4-5-20251101",
@@ -63,6 +67,8 @@ class AnthropicOAuthAdapter(APIProviderAdapter):
     # Model aliases for convenience (OpenRouter convention with dots)
     MODEL_ALIASES = {
         # OpenRouter-style aliases (with dots)
+        "claude-opus-4.8": "claude-opus-4-8",
+        "claude-opus-4.7": "claude-opus-4-7",
         "claude-opus-4.6": "claude-opus-4-6",
         "claude-sonnet-4.6": "claude-sonnet-4-6",
         "claude-sonnet-4.5": "claude-sonnet-4-5-20250929",
@@ -75,7 +81,7 @@ class AnthropicOAuthAdapter(APIProviderAdapter):
         "claude-haiku-4-5": "claude-haiku-4-5-20251001",
         "claude-opus-4-1": "claude-opus-4-1-20250805",
         # Short aliases
-        "opus": "claude-opus-4-6",
+        "opus": "claude-opus-4-8",
         "sonnet": "claude-sonnet-4-6",
         "haiku": "claude-haiku-4-5-20251001",
     }

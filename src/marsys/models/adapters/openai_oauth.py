@@ -29,7 +29,7 @@ class OpenAIOAuthAdapter(APIProviderAdapter):
     - https://chatgpt.com/backend-api/codex/responses
 
     Supports GPT-5 series models only:
-    - gpt-5, gpt-5.1, gpt-5.2, gpt-5.2-codex
+    - gpt-5.5, gpt-5.4, gpt-5.4-mini, gpt-5.3-codex, gpt-5.2, gpt-5.1, gpt-5
 
     Required: Codex CLI installed and authenticated (`codex login`)
     Credentials loaded from ~/.codex/auth.json
@@ -53,7 +53,11 @@ class OpenAIOAuthAdapter(APIProviderAdapter):
 
     # Supported models (GPT-5 series only, NOT o-series or legacy)
     SUPPORTED_MODELS = [
+        "gpt-5.5",
+        "gpt-5.4",
+        "gpt-5.4-mini",
         "gpt-5.3-codex",
+        "gpt-5.3-codex-spark",
         "gpt-5.2-codex",
         "gpt-5.2",
         "gpt-5.1",
@@ -73,7 +77,7 @@ class OpenAIOAuthAdapter(APIProviderAdapter):
         Initialize OpenAI OAuth adapter.
 
         Args:
-            model_name: Model to use (gpt-5, gpt-5.1, gpt-5.2, gpt-5.2-codex)
+            model_name: Model to use (gpt-5.5, gpt-5.4, gpt-5.4-mini, gpt-5.3-codex)
             api_key: Ignored - credentials loaded from Codex CLI
             base_url: Ignored - uses ChatGPT backend endpoint
             credentials_path: Optional path to Codex credentials (default: ~/.codex/auth.json)
