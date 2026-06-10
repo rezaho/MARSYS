@@ -68,6 +68,37 @@ if TYPE_CHECKING:
 logger = logging.getLogger(__name__)
 
 
+def _branch_actionable_error(br: Any, barriers: Dict[str, Any]) -> Optional[str]:
+    """Return the actionable failure cause for a non-terminated branch.
+
+    The orchestrator's `_fail_to` stores the underlying error
+    (step_executor / ModelAPIError / runtime / max_steps / FAIL kind)
+    in `barrier.failed[branch_id]`. The branch's own `.status` only
+    captures the lifecycle state ("FAILED" / "ABANDONED" / ...). When
+    we build the `BranchResult` we want the *cause*, not just the
+    state, so consumers (downstream run records, tests, external trace
+    viewers) can render a useful error without re-walking the
+    barriers themselves. Returns None when the branch terminated
+    successfully — it has no actionable error.
+    """
+    if getattr(br, "status", None) == "TERMINATED":
+        return None
+    # The branch's delivery_target is the barrier that recorded its
+    # failure; fall back to scanning all barriers in case the branch
+    # was abandoned via a side-effect of another barrier firing.
+    target = getattr(br, "delivery_target", None)
+    if target and target in barriers:
+        bar = barriers[target]
+        failed = getattr(bar, "failed", None) or {}
+        if br.id in failed:
+            return str(failed[br.id])
+    for bar in barriers.values():
+        failed = getattr(bar, "failed", None) or {}
+        if br.id in failed:
+            return str(failed[br.id])
+    return f"branch ended in status {getattr(br, 'status', '?')}"
+
+
 @dataclass
 class OrchestraResult:
     """Result of orchestrating a multi-agent workflow."""
@@ -1132,7 +1163,17 @@ class Orchestra:
                         execution_trace=[],
                         branch_memory={br.current_agent: br.memory},
                         metadata={"current_agent": br.current_agent, "status": br.status},
-                        error=None if br.status == "TERMINATED" else f"branch ended in status {br.status}",
+                        # A FAILED branch's actionable cause lives
+                        # in the barrier's `failed` map (the step_executor /
+                        # ModelAPIError / runtime error that put it there).
+                        # Reading br.status alone strips that detail and
+                        # leaves the run record with a vacuous "branch ended
+                        # in status FAILED" instead of the underlying API
+                        # error, so consumers fall back to the workflow's
+                        # symptom-level "ROOT failure: insufficient
+                        # arrivals." Look the cause up here so it's carried
+                        # in the BranchResult.error field.
+                        error=_branch_actionable_error(br, workflow.barriers),
                     )
                     for br in workflow.branches.values()
                 ],
@@ -1504,7 +1545,11 @@ class Orchestra:
                     execution_trace=[],
                     branch_memory={br.current_agent: br.memory},
                     metadata={"current_agent": br.current_agent, "status": br.status},
-                    error=None if br.status == "TERMINATED" else f"branch ended in status {br.status}",
+                    # See the matching note in execute() — surface the
+                    # barrier's recorded failure cause (ModelAPIError,
+                    # step_executor error, etc.), not a generic
+                    # "branch ended in status FAILED" string.
+                    error=_branch_actionable_error(br, workflow.barriers),
                 )
                 for br in workflow.branches.values()
             ],

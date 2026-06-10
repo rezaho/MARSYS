@@ -15,6 +15,30 @@ from marsys.models.response_models import (
 logger = logging.getLogger(__name__)
 
 
+def _anthropic_model_rejects_temperature(model_name: str) -> bool:
+    """Return True for Anthropic models that reject the `temperature`
+    parameter on the messages API.
+
+    Claude Opus 4.7 (and its 1M-context variants) treats `temperature`
+    as deprecated and 400s the request when it is set. The shape of
+    Anthropic's deprecation has been "reasoning-capable models drop
+    sampling parameters," so any future Opus 4.x line is expected to
+    behave the same way; we match by the documented prefix and let the
+    request fail loudly for a model name we have not seen yet.
+    """
+    if not model_name:
+        return False
+    # Anthropic ships model names with or without the "anthropic/"
+    # prefix (OpenRouter etc.); strip it before comparing.
+    name = model_name.lower()
+    if name.startswith("anthropic/"):
+        name = name[len("anthropic/"):]
+    return (
+        name.startswith("claude-opus-4-7")
+        or name.startswith("claude-opus-4-8")
+    )
+
+
 class AnthropicAdapter(APIProviderAdapter):
     """Adapter for Anthropic Claude API"""
 
@@ -193,9 +217,15 @@ class AnthropicAdapter(APIProviderAdapter):
             or self.max_tokens,  # Ensure we always have a valid integer
         }
 
-        # Only add temperature if explicitly provided in kwargs and not None
+        # Only add temperature if (a) explicitly provided and not None,
+        # and (b) the model does not reject it. Anthropic's reasoning-
+        # capable Opus 4.x line deprecates sampling parameters and 400s
+        # the request when temperature is present — see
+        # `_anthropic_model_rejects_temperature`.
         temperature = kwargs.get("temperature")
-        if temperature is not None:
+        if temperature is not None and not _anthropic_model_rejects_temperature(
+            self.model_name
+        ):
             payload["temperature"] = temperature
 
         if system_message:
