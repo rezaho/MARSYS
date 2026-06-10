@@ -64,6 +64,18 @@ class BaseResponseFormat(ABC):
         if tool_instructions:
             parts.append(tool_instructions)
 
+        # 3a. Workflow-completion instructions (terminate_workflow / ask_user).
+        # Sits adjacent to AVAILABLE TOOLS because the LLM reads them as a
+        # pair: "here are the tools; here is when to call the
+        # coordination ones". Conditional on the same topology gating that
+        # the tool schemas use (CoordinationContext.can_terminate_workflow /
+        # can_ask_user) so agents without those edges see nothing here.
+        completion_instructions = self._build_workflow_completion_instructions(
+            context
+        )
+        if completion_instructions:
+            parts.append(completion_instructions)
+
         # 4. Peer agent instructions
         peer_instructions = self._build_peer_agent_instructions(context)
         if peer_instructions:
@@ -117,22 +129,65 @@ class BaseResponseFormat(ABC):
 
         return "\n".join(parts) if parts else ""
 
-    def _determine_available_actions(
+    def _build_workflow_completion_instructions(
         self, context: SystemPromptContext
-    ) -> List[str]:
-        """Determine available actions based on context."""
-        actions = []
+    ) -> str:
+        """Build conditional instructions for coordination tools whose
+        schemas are topology-gated (``terminate_workflow``, ``ask_user``).
 
-        # Check for peer agents (invoke_agent action)
-        # User IS a valid invocation target for agent-to-user communication
-        if context.coordination.next_agents:
-            actions.append("invoke_agent")
+        Without this section the framework lists these tools in
+        ``--- AVAILABLE TOOLS ---`` with their generic per-tool
+        descriptions, but tells the agent nothing about WHEN to call
+        them in the context of *this* workflow. For the End-edge case
+        in particular that gap is the framework's #1 documented failure
+        mode: a default ``Start → Agent → End`` run ends
+        ``failed: "insufficient arrivals"`` (or burns to step_limit on
+        repeated regular tool calls) because the model has no behavioral
+        contract for invoking ``terminate_workflow``.
 
-        # Check for terminate_workflow permission (legacy alias: final_response)
-        if context.coordination.can_terminate_workflow:
-            actions.append("final_response")
+        Mirrors the same topology gating used in
+        ``CoordinationToolSchemaBuilder.build_schemas`` so the
+        instruction surface exactly matches the tool surface:
 
-        return actions
+        - ``can_terminate_workflow`` → agent has a direct edge to an
+          End det-node; emit the termination contract.
+        - ``can_ask_user`` → agent has a direct edge to a User det-node;
+          emit the user-interaction contract.
+
+        Conversation-branch's ``end_conversation`` has its own loop
+        semantics and is intentionally not folded in here.
+        """
+        coord = context.coordination
+        if not (coord.can_terminate_workflow or coord.can_ask_user):
+            return ""
+
+        lines = ["\n\n--- WORKFLOW COMPLETION ---"]
+
+        if coord.can_terminate_workflow:
+            lines.append(
+                "**Workflow termination.** When your task is complete — "
+                "typically once you have produced the deliverable(s) the "
+                "user asked for and have nothing further to add — call "
+                "the `terminate_workflow` tool with your final answer. "
+                "This delivers the answer to the workflow's output and "
+                "ends the run. **The run does not end until you call "
+                "this tool.** Without it, the run will either fail with "
+                "\"insufficient arrivals\" or be cancelled when it hits "
+                "the step limit (repeated regular tool calls without "
+                "`terminate_workflow` will burn through the step budget)."
+            )
+
+        if coord.can_ask_user:
+            lines.append(
+                "**User interaction.** When you need clarification or "
+                "input from the user before continuing, call the "
+                "`ask_user` tool with your question. Execution pauses "
+                "until the user replies; their reply is delivered back "
+                "to you and you resume from there."
+            )
+
+        lines.append("--- END WORKFLOW COMPLETION ---")
+        return "\n".join(lines)
 
     def _strip_schema_hints(self, text: str) -> str:
         """Remove lines that re-explain the output format from agent instructions."""

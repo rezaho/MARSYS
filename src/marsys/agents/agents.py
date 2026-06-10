@@ -2343,24 +2343,6 @@ class BaseAgent(ABC):
             except Exception as e:
                 self.logger.debug(f"Agent close() failed for {agent_name}: {e}")
 
-    def _enhance_description_for_user_interaction(self):
-        """Auto-enhance agent description with user interaction instructions."""
-        if "User" not in self._allowed_peers_init:
-            return
-
-        # Check if instructions already exist
-        if "invoke_agent" not in self.instruction and "User" not in self.instruction:
-            self.instruction += """
-
-When you need clarification or user input, you can invoke the User node:
-{
-    "next_action": "invoke_agent",
-    "action_input": "User",
-    "message": "Your question or request for the user"
-}
-
-The user will provide their response, and you'll receive it to continue your task."""
-
     async def auto_run(
         self,
         task: Any,  # Renamed from initial_request
