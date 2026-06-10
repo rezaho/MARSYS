@@ -208,11 +208,20 @@ class GoogleAdapter(APIProviderAdapter):
                     if image_data:
                         last_msg["parts"].append(image_data)
 
-        # Build generation config
-        generation_config = {
-            "maxOutputTokens": kwargs.get("max_tokens", self.max_tokens),
-            "temperature": kwargs.get("temperature", self.temperature),
-        }
+        # Build generation config. A present-but-None kwarg means "unset"
+        # (the model API's Optional=None sentinel) — dict.get's default does
+        # not fire on it, so the naive form sent `maxOutputTokens: null`.
+        # `or`-coalesce token caps (0 invalid); None-gate temperature so an
+        # explicit 0.0 survives.
+        generation_config = {}
+        max_tokens = kwargs.get("max_tokens") or self.max_tokens
+        if max_tokens is not None:
+            generation_config["maxOutputTokens"] = max_tokens
+        temperature = kwargs.get("temperature")
+        if temperature is None:
+            temperature = self.temperature
+        if temperature is not None:
+            generation_config["temperature"] = temperature
 
         # Add thinking configuration if thinking budget is provided
         thinking_budget = kwargs.get("thinking_budget", self.thinking_budget)

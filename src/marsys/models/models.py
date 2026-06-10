@@ -579,11 +579,20 @@ class BaseAPIModel:
             current_module = sys.modules[self.__module__]
             if hasattr(current_module, async_adapter_class_name):
                 async_adapter_class = getattr(current_module, async_adapter_class_name)
-                # Create async adapter with same configuration
+                # Create async adapter with same configuration — the SAME
+                # named sampling params the sync factory receives above;
+                # **kwargs alone silently dropped them, so async adapters
+                # ran on their class defaults regardless of the model's
+                # configured values.
                 self.async_adapter = async_adapter_class(
                     model_name=model_name,
                     api_key=api_key,
                     base_url=base_url,
+                    max_tokens=max_tokens,
+                    temperature=temperature,
+                    top_p=top_p,
+                    thinking_budget=thinking_budget,
+                    reasoning_effort=reasoning_effort,
                     **kwargs  # Pass through any provider-specific kwargs
                 )
                 # Async adapter is the one that actually emits the trace event.

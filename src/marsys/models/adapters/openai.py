@@ -157,19 +157,28 @@ class OpenAIAdapter(APIProviderAdapter):
             "store": False,  # Don't store responses on OpenAI's servers
         }
 
-        # Handle temperature - reasoning models (GPT-5, o1-*, o3-*, o4-*) don't support it
+        # Handle temperature - reasoning models (GPT-5, o1-*, o3-*, o4-*) don't support it.
+        # A present-but-None kwarg means "unset" (the model API's
+        # Optional[int]=None sentinel) — fall back to the adapter default,
+        # but keep an explicit 0.0 (no `or`).
         if not is_reasoning_model:
-            temperature = kwargs.get("temperature", self.temperature)
-            payload["temperature"] = temperature
+            temperature = kwargs.get("temperature")
+            if temperature is None:
+                temperature = self.temperature
+            if temperature is not None:
+                payload["temperature"] = temperature
 
-        # Handle max tokens - Responses API uses max_output_tokens
-        if "max_completion_tokens" in kwargs:
-            payload["max_output_tokens"] = kwargs["max_completion_tokens"]
-        elif "max_tokens" in kwargs:
-            payload["max_output_tokens"] = kwargs["max_tokens"]
-        else:
-            # Default to 2048 if not specified
-            payload["max_output_tokens"] = 2048
+        # Handle max tokens - Responses API uses max_output_tokens.
+        # Key-presence checks pass a present-but-None value straight to the
+        # wire (`max_output_tokens: null`); coalesce with `or` instead
+        # (0 is not a valid token cap). Terminal fallback is the adapter's
+        # construction-time value — previously a hardcoded 2048 that silently
+        # ignored the configured cap, unlike every sibling adapter.
+        payload["max_output_tokens"] = (
+            kwargs.get("max_completion_tokens")
+            or kwargs.get("max_tokens")
+            or self.max_tokens
+        )
 
         if kwargs.get("top_p") is not None:
             payload["top_p"] = kwargs["top_p"]

@@ -102,9 +102,23 @@ class OpenRouterAdapter(APIProviderAdapter):
         payload = {
             "model": self.model_name,
             "messages": cleaned_messages,
-            "max_tokens": kwargs.get("max_tokens", self.max_tokens),
-            "temperature": kwargs.get("temperature", self.temperature),
         }
+
+        # `max_tokens` arrives as Optional[int]=None ("unset") from the model
+        # API; dict.get's default does not fire on a present-but-None key, so
+        # the naive form put `max_tokens: null` on the wire. `or` coalesces
+        # None to the adapter default (0 is not a valid token cap).
+        max_tokens = kwargs.get("max_tokens") or self.max_tokens
+        if max_tokens is not None:
+            payload["max_tokens"] = max_tokens
+
+        # Temperature must NOT use `or`: an explicit 0.0 is a valid value and
+        # must survive to the wire. None-gate instead.
+        temperature = kwargs.get("temperature")
+        if temperature is None:
+            temperature = self.temperature
+        if temperature is not None:
+            payload["temperature"] = temperature
 
         if kwargs.get("top_p") is not None:
             payload["top_p"] = kwargs["top_p"]
