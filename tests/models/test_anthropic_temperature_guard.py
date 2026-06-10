@@ -40,8 +40,9 @@ def test_rejects_temperature_predicate(model_name, rejects):
     assert _anthropic_model_rejects_temperature(model_name) is rejects
 
 
-def test_payload_omits_temperature_for_opus_4_8():
-    payload = _adapter("claude-opus-4-8").format_request_payload(
+@pytest.mark.parametrize("model_name", ["claude-opus-4-8", "claude-opus-4-7"])
+def test_payload_omits_temperature_for_rejecting_models(model_name):
+    payload = _adapter(model_name).format_request_payload(
         [{"role": "user", "content": "hi"}], temperature=0.5
     )
     assert "temperature" not in payload

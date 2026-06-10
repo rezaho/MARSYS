@@ -66,6 +66,7 @@ def test_openai_present_none_coalesces():
     )
     assert payload["max_output_tokens"] == 4096
     assert payload["temperature"] == 0.2
+    assert None not in payload.values()
 
 
 def test_openai_no_call_time_cap_falls_back_to_ctor_value():
@@ -115,7 +116,13 @@ def test_async_adapter_receives_ctor_sampling_params():
         provider="openrouter",
         max_tokens=5000,
         temperature=0.3,
+        top_p=0.9,
+        thinking_budget=1234,
+        reasoning_effort="low",
     )
     assert model.async_adapter is not None
     assert model.async_adapter.max_tokens == 5000
     assert model.async_adapter.temperature == 0.3
+    assert model.async_adapter.top_p == 0.9
+    assert model.async_adapter.thinking_budget == 1234
+    assert model.async_adapter.reasoning_effort == "low"

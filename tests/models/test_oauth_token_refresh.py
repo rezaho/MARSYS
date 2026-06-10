@@ -16,8 +16,14 @@ import json
 from pathlib import Path
 from unittest.mock import patch
 
-from marsys.models.adapters.anthropic_oauth import AnthropicOAuthAdapter
-from marsys.models.adapters.openai_oauth import OpenAIOAuthAdapter
+from marsys.models.adapters.anthropic_oauth import (
+    AnthropicOAuthAdapter,
+    AsyncAnthropicOAuthAdapter,
+)
+from marsys.models.adapters.openai_oauth import (
+    AsyncOpenAIOAuthAdapter,
+    OpenAIOAuthAdapter,
+)
 from marsys.models.credentials import OAuthTokenRefresher
 
 
@@ -78,6 +84,51 @@ def test_openai_ensure_fresh_token_reloads_after_refresh():
     ):
         adapter._ensure_fresh_token()
     assert adapter.access_token == "new"
+
+
+async def test_anthropic_async_request_path_refreshes_token_per_request():
+    """The named regression was INVOCATION, not mechanics: a long-lived
+    process 401s because nothing on the request path refreshes the token.
+    arun_streaming must call _ensure_fresh_token before building headers."""
+    with patch.object(AnthropicOAuthAdapter, "_refresh_token_if_needed", lambda self: None), patch.object(
+        AnthropicOAuthAdapter, "_load_claude_credentials", lambda self, p=None: {"access_token": "tok"}
+    ):
+        adapter = AsyncAnthropicOAuthAdapter(model_name="claude-haiku-4-5-20251001", auto_refresh=True)
+
+    calls = []
+
+    def spy():
+        calls.append(1)
+        raise RuntimeError("short-circuit before any network I/O")
+
+    adapter._ensure_fresh_token = spy
+    try:
+        await adapter.arun_streaming([{"role": "user", "content": "hi"}])
+    except Exception:
+        pass  # the adapter may wrap or re-raise; only the invocation matters
+    assert calls, "arun_streaming never invoked _ensure_fresh_token"
+
+
+async def test_openai_async_request_path_refreshes_token_per_request():
+    with patch.object(OpenAIOAuthAdapter, "_refresh_token_if_needed", lambda self: None), patch.object(
+        OpenAIOAuthAdapter,
+        "_load_codex_credentials",
+        lambda self, p=None: {"access_token": "tok", "account_id": "acct"},
+    ):
+        adapter = AsyncOpenAIOAuthAdapter(model_name="gpt-5.4-mini", auto_refresh=True)
+
+    calls = []
+
+    def spy():
+        calls.append(1)
+        raise RuntimeError("short-circuit before any network I/O")
+
+    adapter._ensure_fresh_token = spy
+    try:
+        await adapter.arun_streaming([{"role": "user", "content": "hi"}])
+    except Exception:
+        pass
+    assert calls, "arun_streaming never invoked _ensure_fresh_token"
 
 
 def test_update_credential_file_writes_without_posix_lock(tmp_path: Path):
