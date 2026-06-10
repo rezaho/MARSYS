@@ -1,3 +1,4 @@
+import asyncio
 import json
 import logging
 import os
@@ -178,6 +179,24 @@ class AnthropicOAuthAdapter(APIProviderAdapter):
         except Exception as e:
             logger.warning(f"Failed to auto-refresh Anthropic OAuth token: {e}")
             return False
+
+    def _ensure_fresh_token(self) -> None:
+        """Refresh the OAuth token if near expiry AND reload it into ``self.access_token``.
+
+        The daemon's adapter is long-lived: the token loaded at ``__init__`` eventually
+        expires and every request then 401s. ``_refresh_token_if_needed`` rewrites the
+        credentials file but does NOT touch ``self.access_token`` (which ``get_headers``
+        sends), so we must reload after a refresh. Cheap when the token is still valid —
+        the refresher short-circuits on a timestamp check.
+        """
+        if not self.auto_refresh:
+            return
+        try:
+            if self._refresh_token_if_needed():
+                self.credentials = self._load_claude_credentials(self._credentials_path)
+                self.access_token = self.credentials["access_token"]
+        except Exception as e:
+            logger.warning(f"Anthropic OAuth token refresh/reload failed: {e}")
 
     def _load_claude_credentials(self, credentials_path: Optional[str] = None) -> Dict[str, Any]:
         """
@@ -849,6 +868,9 @@ class AsyncAnthropicOAuthAdapter(AsyncBaseAPIAdapter, AnthropicOAuthAdapter):
         request_start_time = time.time()
 
         try:
+            # Long-lived daemon: refresh + reload the OAuth token before each request
+            # (the token loaded at __init__ expires; get_headers sends self.access_token).
+            await asyncio.to_thread(self._ensure_fresh_token)
             headers = self.get_headers()
             payload = self.format_request_payload(messages, **kwargs)
             endpoint = self.get_endpoint_url()

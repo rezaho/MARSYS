@@ -1,3 +1,4 @@
+import asyncio
 import json
 import logging
 import os
@@ -125,6 +126,21 @@ class OpenAIOAuthAdapter(APIProviderAdapter):
         except Exception as e:
             logger.warning(f"Failed to auto-refresh OpenAI OAuth token: {e}")
             return False
+
+    def _ensure_fresh_token(self) -> None:
+        """Refresh + reload the OAuth token (same long-lived-daemon frozen-token defect as
+        the Anthropic adapter). ``_refresh_token_if_needed`` rewrites the credentials file
+        but not ``self.access_token`` (which ``get_headers`` sends), so reload after a refresh.
+        """
+        if not self.auto_refresh:
+            return
+        try:
+            if self._refresh_token_if_needed():
+                self.credentials = self._load_codex_credentials(self._credentials_path)
+                self.access_token = self.credentials["access_token"]
+                self.account_id = self.credentials["account_id"]
+        except Exception as e:
+            logger.warning(f"OpenAI OAuth token refresh/reload failed: {e}")
 
     def _load_codex_credentials(self, credentials_path: Optional[str] = None) -> Dict[str, Any]:
         """
@@ -805,6 +821,8 @@ class AsyncOpenAIOAuthAdapter(AsyncBaseAPIAdapter, OpenAIOAuthAdapter):
 
         try:
             payload = self.format_request_payload(messages, **kwargs)
+            # Long-lived daemon: refresh + reload the OAuth token before each request.
+            await asyncio.to_thread(self._ensure_fresh_token)
             headers = self.get_headers()
             endpoint = self.get_endpoint_url()
 

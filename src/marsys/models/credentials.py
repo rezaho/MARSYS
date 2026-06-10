@@ -344,14 +344,18 @@ class OAuthTokenRefresher:
         Uses file locking to prevent concurrent refresh corruption when
         multiple agents share the same credential file.
         """
-        import fcntl
         import tempfile
+        try:
+            import fcntl
+        except ImportError:  # Windows has no POSIX advisory locks
+            fcntl = None
 
         lock_path = Path(f"{cred_path}.lock")
         lock_path.touch(exist_ok=True)
 
         with open(lock_path) as lock_fd:
-            fcntl.flock(lock_fd, fcntl.LOCK_EX)
+            if fcntl is not None:
+                fcntl.flock(lock_fd, fcntl.LOCK_EX)
             try:
                 with open(cred_path) as f:
                     data = json.load(f)
@@ -388,7 +392,8 @@ class OAuthTokenRefresher:
                         pass
                     raise
             finally:
-                fcntl.flock(lock_fd, fcntl.LOCK_UN)
+                if fcntl is not None:
+                    fcntl.flock(lock_fd, fcntl.LOCK_UN)
 
 
 # =============================================================================
