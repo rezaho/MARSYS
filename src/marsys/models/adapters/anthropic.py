@@ -352,17 +352,30 @@ class AnthropicAdapter(APIProviderAdapter):
                 + usage_data.get("output_tokens", 0),
             )
 
-        # Build metadata with Anthropic-specific fields
+        # Build metadata with Anthropic-specific fields. finish_reason carries the
+        # NORMALIZED vocabulary (the validator's truncation escape checks 'length');
+        # the raw Anthropic token stays on stop_reason — same contract split as
+        # anthropic_oauth.py and openai.py.
+        stop_reason_raw = raw_response.get("stop_reason")
+        finish_reason = "length" if stop_reason_raw == "max_tokens" else stop_reason_raw
         metadata = ResponseMetadata(
             provider="anthropic",
             model=raw_response.get("model", self.model_name),
             request_id=raw_response.get("id"),
             usage=usage,
-            finish_reason=raw_response.get("stop_reason"),
+            finish_reason=finish_reason,
             response_time=time.time() - request_start_time,
-            stop_reason=raw_response.get("stop_reason"),
+            stop_reason=stop_reason_raw,
             stop_sequence=raw_response.get("stop_sequence"),
         )
+
+        # A truncation that produced NO output gets the cross-adapter placeholder
+        # (openai.py's convention) so callers see one shape, never None.
+        if not text_content and not tool_calls and finish_reason == "length":
+            text_content = (
+                "[Response truncated due to token limit. Please increase max_tokens "
+                "or continue the conversation.]"
+            )
 
         # Build harmonized response
         return HarmonizedResponse(

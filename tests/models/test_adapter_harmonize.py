@@ -176,3 +176,105 @@ def test_oauth_and_plain_adapter_agree_on_none_max_tokens():
     )
     assert oauth["max_tokens"] == 4096
     assert isinstance(plain["max_tokens"], int) and plain["max_tokens"] >= 1
+
+
+# ── Stream-failure representation (2026-06-11) ──────────────────────────────────────
+# Production crash: an in-stream SSE `error` event (Anthropic delivers stream failures
+# under HTTP 200; overloaded_error ≙ HTTP 529) was silently dropped by the accumulator,
+# the empty result harmonized, and HarmonizedResponse's own validator rejected it —
+# destroying the provider's real error. The contract: every stream outcome maps to
+# either a valid HarmonizedResponse or a typed, CLASSIFIED ModelAPIError.
+
+import httpx
+import pytest
+
+from marsys.agents.exceptions import APIErrorClassification, ModelAPIError
+
+
+def test_oauth_stream_error_event_raises_classified_retryable(monkeypatch):
+    """The reader captures `type:"error"` and the run path raises the provider's REAL
+    error, classified retryable (overloaded ≙ 529) — never a harmonized empty shell.
+    Partial output is discarded by design; its LENGTH (never its text) is annotated."""
+    events = [
+        {"type": "message_start", "message": {"model": "m", "id": "msg_1"}},
+        {"type": "content_block_delta", "delta": {"type": "text_delta", "text": "zq81_secret_body!"}},
+        {"type": "error", "error": {"type": "overloaded_error", "message": "Overloaded"}},
+    ]
+    real_client = httpx.Client
+    body = "".join(f"data: {json.dumps(e)}\n\n" for e in events).encode()
+    transport = httpx.MockTransport(lambda request: httpx.Response(200, content=body))
+    adapter = _oauth_adapter()
+    monkeypatch.setattr(adapter, "get_headers", lambda: {}, raising=False)
+    monkeypatch.setattr(adapter, "format_request_payload", lambda messages, **kw: {}, raising=False)
+    monkeypatch.setattr(adapter, "get_endpoint_url", lambda: "https://example.invalid/v1/messages", raising=False)
+    monkeypatch.setattr(httpx, "Client", lambda **kw: real_client(transport=transport))
+
+    with pytest.raises(ModelAPIError) as exc:
+        adapter.run_streaming([{"role": "user", "content": "hi"}])
+    err = exc.value
+    assert err.is_retryable is True
+    assert err.classification == APIErrorClassification.SERVICE_UNAVAILABLE.value
+    assert "Overloaded" in str(err)
+    assert "17 chars of partial output discarded" in str(err)
+    assert "zq81_secret_body" not in str(err)  # output LENGTH only, never the text
+
+
+@pytest.mark.parametrize(
+    "error_type, expected_classification, expected_retryable",
+    [
+        ("overloaded_error", APIErrorClassification.SERVICE_UNAVAILABLE.value, True),
+        ("rate_limit_error", APIErrorClassification.RATE_LIMIT.value, True),
+        ("api_error", APIErrorClassification.SERVICE_UNAVAILABLE.value, True),
+        ("authentication_error", APIErrorClassification.AUTHENTICATION_FAILED.value, False),
+        ("invalid_request_error", APIErrorClassification.INVALID_REQUEST.value, False),
+        ("never_seen_before", APIErrorClassification.UNKNOWN.value, False),
+    ],
+)
+def test_status_less_stream_errors_classify_by_type(error_type, expected_classification, expected_retryable):
+    """`from_provider_response` accepts a plain error dict (no Response, no status —
+    the in-stream case) and classifies by the documented error type. Unknown types
+    keep UNKNOWN but the REAL provider message survives."""
+    err = ModelAPIError.from_provider_response(
+        provider="anthropic-oauth",
+        response={"error": {"type": error_type, "message": "the real provider words"}},
+    )
+    assert err.classification == expected_classification
+    assert err.is_retryable is expected_retryable
+    assert "the real provider words" in str(err)
+
+
+def test_oauth_truncation_empty_harmonizes_valid_with_placeholder():
+    """stop_reason=max_tokens with zero output is a VALID response after normalization:
+    finish_reason carries the normalized 'length' (the validator's escape), stop_reason
+    keeps the raw token, and the cross-adapter placeholder (openai.py convention) means
+    callers never see content=None."""
+    adapter = _oauth_adapter()
+    raw = {"text": "", "thinking": "", "tool_use": [], "usage": {}, "stop_reason": "max_tokens",
+           "model": "m", "id": "msg_2"}
+    resp = adapter.harmonize_response(raw, request_start_time=0.0)
+    assert resp.metadata.finish_reason == "length"
+    assert resp.metadata.stop_reason == "max_tokens"
+    assert resp.content and "truncated" in resp.content
+
+
+def test_oauth_finish_reason_normalized_content_untouched():
+    """Truncation WITH partial text: the text passes through unchanged (no placeholder),
+    only the metadata vocabulary is normalized."""
+    adapter = _oauth_adapter()
+    raw = {"text": "partial answer", "thinking": "", "tool_use": [], "usage": {},
+           "stop_reason": "max_tokens", "model": "m", "id": "msg_3"}
+    resp = adapter.harmonize_response(raw, request_start_time=0.0)
+    assert resp.content == "partial answer"
+    assert resp.metadata.finish_reason == "length"
+    assert resp.metadata.stop_reason == "max_tokens"
+
+
+def test_anthropic_truncation_empty_harmonizes_valid_with_placeholder():
+    """The standard (API-key) Anthropic adapter shares the contract: same normalization,
+    same placeholder — one observable shape across adapters."""
+    raw_response = {"role": "assistant", "content": [], "stop_reason": "max_tokens",
+                    "usage": {"input_tokens": 1, "output_tokens": 0}}
+    resp = _adapter().harmonize_response(raw_response, request_start_time=0.0)
+    assert resp.metadata.finish_reason == "length"
+    assert resp.metadata.stop_reason == "max_tokens"
+    assert resp.content and "truncated" in resp.content

@@ -770,8 +770,12 @@ class ModelAPIError(ModelError):
         raw_response = None
         suggested_action = None
 
-        # Try to get raw response data
-        if response:
+        # Try to get raw response data. A plain dict is accepted directly — the
+        # adapters pass one for in-stream SSE error events, which arrive under
+        # HTTP 200 with no Response object and no status code.
+        if isinstance(response, dict):
+            raw_response = response
+        elif response:
             try:
                 raw_response = response.json() if hasattr(response, 'json') else None
             except:
@@ -982,6 +986,36 @@ class ModelAPIError(ModelError):
                 # Check for token expiration in message
                 if "token" in message.lower() and ("expired" in message.lower() or "invalid" in message.lower()):
                     classification = APIErrorClassification.AUTHENTICATION_FAILED.value
+
+        elif provider in ("anthropic", "anthropic-oauth") and raw_response and raw_response.get("error"):
+            # NO status code: an in-stream SSE error event (Anthropic delivers stream
+            # failures as `{"type":"error","error":{...}}` under HTTP 200). Classify by
+            # the documented error type — the official streaming docs equate
+            # overloaded_error to HTTP 529, so it must be retryable exactly like a 5xx.
+            error_data = raw_response.get("error", {}) or {}
+            message = error_data.get("message", message)
+            api_error_type = error_data.get("type")
+            if api_error_type == "overloaded_error":
+                classification = APIErrorClassification.SERVICE_UNAVAILABLE.value
+                is_retryable = True
+                retry_after = 10
+            elif api_error_type == "rate_limit_error":
+                classification = APIErrorClassification.RATE_LIMIT.value
+                is_retryable = True
+                retry_after = 60
+            elif api_error_type == "authentication_error":
+                classification = APIErrorClassification.AUTHENTICATION_FAILED.value
+            elif api_error_type == "permission_error":
+                classification = APIErrorClassification.PERMISSION_DENIED.value
+            elif api_error_type == "invalid_request_error":
+                classification = APIErrorClassification.INVALID_REQUEST.value
+            elif api_error_type == "api_error":
+                # The provider's own "internal error" type (≙ HTTP 500).
+                classification = APIErrorClassification.SERVICE_UNAVAILABLE.value
+                is_retryable = True
+                retry_after = 10
+            # Unknown in-stream types keep UNKNOWN classification but the REAL
+            # provider message above — never a destroyed/synthetic one.
 
         # Payload-too-large override: some providers return 400 with payload
         # hints instead of 413.  This runs unconditionally so it can override

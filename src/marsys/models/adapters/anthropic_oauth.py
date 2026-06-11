@@ -636,6 +636,15 @@ class AnthropicOAuthAdapter(APIProviderAdapter):
                             result["stop_reason"] = delta.get("stop_reason")
                             result["usage"] = data.get("usage", {})
 
+                        elif event_type == "error":
+                            # Anthropic delivers stream failures as in-stream SSE error
+                            # events under HTTP 200 (overloaded_error ≙ HTTP 529 per the
+                            # streaming docs). Capture the REAL error and stop reading:
+                            # the message is failed and recovery is a NEW request —
+                            # partial tool_use must never execute, so partials drop.
+                            result["error"] = data.get("error", {}) or {"type": "unknown"}
+                            break
+
                     except json.JSONDecodeError:
                         continue
 
@@ -721,15 +730,44 @@ class AnthropicOAuthAdapter(APIProviderAdapter):
                             result["stop_reason"] = delta.get("stop_reason")
                             result["usage"] = data.get("usage", {})
 
+                        elif event_type == "error":
+                            # See the sync reader's twin arm: in-stream SSE failure under
+                            # HTTP 200 — capture the real error, stop reading, drop partials
+                            # (recovery is a new request; partial tool_use must not execute).
+                            result["error"] = data.get("error", {}) or {"type": "unknown"}
+                            break
+
                     except json.JSONDecodeError:
                         continue
 
         return result
 
+    @staticmethod
+    def _stream_error_payload(raw_response: Dict[str, Any]) -> Dict[str, Any]:
+        """Shape an in-stream SSE error for ``ModelAPIError.from_provider_response``
+        (which accepts a plain dict for the status-less case): the REAL provider
+        error, annotated with how much partial output was discarded — length only,
+        never the text itself (model output does not belong in error strings)."""
+        error = dict(raw_response.get("error") or {})
+        partial_chars = len(raw_response.get("text") or "")
+        if partial_chars:
+            base = error.get("message") or error.get("type") or "stream error"
+            error["message"] = (
+                f"{base} [stream failed mid-response; {partial_chars} chars of "
+                "partial output discarded — recovery is a new request]"
+            )
+        return {"error": error}
+
     def harmonize_response(
         self, raw_response: Dict[str, Any], request_start_time: float
     ) -> HarmonizedResponse:
-        """Convert streaming response to HarmonizedResponse."""
+        """Convert streaming response to HarmonizedResponse.
+
+        (Latent gap, recorded 2026-06-11: a thinking-only response — ``thinking`` set,
+        no text, no tool calls, stop_reason ``end_turn`` — would still fail the
+        ``HarmonizedResponse`` validator, which ignores ``thinking``. Unreachable while
+        no caller enables extended thinking on this adapter; if a future "impossible"
+        ValidationError lands here with thinking enabled, start there.)"""
         response_time = time.time() - request_start_time
 
         # Extract text content
@@ -757,16 +795,29 @@ class AnthropicOAuthAdapter(APIProviderAdapter):
             completion_tokens=usage_data.get("output_tokens"),
         ) if usage_data else None
 
-        # Build metadata
+        # Build metadata. finish_reason carries the NORMALIZED vocabulary (the
+        # HarmonizedResponse validator's truncation escape checks 'length'); the raw
+        # Anthropic token stays on the provider-specific stop_reason field — the
+        # contract split ResponseMetadata documents, and what openai.py already does.
+        stop_reason_raw = raw_response.get("stop_reason")
+        finish_reason = "length" if stop_reason_raw == "max_tokens" else stop_reason_raw
         metadata = ResponseMetadata(
             provider="anthropic-oauth",
             model=raw_response.get("model", self.model_name),
             request_id=raw_response.get("id"),
             usage=usage,
-            finish_reason=raw_response.get("stop_reason"),
+            finish_reason=finish_reason,
             response_time=response_time,
-            stop_reason=raw_response.get("stop_reason"),
+            stop_reason=stop_reason_raw,
         )
+
+        # A truncation that produced NO output at all gets the cross-adapter
+        # placeholder (openai.py's convention) so callers see one shape, never None.
+        if not text_content and not tool_calls and finish_reason == "length":
+            text_content = (
+                "[Response truncated due to token limit. Please increase max_tokens "
+                "or continue the conversation.]"
+            )
 
         # Build response
         return HarmonizedResponse(
@@ -819,6 +870,12 @@ class AnthropicOAuthAdapter(APIProviderAdapter):
                 raise ModelAPIError.from_provider_response(
                     provider="anthropic-oauth",
                     response=raw_response,
+                )
+
+            if raw_response.get("error"):
+                raise ModelAPIError.from_provider_response(
+                    provider="anthropic-oauth",
+                    response=self._stream_error_payload(raw_response),
                 )
 
             # Reverse transform tool names before harmonization
@@ -881,6 +938,12 @@ class AsyncAnthropicOAuthAdapter(AsyncBaseAPIAdapter, AnthropicOAuthAdapter):
                 raise ModelAPIError.from_provider_response(
                     provider="anthropic-oauth",
                     response=raw_response,
+                )
+
+            if raw_response.get("error"):
+                raise ModelAPIError.from_provider_response(
+                    provider="anthropic-oauth",
+                    response=self._stream_error_payload(raw_response),
                 )
 
             # Reverse transform tool names before harmonization
