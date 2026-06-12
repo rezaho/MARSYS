@@ -76,7 +76,13 @@ class HarmonizedResponse(BaseModel):
     tool_calls: List[ToolCall] = Field(default_factory=list)
     reasoning: Optional[str] = None  # For o1 models or reasoning traces
     thinking: Optional[str] = None  # For thinking/planning content
-    reasoning_details: Optional[List[Dict[str, Any]]] = None  # For Gemini 3 thought signatures
+    # Opaque provider reasoning blocks that must round-trip VERBATIM on the
+    # next request: Gemini 3 thought signatures ({"type": "text"|"function_call",
+    # "thought_signature": ...}) and Anthropic extended-thinking blocks
+    # ({"type": "thinking", "thinking", "signature"} / {"type":
+    # "redacted_thinking", "data"}). Type-discriminated — each provider's
+    # payload builder re-emits only its own block types.
+    reasoning_details: Optional[List[Dict[str, Any]]] = None
     metadata: ResponseMetadata
     
     @field_validator('role')

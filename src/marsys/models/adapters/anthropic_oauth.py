@@ -651,11 +651,18 @@ class AnthropicOAuthAdapter(APIProviderAdapter):
         return result
 
     async def _async_stream_response(
-        self, endpoint: str, headers: Dict[str, str], payload: Dict[str, Any]
+        self,
+        endpoint: str,
+        headers: Dict[str, str],
+        payload: Dict[str, Any],
+        on_stream_event=None,
     ) -> Dict[str, Any]:
         """
         Handle async streaming response from Claude API using httpx.
         Collects all SSE events and assembles final response.
+        ``on_stream_event`` surfaces text/thinking deltas to the caller
+        (``adapters.streaming.StreamTap`` contract: a raising tap is logged
+        and disabled, never failing the call).
         """
         try:
             import httpx
@@ -664,6 +671,21 @@ class AnthropicOAuthAdapter(APIProviderAdapter):
                 "httpx is required for Anthropic OAuth adapter. "
                 "Install with: pip install httpx"
             )
+
+        from marsys.models.adapters.streaming import StreamEvent
+
+        def _tap(kind: str, delta: str) -> None:
+            nonlocal on_stream_event
+            if on_stream_event is None or not delta:
+                return
+            try:
+                on_stream_event(StreamEvent(kind=kind, delta=delta))
+            except Exception:
+                logger.warning(
+                    "stream tap raised; disabling observation for this call",
+                    exc_info=True,
+                )
+                on_stream_event = None
 
         result = {
             "text": "",
@@ -713,9 +735,13 @@ class AnthropicOAuthAdapter(APIProviderAdapter):
                             delta_type = delta.get("type")
 
                             if delta_type == "text_delta":
-                                result["text"] += delta.get("text", "")
+                                text = delta.get("text", "")
+                                result["text"] += text
+                                _tap("text_delta", text)
                             elif delta_type == "thinking_delta":
-                                result["thinking"] += delta.get("thinking", "")
+                                text = delta.get("thinking", "")
+                                result["thinking"] += text
+                                _tap("thinking_delta", text)
                             elif delta_type == "input_json_delta" and current_tool:
                                 current_tool["input"] += delta.get("partial_json", "")
 
@@ -913,12 +939,17 @@ class AsyncAnthropicOAuthAdapter(AsyncBaseAPIAdapter, AnthropicOAuthAdapter):
         # Initialize session from AsyncBaseAPIAdapter
         self._session = None
 
-    async def arun_streaming(self, messages: List[Dict], **kwargs) -> HarmonizedResponse:
+    async def arun_streaming(
+        self, messages: List[Dict], on_stream_event=None, **kwargs
+    ) -> HarmonizedResponse:
         """
         Execute async API request with streaming using httpx.
 
         Claude OAuth uses SSE streaming, so we collect all events
-        and return the final harmonized response.
+        and return the final harmonized response. ``on_stream_event`` is the
+        caller's delta tap (``adapters.streaming.StreamTap``) — tap-only
+        adoption here; the structural thinking-block capture stays with the
+        API-key adapter (this adapter's reader flattens thinking to text).
         """
         from marsys.agents.exceptions import ModelAPIError
 
@@ -932,7 +963,9 @@ class AsyncAnthropicOAuthAdapter(AsyncBaseAPIAdapter, AnthropicOAuthAdapter):
             payload = self.format_request_payload(messages, **kwargs)
             endpoint = self.get_endpoint_url()
 
-            raw_response = await self._async_stream_response(endpoint, headers, payload)
+            raw_response = await self._async_stream_response(
+                endpoint, headers, payload, on_stream_event=on_stream_event
+            )
 
             if not isinstance(raw_response, dict):
                 raise ModelAPIError.from_provider_response(

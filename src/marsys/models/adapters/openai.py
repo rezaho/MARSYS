@@ -2,9 +2,18 @@ import json
 import logging
 import time
 import warnings
-from typing import Any, Dict, List
+from typing import Any, Callable, Dict, List, Optional
 
-from marsys.models.adapters.base import APIProviderAdapter, AsyncBaseAPIAdapter
+from marsys.models.adapters.base import (
+    APIProviderAdapter,
+    AsyncBaseAPIAdapter,
+    _CapturedErrorResponse,
+    _resolve_retry_params,
+)
+from marsys.models.adapters.streaming import (
+    ResponsesStreamAccumulator,
+    stream_error_payload,
+)
 from marsys.models.response_models import (
     ErrorResponse,
     HarmonizedResponse,
@@ -472,5 +481,115 @@ class OpenAIAdapter(APIProviderAdapter):
 
 
 class AsyncOpenAIAdapter(AsyncBaseAPIAdapter, OpenAIAdapter):
-    """Async version of OpenAI adapter using aiohttp."""
-    pass
+    """Async version of OpenAI adapter using aiohttp.
+
+    Streaming is OPT-IN per instance (``streaming=True`` ctor kwarg), same
+    contract as ``AsyncAnthropicAdapter``: class default False, sync twin
+    ignores the kwarg, existing constructions unchanged.
+    """
+
+    _STREAM_OPEN_RETRYABLE = frozenset({429, 500, 502, 503, 504, 529, 408})
+
+    def __init__(self, *args, **kwargs):
+        opt_streaming = kwargs.pop("streaming", None)
+        super().__init__(*args, **kwargs)
+        if opt_streaming is not None:
+            self.streaming = bool(opt_streaming)
+
+    async def arun_streaming(
+        self,
+        messages: List[Dict],
+        on_stream_event: Optional[Callable[[Any], None]] = None,
+        **kwargs,
+    ) -> HarmonizedResponse:
+        """Streaming Responses-API call. The terminal ``response.completed``
+        event carries the full response object — the EXACT shape the
+        non-streaming ``harmonize_response`` parses, so both paths share one
+        harmonization. Deltas (output text + reasoning summaries) surface to
+        ``on_stream_event`` in arrival order.
+        """
+        import asyncio
+
+        import aiohttp
+
+        from marsys.agents.exceptions import ModelAPIError
+
+        request_start_time = time.time()
+        payload = self.format_request_payload(messages, **kwargs)
+        payload["stream"] = True
+        headers = self.get_headers()
+        url = self.get_endpoint_url()
+        session = await self._ensure_session()
+        params = _resolve_retry_params(self.error_config, self._provider_name())
+        max_retries = params["max_retries"]
+        # No total cap (reasoning streams run long); a stalled socket is the
+        # failure mode — sock_read bounds the inter-event gap.
+        timeout = aiohttp.ClientTimeout(total=None, sock_connect=30, sock_read=120)
+
+        for attempt in range(max_retries + 1):
+            acc = ResponsesStreamAccumulator(on_stream_event=on_stream_event)
+            async with session.post(
+                url, headers=headers, json=payload, timeout=timeout
+            ) as response:
+                if response.status != 200:
+                    from multidict import CIMultiDict
+
+                    try:
+                        body = await response.json(content_type=None)
+                    except Exception:
+                        body = None
+                    shim = _CapturedErrorResponse(
+                        status_code=response.status,
+                        body=body,
+                        headers=CIMultiDict(response.headers),
+                    )
+                    if (
+                        response.status in self._STREAM_OPEN_RETRYABLE
+                        and attempt < max_retries
+                    ):
+                        delay = APIProviderAdapter._compute_backoff_delay(attempt, params)
+                        retry_after = response.headers.get("retry-after")
+                        if retry_after:
+                            try:
+                                delay = max(delay, float(retry_after))
+                            except ValueError:
+                                pass
+                        logger.warning(
+                            "stream open failed (%s) for %s; retry %d/%d after %.1fs",
+                            response.status, self.model_name, attempt + 1, max_retries, delay,
+                        )
+                        await asyncio.sleep(delay)
+                        continue
+                    try:
+                        response.raise_for_status()
+                    except Exception as exc:
+                        return self.handle_api_error(exc, response=shim)
+
+                async for raw_line in response.content:
+                    if not acc.feed_line(raw_line.decode("utf-8", "replace")):
+                        break
+
+            if acc.error is not None:
+                raise ModelAPIError.from_provider_response(
+                    provider=self._provider_name() or "openai",
+                    response=stream_error_payload(acc.error, acc.partial_chars),
+                )
+
+            completed = acc.to_rest_response()
+            if completed is None:
+                # The stream closed without a terminal response.completed /
+                # response.failed — a transport-level truncation. Terminal by
+                # the same contract as an in-stream error (partials drop).
+                raise ModelAPIError.from_provider_response(
+                    provider=self._provider_name() or "openai",
+                    response=stream_error_payload(
+                        {"type": "incomplete_stream", "message": "stream ended without completion"},
+                        acc.partial_chars,
+                    ),
+                )
+            return self.harmonize_response(completed, request_start_time)
+
+        raise ModelAPIError.from_provider_response(  # pragma: no cover — loop always returns/raises
+            provider=self._provider_name() or "openai",
+            response=stream_error_payload({"type": "max_retries"}, 0),
+        )

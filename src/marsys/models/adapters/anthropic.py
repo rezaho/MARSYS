@@ -1,9 +1,19 @@
 import json
 import logging
 import time
-from typing import Any, Dict, List
+import warnings
+from typing import Any, Callable, Dict, List, Optional
 
-from marsys.models.adapters.base import APIProviderAdapter, AsyncBaseAPIAdapter
+from marsys.models.adapters.base import (
+    APIProviderAdapter,
+    AsyncBaseAPIAdapter,
+    _CapturedErrorResponse,
+    _resolve_retry_params,
+)
+from marsys.models.adapters.streaming import (
+    AnthropicStreamAccumulator,
+    stream_error_payload,
+)
 from marsys.models.response_models import (
     ErrorResponse,
     HarmonizedResponse,
@@ -140,7 +150,47 @@ class AnthropicAdapter(APIProviderAdapter):
 
         return converted_content
 
+    # Anthropic's documented bounds: budget_tokens >= 1024, and budget_tokens
+    # must be strictly less than max_tokens (thinking spends from the same
+    # output allowance). Headroom keeps a usable text/tool allowance after a
+    # maximally-thinky step.
+    _THINKING_MIN_BUDGET = 1024
+    _THINKING_HEADROOM = 1024
+
+    def _thinking_payload(self, kwargs: Dict[str, Any]) -> Optional[Dict[str, Any]]:
+        """Extended-thinking enablement for this call, or None.
+
+        Convention (models.py BaseAPIModel): a positive ``thinking_budget``
+        enables thinking; 0/None disables. ``BaseAPIModel.arun`` auto-injects
+        the instance's budget into every call's kwargs, so per-call and
+        per-instance configuration arrive through the SAME key. The budget is
+        clamped under max_tokens (the API 400s otherwise); a max_tokens too
+        small to leave the minimum budget disables thinking with a warning
+        rather than failing the call.
+        """
+        budget = kwargs.get("thinking_budget")
+        if not isinstance(budget, int) or budget <= 0:
+            return None
+        max_tokens = kwargs.get("max_tokens") or self.max_tokens
+        clamped = min(budget, max_tokens - self._THINKING_HEADROOM)
+        if clamped < self._THINKING_MIN_BUDGET:
+            warnings.warn(
+                f"thinking_budget={budget} cannot fit under max_tokens={max_tokens} "
+                f"(min budget {self._THINKING_MIN_BUDGET} + headroom); thinking disabled for this call"
+            )
+            return None
+        if clamped < budget:
+            warnings.warn(
+                f"thinking_budget={budget} clamped to {clamped} to fit under max_tokens={max_tokens}"
+            )
+        return {"type": "enabled", "budget_tokens": clamped}
+
     def format_request_payload(self, messages: List[Dict], **kwargs) -> Dict[str, Any]:
+        # Resolved first: the assistant-message rebuild below must know whether
+        # thinking is on (thinking blocks are re-emitted only when the API will
+        # verify them; with thinking off they are not required and not sent).
+        thinking_payload = self._thinking_payload(kwargs)
+
         # Extract system message if present (Claude handles it differently)
         system_message = None
         user_messages = []
@@ -166,6 +216,23 @@ class AnthropicAdapter(APIProviderAdapter):
                 # OpenAI: {"role": "assistant", "content": "...", "tool_calls": [...]}
                 # Anthropic: {"role": "assistant", "content": [{"type": "text", "text": "..."}, {"type": "tool_use", ...}]}
                 content_blocks = []
+
+                # Thinking round-trip (required for tool use under extended
+                # thinking): the assistant turn's thinking/redacted_thinking
+                # blocks — carried on the message as ``reasoning_details``
+                # (the same opaque-blocks channel Gemini thought signatures
+                # ride; Message.to_llm_dict re-emits the key) — go back FIRST
+                # and VERBATIM; the API verifies each block's signature and
+                # 400s on any modification. Only when thinking is enabled for
+                # THIS call: with thinking off the blocks are neither required
+                # nor sent, so a kill-switch flip mid-conversation stays valid.
+                if thinking_payload is not None:
+                    for block in msg.get("reasoning_details") or []:
+                        if isinstance(block, dict) and block.get("type") in (
+                            "thinking",
+                            "redacted_thinking",
+                        ):
+                            content_blocks.append(block)
 
                 # Add text content if present
                 text_content = msg.get("content")
@@ -223,10 +290,15 @@ class AnthropicAdapter(APIProviderAdapter):
         # the request when temperature is present — see
         # `_anthropic_model_rejects_temperature`.
         temperature = kwargs.get("temperature")
-        if temperature is not None and not _anthropic_model_rejects_temperature(
-            self.model_name
+        if (
+            temperature is not None
+            and thinking_payload is None  # thinking forbids sampling params (API 400)
+            and not _anthropic_model_rejects_temperature(self.model_name)
         ):
             payload["temperature"] = temperature
+
+        if thinking_payload is not None:
+            payload["thinking"] = thinking_payload
 
         if system_message:
             payload["system"] = system_message
@@ -317,13 +389,34 @@ class AnthropicAdapter(APIProviderAdapter):
 
         content_blocks = raw_response.get("content", [])
 
-        # Extract text content and tool calls
+        # Extract text content, tool calls, and extended-thinking blocks
         text_content = ""
         tool_calls = []
+        thinking_parts: List[str] = []
+        # Structural blocks ride ``reasoning_details`` — the existing
+        # opaque-provider-blocks carrier (Gemini thought signatures use it the
+        # same way). Preserved VERBATIM incl. signatures: the round-trip
+        # re-emission in format_request_payload sends them back and the API
+        # verifies them. ``redacted_thinking`` is encrypted — no text to show,
+        # but the block must still round-trip.
+        reasoning_details: List[Dict[str, Any]] = []
 
         for block in content_blocks:
             if block.get("type") == "text":
                 text_content += block.get("text", "")
+            elif block.get("type") == "thinking":
+                thinking_parts.append(block.get("thinking", ""))
+                reasoning_details.append(
+                    {
+                        "type": "thinking",
+                        "thinking": block.get("thinking", ""),
+                        "signature": block.get("signature", ""),
+                    }
+                )
+            elif block.get("type") == "redacted_thinking":
+                reasoning_details.append(
+                    {"type": "redacted_thinking", "data": block.get("data", "")}
+                )
             elif block.get("type") == "tool_use":
                 # Convert Claude tool use to standardized format
                 tool_calls.append(
@@ -377,15 +470,141 @@ class AnthropicAdapter(APIProviderAdapter):
                 "or continue the conversation.]"
             )
 
+        content = text_content if text_content else None
+        # Thinking-only response (the latent gap anthropic_oauth.py:766 records,
+        # reachable now that thinking is enableable): the validator requires
+        # content-or-tool_calls and ignores thinking. An empty STRING is a valid
+        # content shape (the None check is what fails), so a response that is
+        # all thinking harmonizes instead of dying in validation.
+        if content is None and not tool_calls and (thinking_parts or reasoning_details):
+            content = ""
+
         # Build harmonized response
         return HarmonizedResponse(
             role=raw_response.get("role", "assistant"),
-            content=text_content if text_content else None,
+            content=content,
             tool_calls=tool_calls,
+            thinking="\n\n".join(p for p in thinking_parts if p) or None,
+            reasoning_details=reasoning_details or None,
             metadata=metadata,
         )
 
 
 class AsyncAnthropicAdapter(AsyncBaseAPIAdapter, AnthropicAdapter):
-    """Async version of Anthropic adapter using aiohttp."""
-    pass
+    """Async version of Anthropic adapter using aiohttp.
+
+    Streaming is OPT-IN per instance (``streaming=True`` ctor kwarg): the
+    class default stays False so every existing construction keeps the
+    request/response path unchanged. The sync ``AnthropicAdapter`` ignores the
+    kwarg (sync streaming is not implemented; ``BaseAPIModel`` constructs both
+    twins with the same kwargs, and only the async one honors it).
+    """
+
+    # Retryable-at-open statuses — the same set the non-streaming path retries
+    # (base.py _arun_standard). Open-failures happen BEFORE any delta is
+    # emitted, so a retry never duplicates tap events; once the stream is
+    # open, a failure is terminal (recovery is a NEW request; partials drop).
+    _STREAM_OPEN_RETRYABLE = frozenset({429, 500, 502, 503, 504, 529, 408})
+
+    def __init__(self, *args, **kwargs):
+        opt_streaming = kwargs.pop("streaming", None)
+        super().__init__(*args, **kwargs)
+        if opt_streaming is not None:
+            self.streaming = bool(opt_streaming)
+
+    async def arun_streaming(
+        self,
+        messages: List[Dict],
+        on_stream_event: Optional[Callable[[Any], None]] = None,
+        **kwargs,
+    ) -> HarmonizedResponse:
+        """Streaming Messages-API call: SSE events are accumulated back into
+        the REST response shape and harmonized by the SAME
+        ``harmonize_response`` the non-streaming path uses (parity by
+        construction); deltas surface to ``on_stream_event`` in arrival order.
+        """
+        import asyncio
+
+        import aiohttp
+
+        from marsys.agents.exceptions import ModelAPIError
+
+        request_start_time = time.time()
+        payload = self.format_request_payload(messages, **kwargs)
+        payload["stream"] = True
+        headers = self.get_headers()
+        url = self.get_endpoint_url()
+        session = await self._ensure_session()
+        params = _resolve_retry_params(self.error_config, self._provider_name())
+        max_retries = params["max_retries"]
+
+        # Streaming timeout: no TOTAL cap (a long thinking+output stream can
+        # legitimately run many minutes); a stalled SOCKET is the failure mode,
+        # so sock_read bounds the gap between events instead.
+        timeout = aiohttp.ClientTimeout(total=None, sock_connect=30, sock_read=120)
+
+        for attempt in range(max_retries + 1):
+            acc = AnthropicStreamAccumulator(on_stream_event=on_stream_event)
+            async with session.post(
+                url, headers=headers, json=payload, timeout=timeout
+            ) as response:
+                if response.status != 200:
+                    # Same body-capture discipline as _arun_standard: the body
+                    # is unrecoverable after the frame closes.
+                    from multidict import CIMultiDict
+
+                    try:
+                        body = await response.json(content_type=None)
+                    except Exception:
+                        body = None
+                    shim = _CapturedErrorResponse(
+                        status_code=response.status,
+                        body=body,
+                        headers=CIMultiDict(response.headers),
+                    )
+                    if (
+                        response.status in self._STREAM_OPEN_RETRYABLE
+                        and attempt < max_retries
+                    ):
+                        delay = APIProviderAdapter._compute_backoff_delay(attempt, params)
+                        retry_after = response.headers.get(
+                            "x-ratelimit-reset-after"
+                        ) or response.headers.get("retry-after")
+                        if retry_after:
+                            try:
+                                delay = max(delay, float(retry_after))
+                            except ValueError:
+                                pass
+                        logger.warning(
+                            "stream open failed (%s) for %s; retry %d/%d after %.1fs",
+                            response.status, self.model_name, attempt + 1, max_retries, delay,
+                        )
+                        await asyncio.sleep(delay)
+                        continue
+                    try:
+                        response.raise_for_status()
+                    except Exception as exc:
+                        # Classified like every other provider error; critical
+                        # raises, retryable-but-exhausted returns ErrorResponse
+                        # (models.py converts it to a raised ModelAPIError).
+                        return self.handle_api_error(exc, response=shim)
+
+                async for raw_line in response.content:
+                    if not acc.feed_line(raw_line.decode("utf-8", "replace")):
+                        break
+
+            if acc.error is not None:
+                # In-stream SSE failure under HTTP 200 — terminal by the
+                # stream-failure contract: partials are discarded, the REAL
+                # provider error is classified, and recovery is a new request.
+                raise ModelAPIError.from_provider_response(
+                    provider=self._provider_name() or "anthropic",
+                    response=stream_error_payload(acc.error, acc.partial_chars),
+                )
+
+            return self.harmonize_response(acc.to_rest_response(), request_start_time)
+
+        raise ModelAPIError.from_provider_response(  # pragma: no cover — loop always returns/raises
+            provider=self._provider_name() or "anthropic",
+            response=stream_error_payload({"type": "max_retries"}, 0),
+        )

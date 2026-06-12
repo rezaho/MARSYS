@@ -4,7 +4,7 @@ import json
 import logging
 import time
 from abc import ABC, abstractmethod
-from typing import Any, Dict, List, Optional, TYPE_CHECKING
+from typing import Any, Callable, Dict, List, Optional, TYPE_CHECKING
 
 import requests
 
@@ -191,6 +191,9 @@ class APIProviderAdapter(ABC):
         If streaming is enabled, delegates to run_streaming().
         Otherwise uses standard request/response flow.
         """
+        # The delta tap is an async-path affordance; popped here so the sync
+        # path never leaks it into payload builders (which warn on unknowns).
+        kwargs.pop("on_stream_event", None)
         if self.streaming:
             return self.run_streaming(messages, **kwargs)
         return self._run_standard(messages, **kwargs)
@@ -492,14 +495,19 @@ class AsyncBaseAPIAdapter(APIProviderAdapter):
         """
         # ``trace_ctx`` rides in as a kwarg and is popped here so it never leaks
         # into ``format_request_payload``; the standard path receives it back as
-        # an explicit parameter.
+        # an explicit parameter. ``on_stream_event`` (the caller's delta tap)
+        # gets the same treatment — adapters' payload builders warn on unknown
+        # params, so it must never reach them via **kwargs.
         trace_ctx = kwargs.pop("trace_ctx", None)
+        on_stream_event = kwargs.pop("on_stream_event", None)
         if self.streaming:
             from marsys.coordination.tracing.capture import emit_llm_call
             base = self._trace_call_base(messages, **kwargs)
             start = time.time()
             try:
-                result = await self.arun_streaming(messages, **kwargs)
+                result = await self.arun_streaming(
+                    messages, on_stream_event=on_stream_event, **kwargs
+                )
             except BaseException as e:
                 await emit_llm_call(trace_ctx, **base, start=start, error=e)
                 raise
@@ -510,11 +518,20 @@ class AsyncBaseAPIAdapter(APIProviderAdapter):
             return result
         return await self._arun_standard(messages, trace_ctx=trace_ctx, **kwargs)
 
-    async def arun_streaming(self, messages: List[Dict], **kwargs) -> HarmonizedResponse:
+    async def arun_streaming(
+        self,
+        messages: List[Dict],
+        on_stream_event: Optional[Callable[[Any], None]] = None,
+        **kwargs,
+    ) -> HarmonizedResponse:
         """
         Execute async API request with streaming.
 
         Subclasses that set streaming=True must implement this method.
+        ``on_stream_event`` is the caller's delta tap (see
+        ``adapters.streaming.StreamTap``) — implementations forward stream
+        deltas to it in arrival order; ``None`` means accumulate silently
+        (behavior identical to a non-tapped call).
 
         Raises:
             NotImplementedError: If streaming is enabled but not implemented

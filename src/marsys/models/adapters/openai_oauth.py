@@ -517,11 +517,18 @@ class OpenAIOAuthAdapter(APIProviderAdapter):
         }
 
     async def _async_stream_response(
-        self, endpoint: str, headers: Dict[str, str], payload: Dict[str, Any]
+        self,
+        endpoint: str,
+        headers: Dict[str, str],
+        payload: Dict[str, Any],
+        on_stream_event=None,
     ) -> Dict[str, Any]:
         """
         Handle streaming response from ChatGPT backend.
         Collects all SSE events and assembles final response.
+        ``on_stream_event`` surfaces text/reasoning deltas to the caller
+        (``adapters.streaming.StreamTap`` contract: a raising tap is logged
+        and disabled, never failing the call).
 
         Event types from ChatGPT backend:
         - response.created: Contains response ID and model
@@ -540,6 +547,21 @@ class OpenAIOAuthAdapter(APIProviderAdapter):
                 "httpx is required for OpenAI OAuth adapter. "
                 "Install with: pip install httpx"
             )
+
+        from marsys.models.adapters.streaming import StreamEvent
+
+        def _tap(kind: str, delta: str) -> None:
+            nonlocal on_stream_event
+            if on_stream_event is None or not delta:
+                return
+            try:
+                on_stream_event(StreamEvent(kind=kind, delta=delta))
+            except Exception:
+                logger.warning(
+                    "stream tap raised; disabling observation for this call",
+                    exc_info=True,
+                )
+                on_stream_event = None
 
         collected_content = ""
         collected_reasoning = []
@@ -591,7 +613,18 @@ class OpenAIOAuthAdapter(APIProviderAdapter):
 
                         elif event_type == "response.output_text.delta":
                             # Text content delta
-                            collected_content += event.get("delta", "")
+                            text = event.get("delta", "")
+                            collected_content += text
+                            _tap("text_delta", text)
+
+                        elif event_type in (
+                            "response.reasoning_summary_text.delta",
+                            "response.reasoning_text.delta",
+                        ):
+                            # Reasoning summary delta — observable trace only;
+                            # the terminal reasoning extraction below is
+                            # unchanged (it reads response.completed items).
+                            _tap("thinking_delta", event.get("delta", ""))
 
                         elif event_type == "response.function_call_arguments.delta":
                             # Tool call argument delta - stream into existing tool call
@@ -808,12 +841,15 @@ class AsyncOpenAIOAuthAdapter(AsyncBaseAPIAdapter, OpenAIOAuthAdapter):
         # Initialize session from AsyncBaseAPIAdapter
         self._session = None
 
-    async def arun_streaming(self, messages: List[Dict], **kwargs) -> HarmonizedResponse:
+    async def arun_streaming(
+        self, messages: List[Dict], on_stream_event=None, **kwargs
+    ) -> HarmonizedResponse:
         """
         Execute async API request with streaming using httpx.
 
         ChatGPT backend REQUIRES streaming, so we collect all SSE events
-        and return the final harmonized response.
+        and return the final harmonized response. ``on_stream_event`` is the
+        caller's delta tap (``adapters.streaming.StreamTap``).
         """
         from marsys.agents.exceptions import ModelAPIError
 
@@ -826,7 +862,9 @@ class AsyncOpenAIOAuthAdapter(AsyncBaseAPIAdapter, OpenAIOAuthAdapter):
             headers = self.get_headers()
             endpoint = self.get_endpoint_url()
 
-            raw_response = await self._async_stream_response(endpoint, headers, payload)
+            raw_response = await self._async_stream_response(
+                endpoint, headers, payload, on_stream_event=on_stream_event
+            )
 
             if not isinstance(raw_response, dict):
                 raise ModelAPIError.from_provider_response(
