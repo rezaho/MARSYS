@@ -130,6 +130,7 @@ def _oauth_adapter(max_tokens: int = 8192) -> AnthropicOAuthAdapter:
     ``format_request_payload`` reads only the config attrs set here."""
     adapter = object.__new__(AnthropicOAuthAdapter)
     adapter.model_name = "claude-haiku-4-5-20251001"
+    adapter.auto_refresh = False  # no credentials on disk in this harness
     adapter.max_tokens = max_tokens
     adapter.temperature = 0.7
     adapter.enable_thinking = False

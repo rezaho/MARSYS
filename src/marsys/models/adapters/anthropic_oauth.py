@@ -183,18 +183,25 @@ class AnthropicOAuthAdapter(APIProviderAdapter):
     def _ensure_fresh_token(self) -> None:
         """Refresh the OAuth token if near expiry AND reload it into ``self.access_token``.
 
-        The daemon's adapter is long-lived: the token loaded at ``__init__`` eventually
-        expires and every request then 401s. ``_refresh_token_if_needed`` rewrites the
-        credentials file but does NOT touch ``self.access_token`` (which ``get_headers``
-        sends), so we must reload after a refresh. Cheap when the token is still valid —
-        the refresher short-circuits on a timestamp check.
+        The credentials file is the single source of truth and it is MULTI-WRITER:
+        the sibling adapter instances in the same process (each ``BaseAPIModel``
+        builds a sync and an async adapter, each with its own cached token) and
+        the Claude Code CLI on the same machine all refresh it. ``self.access_token``
+        is therefore a per-request snapshot, reloaded unconditionally — reloading
+        only after a self-performed refresh leaves this instance sending its stale
+        boot-time token forever once ANY other writer refreshes the file (the
+        refresher short-circuits on the file's freshness, not this cache's).
+        ``refresh_if_needed`` already opens and parses this same file per call,
+        so the reload adds no new class of I/O. On a reload failure (e.g. the
+        file expired AND refresh failed) the prior cache is kept and the request
+        carries the provider's own error — no valid token exists in that state.
         """
         if not self.auto_refresh:
             return
         try:
-            if self._refresh_token_if_needed():
-                self.credentials = self._load_claude_credentials(self._credentials_path)
-                self.access_token = self.credentials["access_token"]
+            self._refresh_token_if_needed()
+            self.credentials = self._load_claude_credentials(self._credentials_path)
+            self.access_token = self.credentials["access_token"]
         except Exception as e:
             logger.warning(f"Anthropic OAuth token refresh/reload failed: {e}")
 
@@ -884,6 +891,12 @@ class AnthropicOAuthAdapter(APIProviderAdapter):
         from marsys.agents.exceptions import ModelAPIError
 
         request_start_time = time.time()
+
+        # Same per-request token invariant as the async path: authorization is
+        # made current per request (the file is the source of truth; the cached
+        # token is a snapshot). Without this, a long-lived sync adapter 401s
+        # unconditionally once its boot-time token expires.
+        self._ensure_fresh_token()
 
         try:
             headers = self.get_headers()

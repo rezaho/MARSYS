@@ -1,13 +1,19 @@
 """OAuth adapters refresh + reload the access token at request time.
 
-Regression for two defects that made a long-lived daemon 401 once its token
+Regression for three defects that made a long-lived daemon 401 once its token
 expired:
 
-1. The token was refreshed only at ``__init__``; ``_refresh_token_if_needed``
-   rewrites the credentials file but does NOT touch the cached
-   ``self.access_token`` that ``get_headers`` sends — so ``_ensure_fresh_token``
-   must reload it after a refresh.
-2. ``OAuthTokenRefresher._update_credential_file`` used a POSIX-only
+1. The token was refreshed only at ``__init__``; nothing on the request path
+   refreshed it (``_ensure_fresh_token`` must run per request, on the sync AND
+   async streaming paths).
+2. The credentials file is MULTI-WRITER (sibling adapter instances in the same
+   process, the claude/codex CLI on the same machine). A reload gated on a
+   self-performed refresh left the cached ``self.access_token`` stale forever
+   once any OTHER writer refreshed the file — ``refresh_if_needed``
+   short-circuits on the FILE's freshness, never this cache's. The reload is
+   therefore unconditional: the file is the source of truth, the attribute a
+   per-request snapshot.
+3. ``OAuthTokenRefresher._update_credential_file`` used a POSIX-only
    ``fcntl`` lock, so on Windows every refresh write raised ``ImportError``
    (swallowed -> refresh silently never happened). It must write
    cross-platform (this test file runs on win32, exercising that path).
@@ -55,14 +61,49 @@ def test_ensure_fresh_token_reloads_access_token_after_refresh():
     assert adapter.access_token == "new-token"
 
 
-def test_ensure_fresh_token_noop_when_token_still_valid():
-    """Refresh returns False (still valid) -> no reload, cached token preserved."""
-    adapter = _anthropic("valid-token")
+def test_ensure_fresh_token_reloads_even_without_a_self_refresh():
+    """THE SECOND-WRITER REGRESSION (deliberate inversion of the former
+    "noop when still valid" test, which pinned the bug): refresh returns False
+    because the FILE is fresh — but another writer (sibling adapter, the CLI)
+    made it so, and this instance's cache is stale. The reload must happen
+    anyway; the file is the source of truth."""
+    adapter = _anthropic("stale-boot-token")
     with patch.object(AnthropicOAuthAdapter, "_refresh_token_if_needed", lambda self: False), patch.object(
-        AnthropicOAuthAdapter, "_load_claude_credentials", lambda self, p=None: {"access_token": "must-not-load"}
+        AnthropicOAuthAdapter,
+        "_load_claude_credentials",
+        lambda self, p=None: {"access_token": "rotated-by-another-writer"},
     ):
         adapter._ensure_fresh_token()
-    assert adapter.access_token == "valid-token"
+    assert adapter.access_token == "rotated-by-another-writer"
+
+
+def test_ensure_fresh_token_keeps_prior_cache_when_reload_fails():
+    """Expired file + failed refresh: the reload raises, the prior cache is
+    kept, and the request carries the provider's own error — no valid token
+    exists in that state, so there is nothing better to send."""
+    def _boom(self, p=None):
+        raise RuntimeError("file expired and refresh failed")
+
+    adapter = _anthropic("last-known-token")
+    with patch.object(AnthropicOAuthAdapter, "_refresh_token_if_needed", lambda self: False), patch.object(
+        AnthropicOAuthAdapter, "_load_claude_credentials", _boom
+    ):
+        adapter._ensure_fresh_token()  # must not raise
+    assert adapter.access_token == "last-known-token"
+
+
+def test_openai_ensure_fresh_token_reloads_even_without_a_self_refresh():
+    """The OpenAI twin of the second-writer regression — including account_id,
+    which get_headers also sends."""
+    adapter = _openai("stale-boot-token")
+    with patch.object(OpenAIOAuthAdapter, "_refresh_token_if_needed", lambda self: False), patch.object(
+        OpenAIOAuthAdapter,
+        "_load_codex_credentials",
+        lambda self, p=None: {"access_token": "rotated", "account_id": "acct-2"},
+    ):
+        adapter._ensure_fresh_token()
+    assert adapter.access_token == "rotated"
+    assert adapter.account_id == "acct-2"
 
 
 def test_ensure_fresh_token_disabled_when_auto_refresh_false():
@@ -129,6 +170,43 @@ async def test_openai_async_request_path_refreshes_token_per_request():
     except Exception:
         pass
     assert calls, "arun_streaming never invoked _ensure_fresh_token"
+
+
+def test_anthropic_sync_request_path_refreshes_token_per_request():
+    """The sync streaming path is live in production (StructuredLLM /
+    consolidation route through BaseAPIModel.run -> run_streaming) and never
+    refreshed — it 401'd unconditionally once the boot token expired."""
+    adapter = _anthropic("tok")
+
+    calls = []
+
+    def spy():
+        calls.append(1)
+        raise RuntimeError("short-circuit before any network I/O")
+
+    adapter._ensure_fresh_token = spy
+    try:
+        adapter.run_streaming([{"role": "user", "content": "hi"}])
+    except Exception:
+        pass  # only the invocation matters
+    assert calls, "run_streaming never invoked _ensure_fresh_token"
+
+
+def test_openai_sync_request_path_refreshes_token_per_request():
+    adapter = _openai("tok")
+
+    calls = []
+
+    def spy():
+        calls.append(1)
+        raise RuntimeError("short-circuit before any network I/O")
+
+    adapter._ensure_fresh_token = spy
+    try:
+        adapter.run_streaming([{"role": "user", "content": "hi"}])
+    except Exception:
+        pass
+    assert calls, "run_streaming never invoked _ensure_fresh_token"
 
 
 def test_update_credential_file_writes_without_posix_lock(tmp_path: Path):

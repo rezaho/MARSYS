@@ -128,17 +128,21 @@ class OpenAIOAuthAdapter(APIProviderAdapter):
             return False
 
     def _ensure_fresh_token(self) -> None:
-        """Refresh + reload the OAuth token (same long-lived-daemon frozen-token defect as
-        the Anthropic adapter). ``_refresh_token_if_needed`` rewrites the credentials file
-        but not ``self.access_token`` (which ``get_headers`` sends), so reload after a refresh.
+        """Refresh + reload the OAuth token (the Anthropic adapter's twin).
+
+        The credentials file is multi-writer (sibling adapter instances, the
+        codex CLI), so ``self.access_token``/``self.account_id`` are per-request
+        snapshots reloaded unconditionally — a reload gated on a self-performed
+        refresh leaves this instance sending its stale boot-time token forever
+        once any other writer refreshes the file.
         """
         if not self.auto_refresh:
             return
         try:
-            if self._refresh_token_if_needed():
-                self.credentials = self._load_codex_credentials(self._credentials_path)
-                self.access_token = self.credentials["access_token"]
-                self.account_id = self.credentials["account_id"]
+            self._refresh_token_if_needed()
+            self.credentials = self._load_codex_credentials(self._credentials_path)
+            self.access_token = self.credentials["access_token"]
+            self.account_id = self.credentials["account_id"]
         except Exception as e:
             logger.warning(f"OpenAI OAuth token refresh/reload failed: {e}")
 
@@ -372,6 +376,10 @@ class OpenAIOAuthAdapter(APIProviderAdapter):
         from marsys.agents.exceptions import ModelAPIError
 
         request_start_time = time.time()
+
+        # Same per-request token invariant as the async path (authorization is
+        # made current per request; the file is the source of truth).
+        self._ensure_fresh_token()
 
         try:
             payload = self.format_request_payload(messages, **kwargs)
