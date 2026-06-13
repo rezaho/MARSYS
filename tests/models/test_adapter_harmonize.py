@@ -279,3 +279,210 @@ def test_anthropic_truncation_empty_harmonizes_valid_with_placeholder():
     assert resp.metadata.finish_reason == "length"
     assert resp.metadata.stop_reason == "max_tokens"
     assert resp.content and "truncated" in resp.content
+
+
+# ── Empty-but-successful terminals (2026-06-12) ─────────────────────────────────────
+# Sequel to the stream-failure contract above. A SUCCESSFUL HTTP-200 stream that
+# legitimately produces no content — stop_reason `refusal`, an empty `end_turn`, an
+# empty `model_context_window_exceeded`, or a stream that closed without a terminal —
+# used to construct HarmonizedResponse(content=None), die in the model validator, and
+# surface as an UNKNOWN ValidationError with the provider's terminal signal destroyed
+# (the boot-replay crash). Contract now: deterministic truncation (max_tokens AND
+# model_context_window_exceeded) takes the placeholder; every OTHER empty terminal
+# raises a typed ModelAPIError classified by stop_reason. stop_details is nullable
+# decoration: captured by the readers, surfaced in messages, never keyed on.
+
+
+def _empty_oauth_raw(stop_reason, stop_details=None, **overrides):
+    """Accumulated-reader shape for a stream that produced no content. The id is
+    a probe: nothing but the terminal signal may travel into error messages."""
+    raw = {"text": "", "thinking": "", "tool_use": [], "usage": {},
+           "stop_reason": stop_reason, "stop_details": stop_details,
+           "model": "m", "id": "msg_PROBE_zq91"}
+    raw.update(overrides)
+    return raw
+
+
+def test_oauth_empty_refusal_raises_typed_refusal_with_decoration():
+    """Empty stream + refusal → typed ModelAPIError (not a ValidationError, not
+    UNKNOWN), non-retryable, carrying the refusal fact + stop_details category —
+    and nothing else from the raw response."""
+    with pytest.raises(ModelAPIError) as exc:
+        _oauth_adapter().harmonize_response(
+            _empty_oauth_raw("refusal", {"category": "abuse_or_harm",
+                                         "explanation": "declined by policy"}),
+            request_start_time=0.0,
+        )
+    err = exc.value
+    assert err.classification == APIErrorClassification.REFUSAL.value
+    assert err.classification != APIErrorClassification.UNKNOWN.value
+    assert err.is_retryable is False
+    assert "refus" in str(err).lower()             # the real fact
+    assert "abuse_or_harm" in str(err)             # stop_details decoration
+    assert "declined by policy" in str(err)
+    assert "msg_PROBE_zq91" not in str(err)        # terminal signal only, no raw leakage
+
+
+def test_oauth_empty_refusal_without_stop_details_still_classifies():
+    """stop_details is nullable decoration — absent/None must not KeyError; the
+    message simply omits the category."""
+    with pytest.raises(ModelAPIError) as exc:
+        _oauth_adapter().harmonize_response(_empty_oauth_raw("refusal"), request_start_time=0.0)
+    err = exc.value
+    assert err.classification == APIErrorClassification.REFUSAL.value
+    assert err.is_retryable is False
+    assert "category" not in str(err)
+
+
+def test_oauth_empty_end_turn_raises_typed_with_recovery_action():
+    """Empty end_turn is non-retryable (Anthropic: don't retry empty responses
+    without modification); the suggested action carries the documented recovery."""
+    with pytest.raises(ModelAPIError) as exc:
+        _oauth_adapter().harmonize_response(_empty_oauth_raw("end_turn"), request_start_time=0.0)
+    err = exc.value
+    assert err.classification == APIErrorClassification.EMPTY_COMPLETION.value
+    assert err.is_retryable is False
+    assert "end_turn" in str(err)
+    assert "modif" in (err.suggested_action or "").lower()
+
+
+@pytest.mark.parametrize("stop_reason", [None, "stop_sequence", "never_seen_terminal"])
+def test_oauth_empty_other_terminals_are_retryable_transient(stop_reason):
+    """stop_sequence, unknown stop reasons, and a stream that closed without ANY
+    terminal (stop_reason None) are transient: typed, classified, retryable."""
+    with pytest.raises(ModelAPIError) as exc:
+        _oauth_adapter().harmonize_response(_empty_oauth_raw(stop_reason), request_start_time=0.0)
+    err = exc.value
+    assert err.classification == APIErrorClassification.EMPTY_COMPLETION.value
+    assert err.is_retryable is True
+
+
+def test_oauth_empty_context_window_exceeded_takes_truncation_placeholder():
+    """model_context_window_exceeded is deterministic truncation (live by default on
+    Sonnet 4.5+): empty output harmonizes VALID with the placeholder — no raise."""
+    resp = _oauth_adapter().harmonize_response(
+        _empty_oauth_raw("model_context_window_exceeded"), request_start_time=0.0)
+    assert resp.metadata.finish_reason == "length"
+    assert resp.metadata.stop_reason == "model_context_window_exceeded"
+    assert resp.content and "truncated" in resp.content
+
+
+def test_oauth_nonempty_context_window_exceeded_normalizes_metadata_only():
+    """Non-empty + model_context_window_exceeded: text passes through untouched;
+    only the finish_reason vocabulary is normalized."""
+    resp = _oauth_adapter().harmonize_response(
+        _empty_oauth_raw("model_context_window_exceeded", text="made it this far"),
+        request_start_time=0.0)
+    assert resp.content == "made it this far"
+    assert resp.metadata.finish_reason == "length"
+    assert resp.metadata.stop_reason == "model_context_window_exceeded"
+
+
+def _refusal_sse_events(msg_id):
+    return [
+        {"type": "message_start", "message": {"model": "m", "id": msg_id}},
+        {"type": "message_delta",
+         "delta": {"stop_reason": "refusal",
+                   "stop_details": {"category": "abuse_or_harm",
+                                    "explanation": "declined"}},
+         "usage": {"output_tokens": 0}},
+        {"type": "message_stop"},
+    ]
+
+
+def test_oauth_sync_reader_captures_stop_details_end_to_end(monkeypatch):
+    """Wire-to-error: the sync reader captures message_delta's stop_details and the
+    empty-refusal terminal classifies WITH its decoration; the message id never leaks."""
+    events = _refusal_sse_events("msg_e2e_PROBE_zq92")
+    real_client = httpx.Client
+    body = "".join(f"data: {json.dumps(e)}\n\n" for e in events).encode()
+    transport = httpx.MockTransport(lambda request: httpx.Response(200, content=body))
+    adapter = _oauth_adapter()
+    monkeypatch.setattr(adapter, "get_headers", lambda: {}, raising=False)
+    monkeypatch.setattr(adapter, "format_request_payload", lambda messages, **kw: {}, raising=False)
+    monkeypatch.setattr(adapter, "get_endpoint_url", lambda: "https://example.invalid/v1/messages", raising=False)
+    monkeypatch.setattr(httpx, "Client", lambda **kw: real_client(transport=transport))
+
+    with pytest.raises(ModelAPIError) as exc:
+        adapter.run_streaming([{"role": "user", "content": "hi"}])
+    err = exc.value
+    assert err.classification == APIErrorClassification.REFUSAL.value
+    assert err.is_retryable is False
+    assert "abuse_or_harm" in str(err)
+    assert "msg_e2e_PROBE_zq92" not in str(err)
+
+
+async def test_oauth_async_reader_captures_stop_details_end_to_end(monkeypatch):
+    """Twin of the sync e2e on the async reader/run path (the one the daemon uses)."""
+    from marsys.models.adapters.anthropic_oauth import AsyncAnthropicOAuthAdapter
+
+    events = _refusal_sse_events("msg_e2e_PROBE_zq93")
+    real_async_client = httpx.AsyncClient
+    body = "".join(f"data: {json.dumps(e)}\n\n" for e in events).encode()
+    transport = httpx.MockTransport(lambda request: httpx.Response(200, content=body))
+    adapter = object.__new__(AsyncAnthropicOAuthAdapter)
+    adapter.model_name = "claude-haiku-4-5-20251001"
+    adapter.max_tokens = 8192
+    adapter.temperature = 0.7
+    adapter.enable_thinking = False
+    adapter.thinking_budget = 10000
+    monkeypatch.setattr(adapter, "_ensure_fresh_token", lambda: None, raising=False)
+    monkeypatch.setattr(adapter, "get_headers", lambda: {}, raising=False)
+    monkeypatch.setattr(adapter, "format_request_payload", lambda messages, **kw: {}, raising=False)
+    monkeypatch.setattr(adapter, "get_endpoint_url", lambda: "https://example.invalid/v1/messages", raising=False)
+    monkeypatch.setattr(httpx, "AsyncClient", lambda **kw: real_async_client(transport=transport))
+
+    with pytest.raises(ModelAPIError) as exc:
+        await adapter.arun_streaming([{"role": "user", "content": "hi"}])
+    err = exc.value
+    assert err.classification == APIErrorClassification.REFUSAL.value
+    assert "abuse_or_harm" in str(err)
+    assert "msg_e2e_PROBE_zq93" not in str(err)
+
+
+# The API-key adapter shares the harmonize-level contract (REST shape).
+
+
+def test_anthropic_empty_refusal_raises_typed_refusal():
+    raw = {"role": "assistant", "content": [], "stop_reason": "refusal",
+           "stop_details": {"category": "abuse_or_harm"},
+           "usage": {"input_tokens": 1, "output_tokens": 0}}
+    with pytest.raises(ModelAPIError) as exc:
+        _adapter().harmonize_response(raw, request_start_time=0.0)
+    err = exc.value
+    assert err.classification == APIErrorClassification.REFUSAL.value
+    assert err.is_retryable is False
+    assert "abuse_or_harm" in str(err)
+
+
+def test_anthropic_empty_context_window_exceeded_takes_placeholder():
+    raw = {"role": "assistant", "content": [],
+           "stop_reason": "model_context_window_exceeded",
+           "usage": {"input_tokens": 1, "output_tokens": 0}}
+    resp = _adapter().harmonize_response(raw, request_start_time=0.0)
+    assert resp.metadata.finish_reason == "length"
+    assert resp.metadata.stop_reason == "model_context_window_exceeded"
+    assert resp.content and "truncated" in resp.content
+
+
+def test_anthropic_nonempty_context_window_exceeded_normalizes_metadata_only():
+    raw = {"role": "assistant",
+           "content": [{"type": "text", "text": "partial"}],
+           "stop_reason": "model_context_window_exceeded",
+           "usage": {"input_tokens": 1, "output_tokens": 1}}
+    resp = _adapter().harmonize_response(raw, request_start_time=0.0)
+    assert resp.content == "partial"
+    assert resp.metadata.finish_reason == "length"
+    assert resp.metadata.stop_reason == "model_context_window_exceeded"
+
+
+def test_anthropic_thinking_only_is_not_misclassified_as_empty():
+    """thinking stays in the empty guard: a thinking-only end_turn response takes
+    the content="" path (valid), NOT the empty-completion raise."""
+    raw = {"role": "assistant",
+           "content": [{"type": "thinking", "thinking": "hmm", "signature": "s"}],
+           "stop_reason": "end_turn",
+           "usage": {"input_tokens": 1, "output_tokens": 1}}
+    resp = _adapter().harmonize_response(raw, request_start_time=0.0)
+    assert resp.content == ""
+    assert resp.thinking == "hmm"

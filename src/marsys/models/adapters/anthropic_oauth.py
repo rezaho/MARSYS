@@ -584,6 +584,7 @@ class AnthropicOAuthAdapter(APIProviderAdapter):
             "tool_use": [],
             "usage": {},
             "stop_reason": None,
+            "stop_details": None,
             "model": None,
             "id": None,
         }
@@ -641,6 +642,9 @@ class AnthropicOAuthAdapter(APIProviderAdapter):
                         elif event_type == "message_delta":
                             delta = data.get("delta", {})
                             result["stop_reason"] = delta.get("stop_reason")
+                            # Nullable decoration on the terminal (refusal
+                            # category etc.) — for error messages, never keyed on.
+                            result["stop_details"] = delta.get("stop_details")
                             result["usage"] = data.get("usage", {})
 
                         elif event_type == "error":
@@ -700,6 +704,7 @@ class AnthropicOAuthAdapter(APIProviderAdapter):
             "tool_use": [],
             "usage": {},
             "stop_reason": None,
+            "stop_details": None,
             "model": None,
             "id": None,
         }
@@ -761,6 +766,8 @@ class AnthropicOAuthAdapter(APIProviderAdapter):
                         elif event_type == "message_delta":
                             delta = data.get("delta", {})
                             result["stop_reason"] = delta.get("stop_reason")
+                            # Twin of the sync reader: nullable terminal decoration.
+                            result["stop_details"] = delta.get("stop_details")
                             result["usage"] = data.get("usage", {})
 
                         elif event_type == "error":
@@ -796,11 +803,24 @@ class AnthropicOAuthAdapter(APIProviderAdapter):
     ) -> HarmonizedResponse:
         """Convert streaming response to HarmonizedResponse.
 
-        (Latent gap, recorded 2026-06-11: a thinking-only response — ``thinking`` set,
-        no text, no tool calls, stop_reason ``end_turn`` — would still fail the
-        ``HarmonizedResponse`` validator, which ignores ``thinking``. Unreachable while
-        no caller enables extended thinking on this adapter; if a future "impossible"
-        ValidationError lands here with thinking enabled, start there.)"""
+        Empty-output contract: a stream that terminated with NO text, NO tool
+        calls, and NO thinking either takes the truncation placeholder
+        (normalized finish_reason ``length`` — ``max_tokens`` or
+        ``model_context_window_exceeded``) or raises a typed, classified
+        ``ModelAPIError`` built from the terminal signal (``refusal``, empty
+        ``end_turn``, no terminal at all). Together with the run paths'
+        in-stream ``error`` handling, every stream outcome maps to a valid
+        ``HarmonizedResponse`` or a typed ``ModelAPIError`` — never a
+        ``content=None`` shell that dies in the model validator as an
+        UNKNOWN ValidationError with the provider signal destroyed.
+
+        (Latent gap, recorded 2026-06-11, still open: a thinking-only response —
+        ``thinking`` set, no text, no tool calls, NON-length stop_reason — is
+        deliberately NOT treated as empty here and still fails the
+        ``HarmonizedResponse`` validator, which ignores ``thinking``. Unreachable
+        while no caller enables extended thinking on this adapter; if a future
+        "impossible" ValidationError lands here with thinking enabled, start
+        there. The API-key twin closed this at its harmonize layer.)"""
         response_time = time.time() - request_start_time
 
         # Extract text content
@@ -832,8 +852,16 @@ class AnthropicOAuthAdapter(APIProviderAdapter):
         # HarmonizedResponse validator's truncation escape checks 'length'); the raw
         # Anthropic token stays on the provider-specific stop_reason field — the
         # contract split ResponseMetadata documents, and what openai.py already does.
+        # BOTH deterministic-truncation terminals normalize to 'length':
+        # max_tokens AND model_context_window_exceeded (the latter fires by
+        # default on Sonnet 4.5+; an empty such stream must take the truncation
+        # placeholder below, not be classified a transient empty completion).
         stop_reason_raw = raw_response.get("stop_reason")
-        finish_reason = "length" if stop_reason_raw == "max_tokens" else stop_reason_raw
+        finish_reason = (
+            "length"
+            if stop_reason_raw in ("max_tokens", "model_context_window_exceeded")
+            else stop_reason_raw
+        )
         metadata = ResponseMetadata(
             provider="anthropic-oauth",
             model=raw_response.get("model", self.model_name),
@@ -844,13 +872,24 @@ class AnthropicOAuthAdapter(APIProviderAdapter):
             stop_reason=stop_reason_raw,
         )
 
-        # A truncation that produced NO output at all gets the cross-adapter
-        # placeholder (openai.py's convention) so callers see one shape, never None.
-        if not text_content and not tool_calls and finish_reason == "length":
-            text_content = (
-                "[Response truncated due to token limit. Please increase max_tokens "
-                "or continue the conversation.]"
-            )
+        # Empty-output contract (docstring above). Deterministic truncation gets
+        # the cross-adapter placeholder (openai.py's convention) so callers see
+        # one shape, never None; every OTHER empty terminal is a typed failure
+        # classified by stop_reason (refusal / empty end_turn / no terminal).
+        if not text_content and not tool_calls and not raw_response.get("thinking"):
+            if finish_reason == "length":
+                text_content = (
+                    "[Response truncated due to token limit. Please increase max_tokens "
+                    "or continue the conversation.]"
+                )
+            else:
+                from marsys.agents.exceptions import ModelAPIError
+                from marsys.models.adapters.streaming import empty_completion_payload
+
+                raise ModelAPIError.from_provider_response(
+                    provider="anthropic-oauth",
+                    response=empty_completion_payload(raw_response),
+                )
 
         # Build response
         return HarmonizedResponse(

@@ -80,6 +80,7 @@ ANTHROPIC_THINKING_REST = {
     ],
     "stop_reason": "tool_use",
     "stop_sequence": None,
+    "stop_details": None,
     "usage": {"input_tokens": 120, "output_tokens": 57},
 }
 
@@ -175,6 +176,21 @@ def test_stream_error_payload_annotates_partial_length_only():
     assert "17 chars" in shaped["error"]["message"]
     assert "boom" in shaped["error"]["message"]
     assert stream_error_payload({"type": "x"}, 0) == {"error": {"type": "x"}}
+
+
+def test_anthropic_accumulator_captures_stop_details():
+    """message_delta's nullable stop_details rides into the REST shape (refusal
+    category etc. — decoration for error messages, never branched on)."""
+    acc = AnthropicStreamAccumulator()
+    acc.feed({"type": "message_start",
+              "message": {"id": "m", "model": "claude-test", "role": "assistant"}})
+    acc.feed({"type": "message_delta",
+              "delta": {"stop_reason": "refusal",
+                        "stop_details": {"category": "abuse_or_harm"}},
+              "usage": {"output_tokens": 0}})
+    rest = acc.to_rest_response()
+    assert rest["stop_reason"] == "refusal"
+    assert rest["stop_details"] == {"category": "abuse_or_harm"}
 
 
 # ---------------------------------------------------------------------------
@@ -499,6 +515,34 @@ async def test_in_stream_error_raises_classified_model_api_error():
     # the REAL provider failure survives; no second request was made (terminal)
     assert "Overloaded" in str(exc_info.value)
     assert len(session.payloads) == 1
+
+
+@pytest.mark.asyncio
+async def test_arun_streaming_empty_refusal_raises_typed_classified():
+    """An empty-but-successful refusal stream raises TYPED out of arun_streaming
+    (no base.py generic handler in this path to degrade it) — classification and
+    stop_details decoration intact."""
+    from marsys.agents.exceptions import APIErrorClassification, ModelAPIError
+
+    events = [
+        {"type": "message_start", "message": {
+            "id": "m1", "model": "claude-test", "role": "assistant",
+            "usage": {"input_tokens": 5}}},
+        {"type": "message_delta",
+         "delta": {"stop_reason": "refusal",
+                   "stop_details": {"category": "abuse_or_harm"}},
+         "usage": {"output_tokens": 0}},
+        {"type": "message_stop"},
+    ]
+    session = _FakeSession([_FakeStreamResponse(200, _sse_lines(events))])
+    adapter = _async_adapter(session)
+
+    with pytest.raises(ModelAPIError) as exc_info:
+        await adapter.arun_streaming([{"role": "user", "content": "q"}], max_tokens=16000)
+    err = exc_info.value
+    assert err.classification == APIErrorClassification.REFUSAL.value
+    assert err.is_retryable is False
+    assert "abuse_or_harm" in str(err)
 
 
 @pytest.mark.asyncio

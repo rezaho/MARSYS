@@ -12,6 +12,7 @@ from marsys.models.adapters.base import (
 )
 from marsys.models.adapters.streaming import (
     AnthropicStreamAccumulator,
+    empty_completion_payload,
     stream_error_payload,
 )
 from marsys.models.response_models import (
@@ -448,9 +449,17 @@ class AnthropicAdapter(APIProviderAdapter):
         # Build metadata with Anthropic-specific fields. finish_reason carries the
         # NORMALIZED vocabulary (the validator's truncation escape checks 'length');
         # the raw Anthropic token stays on stop_reason — same contract split as
-        # anthropic_oauth.py and openai.py.
+        # anthropic_oauth.py and openai.py. BOTH deterministic-truncation
+        # terminals normalize to 'length': max_tokens AND
+        # model_context_window_exceeded (the latter fires by default on Sonnet
+        # 4.5+; an empty such response must take the truncation placeholder
+        # below, not be classified a transient empty completion).
         stop_reason_raw = raw_response.get("stop_reason")
-        finish_reason = "length" if stop_reason_raw == "max_tokens" else stop_reason_raw
+        finish_reason = (
+            "length"
+            if stop_reason_raw in ("max_tokens", "model_context_window_exceeded")
+            else stop_reason_raw
+        )
         metadata = ResponseMetadata(
             provider="anthropic",
             model=raw_response.get("model", self.model_name),
@@ -462,13 +471,36 @@ class AnthropicAdapter(APIProviderAdapter):
             stop_sequence=raw_response.get("stop_sequence"),
         )
 
-        # A truncation that produced NO output gets the cross-adapter placeholder
-        # (openai.py's convention) so callers see one shape, never None.
-        if not text_content and not tool_calls and finish_reason == "length":
-            text_content = (
-                "[Response truncated due to token limit. Please increase max_tokens "
-                "or continue the conversation.]"
-            )
+        # Empty-output contract (twin of anthropic_oauth.py): deterministic
+        # truncation gets the cross-adapter placeholder (openai.py's convention)
+        # so callers see one shape, never None; every OTHER fully-empty terminal
+        # (refusal / empty end_turn / no stop_reason) raises a typed
+        # ModelAPIError classified by stop_reason instead of constructing a
+        # content=None shell the model validator rejects as an UNKNOWN
+        # ValidationError. Thinking-only responses are NOT empty — they take the
+        # content="" path below. NOTE: on the NON-streaming path base.py's
+        # generic handlers re-wrap this raise via handle_api_error → the message
+        # survives but the classification degrades to UNKNOWN in the returned
+        # ErrorResponse (still a strict improvement over the ValidationError it
+        # replaces); the streaming path (arun_streaming) propagates it typed.
+        if (
+            not text_content
+            and not tool_calls
+            and not thinking_parts
+            and not reasoning_details
+        ):
+            if finish_reason == "length":
+                text_content = (
+                    "[Response truncated due to token limit. Please increase max_tokens "
+                    "or continue the conversation.]"
+                )
+            else:
+                from marsys.agents.exceptions import ModelAPIError
+
+                raise ModelAPIError.from_provider_response(
+                    provider="anthropic",
+                    response=empty_completion_payload(raw_response),
+                )
 
         content = text_content if text_content else None
         # Thinking-only response (the latent gap anthropic_oauth.py:766 records,

@@ -34,6 +34,7 @@ __all__ = [
     "AnthropicStreamAccumulator",
     "ResponsesStreamAccumulator",
     "stream_error_payload",
+    "empty_completion_payload",
 ]
 
 
@@ -70,6 +71,24 @@ def stream_error_payload(error: Dict[str, Any], partial_chars: int) -> Dict[str,
             "partial output discarded — recovery is a new request]"
         )
     return {"error": error}
+
+
+def empty_completion_payload(raw_response: Dict[str, Any]) -> Dict[str, Any]:
+    """Shape an empty-but-successful terminal (HTTP 200, no in-stream error
+    event, zero usable output) for ``ModelAPIError.from_provider_response``.
+    Marker key ``empty_completion`` — deliberately NOT the ``error`` key shape,
+    so the in-stream-error arm keeps firing first and separately. Carries ONLY
+    the terminal signal: ``stop_reason`` (the classification key) plus
+    ``stop_details`` (nullable decoration — never required, never keyed on).
+    Ids, usage, and content fields stay behind. Shared by both Anthropic
+    adapters for streamed AND non-streamed responses — this module is the
+    adapters' shared payload-packaging seam (the ``stream_error_payload``
+    precedent)."""
+    return {
+        "empty_completion": True,
+        "stop_reason": raw_response.get("stop_reason"),
+        "stop_details": raw_response.get("stop_details"),
+    }
 
 
 class _TapMixin:
@@ -125,6 +144,7 @@ class AnthropicStreamAccumulator(_TapMixin):
         self.usage: Dict[str, Any] = {}
         self.stop_reason: Optional[str] = None
         self.stop_sequence: Optional[str] = None
+        self.stop_details: Optional[Dict[str, Any]] = None
         self.model: Optional[str] = None
         self.id: Optional[str] = None
         self.role: str = "assistant"
@@ -225,6 +245,10 @@ class AnthropicStreamAccumulator(_TapMixin):
                 self.stop_reason = delta.get("stop_reason")
             if delta.get("stop_sequence") is not None:
                 self.stop_sequence = delta.get("stop_sequence")
+            if delta.get("stop_details") is not None:
+                # Nullable decoration on the terminal (refusal category etc.) —
+                # captured for error messages, never branched on.
+                self.stop_details = delta.get("stop_details")
             usage = data.get("usage")
             if isinstance(usage, dict):
                 self.usage.update(usage)
@@ -255,6 +279,7 @@ class AnthropicStreamAccumulator(_TapMixin):
             "content": self.content,
             "stop_reason": self.stop_reason,
             "stop_sequence": self.stop_sequence,
+            "stop_details": self.stop_details,
             "usage": self.usage,
         }
 

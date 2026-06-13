@@ -1017,6 +1017,66 @@ class ModelAPIError(ModelError):
             # Unknown in-stream types keep UNKNOWN classification but the REAL
             # provider message above — never a destroyed/synthetic one.
 
+        elif (
+            provider in ("anthropic", "anthropic-oauth")
+            and raw_response
+            and raw_response.get("empty_completion")
+        ):
+            # NO status code, NO error event: an HTTP-200 stream/response that
+            # legitimately terminated with zero usable output (the adapters
+            # raise this instead of constructing a HarmonizedResponse the model
+            # validator rejects — which used to surface as an UNKNOWN
+            # ValidationError with the provider's terminal signal destroyed).
+            # Classification branches on stop_reason — the documented contract;
+            # stop_details is NULLABLE decoration, appended to the message when
+            # present and never keyed on. max_tokens/model_context_window_exceeded
+            # never arrive here: harmonization routes them to the truncation
+            # placeholder.
+            stop_reason = raw_response.get("stop_reason")
+            details = raw_response.get("stop_details")
+            details = details if isinstance(details, dict) else {}
+            if stop_reason == "refusal":
+                # The provider refused the request — a content-policy outcome,
+                # not a fault. Retrying it unmodified will be refused again.
+                classification = APIErrorClassification.REFUSAL.value
+                is_retryable = False
+                message = "Anthropic refused the request (stop_reason 'refusal', no content returned)"
+                if details.get("category"):
+                    message += f" — category: {details['category']}"
+                if details.get("explanation"):
+                    message += f": {details['explanation']}"
+                suggested_action = (
+                    "The provider declined to answer this request. Modify or "
+                    "rephrase it; retrying unmodified will be refused again."
+                )
+            elif stop_reason == "end_turn":
+                # Anthropic's documented guidance: don't retry empty responses
+                # without modification — the model already decided it was done.
+                classification = APIErrorClassification.EMPTY_COMPLETION.value
+                is_retryable = False
+                message = "Anthropic returned an empty response (stop_reason 'end_turn', no content)"
+                suggested_action = (
+                    "Do not retry unmodified — the model decided it was done. "
+                    "Send a modified request, e.g. a continuation prompt asking "
+                    "it to produce the response."
+                )
+            else:
+                # stop_sequence, never-seen stop reasons, or NO terminal at all
+                # (stream closed before message_delta): transient — retry.
+                classification = APIErrorClassification.EMPTY_COMPLETION.value
+                is_retryable = True
+                retry_after = 5
+                if stop_reason is None:
+                    message = (
+                        "Anthropic stream closed without a terminal stop_reason "
+                        "and produced no content"
+                    )
+                else:
+                    message = (
+                        f"Anthropic returned an empty response "
+                        f"(stop_reason '{stop_reason}', no content)"
+                    )
+
         # Payload-too-large override: some providers return 400 with payload
         # hints instead of 413.  This runs unconditionally so it can override
         # earlier INVALID_REQUEST-style classifications from 400 status codes.
@@ -1076,6 +1136,9 @@ class ModelAPIError(ModelError):
         ]:
             return ErrorAction.USER_FIXABLE  # User can check connection and retry
 
+        # EMPTY_COMPLETION / REFUSAL fall through to TERMINAL here — even a
+        # retryable EMPTY_COMPLETION (the pre-existing PARTIAL_FAILURE pattern);
+        # the adapter retry ladder reads is_retryable, not this ladder.
         return ErrorAction.TERMINAL  # Default to terminal for unknown
 
 
@@ -1268,6 +1331,17 @@ class APIErrorClassification(Enum):
     INVALID_REQUEST = "invalid_request"
     VALIDATION_ERROR = "validation_error"
     REQUEST_TOO_LARGE = "request_too_large"
+
+    # Empty-but-successful completion (HTTP 200, terminal received or stream
+    # closed, zero usable output). REFUSAL is its own value because it is a
+    # content-policy outcome, not a degenerate stream — consumers must not have
+    # to parse message text to tell "provider declined" from "provider returned
+    # nothing". Retryability rides is_retryable per stop_reason, not the value:
+    # EMPTY_COMPLETION is non-retryable for an empty end_turn (Anthropic:
+    # don't retry empty responses without modification), retryable for
+    # stop_sequence / unknown terminals / no terminal at all.
+    EMPTY_COMPLETION = "empty_completion"
+    REFUSAL = "refusal"
 
     UNKNOWN = "unknown"
 
