@@ -1,0 +1,2923 @@
+
+<!doctype html>
+<html lang="en" class="no-js">
+  <head>
+    
+      <meta charset="utf-8">
+      <meta name="viewport" content="width=device-width,initial-scale=1">
+      
+        <meta name="description" content="A powerful framework for creating, orchestrating, and training collaborative AI agents">
+      
+      
+        <meta name="author" content="Your Name">
+      
+      
+        <link rel="canonical" href="https://marsys.ai/architecture/framework/decisions/ADR-008-unified-node-kind-model/">
+      
+      
+      
+      
+        
+      
+      
+      <link rel="icon" href="../../../../assets/images/favicon.png">
+      <meta name="generator" content="mkdocs-1.6.1, mkdocs-material-9.7.6">
+    
+    
+      
+        <title>ADR-008: Unified Node-Kind Model for the Canonical Topology & Wire Format - MARSYS - Multi-Agent Reasoning Systems</title>
+      
+    
+    
+      <link rel="stylesheet" href="../../../../assets/stylesheets/main.484c7ddc.min.css">
+      
+        
+        <link rel="stylesheet" href="../../../../assets/stylesheets/palette.ab4e12ef.min.css">
+      
+      
+
+
+    
+    
+      
+    
+    
+      
+        
+        
+        <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+        <link rel="stylesheet" href="https://fonts.googleapis.com/css?family=Roboto:300,300i,400,400i,700,700i%7CRoboto+Mono:400,400i,700,700i&display=fallback">
+        <style>:root{--md-text-font:"Roboto";--md-code-font:"Roboto Mono"}</style>
+      
+    
+    
+      <link rel="stylesheet" href="../../../../assets/_mkdocstrings.css">
+    
+      <link rel="stylesheet" href="../../../../assets/css/main.css">
+    
+    <script>__md_scope=new URL("../../../..",location),__md_hash=e=>[...e].reduce(((e,_)=>(e<<5)-e+_.charCodeAt(0)),0),__md_get=(e,_=localStorage,t=__md_scope)=>JSON.parse(_.getItem(t.pathname+"."+e)),__md_set=(e,_,t=localStorage,a=__md_scope)=>{try{t.setItem(a.pathname+"."+e,JSON.stringify(_))}catch(e){}}</script>
+    
+      
+  
+
+
+  
+  
+
+<script id="__analytics">function __md_analytics(){function e(){dataLayer.push(arguments)}window.dataLayer=window.dataLayer||[],e("js",new Date),e("config","YOUR_MEASUREMENT_ID"),document.addEventListener("DOMContentLoaded",(function(){document.forms.search&&document.forms.search.query.addEventListener("blur",(function(){this.value&&e("event","search",{search_term:this.value})}));document$.subscribe((function(){var t=document.forms.feedback;if(void 0!==t)for(var a of t.querySelectorAll("[type=submit]"))a.addEventListener("click",(function(a){a.preventDefault();var n=document.location.pathname,d=this.getAttribute("data-md-value");e("event","feedback",{page:n,data:d}),t.firstElementChild.disabled=!0;var r=t.querySelector(".md-feedback__note [data-md-value='"+d+"']");r&&(r.hidden=!1)})),t.hidden=!1})),location$.subscribe((function(t){e("config","YOUR_MEASUREMENT_ID",{page_path:t.pathname})}))}));var t=document.createElement("script");t.async=!0,t.src="https://www.googletagmanager.com/gtag/js?id=YOUR_MEASUREMENT_ID",document.getElementById("__analytics").insertAdjacentElement("afterEnd",t)}</script>
+  
+    <script>"undefined"!=typeof __md_analytics&&__md_analytics()</script>
+  
+
+    
+    
+  </head>
+  
+  
+    
+    
+      
+    
+    
+    
+    
+    <body dir="ltr" data-md-color-scheme="default" data-md-color-primary="indigo" data-md-color-accent="indigo">
+  
+    
+    <input class="md-toggle" data-md-toggle="drawer" type="checkbox" id="__drawer" autocomplete="off">
+    <input class="md-toggle" data-md-toggle="search" type="checkbox" id="__search" autocomplete="off">
+    <label class="md-overlay" for="__drawer"></label>
+    <div data-md-component="skip">
+      
+        
+        <a href="#adr-008-unified-node-kind-model-for-the-canonical-topology-wire-format" class="md-skip">
+          Skip to content
+        </a>
+      
+    </div>
+    <div data-md-component="announce">
+      
+    </div>
+    
+    
+      
+
+  
+
+<header class="md-header md-header--shadow md-header--lifted" data-md-component="header">
+  <nav class="md-header__inner md-grid" aria-label="Header">
+    <a href="../../../.." title="MARSYS - Multi-Agent Reasoning Systems" class="md-header__button md-logo" aria-label="MARSYS - Multi-Agent Reasoning Systems" data-md-component="logo">
+      
+  
+  <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M12 2a2 2 0 0 1 2 2c0 .74-.4 1.39-1 1.73V7h1a7 7 0 0 1 7 7h1a1 1 0 0 1 1 1v3a1 1 0 0 1-1 1h-1v1a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-1H2a1 1 0 0 1-1-1v-3a1 1 0 0 1 1-1h1a7 7 0 0 1 7-7h1V5.73c-.6-.34-1-.99-1-1.73a2 2 0 0 1 2-2M7.5 13A2.5 2.5 0 0 0 5 15.5 2.5 2.5 0 0 0 7.5 18a2.5 2.5 0 0 0 2.5-2.5A2.5 2.5 0 0 0 7.5 13m9 0a2.5 2.5 0 0 0-2.5 2.5 2.5 2.5 0 0 0 2.5 2.5 2.5 2.5 0 0 0 2.5-2.5 2.5 2.5 0 0 0-2.5-2.5"/></svg>
+
+    </a>
+    <label class="md-header__button md-icon" for="__drawer">
+      
+      <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M3 6h18v2H3zm0 5h18v2H3zm0 5h18v2H3z"/></svg>
+    </label>
+    <div class="md-header__title" data-md-component="header-title">
+      <div class="md-header__ellipsis">
+        <div class="md-header__topic">
+          <span class="md-ellipsis">
+            MARSYS - Multi-Agent Reasoning Systems
+          </span>
+        </div>
+        <div class="md-header__topic" data-md-component="header-topic">
+          <span class="md-ellipsis">
+            
+              ADR-008: Unified Node-Kind Model for the Canonical Topology &amp; Wire Format
+            
+          </span>
+        </div>
+      </div>
+    </div>
+    
+      
+        <form class="md-header__option" data-md-component="palette">
+  
+    
+    
+    
+    <input class="md-option" data-md-color-media="" data-md-color-scheme="default" data-md-color-primary="indigo" data-md-color-accent="indigo"  aria-label="Switch to dark mode"  type="radio" name="__palette" id="__palette_0">
+    
+      <label class="md-header__button md-icon" title="Switch to dark mode" for="__palette_1" hidden>
+        <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M12 8a4 4 0 0 0-4 4 4 4 0 0 0 4 4 4 4 0 0 0 4-4 4 4 0 0 0-4-4m0 10a6 6 0 0 1-6-6 6 6 0 0 1 6-6 6 6 0 0 1 6 6 6 6 0 0 1-6 6m8-9.31V4h-4.69L12 .69 8.69 4H4v4.69L.69 12 4 15.31V20h4.69L12 23.31 15.31 20H20v-4.69L23.31 12z"/></svg>
+      </label>
+    
+  
+    
+    
+    
+    <input class="md-option" data-md-color-media="" data-md-color-scheme="slate" data-md-color-primary="indigo" data-md-color-accent="indigo"  aria-label="Switch to light mode"  type="radio" name="__palette" id="__palette_1">
+    
+      <label class="md-header__button md-icon" title="Switch to light mode" for="__palette_0" hidden>
+        <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M12 18c-.89 0-1.74-.2-2.5-.55C11.56 16.5 13 14.42 13 12s-1.44-4.5-3.5-5.45C10.26 6.2 11.11 6 12 6a6 6 0 0 1 6 6 6 6 0 0 1-6 6m8-9.31V4h-4.69L12 .69 8.69 4H4v4.69L.69 12 4 15.31V20h4.69L12 23.31 15.31 20H20v-4.69L23.31 12z"/></svg>
+      </label>
+    
+  
+</form>
+      
+    
+    
+      <script>var palette=__md_get("__palette");if(palette&&palette.color){if("(prefers-color-scheme)"===palette.color.media){var media=matchMedia("(prefers-color-scheme: light)"),input=document.querySelector(media.matches?"[data-md-color-media='(prefers-color-scheme: light)']":"[data-md-color-media='(prefers-color-scheme: dark)']");palette.color.media=input.getAttribute("data-md-color-media"),palette.color.scheme=input.getAttribute("data-md-color-scheme"),palette.color.primary=input.getAttribute("data-md-color-primary"),palette.color.accent=input.getAttribute("data-md-color-accent")}for(var[key,value]of Object.entries(palette.color))document.body.setAttribute("data-md-color-"+key,value)}</script>
+    
+    
+    
+      
+      
+        <label class="md-header__button md-icon" for="__search">
+          
+          <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M9.5 3A6.5 6.5 0 0 1 16 9.5c0 1.61-.59 3.09-1.56 4.23l.27.27h.79l5 5-1.5 1.5-5-5v-.79l-.27-.27A6.52 6.52 0 0 1 9.5 16 6.5 6.5 0 0 1 3 9.5 6.5 6.5 0 0 1 9.5 3m0 2C7 5 5 7 5 9.5S7 14 9.5 14 14 12 14 9.5 12 5 9.5 5"/></svg>
+        </label>
+        <div class="md-search" data-md-component="search" role="dialog">
+  <label class="md-search__overlay" for="__search"></label>
+  <div class="md-search__inner" role="search">
+    <form class="md-search__form" name="search">
+      <input type="text" class="md-search__input" name="query" aria-label="Search" placeholder="Search" autocapitalize="off" autocorrect="off" autocomplete="off" spellcheck="false" data-md-component="search-query" required>
+      <label class="md-search__icon md-icon" for="__search">
+        
+        <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M9.5 3A6.5 6.5 0 0 1 16 9.5c0 1.61-.59 3.09-1.56 4.23l.27.27h.79l5 5-1.5 1.5-5-5v-.79l-.27-.27A6.52 6.52 0 0 1 9.5 16 6.5 6.5 0 0 1 3 9.5 6.5 6.5 0 0 1 9.5 3m0 2C7 5 5 7 5 9.5S7 14 9.5 14 14 12 14 9.5 12 5 9.5 5"/></svg>
+        
+        <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M20 11v2H8l5.5 5.5-1.42 1.42L4.16 12l7.92-7.92L13.5 5.5 8 11z"/></svg>
+      </label>
+      <nav class="md-search__options" aria-label="Search">
+        
+          <a href="javascript:void(0)" class="md-search__icon md-icon" title="Share" aria-label="Share" data-clipboard data-clipboard-text="" data-md-component="search-share" tabindex="-1">
+            
+            <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M18 16.08c-.76 0-1.44.3-1.96.77L8.91 12.7c.05-.23.09-.46.09-.7s-.04-.47-.09-.7l7.05-4.11c.54.5 1.25.81 2.04.81a3 3 0 0 0 3-3 3 3 0 0 0-3-3 3 3 0 0 0-3 3c0 .24.04.47.09.7L8.04 9.81C7.5 9.31 6.79 9 6 9a3 3 0 0 0-3 3 3 3 0 0 0 3 3c.79 0 1.5-.31 2.04-.81l7.12 4.15c-.05.21-.08.43-.08.66 0 1.61 1.31 2.91 2.92 2.91s2.92-1.3 2.92-2.91A2.92 2.92 0 0 0 18 16.08"/></svg>
+          </a>
+        
+        <button type="reset" class="md-search__icon md-icon" title="Clear" aria-label="Clear" tabindex="-1">
+          
+          <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M19 6.41 17.59 5 12 10.59 6.41 5 5 6.41 10.59 12 5 17.59 6.41 19 12 13.41 17.59 19 19 17.59 13.41 12z"/></svg>
+        </button>
+      </nav>
+      
+        <div class="md-search__suggest" data-md-component="search-suggest"></div>
+      
+    </form>
+    <div class="md-search__output">
+      <div class="md-search__scrollwrap" tabindex="0" data-md-scrollfix>
+        <div class="md-search-result" data-md-component="search-result">
+          <div class="md-search-result__meta">
+            Initializing search
+          </div>
+          <ol class="md-search-result__list" role="presentation"></ol>
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
+      
+    
+    
+      <div class="md-header__source">
+        <a href="https://github.com/rezaho/MARS" title="Go to repository" class="md-source" data-md-component="source">
+  <div class="md-source__icon md-icon">
+    
+    <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512"><!--! Font Awesome Free 7.1.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2025 Fonticons, Inc.--><path d="M173.9 397.4c0 2-2.3 3.6-5.2 3.6-3.3.3-5.6-1.3-5.6-3.6 0-2 2.3-3.6 5.2-3.6 3-.3 5.6 1.3 5.6 3.6m-31.1-4.5c-.7 2 1.3 4.3 4.3 4.9 2.6 1 5.6 0 6.2-2s-1.3-4.3-4.3-5.2c-2.6-.7-5.5.3-6.2 2.3m44.2-1.7c-2.9.7-4.9 2.6-4.6 4.9.3 2 2.9 3.3 5.9 2.6 2.9-.7 4.9-2.6 4.6-4.6-.3-1.9-3-3.2-5.9-2.9M252.8 8C114.1 8 8 113.3 8 252c0 110.9 69.8 205.8 169.5 239.2 12.8 2.3 17.3-5.6 17.3-12.1 0-6.2-.3-40.4-.3-61.4 0 0-70 15-84.7-29.8 0 0-11.4-29.1-27.8-36.6 0 0-22.9-15.7 1.6-15.4 0 0 24.9 2 38.6 25.8 21.9 38.6 58.6 27.5 72.9 20.9 2.3-16 8.8-27.1 16-33.7-55.9-6.2-112.3-14.3-112.3-110.5 0-27.5 7.6-41.3 23.6-58.9-2.6-6.5-11.1-33.3 2.6-67.9 20.9-6.5 69 27 69 27 20-5.6 41.5-8.5 62.8-8.5s42.8 2.9 62.8 8.5c0 0 48.1-33.6 69-27 13.7 34.7 5.2 61.4 2.6 67.9 16 17.7 25.8 31.5 25.8 58.9 0 96.5-58.9 104.2-114.8 110.5 9.2 7.9 17 22.9 17 46.4 0 33.7-.3 75.4-.3 83.6 0 6.5 4.6 14.4 17.3 12.1C436.2 457.8 504 362.9 504 252 504 113.3 391.5 8 252.8 8M105.2 352.9c-1.3 1-1 3.3.7 5.2 1.6 1.6 3.9 2.3 5.2 1 1.3-1 1-3.3-.7-5.2-1.6-1.6-3.9-2.3-5.2-1m-10.8-8.1c-.7 1.3.3 2.9 2.3 3.9 1.6 1 3.6.7 4.3-.7.7-1.3-.3-2.9-2.3-3.9-2-.6-3.6-.3-4.3.7m32.4 35.6c-1.6 1.3-1 4.3 1.3 6.2 2.3 2.3 5.2 2.6 6.5 1 1.3-1.3.7-4.3-1.3-6.2-2.2-2.3-5.2-2.6-6.5-1m-11.4-14.7c-1.6 1-1.6 3.6 0 5.9s4.3 3.3 5.6 2.3c1.6-1.3 1.6-3.9 0-6.2-1.4-2.3-4-3.3-5.6-2"/></svg>
+  </div>
+  <div class="md-source__repository">
+    MARSYS
+  </div>
+</a>
+      </div>
+    
+  </nav>
+  
+    
+      
+<nav class="md-tabs" aria-label="Tabs" data-md-component="tabs">
+  <div class="md-grid">
+    <ul class="md-tabs__list">
+      
+        
+  
+  
+  
+  
+    <li class="md-tabs__item">
+      <a href="../../../.." class="md-tabs__link">
+        
+  
+  
+    
+  
+  Home
+
+      </a>
+    </li>
+  
+
+      
+        
+  
+  
+  
+  
+    
+    
+      <li class="md-tabs__item">
+        <a href="../../../../getting-started/" class="md-tabs__link">
+          
+  
+  
+  Getting Started
+
+        </a>
+      </li>
+    
+  
+
+      
+        
+  
+  
+  
+  
+    
+    
+      <li class="md-tabs__item">
+        <a href="../../../../concepts/overview/" class="md-tabs__link">
+          
+  
+  
+  Concepts
+
+        </a>
+      </li>
+    
+  
+
+      
+        
+  
+  
+  
+  
+    
+    
+      <li class="md-tabs__item">
+        <a href="../../../../api/overview/" class="md-tabs__link">
+          
+  
+  
+  API Reference
+
+        </a>
+      </li>
+    
+  
+
+      
+        
+  
+  
+  
+  
+    <li class="md-tabs__item">
+      <a href="../../../../use-cases/" class="md-tabs__link">
+        
+  
+  
+    
+  
+  Use Cases
+
+      </a>
+    </li>
+  
+
+      
+        
+  
+  
+  
+  
+    
+    
+      <li class="md-tabs__item">
+        <a href="../../../../guides/built-in-tools/" class="md-tabs__link">
+          
+  
+  
+  Guides
+
+        </a>
+      </li>
+    
+  
+
+      
+        
+  
+  
+  
+  
+    <li class="md-tabs__item">
+      <a href="../../../../contributing/" class="md-tabs__link">
+        
+  
+  
+    
+  
+  Contributing
+
+      </a>
+    </li>
+  
+
+      
+        
+  
+  
+  
+  
+    
+    
+      <li class="md-tabs__item">
+        <a href="../../../../project/overview/" class="md-tabs__link">
+          
+  
+  
+  Project
+
+        </a>
+      </li>
+    
+  
+
+      
+    </ul>
+  </div>
+</nav>
+    
+  
+</header>
+    
+    <div class="md-container" data-md-component="container">
+      
+      
+        
+      
+      <main class="md-main" data-md-component="main">
+        <div class="md-main__inner md-grid">
+          
+            
+              
+              <div class="md-sidebar md-sidebar--primary" data-md-component="sidebar" data-md-type="navigation" >
+                <div class="md-sidebar__scrollwrap">
+                  <div class="md-sidebar__inner">
+                    
+
+
+  
+
+
+  
+
+<nav class="md-nav md-nav--primary md-nav--lifted md-nav--integrated" aria-label="Navigation" data-md-level="0">
+  <label class="md-nav__title" for="__drawer">
+    <a href="../../../.." title="MARSYS - Multi-Agent Reasoning Systems" class="md-nav__button md-logo" aria-label="MARSYS - Multi-Agent Reasoning Systems" data-md-component="logo">
+      
+  
+  <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M12 2a2 2 0 0 1 2 2c0 .74-.4 1.39-1 1.73V7h1a7 7 0 0 1 7 7h1a1 1 0 0 1 1 1v3a1 1 0 0 1-1 1h-1v1a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-1H2a1 1 0 0 1-1-1v-3a1 1 0 0 1 1-1h1a7 7 0 0 1 7-7h1V5.73c-.6-.34-1-.99-1-1.73a2 2 0 0 1 2-2M7.5 13A2.5 2.5 0 0 0 5 15.5 2.5 2.5 0 0 0 7.5 18a2.5 2.5 0 0 0 2.5-2.5A2.5 2.5 0 0 0 7.5 13m9 0a2.5 2.5 0 0 0-2.5 2.5 2.5 2.5 0 0 0 2.5 2.5 2.5 2.5 0 0 0 2.5-2.5 2.5 2.5 0 0 0-2.5-2.5"/></svg>
+
+    </a>
+    MARSYS - Multi-Agent Reasoning Systems
+  </label>
+  
+    <div class="md-nav__source">
+      <a href="https://github.com/rezaho/MARS" title="Go to repository" class="md-source" data-md-component="source">
+  <div class="md-source__icon md-icon">
+    
+    <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512"><!--! Font Awesome Free 7.1.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2025 Fonticons, Inc.--><path d="M173.9 397.4c0 2-2.3 3.6-5.2 3.6-3.3.3-5.6-1.3-5.6-3.6 0-2 2.3-3.6 5.2-3.6 3-.3 5.6 1.3 5.6 3.6m-31.1-4.5c-.7 2 1.3 4.3 4.3 4.9 2.6 1 5.6 0 6.2-2s-1.3-4.3-4.3-5.2c-2.6-.7-5.5.3-6.2 2.3m44.2-1.7c-2.9.7-4.9 2.6-4.6 4.9.3 2 2.9 3.3 5.9 2.6 2.9-.7 4.9-2.6 4.6-4.6-.3-1.9-3-3.2-5.9-2.9M252.8 8C114.1 8 8 113.3 8 252c0 110.9 69.8 205.8 169.5 239.2 12.8 2.3 17.3-5.6 17.3-12.1 0-6.2-.3-40.4-.3-61.4 0 0-70 15-84.7-29.8 0 0-11.4-29.1-27.8-36.6 0 0-22.9-15.7 1.6-15.4 0 0 24.9 2 38.6 25.8 21.9 38.6 58.6 27.5 72.9 20.9 2.3-16 8.8-27.1 16-33.7-55.9-6.2-112.3-14.3-112.3-110.5 0-27.5 7.6-41.3 23.6-58.9-2.6-6.5-11.1-33.3 2.6-67.9 20.9-6.5 69 27 69 27 20-5.6 41.5-8.5 62.8-8.5s42.8 2.9 62.8 8.5c0 0 48.1-33.6 69-27 13.7 34.7 5.2 61.4 2.6 67.9 16 17.7 25.8 31.5 25.8 58.9 0 96.5-58.9 104.2-114.8 110.5 9.2 7.9 17 22.9 17 46.4 0 33.7-.3 75.4-.3 83.6 0 6.5 4.6 14.4 17.3 12.1C436.2 457.8 504 362.9 504 252 504 113.3 391.5 8 252.8 8M105.2 352.9c-1.3 1-1 3.3.7 5.2 1.6 1.6 3.9 2.3 5.2 1 1.3-1 1-3.3-.7-5.2-1.6-1.6-3.9-2.3-5.2-1m-10.8-8.1c-.7 1.3.3 2.9 2.3 3.9 1.6 1 3.6.7 4.3-.7.7-1.3-.3-2.9-2.3-3.9-2-.6-3.6-.3-4.3.7m32.4 35.6c-1.6 1.3-1 4.3 1.3 6.2 2.3 2.3 5.2 2.6 6.5 1 1.3-1.3.7-4.3-1.3-6.2-2.2-2.3-5.2-2.6-6.5-1m-11.4-14.7c-1.6 1-1.6 3.6 0 5.9s4.3 3.3 5.6 2.3c1.6-1.3 1.6-3.9 0-6.2-1.4-2.3-4-3.3-5.6-2"/></svg>
+  </div>
+  <div class="md-source__repository">
+    MARSYS
+  </div>
+</a>
+    </div>
+  
+  <ul class="md-nav__list" data-md-scrollfix>
+    
+      
+      
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../../.." class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Home
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    
+    
+    
+    
+      
+      
+        
+      
+    
+    
+    <li class="md-nav__item md-nav__item--nested">
+      
+        
+        
+        <input class="md-nav__toggle md-toggle " type="checkbox" id="__nav_2" >
+        
+          
+          <label class="md-nav__link" for="__nav_2" id="__nav_2_label" tabindex="0">
+            
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Getting Started
+  
+
+    
+  </span>
+  
+  
+
+            <span class="md-nav__icon md-icon"></span>
+          </label>
+        
+        <nav class="md-nav" data-md-level="1" aria-labelledby="__nav_2_label" aria-expanded="false">
+          <label class="md-nav__title" for="__nav_2">
+            <span class="md-nav__icon md-icon"></span>
+            
+  
+    Getting Started
+  
+
+          </label>
+          <ul class="md-nav__list" data-md-scrollfix>
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../../../getting-started/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Introduction
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../../../getting-started/installation/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Installation
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../../../getting-started/quick-start/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Quick Start
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../../../getting-started/first-agent/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Your First Agent
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../../../getting-started/configuration/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Configuration
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+          </ul>
+        </nav>
+      
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    
+    
+    
+    
+      
+      
+        
+      
+    
+    
+    <li class="md-nav__item md-nav__item--nested">
+      
+        
+        
+        <input class="md-nav__toggle md-toggle " type="checkbox" id="__nav_3" >
+        
+          
+          <label class="md-nav__link" for="__nav_3" id="__nav_3_label" tabindex="0">
+            
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Concepts
+  
+
+    
+  </span>
+  
+  
+
+            <span class="md-nav__icon md-icon"></span>
+          </label>
+        
+        <nav class="md-nav" data-md-level="1" aria-labelledby="__nav_3_label" aria-expanded="false">
+          <label class="md-nav__title" for="__nav_3">
+            <span class="md-nav__icon md-icon"></span>
+            
+  
+    Concepts
+  
+
+          </label>
+          <ul class="md-nav__list" data-md-scrollfix>
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../../../concepts/overview/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Overview
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    
+    
+    
+    
+      
+      
+        
+      
+    
+    
+    <li class="md-nav__item md-nav__item--nested">
+      
+        
+        
+        <input class="md-nav__toggle md-toggle " type="checkbox" id="__nav_3_2" >
+        
+          
+          <label class="md-nav__link" for="__nav_3_2" id="__nav_3_2_label" tabindex="0">
+            
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Core Components
+  
+
+    
+  </span>
+  
+  
+
+            <span class="md-nav__icon md-icon"></span>
+          </label>
+        
+        <nav class="md-nav" data-md-level="2" aria-labelledby="__nav_3_2_label" aria-expanded="false">
+          <label class="md-nav__title" for="__nav_3_2">
+            <span class="md-nav__icon md-icon"></span>
+            
+  
+    Core Components
+  
+
+          </label>
+          <ul class="md-nav__list" data-md-scrollfix>
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../../../concepts/agents/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Agents
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../../../concepts/memory/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Memory
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../../../concepts/tools/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Tools
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../../../concepts/run-filesystem/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Run Filesystem
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../../../concepts/models/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Models
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../../../concepts/registry/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Registry
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../../../concepts/messages/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Messages
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../../../concepts/communication/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Communication
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../../../concepts/coordination-tools/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Coordination Tools
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../../../concepts/planning/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Planning
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+          </ul>
+        </nav>
+      
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    
+    
+    
+    
+      
+      
+        
+      
+    
+    
+    <li class="md-nav__item md-nav__item--nested">
+      
+        
+        
+        <input class="md-nav__toggle md-toggle " type="checkbox" id="__nav_3_3" >
+        
+          
+          <label class="md-nav__link" for="__nav_3_3" id="__nav_3_3_label" tabindex="0">
+            
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Specialized Agents
+  
+
+    
+  </span>
+  
+  
+
+            <span class="md-nav__icon md-icon"></span>
+          </label>
+        
+        <nav class="md-nav" data-md-level="2" aria-labelledby="__nav_3_3_label" aria-expanded="false">
+          <label class="md-nav__title" for="__nav_3_3">
+            <span class="md-nav__icon md-icon"></span>
+            
+  
+    Specialized Agents
+  
+
+          </label>
+          <ul class="md-nav__list" data-md-scrollfix>
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../../../concepts/specialized-agents/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Overview
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../../../concepts/browser-automation/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Browser Agent
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+          </ul>
+        </nav>
+      
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    
+    
+    
+    
+      
+      
+        
+      
+    
+    
+    <li class="md-nav__item md-nav__item--nested">
+      
+        
+        
+        <input class="md-nav__toggle md-toggle " type="checkbox" id="__nav_3_4" >
+        
+          
+          <label class="md-nav__link" for="__nav_3_4" id="__nav_3_4_label" tabindex="0">
+            
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Advanced Topics
+  
+
+    
+  </span>
+  
+  
+
+            <span class="md-nav__icon md-icon"></span>
+          </label>
+        
+        <nav class="md-nav" data-md-level="2" aria-labelledby="__nav_3_4_label" aria-expanded="false">
+          <label class="md-nav__title" for="__nav_3_4">
+            <span class="md-nav__icon md-icon"></span>
+            
+  
+    Advanced Topics
+  
+
+          </label>
+          <ul class="md-nav__list" data-md-scrollfix>
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../../../concepts/advanced/topology/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Topology
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../../../concepts/det-nodes/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Det-nodes
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../../../concepts/state-management/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    State Management
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    
+    
+    
+    
+      
+      
+        
+      
+    
+    
+    <li class="md-nav__item md-nav__item--nested">
+      
+        
+        
+        <input class="md-nav__toggle md-toggle " type="checkbox" id="__nav_3_4_4" >
+        
+          
+          <label class="md-nav__link" for="__nav_3_4_4" id="__nav_3_4_4_label" tabindex="0">
+            
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Observability
+  
+
+    
+  </span>
+  
+  
+
+            <span class="md-nav__icon md-icon"></span>
+          </label>
+        
+        <nav class="md-nav" data-md-level="3" aria-labelledby="__nav_3_4_4_label" aria-expanded="false">
+          <label class="md-nav__title" for="__nav_3_4_4">
+            <span class="md-nav__icon md-icon"></span>
+            
+  
+    Observability
+  
+
+          </label>
+          <ul class="md-nav__list" data-md-scrollfix>
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../../../concepts/tracing/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Tracing
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+          </ul>
+        </nav>
+      
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../../../concepts/error-handling/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Error Handling
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../../../concepts/learning-agents/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Learning Agents
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../../../concepts/custom-agents/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Custom Agents
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+          </ul>
+        </nav>
+      
+    </li>
+  
+
+              
+            
+          </ul>
+        </nav>
+      
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    
+    
+    
+    
+      
+      
+        
+      
+    
+    
+    <li class="md-nav__item md-nav__item--nested">
+      
+        
+        
+        <input class="md-nav__toggle md-toggle " type="checkbox" id="__nav_4" >
+        
+          
+          <label class="md-nav__link" for="__nav_4" id="__nav_4_label" tabindex="0">
+            
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    API Reference
+  
+
+    
+  </span>
+  
+  
+
+            <span class="md-nav__icon md-icon"></span>
+          </label>
+        
+        <nav class="md-nav" data-md-level="1" aria-labelledby="__nav_4_label" aria-expanded="false">
+          <label class="md-nav__title" for="__nav_4">
+            <span class="md-nav__icon md-icon"></span>
+            
+  
+    API Reference
+  
+
+          </label>
+          <ul class="md-nav__list" data-md-scrollfix>
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../../../api/overview/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Overview
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    
+    
+    
+    
+      
+      
+        
+      
+    
+    
+    <li class="md-nav__item md-nav__item--nested">
+      
+        
+        
+        <input class="md-nav__toggle md-toggle " type="checkbox" id="__nav_4_2" >
+        
+          
+          <label class="md-nav__link" for="__nav_4_2" id="__nav_4_2_label" tabindex="0">
+            
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Core APIs
+  
+
+    
+  </span>
+  
+  
+
+            <span class="md-nav__icon md-icon"></span>
+          </label>
+        
+        <nav class="md-nav" data-md-level="2" aria-labelledby="__nav_4_2_label" aria-expanded="false">
+          <label class="md-nav__title" for="__nav_4_2">
+            <span class="md-nav__icon md-icon"></span>
+            
+  
+    Core APIs
+  
+
+          </label>
+          <ul class="md-nav__list" data-md-scrollfix>
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../../../api/orchestra/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Orchestra
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../../../api/agent-class/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Agent Class
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../../../api/models/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Models
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+          </ul>
+        </nav>
+      
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    
+    
+    
+    
+      
+      
+        
+      
+    
+    
+    <li class="md-nav__item md-nav__item--nested">
+      
+        
+        
+        <input class="md-nav__toggle md-toggle " type="checkbox" id="__nav_4_3" >
+        
+          
+          <label class="md-nav__link" for="__nav_4_3" id="__nav_4_3_label" tabindex="0">
+            
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Coordination
+  
+
+    
+  </span>
+  
+  
+
+            <span class="md-nav__icon md-icon"></span>
+          </label>
+        
+        <nav class="md-nav" data-md-level="2" aria-labelledby="__nav_4_3_label" aria-expanded="false">
+          <label class="md-nav__title" for="__nav_4_3">
+            <span class="md-nav__icon md-icon"></span>
+            
+  
+    Coordination
+  
+
+          </label>
+          <ul class="md-nav__list" data-md-scrollfix>
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../../../api/topology/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Topology
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../../../api/execution/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Execution
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../../../api/configuration/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Configuration
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../../../api/validation/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Validation
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../../../api/rules/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Rules
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+          </ul>
+        </nav>
+      
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    
+    
+    
+    
+      
+      
+        
+      
+    
+    
+    <li class="md-nav__item md-nav__item--nested">
+      
+        
+        
+        <input class="md-nav__toggle md-toggle " type="checkbox" id="__nav_4_4" >
+        
+          
+          <label class="md-nav__link" for="__nav_4_4" id="__nav_4_4_label" tabindex="0">
+            
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Data Management
+  
+
+    
+  </span>
+  
+  
+
+            <span class="md-nav__icon md-icon"></span>
+          </label>
+        
+        <nav class="md-nav" data-md-level="2" aria-labelledby="__nav_4_4_label" aria-expanded="false">
+          <label class="md-nav__title" for="__nav_4_4">
+            <span class="md-nav__icon md-icon"></span>
+            
+  
+    Data Management
+  
+
+          </label>
+          <ul class="md-nav__list" data-md-scrollfix>
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../../../api/state/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    State
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../../../api/memory/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Memory
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    
+    
+    
+    
+      
+      
+        
+      
+    
+    
+    <li class="md-nav__item md-nav__item--nested">
+      
+        
+        
+        <input class="md-nav__toggle md-toggle " type="checkbox" id="__nav_4_4_3" >
+        
+          
+          <label class="md-nav__link" for="__nav_4_4_3" id="__nav_4_4_3_label" tabindex="0">
+            
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Observability
+  
+
+    
+  </span>
+  
+  
+
+            <span class="md-nav__icon md-icon"></span>
+          </label>
+        
+        <nav class="md-nav" data-md-level="3" aria-labelledby="__nav_4_4_3_label" aria-expanded="false">
+          <label class="md-nav__title" for="__nav_4_4_3">
+            <span class="md-nav__icon md-icon"></span>
+            
+  
+    Observability
+  
+
+          </label>
+          <ul class="md-nav__list" data-md-scrollfix>
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../../../api/tracing/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Tracing
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+          </ul>
+        </nav>
+      
+    </li>
+  
+
+              
+            
+          </ul>
+        </nav>
+      
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    
+    
+    
+    
+      
+      
+        
+      
+    
+    
+    <li class="md-nav__item md-nav__item--nested">
+      
+        
+        
+        <input class="md-nav__toggle md-toggle " type="checkbox" id="__nav_4_5" >
+        
+          
+          <label class="md-nav__link" for="__nav_4_5" id="__nav_4_5_label" tabindex="0">
+            
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Interaction
+  
+
+    
+  </span>
+  
+  
+
+            <span class="md-nav__icon md-icon"></span>
+          </label>
+        
+        <nav class="md-nav" data-md-level="2" aria-labelledby="__nav_4_5_label" aria-expanded="false">
+          <label class="md-nav__title" for="__nav_4_5">
+            <span class="md-nav__icon md-icon"></span>
+            
+  
+    Interaction
+  
+
+          </label>
+          <ul class="md-nav__list" data-md-scrollfix>
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../../../api/communication/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Communication
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../../../api/tools/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Tools
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+          </ul>
+        </nav>
+      
+    </li>
+  
+
+              
+            
+          </ul>
+        </nav>
+      
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../../../use-cases/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Use Cases
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    
+    
+    
+    
+      
+      
+        
+      
+    
+    
+    <li class="md-nav__item md-nav__item--nested">
+      
+        
+        
+        <input class="md-nav__toggle md-toggle " type="checkbox" id="__nav_6" >
+        
+          
+          <label class="md-nav__link" for="__nav_6" id="__nav_6_label" tabindex="0">
+            
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Guides
+  
+
+    
+  </span>
+  
+  
+
+            <span class="md-nav__icon md-icon"></span>
+          </label>
+        
+        <nav class="md-nav" data-md-level="1" aria-labelledby="__nav_6_label" aria-expanded="false">
+          <label class="md-nav__title" for="__nav_6">
+            <span class="md-nav__icon md-icon"></span>
+            
+  
+    Guides
+  
+
+          </label>
+          <ul class="md-nav__list" data-md-scrollfix>
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../../../guides/built-in-tools/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Built-in Tools
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../../../guides/specialized-tools/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Specialized Tools
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../../../guides/file-operations/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    File Operations
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../../../guides/multimodal-agents/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Multimodal Agents
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../../../guides/steering-and-error-recovery/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Steering and Error Recovery
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+          </ul>
+        </nav>
+      
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../../../contributing/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Contributing
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    
+    
+    
+    
+      
+      
+        
+      
+    
+    
+    <li class="md-nav__item md-nav__item--nested">
+      
+        
+        
+        <input class="md-nav__toggle md-toggle " type="checkbox" id="__nav_8" >
+        
+          
+          <label class="md-nav__link" for="__nav_8" id="__nav_8_label" tabindex="0">
+            
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Project
+  
+
+    
+  </span>
+  
+  
+
+            <span class="md-nav__icon md-icon"></span>
+          </label>
+        
+        <nav class="md-nav" data-md-level="1" aria-labelledby="__nav_8_label" aria-expanded="false">
+          <label class="md-nav__title" for="__nav_8">
+            <span class="md-nav__icon md-icon"></span>
+            
+  
+    Project
+  
+
+          </label>
+          <ul class="md-nav__list" data-md-scrollfix>
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../../../project/overview/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Project
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+          </ul>
+        </nav>
+      
+    </li>
+  
+
+    
+  </ul>
+</nav>
+                  </div>
+                </div>
+              </div>
+            
+            
+          
+          
+            <div class="md-content" data-md-component="content">
+              
+                
+
+
+
+  
+
+
+              
+              <article class="md-content__inner md-typeset">
+                
+                  
+
+
+  
+  
+
+
+<h1 id="adr-008-unified-node-kind-model-for-the-canonical-topology-wire-format">ADR-008: Unified Node-Kind Model for the Canonical Topology &amp; Wire Format<a class="headerlink" href="#adr-008-unified-node-kind-model-for-the-canonical-topology-wire-format" title="Permanent link">&para;</a></h1>
+<p><strong>Status</strong>: Proposed (awaiting written approval — escalation gate)
+<strong>Date</strong>: 2026-05-16 (drafted); 2026-05-16 (revised after Phase-A validation refuted the v1 mechanism — see §Revision note)
+<strong>Implements</strong>: Framework Session 08 — <code>docs/implementation/framework/sessions/v0.3.0/08-unified-node-kind-model.md</code>
+<strong>Related</strong>: ADR-005 (unified-barrier algorithm — the runtime that consumes Start/End/User), ADR-006 (deprecation timeline — the removals whose <em>destination model</em> this builds), Session 04 (the serializer this corrects), Session 07 (exercised this path; did not touch the node model)</p>
+<h2 id="revision-note-why-v2">Revision note (why v2)<a class="headerlink" href="#revision-note-why-v2" title="Permanent link">&para;</a></h2>
+<p>The v1 draft asserted the orchestrator core stays untouched because "<code>TopologyGraph</code> det-node queries resolve via <code>Node.kind</code>". Phase-A validation <strong>refuted</strong> that from primary source: <code>TopologyGraph</code> holds <code>NodeInfo</code> (<code>graph.py:38-48</code>, field <code>node_type</code>, no <code>kind</code>, no <code>core.Node</code>); its <code>get_start_node</code>/<code>is_det_node</code>/<code>get_det_node</code> resolve from a separate <code>det_nodes: Dict[str, DeterministicNode-instance]</code> registry (<code>graph.py:1042-1075</code>) populated by <code>register_det_node</code>, fed by <code>analyzer._add_nodes</code>' <code>isinstance</code> check and the shim — there is no path from <code>core.Node.kind</code> to that registry. The diagnosis (serializer is backwards; unify at the core) survived; the <em>mechanism and blast radius</em> did not. v2 relocates the real work to the analyzer/parsing <strong>materialization seam</strong> and states the true (larger) surface.</p>
+<h2 id="context">Context<a class="headerlink" href="#context" title="Permanent link">&para;</a></h2>
+<p><code>coordination/topology/serialize.py</code> is the canonical cross-process wire shape. It exposes <code>Literal["user","agent","system","tool"]</code> (<code>serialize.py:87</code>) mirroring <code>NodeType</code> (<code>core.py:20-25</code>), and <code>workflow_to_pydantic</code> raises <code>NonSerializableTopologyError</code> on <strong>any</strong> <code>DeterministicNode</code> (<code>serialize.py:279-286</code>) — a frozen Session-04 criterion (AC-59) on the rationale <em>"det-nodes carry execution-runtime state beyond what NodeSpec captures"</em> (<code>exceptions.py:15-25</code>).</p>
+<p>That rationale is false from primary source: <code>StartNode</code>/<code>EndNode.__init__</code> carry only <code>name</code> (<code>det_nodes.py:77-78,109-110</code>); <code>UserNode</code>'s only non-trivial field is <code>handler</code> (<code>det_nodes.py:137-139</code>) — a runtime binding identical to agent tool callables, already handled by name + <code>tool_registry</code> at hydrate (<code>serialize.py:31-34</code>). The wire never needed det-node <em>state</em> — only the <em>discriminator</em>, which is a string, exactly what <code>node_type</code> already is.</p>
+<p>The deeper defect: the v0.3 redesign already made explicit <code>Start</code>/<code>End</code>/<code>User</code> det-nodes <strong>"the canonical way to express workflow entry, termination, and user-channel I/O"</strong> (<code>DEPRECATIONS.md:24-31</code>). The runtime <code>Topology</code> accepts them (<code>core.py:167-174</code>); the unified-barrier orchestrator drives from them (<code>orchestrator.py:162-168</code>). The Session-04 serializer mirrored the <em>legacy enum-only</em> model and banned the canonical one — built backwards relative to the framework's documented direction. The canonical wire path runs today only because the <code>REMOVE-IN-V0.4</code> shim (<code>orchestra.py:_apply_legacy_topology_shim</code>, ~456-616) synthesises the missing Start/End/User. At v0.4 the crutch is deleted and the format cannot express a runnable workflow; a <code>UserNode</code> workflow already cannot round-trip.</p>
+<p>Compounding structural problems (all primary-source confirmed): two muddled axes (executor-kind class hierarchy vs <code>NodeType</code> enum, with <code>User</code> in <strong>both</strong> — <code>core.User(Node)</code> at <code>core.py:132</code> <em>and</em> <code>det_nodes.UserNode</code> — forcing the <code>parsing.py:67</code> carve-out); vestigial <code>NodeType.SYSTEM</code>/<code>TOOL</code> (never dispatched); specialized <code>Agent</code> subclasses don't round-trip (<code>agents/serialize.py:158</code> always rebuilds base <code>Agent</code>; <code>AgentSpec</code> has no type discriminator).</p>
+<h3 id="the-three-representations-the-corrected-mental-model">The three representations (the corrected mental model)<a class="headerlink" href="#the-three-representations-the-corrected-mental-model" title="Permanent link">&para;</a></h3>
+<p><code>kind</code> must thread through <strong>three</strong> layers, not two:</p>
+<ol>
+<li><strong>Wire</strong> — <code>WorkflowDefinition</code>/<code>NodeSpec</code> (Pydantic, JSON). Discriminator field.</li>
+<li><strong>Canonical runtime model</strong> — <code>core.Topology</code>/<code>core.Node</code> (the "canonical internal representation", <code>core.py:1-7</code>). What <code>pydantic_to_topology</code> produces and <code>Orchestra.run</code> receives.</li>
+<li><strong>Execution graph</strong> — <code>TopologyGraph</code>/<code>NodeInfo</code> + the <code>det_nodes</code> <strong>instance registry</strong> (<code>graph.py:38-48,1042-1075</code>). Built by <code>TopologyAnalyzer</code> (<code>analyzer._add_nodes</code>) and the shim, from (2). Consumed by the <code>Orchestrator</code> only via the <code>TopologyLike</code> Protocol (<code>orchestrator_types.py:198-205</code>, <code>orchestrator.py:163</code>).</li>
+</ol>
+<p>The real work is the <strong>materialization seam</strong> between (2) and (3): a <code>core.Node</code> with <code>kind ∈ {START,END,USER}</code> (or a <code>"Start"</code>/<code>"End"</code>/<code>"User"</code> string via <code>parse_node</code>) must be turned into the right <code>DeterministicNode</code> <em>instance</em> via one authoritative registry and <code>register_det_node</code>'d. That single seam <strong>replaces</strong> the analyzer's <code>isinstance</code> branch (<code>analyzer.py:185-192</code>), the <code>parsing.py:62-72</code> string special-casing, <em>and</em> closes the round-trip gap that a deserialized <code>core.Node(kind=START)</code> does not currently become a det-node.</p>
+<h3 id="why-the-orchestrator-core-genuinely-does-not-change-narrow-true-claim">Why the orchestrator core genuinely does not change (narrow, true claim)<a class="headerlink" href="#why-the-orchestrator-core-genuinely-does-not-change-narrow-true-claim" title="Permanent link">&para;</a></h3>
+<p><code>get_start_node</code>/<code>is_det_node</code>/<code>get_det_node</code> keep reading <code>TopologyGraph.det_nodes</code>; the <code>TopologyLike</code> signature and the <code>Orchestrator</code> dispatch body are unmodified. We change <em>what feeds</em> <code>det_nodes</code> (kind-materialization in the analyzer instead of isinstance/string), not what reads it. <code>init_workflow</code> precedence is confirmed (<code>orchestrator.py:154-168</code>): <code>entry_agent</code> set → direct spawn; else → require <code>get_start_node()</code>. The Orchestrator's TRUNK-CRITICAL body is untouched — but the analyzer/parsing/graph materialization path <strong>is in scope and is the real work</strong>, not a one-line branch swap. This is why this is implementer-tier <em>with</em> an ADR gate, not an Orchestrator rewrite.</p>
+<h3 id="why-exactly-one-start-can-be-enforced-now">Why "exactly one Start" can be enforced now<a class="headerlink" href="#why-exactly-one-start-can-be-enforced-now" title="Permanent link">&para;</a></h3>
+<p><strong>[Corrected 2026-05-17 — Step-0 characterization refuted the v2 wording of P6; primary-source-traced true mechanism below.]</strong></p>
+<p><code>get_start_node()</code> <strong>already</strong> raises <code>TopologyError</code> on <em>multiple</em> Starts (<code>graph.py:1069-1074</code>). The earlier claim that a pure-agent topology has no Start (and runs via the <code>_find_entry_agents</code> heuristic) is <strong>false</strong>. True mechanism, traced + empirically confirmed: <code>TopologyAnalyzer.analyze</code> <em>unconditionally</em> writes <code>graph.metadata["exit_points"] = &lt;terminal nodes&gt;</code> (<code>analyzer.py:119-127</code>, comment <em>"ALWAYS find and store exit points"</em>); the shim's exit_points block synthesises an <code>EndNode</code> + edges; <code>det_nodes</code> is now non-empty, which <strong>un-gates</strong> the shim's final block (<code>orchestra.py:599</code>) → it synthesises exactly one <code>Start</code>. So for <strong>every topology with ≥1 terminal node the shim already produces exactly one Start + End today</strong>; the <code>_find_entry_agents</code> heuristic is already dead for them. The <em>only</em> surviving zero-Start case is a <strong>degenerate topology with no terminal node</strong> (a pure cycle where every node has an outgoing edge, or an isolated single node): <code>exit_points</code> empty → no End → <code>det_nodes</code> empty → final block skipped → no Start → today the silent heuristic guesses or dies vaguely. The enforcement work therefore reduces to <strong>one additive post-shim guard</strong>: after <code>_apply_legacy_topology_shim</code>, if <code>get_start_node() is None</code>, raise an explicit <code>TopologyError</code> naming the degenerate-no-terminal issue (before the legacy <code>_find_entry_agents</code> fallback, which is left in place for v0.4). Multiple-Start already enforced; single-Start already synthesised for all non-degenerate topologies. Net guarantee delivered: every runnable topology provably has exactly one Start or fails loudly. Behaviour change is confined to the degenerate no-terminal input (already a malformed/no-exit workflow) — flagged + documented.</p>
+<h2 id="premise-ledger">Premise Ledger<a class="headerlink" href="#premise-ledger" title="Permanent link">&para;</a></h2>
+<table>
+<thead>
+<tr>
+<th>#</th>
+<th>Premise</th>
+<th>Source</th>
+<th>Status</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>P1</td>
+<td>Wire bans det-nodes on the "carry runtime state" rationale; frozen S04 AC-59</td>
+<td>primary-source</td>
+<td>CONFIRMED@serialize.py:279-286, exceptions.py:15-25, 04 acceptance:116</td>
+</tr>
+<tr>
+<td>P2</td>
+<td>Rationale false: Start/End name-only; UserNode.handler = tool-style binding</td>
+<td>primary-source</td>
+<td>CONFIRMED@det_nodes.py:77-78,109-110,137-139; serialize.py:31-34</td>
+</tr>
+<tr>
+<td>P3</td>
+<td>Explicit Start/End/User det-nodes are the v0.3 <em>canonical</em> model</td>
+<td>primary-source</td>
+<td>CONFIRMED@DEPRECATIONS.md:24-31</td>
+</tr>
+<tr>
+<td>P4 (load-bearing, <strong>revised</strong>)</td>
+<td>The <code>Orchestrator</code> dispatch body and the <code>TopologyLike</code> Protocol <em>signature</em> are unmodified; <code>get_start_node</code>/<code>is_det_node</code>/<code>get_det_node</code> keep reading <code>det_nodes</code>; only the <em>feed</em> (analyzer materialization) changes</td>
+<td>primary-source</td>
+<td>CONFIRMED@orchestrator.py:154-168, orchestrator_types.py:198-205, graph.py:1042-1075. Falsifier: any required edit to <code>execution/orchestrator.py</code> dispatch logic OR the <code>TopologyLike</code> signature. (NOT "topology layer is a one-liner" — that v1 wording was refuted.)</td>
+</tr>
+<tr>
+<td>P4b (load-bearing, <strong>new</strong>)</td>
+<td>The det-node materialization path (<code>analyzer._add_nodes</code>, <code>parsing.parse_node</code>, the registry, <code>register_det_node</code>) is the real work and is non-trivial; a deserialized <code>core.Node(kind=START)</code> does NOT become a det-node today</td>
+<td>primary-source</td>
+<td>CONFIRMED@analyzer.py:185-192, parsing.py:62-72, serialize.py:420-470 (pydantic_to_topology emits plain core.Node, never DeterministicNode)</td>
+</tr>
+<tr>
+<td>P5</td>
+<td><code>NodeType.SYSTEM</code>/<code>TOOL</code> never dispatched (vestigial)</td>
+<td>primary-source</td>
+<td>CONFIRMED@grep (enum + RESERVED_NODE_NAMES + wire mirror only)</td>
+</tr>
+<tr>
+<td>P6 (<strong>corrected 2026-05-17</strong>)</td>
+<td><del>Shim near-total; only pure-agent no-Start bypasses Start</del> <strong>REFUTED by Step-0 characterization.</strong> TRUE: analyzer's unconditional <code>exit_points</code> write ⇒ shim synthesises End ⇒ <code>det_nodes</code> non-empty ⇒ shim synthesises exactly one Start, for <em>every</em> topology with a terminal node. Only a degenerate no-terminal topology survives with zero Start</td>
+<td>primary-source + empirical</td>
+<td>CONFIRMED@analyzer.py:119-127, orchestra.py:504-522,599; test_s08_characterization.py</td>
+</tr>
+<tr>
+<td>P7</td>
+<td>Specialized <code>Agent</code> subclasses don't round-trip</td>
+<td>primary-source</td>
+<td>CONFIRMED@agents/serialize.py:76-91,158</td>
+</tr>
+<tr>
+<td>P8 (<strong>revised</strong>)</td>
+<td>The only <em>live</em> consumer of the model shape is a downstream hand-mirror; other prospective consumers are aspirational. That consumer's breakage is contracted as a follow-up (P9). The <code>RESERVED_NODE_NAMES</code> import does <strong>not</strong> break (derived → still a same-named module-level frozenset, same path); only its <em>value</em> changes, so the consumer's name validator semantics diverge</td>
+<td>primary-source</td>
+<td>CONFIRMED@DEPRECATIONS.md:24-31; the downstream consumer imports the set to track the framework</td>
+</tr>
+<tr>
+<td>P9</td>
+<td>Downstream hand-mirror drop + stored-data migration is a consumer-side follow-up</td>
+<td>agent-brief</td>
+<td>RISK-LOGGED (consumer roadmap, not framework-verifiable)</td>
+</tr>
+<tr>
+<td>P10 (<strong>revised</strong>)</td>
+<td><code>RESERVED_NODE_NAMES</code> is load-bearing for agent/pool-name rejection, the Hypothesis strategy, AND a downstream validator. Changing its membership is a <em>value/behaviour</em> change (NOT an import-time break — the symbol/path is preserved): agents may now be named <code>system</code>/<code>tool</code>, no longer <code>Start</code>/<code>End</code>; a downstream mirror stops reserving <code>system</code>/<code>tool</code>, starts reserving <code>start</code>/<code>end</code> — which is what such a mirror wants (track the framework set)</td>
+<td>primary-source</td>
+<td>CONFIRMED@agents/agents.py:241, agents/registry.py:61,257, tests/.../strategies.py:22</td>
+</tr>
+<tr>
+<td>P11 (<strong>new</strong>)</td>
+<td><code>pattern_converter</code> injects <code>Node(name="User", node_type=NodeType.USER)</code> at 7 sites — uniform-Node/kind migration touches it</td>
+<td>primary-source</td>
+<td>CONFIRMED@pattern_converter.py:70,118,176,233,248,298,313</td>
+</tr>
+<tr>
+<td>P12 (<strong>new</strong>)</td>
+<td><code>topology_equals</code> oracle keys on <code>(name, node_type.value, metadata)</code>, excludes <code>is_convergence_point</code> — AC "full round-trip equality" needs the oracle updated to <code>kind</code></td>
+<td>primary-source</td>
+<td>CONFIRMED@serialize.py:225-226</td>
+</tr>
+<tr>
+<td>P13 (<strong>new</strong>)</td>
+<td><code>get_start_node()</code> already raises on <em>multiple</em> Starts; only the <em>zero</em>-Start-post-shim half is missing</td>
+<td>primary-source</td>
+<td>CONFIRMED@graph.py:1069-1074</td>
+</tr>
+</tbody>
+</table>
+<p><strong>Frame check.</strong> Most load-bearing: P3 (explicit det-nodes are canonical; the serializer, not the model, is wrong). Falsifier sought: the runtime needs det-nodes only cosmetically (wire gap not real) OR the unification mechanism is impossible against the live graph. First falsifier refuted (the explicit model is documented-canonical P3; the shim/auto-synth is <code>REMOVE-IN-V0.4</code>). Second falsifier <em>partially fired</em> against v1 (the "kind-backed Protocol" mechanism was wrong) and is resolved in v2 by relocating the work to the analyzer materialization seam. <strong>P6 itself was subsequently refuted by Step-0 characterization (2026-05-17) — but this does not move the frame: it <em>narrows</em> the Start-invariant work (the shim is already total; only a degenerate no-terminal guard is needed) and leaves the core node-kind unification (Decisions 1-5/&#8542;) entirely untouched.</strong> Frame holds: this finishes the v0.3 redesign in the component that missed it.</p>
+<h2 id="decision">Decision<a class="headerlink" href="#decision" title="Permanent link">&para;</a></h2>
+<p><strong>Y-statement.</strong> In the context of the canonical topology + wire format, facing a serializer that mirrors the legacy enum-only node model and bans the canonical det-nodes on a refuted premise, we decided <strong>to make a single closed <code>NodeKind</code> discriminator the canonical node taxonomy (owned in <code>topology/core.py</code>, mirrored 1:1 on the wire), with deterministic behaviour materialized from <code>kind</code> at the <code>analyzer._add_nodes</code> seam (<code>parse_node</code> normalizes to uniform <code>core.Node</code>; <code>Topology.nodes</code> is homogeneous) via one authoritative extension-open registry</strong> — and neither a parallel public class hierarchy nor a vestigial enum — to achieve a canonical format that losslessly round-trips every runnable workflow and survives the v0.4 shim removal, accepting a wire-schema value-set change (one in-repo mirror consumer, contracted follow-up), a cross-package <code>RESERVED_NODE_NAMES</code> + agent-registration behaviour change, and a one-session blast radius spanning core + serialize + analyzer/parsing + pattern_converter + the equality oracle + characterization tests.</p>
+<ol>
+<li><strong><code>topology/core.py</code></strong> — <code>NodeType</code> → <code>NodeKind = {AGENT, START, END, USER}</code>; drop <code>SYSTEM</code>/<code>TOOL</code> (P5); remove <code>User(Node)</code> (<code>core.py:132</code>); <code>Node</code> carries <code>kind</code>; <code>Topology</code> holds uniform <code>Node</code>s (no dual-family accept at <code>core.py:171</code>). <code>RESERVED_NODE_NAMES</code> is <strong>derived from <code>NodeKind</code></strong> (<code>frozenset(k.name.lower() for k in NodeKind if k is not NodeKind.AGENT)</code>), NOT a rewritten literal — it stays a module-level frozenset with the <em>same name and import path</em> (a downstream consumer imports the value; derive, don't restructure the export). <strong>Surfaced</strong> behaviour change (P10): agents may now be named <code>system</code>/<code>tool</code>; may no longer be named <code>Start</code>/<code>End</code>; the Hypothesis strategy (<code>strategies.py:22</code>) and any downstream import are affected.</li>
+<li><strong>Behaviour registry (single-sourced)</strong> — a <code>NodeKind → behaviour-class</code> map is the <strong>single source of truth</strong>; the reserved-name string lookup (<code>"Start"→StartNode</code>) is <em>derived</em> from the classes' existing <code>RESERVED_NAME</code> attrs (<code>det_nodes.py:75,107,135</code>), NOT kept as a second hand-maintained <code>RESERVED_DETNODE_NAMES</code> dict. <code>RESERVED_DETNODE_NAMES</code>, the <code>parse_node</code> carve-out (<code>parsing.py:67</code>), and <code>RESERVED_NODE_NAMES</code> (<code>core.py:29</code>) are three hand-synced spellings of one fact — collapse to one (AC-4 "extension-open" is only true if adding a kind touches exactly one place). <code>DeterministicNode</code>/<code>StartNode</code>/<code>EndNode</code>/<code>UserNode</code> classes <strong>stay</strong> as behaviour. <strong>No speculative <code>conditional</code>/<code>loop</code> classes built</strong> (anti-pattern #11).</li>
+<li><strong>Materialization seam (the real work) — Option A, true uniform <code>Topology.nodes</code>.</strong> <code>parsing.parse_node</code> returns a uniform <code>core.Node(kind=...)</code> for <em>every</em> input — a <code>"Start"/"End"/"User"</code> string → <code>core.Node(name, kind=START/END/USER)</code>; it <strong>no longer returns <code>DeterministicNode</code> instances</strong> (reversing today's parsing.py:56-69 behaviour). <code>Topology.__post_init__</code> accepts <code>Node</code> only (the <code>(Node, DeterministicNode)</code> dual-accept at <code>core.py:171</code> is removed). The <code>DeterministicNode</code> <em>behaviour instance</em> is materialized <strong>only</strong> at <code>analyzer._add_nodes</code>: it branches on <code>node.kind</code>, builds the instance via the registry, and calls <code>register_det_node</code> — retained, <code>graph.py:1042</code> keeps its sole caller; the <code>isinstance</code> at <code>analyzer.py:185</code> becomes a <code>kind</code> check at the <strong>same site</strong> (not deleted — that v1-reflex wording would strand <code>register_det_node</code>). Every reader doing <code>isinstance(x, DeterministicNode)</code> on <code>Topology.nodes</code>/a parsed node migrates to <code>node.kind</code> — bounded set: <code>parsing.py:56</code>, the <code>serialize.py:279</code> check being deleted anyway, <code>core.py:171</code>, <code>analyzer.py:185</code>. (Option B — keep instances in <code>Topology.nodes</code>, just add <code>kind</code> — is the bounded-depth Fix #2 already rejected; it leaves the dual-type model alive and would make Decision 1's "uniform <code>Node</code>s" false. Chosen: A.) Single chokepoint confirmed by primary source: every runnable topology flows <code>_ensure_topology</code>→<code>analyzer.analyze</code>→<code>_add_nodes</code> (<code>orchestra.py:936-955</code>, <code>analyze</code> called once @948); <code>pydantic_to_topology</code> builds a graph-free <code>core.Topology</code> (<code>serialize.py:454</code>) — no bypass. Closes P4b (a deserialized <code>core.Node(kind=START)</code> now materializes as a det-node at <code>_add_nodes</code>).</li>
+<li><strong><code>topology/serialize.py</code></strong> — <code>NodeSpec.node_type</code> → <code>kind</code> (1:1 <code>NodeKind</code>); <code>workflow_to_pydantic</code> total; delete <code>NonSerializableTopologyError</code> (<code>exceptions.py</code>); <code>pydantic_to_topology</code> gets a <code>handler_registry</code> param (tool-registry pattern) for <code>UserNode</code>; <strong>update <code>topology_equals</code> oracle</strong>: <code>node_type.value</code> → <code>kind.value</code> AND <strong>add <code>is_convergence_point</code> to <code>node_key</code></strong> (P12). The wire serializes + round-trips <code>is_convergence_point</code> (<code>serialize.py:119,305,447</code>) but the oracle (<code>serialize.py:225-226</code>) is blind to it — "full round-trip equality" is unsatisfiable for an <code>is_convergence_point=True</code> node otherwise. Any convergence round-trip discrepancy the oracle exposes — whether in S08's own changed path OR pre-existing and unrelated — <strong>is in-scope to fix in S08</strong> (user-directed 2026-05-17: the serializer must be correct when S08 lands). Recorded as a <strong>deliberate, user-instructed</strong> scope inclusion (the anti-pattern #8 "no smuggled scope" exception is <em>explicit user instruction</em>) so a future reader sees it was intentional, not creep. Tradeoff accepted: larger diff; rollback couples the node-kind change with the convergence fix. Decided at acceptance-freeze — NOT deferred to sign-off.</li>
+<li><strong><code>pattern_converter.py</code></strong> (7 sites, P11) — <code>Node(name="User", node_type=NodeType.USER)</code> → <code>kind=USER</code>. Pattern <em>semantics/edges unchanged</em>; only the node constructor migrates. NOT a "pattern model change".</li>
+<li><strong><code>coordination/orchestra.py</code></strong> — <strong>NO production code (final, 2026-05-17, user-approved "clean option").</strong> Characterization proved "exactly one Start" is <em>already fully enforced</em> for the explicit/canonical path: <code>find_entry_point_with_manual</code> hard-errors on no-entry/cycle (<code>graph.py:516</code>), <code>find_exit_points_with_manual</code> (strict) hard-errors on no-terminal (<code>graph.py:644</code>), surviving topologies get exactly one synthesized Start, multiple-Start errors (<code>graph.py:1069</code>). A post-shim guard would be defensive code for an impossible state (anti-pattern #5). Step 6 = <strong>regression-pins only</strong>: <code>test_s08_characterization.py</code> f1/f2 lock that the existing analyze-layer <code>TopologyError</code>s remain. The <code>_find_entry_agents</code> heuristic is reachable only via <code>auto_run</code> soft-exit mode — a separate subsystem, out of S08 scope.</li>
+<li><strong>Wire backward-compat</strong> — wire validator stays permissive in v0.3: legacy-no-Start deserialises + <code>DeprecationWarning</code>; stored <code>kind</code>/value <code>system</code>/<code>tool</code> → reject at load with a migration message. Hard invariant lives at the runtime/post-shim seam. v0.4: warning→error, shim deleted.</li>
+<li><strong>AC-59 reversal is an explicit, intentional spec change</strong> — <code>test_serialize.py:612-649</code> asserts <code>pytest.raises(NonSerializableTopologyError)</code>; Decision 4 reverses it. Those tests are <strong>inverted to assert successful round-trip</strong>, surfaced in the session sign-off and the S04 acceptance amendment (anti-pattern #1: never a silent test deletion).</li>
+<li><strong>Specialized-agent gap — principle here, implementation Session 09.</strong> The unifying principle ("a typed graph entity round-trips via a closed wire discriminator + a framework-side class registry; behaviour in the class; bindings injected at hydrate") is the canonical pattern for <strong>both</strong> axes. <code>AgentSpec</code> <code>agent_type</code> discriminator + agent-class registry = ADR-blessed Session 09 (P7), deliberately not bundled — scope discipline.</li>
+</ol>
+<h3 id="scope-boundaries">Scope boundaries<a class="headerlink" href="#scope-boundaries" title="Permanent link">&para;</a></h3>
+<ul>
+<li><strong>In S08</strong>: Decisions 1-8. End-to-end node-kind unification incl. the analyzer materialization seam, the total-shim + complete Start invariant, the equality-oracle update, <code>pattern_converter</code> node migration, the <code>RESERVED_NODE_NAMES</code> reconciliation <em>with its behaviour/cross-package change surfaced</em>, characterization tests written <strong>first</strong> (no AC-11 baseline exists), the AC-59 inversion, DEPRECATIONS/CHANGELOG/schema-version, S04 acceptance amendment.</li>
+<li><strong>Out of S08</strong>: <code>agent_type</code> round-trip (Session 09); v0.4 shim/heuristic deletion; downstream hand-mirror drop + stored-data migration (a consumer-side PR, P9); edge/pattern <em>semantics</em>; new det-node classes.</li>
+<li><strong>Test bar</strong>: AC-15 green = the <strong>framework</strong> suite. A downstream consumer's import does NOT break (derived frozenset, same name/path); its <em>suite</em> diverges only where it asserts the old reserved-value semantics or relies on a stale local <code>NodeType</code> (still has <code>system</code>/<code>tool</code>) / mirror — the contracted P9 follow-up. If a downstream suite runs in the same bar, Step 0 scopes the green target explicitly; the divergence is expected/surfaced, not "fixed" by reverting the framework change.</li>
+</ul>
+<h2 id="consequences">Consequences<a class="headerlink" href="#consequences" title="Permanent link">&para;</a></h2>
+<ul>
+<li><strong>Positive</strong>: canonical format losslessly round-trips every runnable workflow incl. explicit entry/exit/human nodes; survives v0.4 shim removal with zero further model change; one single-sourced taxonomy; two-axes muddle + <code>User</code> double-representation gone; Start invariant complete now; future det-kinds additive.</li>
+<li><strong>Negative</strong>: wire discriminator name+value-set change → schema bump; a downstream hand-mirror + its suite diverge until a follow-up PR (P9, contracted); <code>RESERVED_NODE_NAMES</code> membership change alters agent-registration legality (surfaced); undeterminable-entry topologies now error instead of guessing (intended).</li>
+<li><strong>Risks</strong>: round-trip regressions on exotic combos → exhaustive <code>NodeKind×EdgeType×pattern</code> matrix + Hypothesis; legacy/parity outcomes changing under the node-kind migration → characterization-test-first (5 cases incl. degenerate) then parity assert; the analyzer materialization being mis-scoped → P4b is a named load-bearing premise the validator re-confirms; <code>RESERVED_NODE_NAMES</code> cross-package breakage → surfaced as expected P9 fallout, green-bar scoped in Step 0; oracle change hiding a real round-trip bug → oracle update is itself reviewed; the degenerate-no-terminal guard is a behaviour change for an already-malformed input → flagged + documented (CHANGELOG/DEPRECATIONS), characterized pre/post. The corrected-P6 episode itself shows characterization-first working as intended (false premise caught before any production code).</li>
+</ul>
+<h2 id="alternatives-rejected">Alternatives Rejected<a class="headerlink" href="#alternatives-rejected" title="Permanent link">&para;</a></h2>
+<ol>
+<li><strong>Bounded-depth (wire+dispatch only; keep core duality + <code>User</code> dup)</strong> — smaller, but ships a wire more coherent than its runtime and leaves the root mess as debt. Rejected: user chose full unification; mirroring the mess isn't "canonical".</li>
+<li><strong>Honesty-only (drop "runnable" claim, keep the reject)</strong> — does not fix v0.4 incompatibility or the authoring gap. Rejected.</li>
+<li><strong>Two-field <code>kind</code>+<code>subtype</code></strong> — premature; family is derivable from <code>kind</code> + registry. Rejected (anti-pattern #4/#11); revisit if a kind needs sub-variants.</li>
+<li><strong>Delete <code>_find_entry_agents</code>/<code>entry_agent</code> now</strong> — already v0.4-scheduled; smuggled scope, touches the run signature. Rejected.</li>
+<li><strong>Coerce stored <code>system</code>/<code>tool</code> → <code>agent</code> on load</strong> — silently rescues a never-runnable doc. Rejected: reject-at-load with migration message (serializer's fail-fast-at-storage value, <code>serialize.py:161-169</code>).</li>
+<li><strong>Bundle <code>agent_type</code> into S08</strong> — same mechanism, doubles scope beyond the reported problem. Rejected; ADR-blessed Session 09 so the principle isn't silently half-applied.</li>
+<li><strong>Split core-model and wire-mirror into two sessions</strong> — ships a half-migrated dual model (the exact legacy-retention anti-pattern). Rejected: one coherent change, one session.</li>
+</ol>
+<h2 id="resolved-open-decisions">Resolved open decisions<a class="headerlink" href="#resolved-open-decisions" title="Permanent link">&para;</a></h2>
+<ul>
+<li>Wire field rename <code>node_type</code>→<code>kind</code> (value-set changes regardless; one mirror consumer; honest name).</li>
+<li>Reserved names: one set = non-agent kinds, lowercase, case-insensitive; <code>system</code>/<code>tool</code> removed; <strong>behaviour + cross-package change explicitly surfaced (P10), not silent</strong>.</li>
+<li>Vestigial-value load policy: reject (alt. 5).</li>
+<li>Specialized-agent scope: principle here, implementation Session 09 (Decision 9 + alt. 6).</li>
+<li><code>is_convergence_point</code> in the equality oracle: <strong>include it in <code>node_key</code></strong> (the wire round-trips it; an oracle blind to it cannot verify "full round-trip equality"). Decided here, at acceptance-freeze. Any convergence round-trip discrepancy the oracle exposes (in-path OR pre-existing/unrelated) = <strong>fix in S08</strong> (user-directed 2026-05-17; deliberate scope inclusion, not creep; tradeoff: coupled rollback + larger diff).</li>
+</ul>
+<h2 id="migration-backward-compat">Migration &amp; backward-compat<a class="headerlink" href="#migration-backward-compat" title="Permanent link">&para;</a></h2>
+<p>Legacy no-Start stored <code>WorkflowDefinition</code>: still deserialises, <code>DeprecationWarning</code>, runs via the now-total shim — unchanged user-visible outcome (parity characterization-pinned). Legacy <code>entry_point</code>/<code>exit_points</code>/<code>User(Node)</code>: shim path preserved + parity-pinned. <code>node_type</code>(old) vs <code>kind</code>(new): schema bump + CHANGELOG; framework ships new shape, a downstream consumer migrates its store + mirror in its own PR (P9). No dual-field wire shim (anti-pattern: legacy retention) — the version boundary is the contract.</p>
+
+
+
+
+
+
+
+
+
+  
+
+
+
+
+                
+              </article>
+            </div>
+          
+          
+  <script>var tabs=__md_get("__tabs");if(Array.isArray(tabs))e:for(var set of document.querySelectorAll(".tabbed-set")){var labels=set.querySelector(".tabbed-labels");for(var tab of tabs)for(var label of labels.getElementsByTagName("label"))if(label.innerText.trim()===tab){var input=document.getElementById(label.htmlFor);input.checked=!0;continue e}}</script>
+
+<script>var target=document.getElementById(location.hash.slice(1));target&&target.name&&(target.checked=target.name.startsWith("__tabbed_"))</script>
+        </div>
+        
+          <button type="button" class="md-top md-icon" data-md-component="top" hidden>
+  
+  <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M13 20h-2V8l-5.5 5.5-1.42-1.42L12 4.16l7.92 7.92-1.42 1.42L13 8z"/></svg>
+  Back to top
+</button>
+        
+      </main>
+      
+        <footer class="md-footer">
+  
+  <div class="md-footer-meta md-typeset">
+    <div class="md-footer-meta__inner md-grid">
+      <div class="md-copyright">
+  
+  
+    Made with
+    <a href="https://squidfunk.github.io/mkdocs-material/" target="_blank" rel="noopener">
+      Material for MkDocs
+    </a>
+  
+</div>
+      
+        
+<div class="md-social">
+  
+    
+    
+    
+    
+      
+      
+    
+    <a href="https://github.com/rezaho" target="_blank" rel="noopener" title="github.com" class="md-social__link">
+      <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512"><!--! Font Awesome Free 7.1.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2025 Fonticons, Inc.--><path d="M173.9 397.4c0 2-2.3 3.6-5.2 3.6-3.3.3-5.6-1.3-5.6-3.6 0-2 2.3-3.6 5.2-3.6 3-.3 5.6 1.3 5.6 3.6m-31.1-4.5c-.7 2 1.3 4.3 4.3 4.9 2.6 1 5.6 0 6.2-2s-1.3-4.3-4.3-5.2c-2.6-.7-5.5.3-6.2 2.3m44.2-1.7c-2.9.7-4.9 2.6-4.6 4.9.3 2 2.9 3.3 5.9 2.6 2.9-.7 4.9-2.6 4.6-4.6-.3-1.9-3-3.2-5.9-2.9M252.8 8C114.1 8 8 113.3 8 252c0 110.9 69.8 205.8 169.5 239.2 12.8 2.3 17.3-5.6 17.3-12.1 0-6.2-.3-40.4-.3-61.4 0 0-70 15-84.7-29.8 0 0-11.4-29.1-27.8-36.6 0 0-22.9-15.7 1.6-15.4 0 0 24.9 2 38.6 25.8 21.9 38.6 58.6 27.5 72.9 20.9 2.3-16 8.8-27.1 16-33.7-55.9-6.2-112.3-14.3-112.3-110.5 0-27.5 7.6-41.3 23.6-58.9-2.6-6.5-11.1-33.3 2.6-67.9 20.9-6.5 69 27 69 27 20-5.6 41.5-8.5 62.8-8.5s42.8 2.9 62.8 8.5c0 0 48.1-33.6 69-27 13.7 34.7 5.2 61.4 2.6 67.9 16 17.7 25.8 31.5 25.8 58.9 0 96.5-58.9 104.2-114.8 110.5 9.2 7.9 17 22.9 17 46.4 0 33.7-.3 75.4-.3 83.6 0 6.5 4.6 14.4 17.3 12.1C436.2 457.8 504 362.9 504 252 504 113.3 391.5 8 252.8 8M105.2 352.9c-1.3 1-1 3.3.7 5.2 1.6 1.6 3.9 2.3 5.2 1 1.3-1 1-3.3-.7-5.2-1.6-1.6-3.9-2.3-5.2-1m-10.8-8.1c-.7 1.3.3 2.9 2.3 3.9 1.6 1 3.6.7 4.3-.7.7-1.3-.3-2.9-2.3-3.9-2-.6-3.6-.3-4.3.7m32.4 35.6c-1.6 1.3-1 4.3 1.3 6.2 2.3 2.3 5.2 2.6 6.5 1 1.3-1.3.7-4.3-1.3-6.2-2.2-2.3-5.2-2.6-6.5-1m-11.4-14.7c-1.6 1-1.6 3.6 0 5.9s4.3 3.3 5.6 2.3c1.6-1.3 1.6-3.9 0-6.2-1.4-2.3-4-3.3-5.6-2"/></svg>
+    </a>
+  
+    
+    
+    
+    
+      
+      
+    
+    <a href="https://discord.gg/yourinvite" target="_blank" rel="noopener" title="discord.gg" class="md-social__link">
+      <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 576 512"><!--! Font Awesome Free 7.1.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2025 Fonticons, Inc.--><path d="M492.5 69.8c-.2-.3-.4-.6-.8-.7-38.1-17.5-78.4-30-119.7-37.1-.4-.1-.8 0-1.1.1s-.6.4-.8.8c-5.5 9.9-10.5 20.2-14.9 30.6-44.6-6.8-89.9-6.8-134.4 0-4.5-10.5-9.5-20.7-15.1-30.6-.2-.3-.5-.6-.8-.8s-.7-.2-1.1-.2C162.5 39 122.2 51.5 84.1 69c-.3.1-.6.4-.8.7C7.1 183.5-13.8 294.6-3.6 404.2c0 .3.1.5.2.8s.3.4.5.6c44.4 32.9 94 58 146.8 74.2.4.1.8.1 1.1 0s.7-.4.9-.7c11.3-15.4 21.4-31.8 30-48.8.1-.2.2-.5.2-.8s0-.5-.1-.8-.2-.5-.4-.6-.4-.3-.7-.4c-15.8-6.1-31.2-13.4-45.9-21.9-.3-.2-.5-.4-.7-.6s-.3-.6-.3-.9 0-.6.2-.9.3-.5.6-.7c3.1-2.3 6.2-4.7 9.1-7.1.3-.2.6-.4.9-.4s.7 0 1 .1c96.2 43.9 200.4 43.9 295.5 0 .3-.1.7-.2 1-.2s.7.2.9.4c2.9 2.4 6 4.9 9.1 7.2.2.2.4.4.6.7s.2.6.2.9-.1.6-.3.9-.4.5-.6.6c-14.7 8.6-30 15.9-45.9 21.8-.2.1-.5.2-.7.4s-.3.4-.4.7-.1.5-.1.8.1.5.2.8c8.8 17 18.8 33.3 30 48.8.2.3.6.6.9.7s.8.1 1.1 0c52.9-16.2 102.6-41.3 147.1-74.2.2-.2.4-.4.5-.6s.2-.5.2-.8c12.3-126.8-20.5-236.9-86.9-334.5zm-302 267.7c-29 0-52.8-26.6-52.8-59.2s23.4-59.2 52.8-59.2c29.7 0 53.3 26.8 52.8 59.2 0 32.7-23.4 59.2-52.8 59.2m195.4 0c-29 0-52.8-26.6-52.8-59.2s23.4-59.2 52.8-59.2c29.7 0 53.3 26.8 52.8 59.2 0 32.7-23.2 59.2-52.8 59.2"/></svg>
+    </a>
+  
+    
+    
+    
+    
+      
+      
+    
+    <a href="https://pypi.org/project/marsys" target="_blank" rel="noopener" title="pypi.org" class="md-social__link">
+      <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 448 512"><!--! Font Awesome Free 7.1.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2025 Fonticons, Inc.--><path d="M439.8 200.5c-7.7-30.9-22.3-54.2-53.4-54.2h-40.1v47.4c0 36.8-31.2 67.8-66.8 67.8H172.7c-29.2 0-53.4 25-53.4 54.3v101.8c0 29 25.2 46 53.4 54.3 33.8 9.9 66.3 11.7 106.8 0 26.9-7.8 53.4-23.5 53.4-54.3v-40.7H226.2v-13.6h160.2c31.1 0 42.6-21.7 53.4-54.2 11.2-33.5 10.7-65.7 0-108.6M286.2 444.7a20.4 20.4 0 1 1 0-40.7 20.4 20.4 0 1 1 0 40.7M167.8 248.1h106.8c29.7 0 53.4-24.5 53.4-54.3V91.9c0-29-24.4-50.7-53.4-55.6-35.8-5.9-74.7-5.6-106.8.1-45.2 8-53.4 24.7-53.4 55.6v40.7h106.9v13.6h-147c-31.1 0-58.3 18.7-66.8 54.2-9.8 40.7-10.2 66.1 0 108.6 7.6 31.6 25.7 54.2 56.8 54.2H101v-48.8c0-35.3 30.5-66.4 66.8-66.4m-6.6-183.4a20.4 20.4 0 1 1 0 40.8 20.4 20.4 0 1 1 0-40.8"/></svg>
+    </a>
+  
+</div>
+      
+    </div>
+  </div>
+</footer>
+      
+    </div>
+    <div class="md-dialog" data-md-component="dialog">
+      <div class="md-dialog__inner md-typeset"></div>
+    </div>
+    
+    
+    
+      
+      
+      <script id="__config" type="application/json">{"annotate": null, "base": "../../../..", "features": ["navigation.instant", "navigation.tracking", "navigation.sections", "navigation.top", "navigation.path", "navigation.tabs", "navigation.tabs.sticky", "toc.follow", "toc.integrate", "search.suggest", "search.highlight", "search.share", "content.tabs.link", "content.code.annotation", "content.code.copy", "content.tooltips"], "search": "../../../../assets/javascripts/workers/search.2c215733.min.js", "tags": null, "translations": {"clipboard.copied": "Copied to clipboard", "clipboard.copy": "Copy to clipboard", "search.result.more.one": "1 more on this page", "search.result.more.other": "# more on this page", "search.result.none": "No matching documents", "search.result.one": "1 matching document", "search.result.other": "# matching documents", "search.result.placeholder": "Type to start searching", "search.result.term.missing": "Missing", "select.version": "Select version"}, "version": null}</script>
+    
+    
+      <script src="../../../../assets/javascripts/bundle.79ae519e.min.js"></script>
+      
+        <script src="../../../../assets/js/main.js"></script>
+      
+    
+  </body>
+</html>

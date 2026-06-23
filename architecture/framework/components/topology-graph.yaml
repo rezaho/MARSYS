@@ -1,0 +1,36 @@
+name: TopologyGraph
+criticality: TRUNK-CRITICAL
+
+purpose: |
+  Source of truth for the runtime topology graph and routing permissions.
+
+responsibilities:
+  - Store nodes/edges and adjacency for runtime routing
+  - Identify divergence and convergence points
+  - Provide transition and reachability checks
+
+not_responsible_for:
+  - Building the graph from user inputs (-> TopologyAnalyzer)
+  - Scheduling execution or spawning branches (-> Orchestra/Orchestrator)
+  - Parsing responses (-> ValidationProcessor)
+
+design_principles:
+  - DP-005
+  - DP-003
+
+relationships:
+  called_by:
+    - TopologyAnalyzer.analyze
+    - Router (transition validation)
+    - ValidationProcessor (allowed actions)
+    - Orchestrator (rendezvous detection, predecessor_convergences, get_det_node, get_start_node, is_convergence)
+    - RealRuntime (gating: has_edge_to_endnode, has_edge_to_usernode, get_next_agents)
+  calls: []
+  never_calls: []
+
+boundaries:
+  add_here:
+    - Runtime graph data and topology analysis results
+  not_here:
+    - Execution scheduling or agent invocation
+    - Response parsing or validation logic
