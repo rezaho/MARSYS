@@ -86,7 +86,6 @@ class RealRuntime:
                 kind="FAIL",
                 error=f"agent {branch.current_agent!r} not registered",
             )
-        self._current_instance = instance
 
         steering_threshold = getattr(
             self.execution_config, "content_only_steering_threshold",
@@ -150,7 +149,7 @@ class RealRuntime:
             logger.debug("could not snapshot agent memory for branch %s", branch.id)
 
         # 5. Translate the MARSYS StepResult into an orchestrator StepResult.
-        result = await self._translate(marsys_result, branch)
+        result = await self._translate(marsys_result, branch, instance)
         # Stamp step_span_id so the orchestrator can forward it as
         # ``parent_step_span_id`` for child branches spawned this tick.
         step_span_id = context.get("step_span_id")
@@ -159,7 +158,7 @@ class RealRuntime:
         return result
 
     async def _translate(
-        self, marsys_result: Any, branch: OrchestratorBranch
+        self, marsys_result: Any, branch: OrchestratorBranch, instance: Any
     ) -> OrchestratorStepResult:
         """Translate a MARSYS branches/types.StepResult into the
         orchestrator's StepResult shape.
@@ -206,7 +205,7 @@ class RealRuntime:
         validation = await self.validator.validate_coordination_action(
             action=coord_action,
             data=coord_data,
-            agent=getattr(self, "_current_instance", None),
+            agent=instance,
             branch=None,
             exec_state=exec_state,
         )

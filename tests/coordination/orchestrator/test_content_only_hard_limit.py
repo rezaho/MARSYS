@@ -56,7 +56,6 @@ def _make_runtime(topology_graph=None) -> RealRuntime:
         session_id="test-session",
         execution_config=None,
     )
-    runtime._current_instance = instance
     return runtime
 
 
