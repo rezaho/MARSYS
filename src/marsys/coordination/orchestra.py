@@ -15,7 +15,7 @@ import uuid
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Set, Tuple, TYPE_CHECKING
+from typing import Any, Callable, Dict, List, Optional, Set, Tuple, TYPE_CHECKING
 
 from .. import __version__ as _MARSYS_VERSION
 from ..agents.registry import AgentRegistry
@@ -282,6 +282,31 @@ class Orchestra:
                 )
         except Exception as exc:  # pragma: no cover
             logger.warning("Orchestra: retention sweeper failed: %s", exc)
+
+    def _build_topology_graph(
+        self,
+        canonical: 'Topology',
+        execution_config: 'ExecutionConfig',
+    ) -> None:
+        """The single topology-build path (extracted from execute()): analyze +
+        legacy shim + validate. Sets BOTH self.canonical_topology and
+        self.topology_graph, so the resume digest check and per-topology setup
+        (both of which read self.canonical_topology) see a coherent pair.
+
+        ``canonical`` is an already-coerced Topology (execute() runs
+        _ensure_topology first; a cross-process resume consumer supplies one).
+        ``auto_inject_user`` metadata defaults to False when absent — execute()
+        sets it explicitly from its run context before calling this, so the
+        default only applies to the new-style resume path.
+        """
+        self.canonical_topology = canonical
+        canonical.metadata = canonical.metadata or {}
+        canonical.metadata.setdefault("auto_inject_user", False)
+        self.topology_graph = self.topology_analyzer.analyze(canonical)
+        self.topology_graph.metadata["execution_config"] = execution_config
+        self._apply_legacy_topology_shim(self.topology_graph, canonical)
+        self.topology_graph.validate()
+        self.topology_graph.validate_workflow()
 
     def _initialize_per_topology(
         self,
@@ -1021,25 +1046,14 @@ class Orchestra:
             self.canonical_topology.metadata = self.canonical_topology.metadata or {}
             self.canonical_topology.metadata["auto_inject_user"] = context.get("auto_inject_user", False)
 
-            # Build the topology graph.
-            self.topology_graph = self.topology_analyzer.analyze(self.canonical_topology)
-            self.topology_graph.metadata["execution_config"] = execution_config
-
-            # Legacy entry/exit/User → det-node shim. Translates legacy
-            # entry_point/exit_points metadata and User(Node) regular nodes
-            # into explicit Start/End/User det-node edges. Emits
-            # DeprecationWarnings; full removal planned for v0.4.
-            self._apply_legacy_topology_shim(
-                self.topology_graph, self.canonical_topology
-            )
-
-            # Compile-time topology validation: runs AFTER the shim so error
-            # messages reference real det-nodes the user can address. Calls
-            # both `validate()` (det-node invariants) and `validate_workflow()`
-            # (workflow-completeness — every node reaches End/User; cycles
-            # have an escape). Skipped silently if no det-nodes registered.
-            self.topology_graph.validate()
-            self.topology_graph.validate_workflow()
+            # Build the topology graph (analyze + legacy entry/exit/User
+            # det-node shim + compile-time validation). Shared with
+            # resume_session via _build_topology_graph so a cross-process
+            # resume produces the *equivalent* graph. auto_inject_user is set
+            # just above from the run context; the helper's default is a no-op
+            # here. The shim emits DeprecationWarnings (full removal v0.4);
+            # validation runs after it so errors reference real det-nodes.
+            self._build_topology_graph(self.canonical_topology, execution_config)
 
             # Update trace with topology info now that it's analyzed.
             if self.trace_collector and session_id in self.trace_collector.active_traces:
@@ -1381,7 +1395,11 @@ class Orchestra:
         await self.storage_backend.write(self._snapshot_key(session_id), payload)
         logger.info("pause_session: wrote snapshot for session %s", session_id)
 
-    async def resume_session(self, session_id: str) -> OrchestraResult:
+    async def resume_session(
+        self, session_id: str, *,
+        canonical_topology: "Optional[Topology]" = None,
+        on_bus_rebuilt: "Optional[Callable[[EventBus], None]]" = None,
+    ) -> OrchestraResult:
         """Read the snapshot for ``session_id`` and continue dispatch
         through to terminal state.
 
@@ -1389,12 +1407,19 @@ class Orchestra:
         shape). Events flow via the existing ``EventBus`` → SSE pathway,
         not via the return value.
 
-        NOTE: only the standard listener set is restored on resume
-        (StatusManager, TraceCollector, registered TelemetrySink instances).
-        Custom listeners attached via ``EventBus.subscribe`` by the caller
-        are NOT restored; the caller must re-attach them BEFORE calling
-        resume_session — the snapshot read is fast, but the resumed run
-        begins dispatching inside this method.
+        ``canonical_topology`` (optional, keyword-only): a cross-process
+        consumer that never called ``execute()`` this process supplies the
+        canonical topology, and the framework binds an *equivalent*
+        ``topology_graph`` internally (the snapshot does not carry topology).
+        Omit it when the topology is already bound on this instance.
+
+        ``on_bus_rebuilt`` (optional, keyword-only): resume rebuilds the
+        EventBus, restoring only the standard listener set — a caller's custom
+        ``EventBus.subscribe(...)`` (e.g. a per-run cost adapter) is dropped.
+        This callback is invoked once as ``on_bus_rebuilt(self.event_bus)``
+        AFTER the resume preconditions (topology bound + digest match) pass and
+        BEFORE dispatch begins, so the caller re-attaches its subscribers. It
+        does NOT fire when resume aborts on a precondition.
         """
         from .config import ConvergencePolicyConfig, ExecutionConfig
         from .execution.real_runtime import RealRuntime
@@ -1431,6 +1456,13 @@ class Orchestra:
         execution_config = self._execution_config or ExecutionConfig()
         self._execution_config = execution_config
 
+        # A cross-process consumer can supply the canonical topology so the
+        # framework binds an *equivalent* topology_graph internally (the
+        # snapshot deliberately does not carry topology). Done before the guard
+        # below so the consumer need not pre-set topology_graph/canonical_topology.
+        if canonical_topology is not None:
+            self._build_topology_graph(canonical_topology, execution_config)
+
         # The topology must already be bound on this Orchestra instance.
         # For cross-process resume the consumer either (a) calls execute()
         # once to seed the topology before resume_session, or (b) sets
@@ -1451,6 +1483,14 @@ class Orchestra:
                 current_version=_MARSYS_VERSION,
                 session_id=session_id,
             )
+
+        # Re-attach the caller's custom EventBus subscribers on the rebuilt bus,
+        # now that the resume preconditions (topology bound + digest match) have
+        # passed. Fired here — not at the bus rebuild — so a consumer's
+        # subscribers never attach to a bus a failing resume discards, and a
+        # raising callback can't preempt the precondition errors above.
+        if on_bus_rebuilt is not None:
+            on_bus_rebuilt(self.event_bus)
 
         # 5. Build per-topology components — same surface as execute()
         # constructs (validator, rules, router, agent topology refs).

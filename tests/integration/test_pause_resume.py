@@ -1022,3 +1022,200 @@ async def test_orchestra_resume_session_round_trip_through_state_snapshot(tmp_pa
     assert "snapshot.max_steps" in src, (
         "resume_session must construct Orchestrator with snapshot.max_steps"
     )
+
+
+# ─── resume ergonomics — canonical_topology + on_bus_rebuilt ─────────────────
+# A cross-process consumer (e.g. Spren S61) reconstructs a paused run from disk
+# in a fresh process: it supplies the canonical topology (bound internally via
+# the shared _build_topology_graph) and re-attaches its custom EventBus
+# subscribers via on_bus_rebuilt. Both params are additive, optional,
+# keyword-only, and default to today's behavior.
+
+from marsys.coordination.config import ExecutionConfig as _ExecutionConfig
+from marsys.agents.exceptions import StateError as _StateError
+
+_FW17_TOPO = {"agents": ["A", "B"], "flows": ["A -> B"]}
+
+
+def _fw17_canonical(tmp_path, name):
+    """A fresh canonical Topology built from a fixed dict — the form
+    resume_session(canonical_topology=) expects (what execute() coerces)."""
+    src = _make_orchestra(tmp_path / name)
+    return src._ensure_topology(dict(_FW17_TOPO))
+
+
+def _fw17_reference_digest(tmp_path):
+    """The (digest, topology_graph) execute() would produce for _FW17_TOPO via
+    the shared _build_topology_graph path — the AC-2 reference."""
+    src = _make_orchestra(tmp_path / "fw17-ref")
+    src._build_topology_graph(src._ensure_topology(dict(_FW17_TOPO)), _ExecutionConfig())
+    return src._compute_topology_digest(), src.topology_graph
+
+
+async def _fw17_write_snapshot(orch, sid, *, topology_digest):
+    """Write an empty-state snapshot with a chosen topology_digest."""
+    now = datetime.now(tz=timezone.utc)
+    snapshot = StateSnapshot(
+        framework_version=marsys.__version__,
+        session_id=sid,
+        topology_digest=topology_digest,
+        created_at=now,
+        paused_at=now,
+        branches={},
+        barriers={},
+        convergence_barriers={},
+        runnable=[],
+        fire_queue=[],
+        completed_emitted=[],
+        user_interactions=[],
+        user_interaction_inflight=False,
+    )
+    await orch.storage_backend.write(
+        f"{sid}/snapshot.json", snapshot.model_dump_json().encode("utf-8")
+    )
+
+
+@pytest.mark.asyncio
+async def test_fw17_canonical_topology_binds_equivalent_graph(tmp_path):
+    """AC-1 + AC-2: resume_session(canonical_topology=) binds the topology
+    internally — a fresh Orchestra with nothing pre-set gets PAST the
+    RESUME_NO_TOPOLOGY guard (it raises the *digest* error instead, proving the
+    bind ran before the guard), and the bound graph equals execute()'s. We
+    deliberately mismatch the snapshot digest so resume raises right after the
+    bind, before dispatch — the bind, not the dispatch, is what FW17 adds."""
+    ref_digest, ref_graph = _fw17_reference_digest(tmp_path)
+
+    orch = _make_orchestra(tmp_path / "run")
+    sid = "fw17-bind"
+    await _fw17_write_snapshot(orch, sid, topology_digest="deliberately-wrong")
+
+    assert getattr(orch, "topology_graph", None) is None  # nothing pre-set
+    with pytest.raises(IncompatibleSnapshotError):
+        await orch.resume_session(sid, canonical_topology=_fw17_canonical(tmp_path, "c1"))
+
+    # AC-1: it passed the RESUME_NO_TOPOLOGY guard (raised the digest error).
+    # AC-2: the internal bind produced the graph execute() would build — equal
+    # digest, equal nodes AND edges, and the explicit `A -> B` flow actually
+    # survived analyze+shim (not just == another call of the same helper).
+    assert orch._compute_topology_digest() == ref_digest
+    assert set(orch.topology_graph.nodes) == set(ref_graph.nodes)
+    bound_edges = {(e.source, e.target) for e in orch.topology_graph.edges}
+    assert bound_edges == {(e.source, e.target) for e in ref_graph.edges}
+    assert ("A", "B") in bound_edges
+    assert {"A", "B"} <= set(orch.topology_graph.nodes)
+
+
+@pytest.mark.asyncio
+async def test_fw17_no_topology_raises_and_callback_not_fired(tmp_path):
+    """AC-6: with neither a pre-bound topology nor canonical_topology, resume
+    raises RESUME_NO_TOPOLOGY and on_bus_rebuilt does NOT fire."""
+    orch = _make_orchestra(tmp_path / "run")
+    sid = "fw17-no-topo"
+    await _fw17_write_snapshot(orch, sid, topology_digest="x")
+
+    fired = []
+    with pytest.raises(_StateError) as exc:
+        await orch.resume_session(sid, on_bus_rebuilt=lambda bus: fired.append(bus))
+    assert exc.value.error_code == "RESUME_NO_TOPOLOGY"
+    assert fired == []
+
+
+@pytest.mark.asyncio
+async def test_fw17_mismatched_topology_raises_and_callback_not_fired(tmp_path):
+    """AC-7 + AC-8: a canonical_topology whose digest differs from the
+    snapshot's raises IncompatibleSnapshotError after the bind, and
+    on_bus_rebuilt does NOT fire (the digest check aborts first)."""
+    orch = _make_orchestra(tmp_path / "run")
+    sid = "fw17-mismatch"
+    await _fw17_write_snapshot(orch, sid, topology_digest="not-the-real-digest")
+
+    fired = []
+    with pytest.raises(IncompatibleSnapshotError):
+        await orch.resume_session(
+            sid,
+            canonical_topology=_fw17_canonical(tmp_path, "c2"),
+            on_bus_rebuilt=lambda bus: fired.append(bus),
+        )
+    assert fired == []
+
+
+@pytest.mark.asyncio
+async def test_fw17_on_bus_rebuilt_fires_once_after_preconditions(tmp_path):
+    """AC-3 + AC-4: on a resume whose preconditions pass, on_bus_rebuilt fires
+    exactly once with the rebuilt bus, and a subscriber attached inside it is
+    live on the bus the resumed run uses."""
+    ref_digest, _ = _fw17_reference_digest(tmp_path)
+
+    orch = _make_orchestra(tmp_path / "run")
+    sid = "fw17-cb"
+    await _fw17_write_snapshot(orch, sid, topology_digest=ref_digest)
+
+    seen = []
+    received = []
+
+    def cb(bus):
+        seen.append(bus)
+        bus.subscribe("_FW17ProbeEvent", lambda ev: received.append(ev))
+
+    # on_bus_rebuilt fires post-precondition, BEFORE restore/dispatch. The
+    # crafted empty-state snapshot then can't drive resume() to completion
+    # (no restored branches) — irrelevant to this test, which asserts only that
+    # the callback fired once with the live run bus.
+    try:
+        await orch.resume_session(
+            sid, canonical_topology=_fw17_canonical(tmp_path, "c3"), on_bus_rebuilt=cb
+        )
+    except RuntimeError:
+        pass
+
+    assert len(seen) == 1             # fired exactly once
+    assert seen[0] is orch.event_bus  # with the rebuilt bus
+
+    class _FW17ProbeEvent:
+        pass
+
+    await orch.event_bus.emit(_FW17ProbeEvent())
+    assert len(received) == 1         # subscriber is live on the run's bus
+
+
+@pytest.mark.asyncio
+async def test_fw17_on_bus_rebuilt_raising_propagates(tmp_path):
+    """AC-9: a raising on_bus_rebuilt callback propagates out of resume_session
+    (fails loudly, not swallowed)."""
+    ref_digest, _ = _fw17_reference_digest(tmp_path)
+
+    orch = _make_orchestra(tmp_path / "run")
+    sid = "fw17-cb-raises"
+    await _fw17_write_snapshot(orch, sid, topology_digest=ref_digest)
+
+    class _Boom(RuntimeError):
+        pass
+
+    def cb(bus):
+        raise _Boom("subscriber wiring failed")
+
+    with pytest.raises(_Boom):
+        await orch.resume_session(
+            sid, canonical_topology=_fw17_canonical(tmp_path, "c4"), on_bus_rebuilt=cb
+        )
+
+
+@pytest.mark.asyncio
+async def test_fw17_new_params_are_keyword_only_and_optional(tmp_path):
+    """AC-10: both new params are keyword-only (the `*` gates both — a positional
+    second arg is a TypeError) and optional (omitting both is the unchanged
+    pre-FW17 path)."""
+    orch = _make_orchestra(tmp_path / "run")
+    sid = "fw17-kw"
+    await _fw17_write_snapshot(orch, sid, topology_digest="x")
+
+    # keyword-only: a positional second arg is rejected — the `*` gates BOTH
+    # canonical_topology and on_bus_rebuilt.
+    with pytest.raises(TypeError):
+        await orch.resume_session(sid, _fw17_canonical(tmp_path, "c5"))  # positional
+
+    # optional / back-compat: omitting both args is the unchanged pre-FW17 path —
+    # with no topology bound it raises RESUME_NO_TOPOLOGY exactly as before.
+    with pytest.raises(_StateError) as exc:
+        await orch.resume_session(sid)
+    assert exc.value.error_code == "RESUME_NO_TOPOLOGY"
