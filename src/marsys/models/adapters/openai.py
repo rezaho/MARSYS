@@ -198,13 +198,17 @@ class OpenAIAdapter(APIProviderAdapter):
         # Priority: response_schema > response_format > json_mode
         response_schema = kwargs.get("response_schema")
         if response_schema:
-            # Convert unified response_schema to Responses API text.format
+            # Convert unified response_schema to Responses API text.format. Strict mode
+            # demands BOTH additionalProperties:false AND required==every property; a
+            # Pydantic schema satisfies neither, so compose both transforms.
             payload["text"] = {
                 "format": {
                     "type": "json_schema",
                     "name": "response_schema",
                     "strict": True,
-                    "schema": self._ensure_additional_properties_false(response_schema)
+                    "schema": self._ensure_all_properties_required(
+                        self._ensure_additional_properties_false(response_schema)
+                    )
                 }
             }
         elif kwargs.get("response_format"):

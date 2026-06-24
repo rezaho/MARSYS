@@ -184,6 +184,39 @@ class APIProviderAdapter(ABC):
         _fix(schema)
         return schema
 
+    @staticmethod
+    def _ensure_all_properties_required(schema: Dict[str, Any]) -> Dict[str, Any]:
+        """Set ``required`` to every key in ``properties`` on each object node.
+
+        OpenAI's Responses API in strict mode (``text.format`` json_schema with
+        ``strict: true``) rejects a schema whose ``required`` omits any property —
+        ``invalid_json_schema``: "'required' is required to be supplied and to be
+        an array including every key in properties." Pydantic emits optional /
+        defaulted fields outside ``required``, so a generic schema fails strict
+        mode; the model still returns every field (with empty/default values when
+        not applicable). This is OpenAI-strict-specific — Anthropic's native
+        schema mode does not impose it — so it is composed only by the OpenAI
+        adapters, never applied globally. Returns a deep copy; the original is not
+        mutated.
+        """
+        import copy
+        schema = copy.deepcopy(schema)
+
+        def _fix(node: Any) -> None:
+            if not isinstance(node, dict):
+                return
+            if node.get("type") == "object" and isinstance(node.get("properties"), dict):
+                node["required"] = list(node["properties"].keys())
+            for v in node.values():
+                if isinstance(v, dict):
+                    _fix(v)
+                elif isinstance(v, list):
+                    for item in v:
+                        _fix(item)
+
+        _fix(schema)
+        return schema
+
     def run(self, messages: List[Dict], **kwargs) -> HarmonizedResponse:
         """
         Execute API request.

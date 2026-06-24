@@ -350,7 +350,11 @@ class OpenAIOAuthAdapter(APIProviderAdapter):
             "prompt_cache_key": str(uuid.uuid4()),
         }
 
-        # Handle structured output — text.format (Responses API)
+        # Handle structured output — text.format (Responses API). Strict mode here
+        # demands BOTH additionalProperties:false AND required==every property; a
+        # Pydantic schema satisfies neither out of the box, so compose both schema
+        # transforms (the required one is OpenAI-strict-specific, hence applied here
+        # rather than globally).
         response_schema = kwargs.get("response_schema")
         if response_schema:
             payload["text"] = {
@@ -358,7 +362,9 @@ class OpenAIOAuthAdapter(APIProviderAdapter):
                     "type": "json_schema",
                     "name": "response_schema",
                     "strict": True,
-                    "schema": self._ensure_additional_properties_false(response_schema)
+                    "schema": self._ensure_all_properties_required(
+                        self._ensure_additional_properties_false(response_schema)
+                    )
                 }
             }
         elif kwargs.get("json_mode"):
