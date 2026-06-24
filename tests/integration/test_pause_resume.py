@@ -1219,3 +1219,103 @@ async def test_fw17_new_params_are_keyword_only_and_optional(tmp_path):
     with pytest.raises(_StateError) as exc:
         await orch.resume_session(sid)
     assert exc.value.error_code == "RESUME_NO_TOPOLOGY"
+
+
+@pytest.mark.asyncio
+async def test_fw17_canonical_topology_resume_drives_real_agent_to_terminal(tmp_path):
+    """AC-1 (terminal) + AC-4 (real post-dispatch event), end-to-end: a fresh
+    Orchestra resumes a real on-disk snapshot via resume_session(canonical_topology=),
+    binds the topology internally, dispatches a REAL agent through RealRuntime to a
+    terminal OrchestraResult, and a subscriber attached inside on_bus_rebuilt
+    receives a run event emitted by the resumed dispatch (not a test-injected emit).
+
+    The agent is a deterministic stub (overrides _run, no LLM) — the same pattern
+    test_real_runtime_smoke uses to exercise RealRuntime without a model call.
+    """
+    import json as _json
+    import uuid as _uuid
+
+    from marsys.agents import Agent
+    from marsys.agents.memory import Message, ToolCallMsg
+    from marsys.agents.registry import AgentRegistry
+    from marsys.models import ModelConfig
+
+    class _FinalAgent(Agent):
+        """Returns a final response on its first (only) tick — no model call."""
+
+        def __init__(self):
+            super().__init__(
+                model_config=ModelConfig(
+                    type="api", name="mock-model", provider="openai", api_key="mock-key",
+                ),
+                goal="finish", instruction="Finish immediately.", name="A",
+            )
+
+        async def _run(self, messages, request_context, run_mode="default", **kwargs):
+            cid = f"call_{_uuid.uuid4().hex[:8]}"
+            return Message(
+                role="assistant", content="done", name="A",
+                tool_calls=[ToolCallMsg(
+                    id=cid, call_id=cid, type="function",
+                    name="return_final_response",
+                    arguments=_json.dumps({"response": "done"}),
+                )],
+            )
+
+    topo_dict = {"agents": ["User", "A"], "flows": ["User -> A", "A -> User"]}
+    backend = FileStorageBackend(tmp_path / "snapshots")
+    sid = "fw17-complete"
+
+    AgentRegistry.clear()
+    try:
+        agent = _FinalAgent()  # auto-registers (weakref store); keep a strong ref
+        AgentRegistry._test_agents = [agent]
+
+        # ── Create a REAL paused snapshot: a branch runnable at A. The gated
+        # runtime NOOPs A's tick (it never calls the agent), so the snapshot has
+        # a runnable branch at A — exactly what a mid-flight pause produces. ──
+        pause_orch = Orchestra(agent_registry=AgentRegistry, storage_backend=backend)
+        canonical = pause_orch._ensure_topology(dict(topo_dict))
+        pause_orch.canonical_topology = canonical
+        pause_orch.topology_graph = pause_orch.topology_analyzer.analyze(canonical)
+        runtime = _GatedAsyncRuntime()
+        underlying = Orchestrator(pause_orch.topology_graph, runtime, ConvergencePolicy())
+        pause_orch._active_orchestrators[sid] = underlying
+        run_task = asyncio.create_task(underlying.run(task="go", entry_agent="A"))
+        while runtime.tick_count < 1 and not run_task.done():
+            await asyncio.sleep(0.01)
+        pause_task = asyncio.create_task(pause_orch.pause_session(sid))
+        await asyncio.sleep(0)
+        runtime.release()
+        await pause_task
+        await run_task
+
+        # ── Resume in a FRESH Orchestra via the new canonical_topology param.
+        # resume_session builds RealRuntime, which dispatches the REAL agent A. ──
+        resume_orch = Orchestra(agent_registry=AgentRegistry, storage_backend=backend)
+        seen, received = [], []
+
+        def cb(bus):
+            seen.append(bus)
+            # BranchCompletedEvent is emitted by the orchestrator to the rebuilt
+            # bus during the resumed dispatch — proof that a subscriber
+            # re-attached via on_bus_rebuilt receives real post-callback run events.
+            bus.subscribe("BranchCompletedEvent", lambda ev: received.append(ev))
+
+        result = await resume_orch.resume_session(
+            sid,
+            canonical_topology=resume_orch._ensure_topology(dict(topo_dict)),
+            on_bus_rebuilt=cb,
+        )
+
+        _bus_events = [type(e).__name__ for e in resume_orch.event_bus.events]
+        assert result.success, f"resume did not reach a terminal success: {result.error}"
+        assert result.final_response == "done"     # AC-1: the real agent actually ran
+        assert len(seen) == 1                      # AC-3: callback fired exactly once
+        assert seen[0] is resume_orch.event_bus    # AC-3: with the rebuilt run bus
+        assert received, (                         # AC-4: a REAL dispatch event reached the
+            "a subscriber attached inside on_bus_rebuilt received no run event from "
+            f"the resumed dispatch; bus_events={_bus_events}; final={result.final_response!r}"
+        )
+    finally:
+        AgentRegistry.clear()
