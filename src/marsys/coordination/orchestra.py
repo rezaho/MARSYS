@@ -412,6 +412,22 @@ class Orchestra:
                 execution_config.aggui.queue_max_size,
             )
 
+        # A rebuilt EventBus (resume_session) re-creates the listener set above,
+        # but the components that PUBLISH onto the bus and are REUSED across the
+        # rebuild — the step_executor (emits LLMCallEvent) and the user-node
+        # handler — still hold the prior bus. Without re-pointing them, a resumed
+        # run's LLM-call/user-node events publish on the stale bus, so a consumer
+        # re-attached via resume_session(on_bus_rebuilt=...) (e.g. a per-run cost
+        # adapter) never receives them. In __init__ these are created AFTER this
+        # call, so they're absent here and the guards no-op (they bind the fresh
+        # bus directly at construction); on resume they exist and get re-pointed.
+        step_executor = getattr(self, "step_executor", None)
+        if step_executor is not None and hasattr(step_executor, "event_bus"):
+            step_executor.event_bus = self.event_bus
+        user_node_handler = getattr(self, "_user_node_handler", None)
+        if user_node_handler is not None and hasattr(user_node_handler, "event_bus"):
+            user_node_handler.event_bus = self.event_bus
+
     def _initialize_components(self):
         """Initialize all internal coordination components."""
         # Create event bus for coordination events

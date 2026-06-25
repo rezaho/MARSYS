@@ -89,6 +89,12 @@ The callback fires **after** the precondition checks (topology bound + digest ma
 - Legacy `auto_inject_user` topologies are not cross-process-resumable in v0.3 (the digest does not cover the flag). RISK-LOGGED for a future snapshot-format PR.
 - A consumer supplying a `canonical_topology` whose digest differs from the snapshot's gets a clean `IncompatibleSnapshotError` after the bind (not a silent wrong-topology run).
 
+## Completion — the bus rebuild must re-point reused emitters (2026-06-25)
+
+`on_bus_rebuilt`'s motivating use case — re-attaching a per-run cost adapter so post-resume LLM spend is billed — did not actually work as first shipped. Spren's S61 **live** test (real OAuth model, real pause→resume) found it: `resume_session` rebuilds `self.event_bus` and hands consumers the new bus via `on_bus_rebuilt`, and `_wire_event_bus` re-creates the listener set (TraceCollector / StatusManager / AGGUITranslator) on it — **but the REUSED `step_executor`** (which emits `LLMCallEvent`, the event cost is computed from) **and `_user_node_handler` still held the prior bus.** So the resumed dispatch's LLM events published on the stale bus, and a consumer re-attached via `on_bus_rebuilt` (subscribed to the new bus) received nothing. FW17's own resume test missed this because it used a **stub agent that makes no LLM call** — `on_bus_rebuilt` was only ever exercised against orchestrator-level events (`BranchCompletedEvent`), never a real `LLMCallEvent`.
+
+Fix: `_wire_event_bus` now also re-points the reused publishers (`step_executor.event_bus`, `_user_node_handler.event_bus`) to `self.event_bus`, guarded (they are created *after* this call in `__init__`, so the guards no-op there and bind the fresh bus at construction; on resume they exist and get re-pointed). With this, a resumed run's `LLMCallEvent`s reach the rebuilt bus and `on_bus_rebuilt` delivers its full contract. Regression: the framework pause/resume suite (34 tests) stays green; Spren's `test_pause_resume_live.py` asserts `total_cost_usd` accrues across a real resume.
+
 ## Approval
 
 This ADR requires framework-team approval before merge. Approval is recorded here by the framework lead, OR by an explicit approval message in the PR thread.
