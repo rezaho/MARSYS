@@ -262,12 +262,17 @@ class DetNodeContext(Protocol):
         """Spawn a fresh branch at an agent (used by Start)."""
 
     def enqueue_user_interaction(
-        self, branch: Branch, prompt: Any, resume_agent: str
+        self, branch: Branch, prompt: Any, resume_agent: str, *, durable: bool = False
     ) -> None:
-        """Mark the calling branch as waiting on user input, schedule async I/O
-        through the configured UserNodeHandler, and (when the user responds)
-        deliver the response into the orchestrator's resume queue. Used by
-        UserNode.on_single_invoke."""
+        """Mark the calling branch as waiting on user input.
+
+        durable=False (default): schedule async I/O through the configured
+        UserNodeHandler and (when the user responds) deliver the response into
+        the orchestrator's resume queue — the in-memory SYNC path.
+        durable=True (ADR-012): record the in-flight interaction so snapshot()
+        captures it and spawn NO in-memory wait; the dispatch loop snapshots-
+        and-exits at the next user-wait boundary, and resume_session(user_response)
+        resumes it. Used by UserNode.on_single_invoke / on_dispatch."""
 
     def resume_branch_with_user_response(
         self, suspended_branch_id: str, response: Any, resume_agent: str
