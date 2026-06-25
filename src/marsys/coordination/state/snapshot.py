@@ -95,6 +95,9 @@ class UserInteractionState(BaseModel):
     prompt: Any
     resume_agent: str
     delivery_target: str
+    # ADR-012: True for a durable interaction (snapshot-and-exit), False for the
+    # SYNC path. Default False keeps pre-ADR-012 snapshots valid under extra=forbid.
+    durable: bool = False
 
 
 class StateSnapshot(BaseModel):
@@ -123,6 +126,11 @@ class StateSnapshot(BaseModel):
     completed_emitted: list[str]
     user_interactions: list[UserInteractionState]
     user_interaction_inflight: bool
+    # The single in-flight DURABLE user interaction (ADR-012), held apart from
+    # the queued-siblings `user_interactions` deque (whose FIFO pop would
+    # mis-dispatch it as a sibling). None for SYNC interactions and for
+    # snapshots written before this field existed (extra='forbid'-safe).
+    pending_user_interaction: Optional[UserInteractionState] = None
     max_steps: int = 200  # mirrors Orchestrator.max_steps; preserved across resume
 
 

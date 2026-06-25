@@ -642,7 +642,17 @@ class Orchestra:
                 DeprecationWarning,
                 stacklevel=3,
             )
-            topology_graph.register_det_node(UserNode())
+            # ADR-012: a USER node may declare durability in the spec via
+            # node.metadata["durable"]. Read it from the CANONICAL source node
+            # (graph nodes drop metadata at analyze time), so a workflow
+            # definition can request a durable user step. Forward-compatible:
+            # the v0.4 generic det-node materialization reads the same metadata.
+            durable_user = any(
+                getattr(node, "kind", None) == NodeKind.USER
+                and bool((getattr(node, "metadata", None) or {}).get("durable"))
+                for node in canonical_topology.nodes
+            )
+            topology_graph.register_det_node(UserNode(durable=durable_user))
 
             # Legacy User-as-entry pattern: a `User → X` edge meant "workflow
             # starts with X receiving input from the user". In the new model,
@@ -1160,8 +1170,16 @@ class Orchestra:
             workflow = await orchestrator.run(task=task, entry_agent=entry_agent)
 
             duration = time.time() - start_time
-            paused = workflow.error == "paused"
-            if paused:
+            awaiting_user = workflow.error == "awaiting_user"
+            paused = workflow.error == "paused" or awaiting_user
+            if awaiting_user:
+                # Durable user wait (ADR-012): the run paused ITSELF at a durable
+                # interaction. Unlike the external pause_session, nothing else
+                # writes the snapshot — execute() must, here, while the
+                # orchestrator is still registered (before the finally pop).
+                await self._snapshot_and_write(session_id, orchestrator)
+                logger.info(f"Orchestration awaiting user after {duration:.2f}s")
+            elif paused:
                 logger.info(f"Orchestration paused after {duration:.2f}s")
             else:
                 logger.info(f"Orchestration completed in {duration:.2f}s")
@@ -1218,6 +1236,7 @@ class Orchestra:
                     "barrier_count": len(workflow.barriers),
                     "branch_count": len(workflow.branches),
                     "paused": paused,
+                    "awaiting_user": awaiting_user,
                 },
             )
 
@@ -1344,6 +1363,23 @@ class Orchestra:
             logger.error(f"Failed to find entry agents: {e}")
             raise
     
+    async def _snapshot_and_write(
+        self, session_id: str, orchestrator: Orchestrator,
+    ) -> None:
+        """Build a ``StateSnapshot`` from a quiesced ``orchestrator`` and write
+        it atomically via the configured ``StorageBackend``.
+
+        Shared by ``pause_session`` (external on-demand pause) and the
+        awaiting-user self-pause exit in ``execute()`` / ``resume_session``
+        (a durable user interaction snapshots-and-exits on its own). Every
+        caller reaches this only when the orchestrator is no longer
+        dispatching (loop exited or quiesced), so ``snapshot()`` is safe.
+        """
+        snapshot = self._build_state_snapshot(session_id, orchestrator)
+        payload = snapshot.model_dump_json(indent=2).encode("utf-8")
+        await self.storage_backend.write(self._snapshot_key(session_id), payload)
+        logger.info("_snapshot_and_write: wrote snapshot for session %s", session_id)
+
     async def pause_session(self, session_id: str) -> None:
         """Cleanly halt the run for ``session_id`` and write a snapshot
         atomically.
@@ -1406,15 +1442,13 @@ class Orchestra:
             )
             return
 
-        snapshot = self._build_state_snapshot(session_id, orchestrator)
-        payload = snapshot.model_dump_json(indent=2).encode("utf-8")
-        await self.storage_backend.write(self._snapshot_key(session_id), payload)
-        logger.info("pause_session: wrote snapshot for session %s", session_id)
+        await self._snapshot_and_write(session_id, orchestrator)
 
     async def resume_session(
         self, session_id: str, *,
         canonical_topology: "Optional[Topology]" = None,
         on_bus_rebuilt: "Optional[Callable[[EventBus], None]]" = None,
+        user_response: Any = None,
     ) -> OrchestraResult:
         """Read the snapshot for ``session_id`` and continue dispatch
         through to terminal state.
@@ -1462,6 +1496,23 @@ class Orchestra:
                 snapshot_version=snapshot.framework_version,
                 current_version=_MARSYS_VERSION,
                 session_id=session_id,
+            )
+
+        # ADR-012: durable resume-with-response argument contract (AC-5). A
+        # pending durable interaction REQUIRES the human's answer; an on-demand
+        # resume must NOT carry one. (None means "no response" — a durable
+        # answer is always a meaningful non-None value.) Validated early so a
+        # bad call fails before the EventBus/topology rebuild.
+        pending_interaction = snapshot.pending_user_interaction
+        if pending_interaction is not None and user_response is None:
+            raise ValueError(
+                f"resume_session: session {session_id!r} is awaiting a user "
+                f"response (durable interaction); pass user_response=… to resume."
+            )
+        if pending_interaction is None and user_response is not None:
+            raise ValueError(
+                f"resume_session: user_response was supplied but session "
+                f"{session_id!r} has no pending durable user interaction."
             )
 
         # 3. Reconstruct EventBus + listener set.
@@ -1551,6 +1602,17 @@ class Orchestra:
         orchestrator.restore_from(state)
         self._active_orchestrators[session_id] = orchestrator
 
+        # ADR-012: inject the human's response into the suspended branch BEFORE
+        # dispatch resumes. Reuses the existing public seam, which spawns the
+        # resume_agent branch with the response as input, terminates the
+        # suspended branch, and clears the pending-interaction scalar.
+        if pending_interaction is not None:
+            orchestrator.resume_branch_with_user_response(
+                pending_interaction.suspended_branch_id,
+                user_response,
+                pending_interaction.resume_agent,
+            )
+
         logger.info("resume_session: resuming session %s", session_id)
         start_time = time.time()
         # If anything is added to this finally that reads a try-scoped
@@ -1567,12 +1629,15 @@ class Orchestra:
             self._active_orchestrators.pop(session_id, None)
 
         duration = time.time() - start_time
-        paused_again = workflow.error == "paused"
+        awaiting_user_again = workflow.error == "awaiting_user"
+        paused_again = workflow.error == "paused" or awaiting_user_again
         total_steps = sum(b.step_count for b in workflow.branches.values())
 
-        # 8. On successful terminal state, discard the snapshot. Failed
-        # resumes leave the snapshot in place for inspection — log a
-        # warning so the operator knows.
+        # 8. Terminal success → discard the snapshot. Awaiting-user again (a
+        # resumed run that hit ANOTHER durable interaction, ADR-012) → re-write
+        # the snapshot with the new suspended state. An external on-demand pause
+        # during resume already wrote its own snapshot via pause_session. Other
+        # non-paused failures → leave the snapshot for inspection.
         if workflow.success:
             try:
                 await self.storage_backend.delete(key)
@@ -1581,6 +1646,8 @@ class Orchestra:
                     "resume_session: failed to delete snapshot for %s: %s",
                     session_id, exc,
                 )
+        elif awaiting_user_again:
+            await self._snapshot_and_write(session_id, orchestrator)
         elif not paused_again:
             logger.warning(
                 "resume_session: %s ended in error=%r; snapshot left in place "
@@ -1616,6 +1683,7 @@ class Orchestra:
                 "session_id": session_id,
                 "resumed": True,
                 "paused": paused_again,
+                "awaiting_user": awaiting_user_again,
                 "barrier_count": len(workflow.barriers),
                 "branch_count": len(workflow.branches),
             },
@@ -1736,6 +1804,10 @@ class Orchestra:
                 for item in state.user_interactions
             ],
             user_interaction_inflight=state.user_interaction_inflight,
+            pending_user_interaction=(
+                self._user_interaction_to_state(state.pending_user_interaction)
+                if state.pending_user_interaction is not None else None
+            ),
             max_steps=state.max_steps,
         )
         try:
@@ -1802,14 +1874,15 @@ class Orchestra:
 
     @staticmethod
     def _user_interaction_to_state(item: tuple) -> UserInteractionState:
-        # Items are (suspended_branch_id, prompt, resume_agent, delivery_target)
-        # tuples per Orchestrator.enqueue_user_interaction.
-        bid, prompt, resume_agent, delivery_target = item
+        # Items are (suspended_branch_id, prompt, resume_agent, delivery_target,
+        # durable) tuples per Orchestrator.enqueue_user_interaction.
+        bid, prompt, resume_agent, delivery_target, durable = item
         return UserInteractionState(
             suspended_branch_id=bid,
             prompt=prompt,
             resume_agent=resume_agent,
             delivery_target=delivery_target,
+            durable=durable,
         )
 
     def _snapshot_to_orchestrator_state(
@@ -1865,9 +1938,16 @@ class Orchestra:
             for barid, s in snapshot.barriers.items()
         }
         user_interactions = [
-            (ui.suspended_branch_id, ui.prompt, ui.resume_agent, ui.delivery_target)
+            (ui.suspended_branch_id, ui.prompt, ui.resume_agent, ui.delivery_target,
+             ui.durable)
             for ui in snapshot.user_interactions
         ]
+        pending = snapshot.pending_user_interaction
+        pending_user_interaction = (
+            (pending.suspended_branch_id, pending.prompt, pending.resume_agent,
+             pending.delivery_target, pending.durable)
+            if pending is not None else None
+        )
         return OrchestratorState(
             branches=branches,
             barriers=barriers,
@@ -1879,6 +1959,7 @@ class Orchestra:
             completed_emitted=set(snapshot.completed_emitted),
             user_interactions=user_interactions,
             user_interaction_inflight=snapshot.user_interaction_inflight,
+            pending_user_interaction=pending_user_interaction,
             max_steps=snapshot.max_steps,
         )
 

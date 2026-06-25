@@ -113,12 +113,19 @@ class Orchestrator:
         self._completed_emitted: set[str] = set()
 
         # User-node interaction queue (FIFO single-pending). Each item:
-        # (suspended_branch_id, prompt, resume_agent, delivery_target). The
-        # orchestrator dispatches one at a time; siblings wait. Resumed via
+        # (suspended_branch_id, prompt, resume_agent, delivery_target, durable).
+        # The orchestrator dispatches one at a time; siblings wait. Resumed via
         # the _resume_user_responses async-queue.
         self._user_interactions: collections.deque = collections.deque()
         self._user_interaction_inflight: bool = False
         self._resume_user_responses: Optional[Any] = None  # asyncio.Queue lazily created
+        # The single in-flight DURABLE user interaction (ADR-012): the 5-tuple
+        # (suspended_branch_id, prompt, resume_agent, delivery_target, durable),
+        # or None. Held apart from the deque (a deque entry is a queued *sibling*
+        # the FIFO
+        # pop re-dispatches). Non-None ⇒ the dispatch loop snapshots-and-exits at
+        # the next user-wait boundary instead of blocking on an in-memory queue.
+        self.pending_user_interaction: Optional[tuple] = None
 
         # Pause/resume primitive (ADR-007). Both events are lazy-init'd
         # in _dispatch_loop so they bind to the loop that's actually
@@ -271,6 +278,11 @@ class Orchestrator:
                 continue
 
             if not in_flight:
+                if self.pending_user_interaction is not None:
+                    # Durable user wait (ADR-012): snapshot-and-exit instead of
+                    # blocking on an in-memory queue. execute()/resume_session
+                    # write the snapshot and surface the awaiting-user result.
+                    return self._build_awaiting_user_result()
                 if self._user_interaction_inflight or self._user_interactions:
                     # An interaction is still pending; wait for it to land.
                     if self._resume_user_responses is not None:
@@ -395,22 +407,37 @@ class Orchestrator:
         return br
 
     def enqueue_user_interaction(
-        self, branch: Branch, prompt: Any, resume_agent: str
+        self, branch: Branch, prompt: Any, resume_agent: str, *, durable: bool = False
     ) -> None:
         """Suspend `branch` (mark WAITING), enqueue or dispatch the
         interaction. FIFO discipline: only one interaction is dispatched at
-        a time; the rest wait in self._user_interactions."""
+        a time; the rest wait in self._user_interactions.
+
+        durable=True (ADR-012): record the in-flight interaction in
+        self.pending_user_interaction (so snapshot() captures it) and spawn NO
+        in-memory `_drive` — the dispatch loop snapshots-and-exits at the next
+        user-wait boundary and resume_session(user_response) resumes it. The
+        SYNC (durable=False) path is unchanged."""
         import asyncio
 
         branch.status = "WAITING"
         branch.waiting_on = "user_interaction"
 
-        item = (branch.id, prompt, resume_agent, branch.delivery_target)
+        item = (branch.id, prompt, resume_agent, branch.delivery_target, durable)
         if self._user_interaction_inflight:
             self._user_interactions.append(item)
             return
 
         self._user_interaction_inflight = True
+
+        if durable:
+            # Durable (ADR-012): capture the in-flight interaction for the
+            # snapshot; the dispatch loop snapshots-and-exits at its user-wait
+            # boundary. No in-memory future, no 300s timeout, no resume queue —
+            # resume_session(user_response) drives the resume.
+            self.pending_user_interaction = item
+            return
+
         # Lazily create the resume queue inside an event loop.
         if self._resume_user_responses is None:
             try:
@@ -471,6 +498,13 @@ class Orchestrator:
         if suspended is not None and suspended.status != "TERMINATED":
             suspended.status = "TERMINATED"
             self._completed_emitted.add(suspended.id)
+            # The suspended branch left via the user interaction, not a barrier
+            # delivery — drop it from every barrier candidacy (re-queueing each
+            # for a fire-check) via the same helper _deliver/_fail_to use, so a
+            # terminated branch never lingers as a phantom pending candidate that
+            # would keep its barrier from firing. (Latent SYNC-seam gap surfaced
+            # by ADR-012's first orchestrator-level UserNode→resume→terminal run.)
+            self._unregister(suspended, keep=set())
 
         spawned = self._spawn(
             agent=resume_agent,
@@ -484,12 +518,24 @@ class Orchestrator:
                 target.candidates.add(spawned.id)
                 spawned.candidate_of.add(delivery_target)
 
+        # ADR-012: the durable in-flight interaction (if any) has been consumed
+        # (its suspended branch was just resumed above). Clear the scalar BEFORE
+        # re-dispatching the next queued sibling, which may itself be durable and
+        # re-arm the scalar. No-op on the SYNC path (already None).
+        self.pending_user_interaction = None
         if self._user_interactions:
-            next_branch_id, next_prompt, next_resume, _ = self._user_interactions.popleft()
+            next_branch_id, next_prompt, next_resume, _next_target, next_durable = (
+                self._user_interactions.popleft()
+            )
             next_branch = self.branches.get(next_branch_id)
             if next_branch is not None:
                 self._user_interaction_inflight = False
-                self.enqueue_user_interaction(next_branch, next_prompt, next_resume)
+                # Preserve the sibling's durability — a queued durable interaction
+                # must stay durable when it goes in-flight (ADR-012 FIFO), not
+                # silently revert to the SYNC path.
+                self.enqueue_user_interaction(
+                    next_branch, next_prompt, next_resume, durable=next_durable
+                )
         else:
             self._user_interaction_inflight = False
 
@@ -1311,6 +1357,21 @@ class Orchestrator:
             barriers=self.barriers,
         )
 
+    def _build_awaiting_user_result(self) -> WorkflowResult:
+        """Result returned when the dispatch loop hits a DURABLE user
+        interaction (ADR-012) — a second pause sentinel parallel to
+        `_build_paused_result`'s "paused". `Orchestra.execute()` /
+        `resume_session()` recognize `error == "awaiting_user"`, write the
+        snapshot, and set metadata["awaiting_user"]=True — distinct from a
+        plain on-demand pause. The run is suspended, not terminal."""
+        return WorkflowResult(
+            success=False,
+            final_response=None,
+            error="awaiting_user",
+            branches=self.branches,
+            barriers=self.barriers,
+        )
+
     # ══════════════════════════════════════════════════════════════════
     # Snapshot / restore (ADR-007)
     # ══════════════════════════════════════════════════════════════════
@@ -1339,6 +1400,7 @@ class Orchestrator:
             completed_emitted=set(self._completed_emitted),
             user_interactions=[copy.deepcopy(item) for item in self._user_interactions],
             user_interaction_inflight=self._user_interaction_inflight,
+            pending_user_interaction=copy.deepcopy(self.pending_user_interaction),
             max_steps=self.max_steps,
         )
 
@@ -1370,6 +1432,7 @@ class Orchestrator:
             copy.deepcopy(item) for item in state.user_interactions
         )
         self._user_interaction_inflight = state.user_interaction_inflight
+        self.pending_user_interaction = copy.deepcopy(state.pending_user_interaction)
         self.max_steps = state.max_steps
         # _resume_user_responses (asyncio.Queue) is intentionally rebuilt
         # fresh on resume — it lives only inside an active loop. Pending
@@ -1400,8 +1463,10 @@ class OrchestratorState:
     root_barrier_id: Optional[str]
     workflow_error: Optional[str]
     completed_emitted: set[str]
-    user_interactions: list  # deque content; tuples of (bid, prompt, agent, target)
+    user_interactions: list  # deque content; (bid, prompt, agent, target, durable)
     user_interaction_inflight: bool
+    # ADR-012: the single in-flight DURABLE interaction (a 5-tuple) or None.
+    pending_user_interaction: Optional[tuple] = None
     max_steps: int = MAX_STEPS_DEFAULT
 
 
