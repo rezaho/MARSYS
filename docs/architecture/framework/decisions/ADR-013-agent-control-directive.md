@@ -102,6 +102,12 @@ Founder-requested direction (2026-06-24), **NOT built here** — recorded so the
 - **Open design questions**: condition source (agent vs automatic); the action vocabulary; how dynamic directives reconcile with topology-driven routing (ADR-003); precedence when multiple hooks fire.
 - **Build trigger**: a SECOND concrete consumer (anti-pattern #4/#11). `escalate_to_user` is consumer #1; it ships as a single arm, not a framework for hooks no one calls. No `pause`/`redirect`/`fail` `ActionType` values or extra `can_*` flags are pre-added now.
 
+## Addendum (2026-06-26) — `AgentSpec` wire-mirror completion (Spren S62)
+
+FW18 added `can_escalate` to the live `Agent`/`BaseAgent` constructor (the canonical runtime grant, read at dispatch via `getattr(agent, "can_escalate", …)`) but not to `AgentSpec`, the serialized "wire mirror of `Agent`'s constructor surface". So the grant could not round-trip through a saved workflow definition — an agent hydrated from `AgentSpec` (every workflow agent) could never be granted escalate. The first consumer (Spren S62, browser re-auth) needs exactly that: a browser-workflow agent granted escalate.
+
+S62 completes the mirror: add `can_escalate: bool = False` to `AgentSpec`, carried through `agent_to_pydantic` (live→spec) and both `pydantic_to_agents` constructor paths (base + specialized) — mirroring `bidirectional_peers` exactly. Both layers are canonical by role, not redundant: the live `Agent` attribute is what dispatch reads (a pure-Python `Agent(can_escalate=True)` needs no spec), and the `AgentSpec` field is its serialization (round-trips through `workflow.json` and survives a cold-resume's re-read of the frozen definition). Backward-compatible: an at-rest spec lacking the field hydrates to `False`. The framework stays Spren-agnostic (SP-018) — the consumer sets the grant; for a fixed-signature specialized factory whose constructor does not accept it (e.g. `BrowserAgent.create_safe`), `_accepted_kwargs` drops it, the same documented property `bidirectional_peers` has.
+
 ## Approval
 
 This ADR requires framework-team approval before merge. Approval is recorded here by the framework lead, OR by an explicit approval message in the PR thread.

@@ -444,3 +444,73 @@ def test_agent_round_trip_preserves_identity_fields():
     assert re.instruction == original.instruction
     assert re.max_tokens == original.max_tokens
     assert "Peer1" in re._allowed_peers_init
+
+
+# ---------------------------------------------------------------------------
+# can_escalate (ADR-013 wire-mirror completion): the escalate_to_user grant
+# round-trips through AgentSpec, mirroring bidirectional_peers.
+# ---------------------------------------------------------------------------
+
+
+def test_can_escalate_true_round_trip_via_spec():
+    """AC-1: a spec carrying can_escalate=True hydrates to a live Agent granted it."""
+    spec = WorkflowDefinition(
+        topology=TopologySpec(
+            nodes=[NodeSpec(name="EscT", agent_ref="EscT")], edges=[]
+        ),
+        agents={
+            "EscT": AgentSpec(
+                name="EscT",
+                goal="g",
+                instruction="i",
+                model=_model_config_spec(),
+                can_escalate=True,
+            ),
+        },
+    )
+    agents = asyncio.run(pydantic_to_agents(spec, tool_registry={}))
+    assert agents[0].can_escalate is True
+
+
+def test_can_escalate_default_false_backward_compat():
+    """AC-1b: a serialized spec predating can_escalate hydrates to False (the
+    optional field's default) and validates despite AgentSpec's extra='forbid'."""
+    legacy = AgentSpec(
+        name="EscLegacy", goal="g", instruction="i", model=_model_config_spec()
+    ).model_dump()
+    legacy.pop("can_escalate", None)  # simulate at-rest JSON predating the field
+    spec = AgentSpec.model_validate(legacy)
+    assert spec.can_escalate is False
+    workflow = WorkflowDefinition(
+        topology=TopologySpec(
+            nodes=[NodeSpec(name="EscLegacy", agent_ref="EscLegacy")], edges=[]
+        ),
+        agents={"EscLegacy": spec},
+    )
+    agents = asyncio.run(pydantic_to_agents(workflow, tool_registry={}))
+    assert agents[0].can_escalate is False
+
+
+def test_can_escalate_live_agent_round_trip():
+    """AC-1: live Agent(can_escalate=True) -> AgentSpec -> JSON -> AgentSpec -> Agent."""
+    original = Agent(
+        name="EscRT",
+        goal="g",
+        instruction="i",
+        model_config=_model_config(),
+        can_escalate=True,
+    )
+    spec = agent_to_pydantic(original)
+    assert spec.can_escalate is True
+    rehydrated_spec = AgentSpec.model_validate_json(spec.model_dump_json())
+    assert rehydrated_spec.can_escalate is True
+
+    AgentRegistry.unregister(original.name)
+    workflow = WorkflowDefinition(
+        topology=TopologySpec(
+            nodes=[NodeSpec(name="EscRT", agent_ref="EscRT")], edges=[]
+        ),
+        agents={"EscRT": rehydrated_spec},
+    )
+    agents = asyncio.run(pydantic_to_agents(workflow, tool_registry={}))
+    assert agents[0].can_escalate is True

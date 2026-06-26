@@ -1172,12 +1172,19 @@ class Orchestra:
             duration = time.time() - start_time
             awaiting_user = workflow.error == "awaiting_user"
             paused = workflow.error == "paused" or awaiting_user
+            awaiting_user_prompt = None
             if awaiting_user:
                 # Durable user wait (ADR-012): the run paused ITSELF at a durable
                 # interaction. Unlike the external pause_session, nothing else
                 # writes the snapshot — execute() must, here, while the
                 # orchestrator is still registered (before the finally pop).
                 await self._snapshot_and_write(session_id, orchestrator)
+                # Surface WHAT the run is awaiting on the result metadata, so a
+                # consumer can render the request (e.g. "re-authenticate [site]")
+                # without parsing the snapshot. pending_user_interaction is the
+                # tuple (branch_id, prompt, resume_agent, delivery_target, durable).
+                pending = orchestrator.pending_user_interaction
+                awaiting_user_prompt = pending[1] if pending else None
                 logger.info(f"Orchestration awaiting user after {duration:.2f}s")
             elif paused:
                 logger.info(f"Orchestration paused after {duration:.2f}s")
@@ -1237,6 +1244,7 @@ class Orchestra:
                     "branch_count": len(workflow.branches),
                     "paused": paused,
                     "awaiting_user": awaiting_user,
+                    "awaiting_user_prompt": awaiting_user_prompt,
                 },
             )
 
@@ -1631,6 +1639,7 @@ class Orchestra:
         duration = time.time() - start_time
         awaiting_user_again = workflow.error == "awaiting_user"
         paused_again = workflow.error == "paused" or awaiting_user_again
+        awaiting_user_prompt_again = None
         total_steps = sum(b.step_count for b in workflow.branches.values())
 
         # 8. Terminal success → discard the snapshot. Awaiting-user again (a
@@ -1648,6 +1657,8 @@ class Orchestra:
                 )
         elif awaiting_user_again:
             await self._snapshot_and_write(session_id, orchestrator)
+            pending = orchestrator.pending_user_interaction
+            awaiting_user_prompt_again = pending[1] if pending else None
         elif not paused_again:
             logger.warning(
                 "resume_session: %s ended in error=%r; snapshot left in place "
@@ -1684,6 +1695,7 @@ class Orchestra:
                 "resumed": True,
                 "paused": paused_again,
                 "awaiting_user": awaiting_user_again,
+                "awaiting_user_prompt": awaiting_user_prompt_again,
                 "barrier_count": len(workflow.barriers),
                 "branch_count": len(workflow.branches),
             },
