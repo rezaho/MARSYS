@@ -263,6 +263,16 @@ class RealRuntime:
                 value=question,
             )
 
+        if action == ActionType.ESCALATE_USER:
+            # ADR-013: dynamic escalate-to-user. A distinct step kind (NOT the
+            # ASK_USER User-node route) the orchestrator routes into framework
+            # 16's durable suspend. Prompt is sourced from the validator output.
+            prompt = (validation.parsed_response or {}).get("prompt")
+            return OrchestratorStepResult(
+                kind="ESCALATE_USER",
+                value=prompt,
+            )
+
         if action == ActionType.TERMINAL_ERROR:
             return OrchestratorStepResult(
                 kind="FAIL",

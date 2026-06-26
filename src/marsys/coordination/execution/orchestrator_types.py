@@ -51,6 +51,9 @@ StepKind = Literal[
     "SINGLE_INVOKE",
     "PARALLEL_INVOKE",
     "FINAL_RESPONSE",
+    # ADR-013: a granted agent's dynamic escalate-to-user directive. The
+    # orchestrator routes it into framework 16's durable suspend seam.
+    "ESCALATE_USER",
     "FAIL",
 ]
 

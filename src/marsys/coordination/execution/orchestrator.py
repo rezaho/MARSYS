@@ -728,6 +728,16 @@ class Orchestrator:
             self._fail_to(br, step.error or "unspecified")
             return
 
+        if step.kind == "ESCALATE_USER":
+            # ADR-013: a granted agent's dynamic escalate-to-user. Route directly
+            # into framework 16's durable suspend seam — no topology User node.
+            # resume_agent = the emitting agent (br.current_agent), so resume
+            # re-runs that same agent with the user's response as its input.
+            self.enqueue_user_interaction(
+                br, step.value, resume_agent=br.current_agent, durable=True
+            )
+            return
+
         raise ValueError(f"Unknown step kind: {step.kind}")
 
     # ══════════════════════════════════════════════════════════════════

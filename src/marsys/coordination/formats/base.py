@@ -76,6 +76,14 @@ class BaseResponseFormat(ABC):
         if completion_instructions:
             parts.append(completion_instructions)
 
+        # 3b. Escalation instruction (ADR-013). Gated on the per-agent
+        # can_escalate grant, SEPARATE from the completion block above (which is
+        # empty unless the agent can terminate_workflow or ask_user) so a granted
+        # agent on a User-less, End-edge topology still sees this contract.
+        escalate_instructions = self._build_escalate_instructions(context)
+        if escalate_instructions:
+            parts.append(escalate_instructions)
+
         # 4. Peer agent instructions
         peer_instructions = self._build_peer_agent_instructions(context)
         if peer_instructions:
@@ -188,6 +196,32 @@ class BaseResponseFormat(ABC):
 
         lines.append("--- END WORKFLOW COMPLETION ---")
         return "\n".join(lines)
+
+    def _build_escalate_instructions(self, context: SystemPromptContext) -> str:
+        """Build the conditional instruction for the `escalate_to_user` directive
+        (ADR-013), gated on the per-agent `can_escalate` grant.
+
+        Kept SEPARATE from ``_build_workflow_completion_instructions`` because
+        that block early-returns unless the agent can terminate_workflow or
+        ask_user (topology-gated) — a granted agent on a User-less, End-edge
+        topology (the re-auth browsing case) would otherwise never see this
+        contract. Instruction surface matches tool surface: both gate on
+        ``can_escalate_user``."""
+        coord = context.coordination
+        if not getattr(coord, "can_escalate_user", False):
+            return ""
+
+        return (
+            "\n\n--- ESCALATION ---\n"
+            "**Escalating to the human.** When you hit something only a human "
+            "can resolve mid-task — re-authentication, an approval, or a "
+            "decision or input you cannot obtain yourself — call the "
+            "`escalate_to_user` tool with a clear `prompt` describing what you "
+            "need. The run pauses durably (it survives a restart) and resumes "
+            "you with the human's reply. Prefer continuing on your own; "
+            "escalate only when genuinely blocked on a human.\n"
+            "--- END ESCALATION ---"
+        )
 
     def _strip_schema_hints(self, text: str) -> str:
         """Remove lines that re-explain the output format from agent instructions."""

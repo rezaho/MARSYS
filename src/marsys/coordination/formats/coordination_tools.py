@@ -24,6 +24,7 @@ COORDINATION_TOOL_NAMES: Set[str] = frozenset({
     "invoke_agent",
     "terminate_workflow",
     "ask_user",
+    "escalate_to_user",
     "end_conversation",
     # REMOVE-IN-V0.4: legacy alias for "terminate_workflow"; kept so agents
     # emitting the old name still validate. See DEPRECATIONS.md.
@@ -83,6 +84,7 @@ class CoordinationToolSchemaBuilder:
         can_ask_user: bool = False,
         is_conversation_branch: bool = False,
         output_schema: Optional[Dict[str, Any]] = None,
+        can_escalate_user: bool = False,
     ) -> List[Dict[str, Any]]:
         """
         Build coordination tool schemas for an agent.
@@ -95,6 +97,8 @@ class CoordinationToolSchemaBuilder:
                 edge to User det-node)
             is_conversation_branch: Whether this agent is in a conversation branch
             output_schema: Optional output schema to merge into terminate_workflow
+            can_escalate_user: Whether this agent can call escalate_to_user (gated
+                on the per-agent can_escalate grant, NOT topology — ADR-013)
 
         Returns:
             List of OpenAI-format tool definition dicts
@@ -122,6 +126,11 @@ class CoordinationToolSchemaBuilder:
         if can_ask_user:
             schemas.append(
                 CoordinationToolSchemaBuilder._build_ask_user_schema()
+            )
+
+        if can_escalate_user:
+            schemas.append(
+                CoordinationToolSchemaBuilder._build_escalate_user_schema()
             )
 
         if is_conversation_branch:
@@ -235,6 +244,37 @@ class CoordinationToolSchemaBuilder:
                         },
                     },
                     "required": ["question"],
+                },
+            },
+        }
+
+    @staticmethod
+    def _build_escalate_user_schema() -> Dict[str, Any]:
+        return {
+            "type": "function",
+            "function": {
+                "name": "escalate_to_user",
+                "description": (
+                    "Escalate to the human and pause the run until they respond. "
+                    "Use this when you hit something only a human can resolve "
+                    "mid-task — re-authentication, an approval, or a decision or "
+                    "input you cannot obtain yourself. The run suspends durably "
+                    "(it survives a restart) and resumes you with the human's "
+                    "reply. Prefer continuing on your own; escalate only when "
+                    "genuinely blocked on a human."
+                ),
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "prompt": {
+                            "type": "string",
+                            "description": (
+                                "What you need from the human, stated clearly "
+                                "(e.g. 'Please re-authenticate to example.com')."
+                            ),
+                        },
+                    },
+                    "required": ["prompt"],
                 },
             },
         }

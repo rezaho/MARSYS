@@ -352,7 +352,8 @@ class StepExecutor:
                 coordination_context = self._build_coordination_context(
                     agent_name,
                     topology_graph,
-                    branch=branch
+                    branch=branch,
+                    can_escalate=getattr(agent, "can_escalate", False),
                 )
 
                 # Add coordination context and system prompt builder to run_context
@@ -859,6 +860,7 @@ class StepExecutor:
         agent_name: str,
         topology_graph: Optional['TopologyGraph'],
         branch: Optional['ExecutionBranch'] = None,
+        can_escalate: bool = False,
     ) -> CoordinationContext:
         """
         Build CoordinationContext from topology.
@@ -911,6 +913,7 @@ class StepExecutor:
             next_agents=next_agents,
             can_terminate_workflow=can_terminate,
             can_ask_user=can_ask_user,
+            can_escalate_user=can_escalate,
             is_conversation_branch=is_conversation,
         )
 
