@@ -221,6 +221,8 @@ Explanation: Direct API calls bypass adapter harmonization and error handling.
 
 **Exceptions**: None. New providers must be added via `ProviderAdapterFactory` and adapter classes.
 
+**Capability — deferred tool loading (Framework Session 17)**: the canonical example of the DP-006 value. A single normalized input — a per-tool `defer_loading: true` flag on the tool dict (it rides the existing `tools` array, no `arun`/`run` signature change) — is translated per-provider inside each adapter: Anthropic maps it onto the Anthropic tool + auto-adds the `tool_search_tool_regex_20251119` server tool; OpenAI Responses maps it onto the flat function tool + auto-adds the `tool_search` built-in; OpenRouter strips it (no feature, would 400 on the wire) + warns; Google warns + falls back to eager. No provider dialect (the `tool_search`/`defer_loading` shapes, the discovery response blocks) leaks above the adapter boundary; the caller marks "this tool is deferred" once and each adapter does the right thing. Additive + default-off (nothing deferred ⇒ byte-identical request payload per adapter). See CHANGELOG `[Unreleased]` and `tests/models/test_deferred_tool_loading.py`.
+
 ---
 
 ## DP-007: Format Pluggability
