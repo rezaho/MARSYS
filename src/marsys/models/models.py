@@ -742,7 +742,13 @@ class BaseAPIModel:
             max_tokens: Overrides the default max_tokens for this specific call.
             temperature: Overrides the default temperature for this specific call.
             top_p: Overrides the default top_p for this specific call.
-            tools: Optional list of tools for function calling.
+            tools: Optional list of tools for function calling. A per-tool ``defer_loading: true``
+                flag on a tool dict marks it for DEFERRED loading: the provider's tool-search
+                built-in discovers it on demand and the definition rides the message tail, so its
+                schema stays out of the billed/cached prefix (the prompt cache survives a load).
+                Honored on Anthropic (api-key + OAuth) and OpenAI Responses (api-key + OAuth);
+                stripped on OpenRouter and warned-then-ignored on Google (no provider feature).
+                No signature change — the flag rides the existing ``tools`` array. Default: all eager.
             **kwargs: Additional parameters to pass to the API.
 
         Returns:

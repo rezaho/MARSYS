@@ -176,7 +176,22 @@ class OpenRouterAdapter(APIProviderAdapter):
             payload["response_format"] = {"type": "json_object"}
 
         if kwargs.get("tools"):
-            payload["tools"] = kwargs["tools"]
+            tools = kwargs["tools"]
+            if any(isinstance(t, dict) and t.get("defer_loading") for t in tools):
+                # OpenRouter has no deferred-tool-loading feature and forwards `tools` verbatim,
+                # so a defer_loading marker would reach the wire (possible 400). Strip it and fall
+                # back to eager loading. Warn — a SILENT behavior change is what the additive
+                # contract forbids.
+                import warnings
+                warnings.warn(
+                    "OpenRouter does not support deferred tool loading; the per-tool defer_loading "
+                    "flag is stripped and all tools are loaded eagerly."
+                )
+                tools = [
+                    {k: v for k, v in t.items() if k != "defer_loading"} if isinstance(t, dict) else t
+                    for t in tools
+                ]
+            payload["tools"] = tools
 
         # Handle OpenRouter-specific reasoning configuration
         # Import model detection utility

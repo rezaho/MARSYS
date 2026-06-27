@@ -518,26 +518,44 @@ class AnthropicOAuthAdapter(APIProviderAdapter):
                 "budget_tokens": kwargs.get("thinking_budget", self.thinking_budget)
             }
 
-        # Convert tools to Anthropic format with reserved name transformation
+        # Convert tools to Anthropic format with reserved name transformation.
+        # A per-tool ``defer_loading: true`` rides the tool dict top-level (deferred tool loading);
+        # it maps onto the Anthropic tool and triggers the Tool Search server tool so deferred
+        # tools are discovered on demand (their schemas stay out of the cached prefix). Nothing
+        # deferred → byte-identical to before (no defer_loading key, no search tool).
         if kwargs.get("tools"):
             anthropic_tools = []
+            any_deferred = False
             for tool in kwargs["tools"]:
                 if tool.get("type") == "function" and "function" in tool:
                     func = tool["function"]
                     original_name = func.get("name", "")
                     api_name = self._transform_tool_name_for_api(original_name)
-                    anthropic_tools.append({
+                    converted = {
                         "name": api_name,
                         "description": func.get("description", ""),
                         "input_schema": func.get("parameters", {"type": "object", "properties": {}})
-                    })
+                    }
+                    if tool.get("defer_loading"):
+                        converted["defer_loading"] = True
+                        any_deferred = True
+                    anthropic_tools.append(converted)
                 elif "name" in tool and "input_schema" in tool:
                     # Already in Anthropic format - still transform the name
                     original_name = tool.get("name", "")
                     api_name = self._transform_tool_name_for_api(original_name)
                     transformed_tool = {**tool, "name": api_name}
                     anthropic_tools.append(transformed_tool)
+                    if tool.get("defer_loading"):
+                        any_deferred = True
 
+            if any_deferred and not any(
+                isinstance(t, dict) and str(t.get("type", "")).startswith("tool_search_tool")
+                for t in anthropic_tools
+            ):
+                anthropic_tools.append(
+                    {"type": "tool_search_tool_regex_20251119", "name": "tool_search_tool_regex"}
+                )
             if anthropic_tools:
                 payload["tools"] = anthropic_tools
 

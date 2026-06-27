@@ -327,21 +327,44 @@ class AnthropicAdapter(APIProviderAdapter):
         # Handle tools - convert OpenAI format to Anthropic format
         # OpenAI: {"type": "function", "function": {"name": ..., "description": ..., "parameters": ...}}
         # Anthropic: {"name": ..., "description": ..., "input_schema": ...}
+        # A per-tool ``defer_loading: true`` (deferred tool loading) rides the OpenAI tool dict
+        # at the top level; it maps onto the Anthropic tool and triggers the Tool Search server
+        # tool so the model discovers deferred tools on demand — their schemas stay out of the
+        # billed/cached prefix until searched. With nothing deferred this branch is byte-identical
+        # to before (no defer_loading key emitted, no search tool added).
         if kwargs.get("tools"):
             anthropic_tools = []
+            any_deferred = False
             for tool in kwargs["tools"]:
                 if isinstance(tool, dict):
                     if tool.get("type") == "function" and "function" in tool:
                         # Convert from OpenAI format
                         func = tool["function"]
-                        anthropic_tools.append({
+                        converted = {
                             "name": func.get("name"),
                             "description": func.get("description", ""),
                             "input_schema": func.get("parameters", {"type": "object", "properties": {}})
-                        })
+                        }
+                        if tool.get("defer_loading"):
+                            converted["defer_loading"] = True
+                            any_deferred = True
+                        anthropic_tools.append(converted)
                     elif "name" in tool and "input_schema" in tool:
-                        # Already in Anthropic format
+                        # Already in Anthropic format (incl. a pre-marked defer_loading tool or a
+                        # caller-supplied tool-search server tool) — pass through verbatim.
                         anthropic_tools.append(tool)
+                        if tool.get("defer_loading"):
+                            any_deferred = True
+            if any_deferred and not any(
+                isinstance(t, dict) and str(t.get("type", "")).startswith("tool_search_tool")
+                for t in anthropic_tools
+            ):
+                # Auto-add the Tool Search server tool (regex variant) so deferred tools are
+                # discoverable. It is non-deferred by construction (the API requires >=1
+                # non-deferred tool). Suppressed if the caller supplied their own search tool.
+                anthropic_tools.append(
+                    {"type": "tool_search_tool_regex_20251119", "name": "tool_search_tool_regex"}
+                )
             if anthropic_tools:
                 payload["tools"] = anthropic_tools
 

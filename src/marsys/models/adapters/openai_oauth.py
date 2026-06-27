@@ -320,19 +320,33 @@ class OpenAIOAuthAdapter(APIProviderAdapter):
         """Format request payload for ChatGPT backend."""
         instructions, input_messages = self._convert_messages_to_chatgpt_format(messages)
 
-        # Convert tools to Responses API format
+        # Convert tools to Responses API format. A per-tool ``defer_loading: true`` rides the tool
+        # dict top-level (deferred tool loading); it maps onto the flat Responses tool and triggers
+        # the ``tool_search`` built-in so deferred tools are discovered on demand. Nothing deferred
+        # → byte-identical to before.
         tools_list = []
+        any_deferred = False
         if kwargs.get("tools"):
             for t in kwargs["tools"]:
                 if t.get("type") == "function":
-                    tools_list.append({
+                    converted = {
                         "type": "function",
                         "name": t["function"]["name"],
                         "description": t["function"].get("description", ""),
                         "parameters": t["function"].get("parameters", {})
-                    })
+                    }
+                    if t.get("defer_loading"):
+                        converted["defer_loading"] = True
+                        any_deferred = True
+                    tools_list.append(converted)
                 else:
                     tools_list.append(t)
+                    if isinstance(t, dict) and t.get("defer_loading"):
+                        any_deferred = True
+            if any_deferred and not any(
+                isinstance(t, dict) and t.get("type") == "tool_search" for t in tools_list
+            ):
+                tools_list.append({"type": "tool_search"})
 
         # Build payload - all required fields for ChatGPT backend
         # Note: max_output_tokens is NOT supported by ChatGPT backend

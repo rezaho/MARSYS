@@ -244,6 +244,14 @@ class GoogleAdapter(APIProviderAdapter):
 
         # Add native function calling support
         if kwargs.get("tools"):
+            if any(isinstance(t, dict) and t.get("defer_loading") for t in kwargs["tools"]):
+                # Google has no deferred-tool-loading feature; the rebuild below already drops the
+                # per-tool defer_loading flag, so warn (not a silent drop) and fall back to eager.
+                import warnings
+                warnings.warn(
+                    "Google models do not support deferred tool loading; the per-tool "
+                    "defer_loading flag is ignored and all tools are loaded eagerly."
+                )
             # Convert OpenAI format tools to Google format
             google_tools = []
             for tool in kwargs["tools"]:
