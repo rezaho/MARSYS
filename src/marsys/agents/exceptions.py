@@ -1029,9 +1029,11 @@ class ModelAPIError(ModelError):
             # ValidationError with the provider's terminal signal destroyed).
             # Classification branches on stop_reason — the documented contract;
             # stop_details is NULLABLE decoration, appended to the message when
-            # present and never keyed on. max_tokens/model_context_window_exceeded
-            # never arrive here: harmonization routes them to the truncation
-            # placeholder.
+            # present and never keyed on. Two terminals never arrive here, because
+            # harmonization represents them instead of raising:
+            # max_tokens/model_context_window_exceeded (→ truncation placeholder)
+            # and end_turn (→ a silent turn, content="": the model finished and
+            # chose to say nothing, which is a success, not a fault).
             stop_reason = raw_response.get("stop_reason")
             details = raw_response.get("stop_details")
             details = details if isinstance(details, dict) else {}
@@ -1048,17 +1050,6 @@ class ModelAPIError(ModelError):
                 suggested_action = (
                     "The provider declined to answer this request. Modify or "
                     "rephrase it; retrying unmodified will be refused again."
-                )
-            elif stop_reason == "end_turn":
-                # Anthropic's documented guidance: don't retry empty responses
-                # without modification — the model already decided it was done.
-                classification = APIErrorClassification.EMPTY_COMPLETION.value
-                is_retryable = False
-                message = "Anthropic returned an empty response (stop_reason 'end_turn', no content)"
-                suggested_action = (
-                    "Do not retry unmodified — the model decided it was done. "
-                    "Send a modified request, e.g. a continuation prompt asking "
-                    "it to produce the response."
                 )
             else:
                 # stop_sequence, never-seen stop reasons, or NO terminal at all

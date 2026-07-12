@@ -822,15 +822,19 @@ class AnthropicOAuthAdapter(APIProviderAdapter):
         """Convert streaming response to HarmonizedResponse.
 
         Empty-output contract: a stream that terminated with NO text, NO tool
-        calls, and NO thinking either takes the truncation placeholder
+        calls, and NO thinking takes one of three arms. Deterministic truncation
         (normalized finish_reason ``length`` — ``max_tokens`` or
-        ``model_context_window_exceeded``) or raises a typed, classified
-        ``ModelAPIError`` built from the terminal signal (``refusal``, empty
-        ``end_turn``, no terminal at all). Together with the run paths'
-        in-stream ``error`` handling, every stream outcome maps to a valid
-        ``HarmonizedResponse`` or a typed ``ModelAPIError`` — never a
-        ``content=None`` shell that dies in the model validator as an
-        UNKNOWN ValidationError with the provider signal destroyed.
+        ``model_context_window_exceeded``) gets the truncation placeholder. A
+        natural-completion terminal (``end_turn``) is a SILENT TURN: the model
+        finished and chose to say nothing, which is a success, and harmonizes to
+        the empty-string content shape (the validator rejects ``None``, not
+        ``""``). Every OTHER empty terminal (``refusal``, no terminal at all)
+        raises a typed, classified ``ModelAPIError`` built from the terminal
+        signal. Together with the run paths' in-stream ``error`` handling, every
+        stream outcome maps to a valid ``HarmonizedResponse`` or a typed
+        ``ModelAPIError`` — never a ``content=None`` shell that dies in the model
+        validator as an UNKNOWN ValidationError with the provider signal
+        destroyed.
 
         (Latent gap, recorded 2026-06-11, still open: a thinking-only response —
         ``thinking`` set, no text, no tool calls, NON-length stop_reason — is
@@ -892,14 +896,24 @@ class AnthropicOAuthAdapter(APIProviderAdapter):
 
         # Empty-output contract (docstring above). Deterministic truncation gets
         # the cross-adapter placeholder (openai.py's convention) so callers see
-        # one shape, never None; every OTHER empty terminal is a typed failure
-        # classified by stop_reason (refusal / empty end_turn / no terminal).
+        # one shape, never None; a natural-completion terminal is a silent turn;
+        # every OTHER empty terminal is a typed failure classified by stop_reason
+        # (refusal / no terminal).
+        content = text_content if text_content else None
         if not text_content and not tool_calls and not raw_response.get("thinking"):
             if finish_reason == "length":
-                text_content = (
+                content = (
                     "[Response truncated due to token limit. Please increase max_tokens "
                     "or continue the conversation.]"
                 )
+            elif stop_reason_raw == "end_turn":
+                # A silent turn: the model ran to natural completion and produced
+                # nothing. Callers ask for this (an agent told to stay quiet when
+                # it has nothing to report), the provider bills it as a success,
+                # and the empty STRING is the content shape that carries it — the
+                # validator's rejection is of None, never of "". The API-key twin
+                # uses the same escape for its thinking-only responses.
+                content = ""
             else:
                 from marsys.agents.exceptions import ModelAPIError
                 from marsys.models.adapters.streaming import empty_completion_payload
@@ -912,7 +926,7 @@ class AnthropicOAuthAdapter(APIProviderAdapter):
         # Build response
         return HarmonizedResponse(
             role="assistant",
-            content=text_content if text_content else None,
+            content=content,
             tool_calls=tool_calls,
             thinking=raw_response.get("thinking") or None,
             metadata=metadata,

@@ -496,8 +496,9 @@ class AnthropicAdapter(APIProviderAdapter):
 
         # Empty-output contract (twin of anthropic_oauth.py): deterministic
         # truncation gets the cross-adapter placeholder (openai.py's convention)
-        # so callers see one shape, never None; every OTHER fully-empty terminal
-        # (refusal / empty end_turn / no stop_reason) raises a typed
+        # so callers see one shape, never None; a natural-completion terminal
+        # (end_turn) is a SILENT TURN and takes the content="" path below; every
+        # OTHER fully-empty terminal (refusal / no stop_reason) raises a typed
         # ModelAPIError classified by stop_reason instead of constructing a
         # content=None shell the model validator rejects as an UNKNOWN
         # ValidationError. Thinking-only responses are NOT empty — they take the
@@ -517,7 +518,7 @@ class AnthropicAdapter(APIProviderAdapter):
                     "[Response truncated due to token limit. Please increase max_tokens "
                     "or continue the conversation.]"
                 )
-            else:
+            elif stop_reason_raw != "end_turn":
                 from marsys.agents.exceptions import ModelAPIError
 
                 raise ModelAPIError.from_provider_response(
@@ -526,12 +527,14 @@ class AnthropicAdapter(APIProviderAdapter):
                 )
 
         content = text_content if text_content else None
-        # Thinking-only response (the latent gap anthropic_oauth.py:766 records,
-        # reachable now that thinking is enableable): the validator requires
-        # content-or-tool_calls and ignores thinking. An empty STRING is a valid
-        # content shape (the None check is what fails), so a response that is
-        # all thinking harmonizes instead of dying in validation.
-        if content is None and not tool_calls and (thinking_parts or reasoning_details):
+        # An empty STRING is a valid content shape (the validator's None check is
+        # what fails), so two responses that carry no text still harmonize rather
+        # than dying in validation: a thinking-only response, and a SILENT TURN —
+        # the model ran to natural completion (end_turn) and chose to produce
+        # nothing, which callers ask for and the provider bills as a success.
+        if content is None and not tool_calls and (
+            thinking_parts or reasoning_details or stop_reason_raw == "end_turn"
+        ):
             content = ""
 
         # Build harmonized response
