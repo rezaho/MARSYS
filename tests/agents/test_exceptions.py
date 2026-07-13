@@ -401,6 +401,88 @@ class TestModelErrors:
         assert error.retry_after == 60
 
 
+class TestTransportErrorClassification:
+    """A transport-layer failure (connect/DNS/timeout/reset) is raised by the HTTP
+    client with NO status code and NO provider error body. It must classify as a
+    transient, retryable NETWORK_ERROR/TIMEOUT — not the UNKNOWN, non-retryable
+    default that would terminally kill an otherwise-recoverable turn. Real regression:
+    a machine-wide DNS blip raised httpx.ConnectError('[Errno 11001] getaddrinfo
+    failed') and the turn was permanently dropped instead of retried."""
+
+    def test_httpx_connect_error_is_retryable_network(self):
+        import httpx
+
+        err = ModelAPIError.from_provider_response(
+            provider="anthropic-oauth",
+            exception=httpx.ConnectError("[Errno 11001] getaddrinfo failed"),
+        )
+        assert err.classification == "network_error"
+        assert err.is_retryable is True
+
+    def test_httpcore_connect_error_is_retryable_network(self):
+        import httpcore
+
+        err = ModelAPIError.from_provider_response(
+            provider="anthropic-oauth",
+            exception=httpcore.ConnectError("getaddrinfo failed"),
+        )
+        assert err.classification == "network_error"
+        assert err.is_retryable is True
+
+    def test_httpx_read_timeout_is_retryable_timeout(self):
+        import httpx
+
+        err = ModelAPIError.from_provider_response(
+            provider="anthropic-oauth",
+            exception=httpx.ReadTimeout("The read operation timed out"),
+        )
+        assert err.classification == "timeout"
+        assert err.is_retryable is True
+
+    def test_stdlib_connection_reset_is_retryable_network(self):
+        """No httpx/httpcore/aiohttp in the MRO — a bare stdlib ConnectionError
+        (e.g. a mid-stream RST) still classifies via the name table."""
+        err = ModelAPIError.from_provider_response(
+            provider="anthropic-oauth",
+            exception=ConnectionResetError("Connection reset by peer"),
+        )
+        assert err.classification == "network_error"
+        assert err.is_retryable is True
+
+    def test_local_protocol_error_stays_non_retryable(self):
+        """An our-side/config transport fault (bad request framing, unsupported
+        protocol) shares the transport tree but is NOT transient — it must keep the
+        UNKNOWN, non-retryable default so we don't hammer a doomed request."""
+        import httpx
+
+        err = ModelAPIError.from_provider_response(
+            provider="anthropic-oauth",
+            exception=httpx.LocalProtocolError("bad chunk"),
+        )
+        assert err.classification == "unknown"
+        assert err.is_retryable is False
+
+    def test_status_code_wins_over_transport_fallback(self):
+        """Precedence guard: when a real HTTP status was parsed, the transport
+        fallback must NOT fire — a 401 stays AUTHENTICATION_FAILED even if the
+        carrying exception's name is in the transport table."""
+
+        class FakeResp:
+            status_code = 401
+
+            def json(self):
+                return {}
+
+        err = ModelAPIError.from_provider_response(
+            provider="anthropic-oauth",
+            response=FakeResp(),
+            exception=ConnectionError("noise"),
+        )
+        assert err.status_code == 401
+        assert err.classification == "authentication_failed"
+        assert err.is_retryable is False
+
+
 # =============================================================================
 # Browser Error Tests
 # =============================================================================
