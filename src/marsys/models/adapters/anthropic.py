@@ -26,32 +26,65 @@ from marsys.models.response_models import (
 logger = logging.getLogger(__name__)
 
 
-def _anthropic_model_rejects_temperature(model_name: str) -> bool:
-    """Return True for Anthropic models that reject the `temperature`
-    parameter on the messages API.
+def _normalize_anthropic_model(model_name: str) -> str:
+    """Bare, lower-cased model id for capability matching.
 
-    Claude Opus 4.7 (and its 1M-context variants) treats `temperature`
-    as deprecated and 400s the request when it is set. The shape of
-    Anthropic's deprecation has been "reasoning-capable models drop
-    sampling parameters," so any future Opus 4.x line is expected to
-    behave the same way; we match by the documented prefix and let the
-    request fail loudly for a model name we have not seen yet.
+    The same model arrives under several spellings: an ``anthropic/`` prefix
+    (OpenRouter), an ``anthropic.`` / ``us.anthropic.`` prefix (Bedrock), and
+    with or without a date suffix. Capability is a property of the model, not
+    of the spelling, so all of them collapse to one key here.
     """
-    if not model_name:
+    name = (model_name or "").lower()
+    for prefix in ("us.anthropic.", "eu.anthropic.", "apac.anthropic.", "anthropic.", "anthropic/"):
+        if name.startswith(prefix):
+            name = name[len(prefix):]
+            break
+    return name
+
+
+# Reasoning-capable Claude models progressively dropped the sampling parameters
+# and the fixed thinking budget. Both are hard 400s, not ignored fields, so the
+# payload has to be shaped per model. Measured against the live API (Bedrock and
+# the OAuth/Messages endpoint): `temperature` is rejected by every model below,
+# and `thinking.type="enabled"` is rejected in favour of
+# `thinking.type="adaptive"` + `output_config.effort`. Matching is by prefix so
+# dated snapshots and 1M-context variants inherit the capability; a model we
+# have not seen yet keeps the legacy shape and fails loudly rather than silently.
+_ADAPTIVE_THINKING_MODEL_PREFIXES = (
+    "claude-opus-4-7",
+    "claude-opus-4-8",
+    "claude-opus-5",
+    "claude-sonnet-5",
+    "claude-fable-5",
+    "claude-mythos-5",
+)
+
+
+def _anthropic_model_rejects_temperature(model_name: str) -> bool:
+    """True for models that 400 when `temperature` is present."""
+    name = _normalize_anthropic_model(model_name)
+    if not name:
         return False
-    # Anthropic ships model names with or without the "anthropic/"
-    # prefix (OpenRouter etc.); strip it before comparing.
-    name = model_name.lower()
-    if name.startswith("anthropic/"):
-        name = name[len("anthropic/"):]
-    return (
-        name.startswith("claude-opus-4-7")
-        or name.startswith("claude-opus-4-8")
-    )
+    return name.startswith(_ADAPTIVE_THINKING_MODEL_PREFIXES)
+
+
+def _anthropic_model_requires_adaptive_thinking(model_name: str) -> bool:
+    """True for models where a fixed `budget_tokens` is rejected and thinking
+    is requested as `{"type": "adaptive"}` instead."""
+    name = _normalize_anthropic_model(model_name)
+    if not name:
+        return False
+    return name.startswith(_ADAPTIVE_THINKING_MODEL_PREFIXES)
 
 
 class AnthropicAdapter(APIProviderAdapter):
     """Adapter for Anthropic Claude API"""
+
+    # Endpoint capability, not model capability: the first-party Messages API
+    # enforces `output_config.format`, while the Bedrock endpoints reject the
+    # key outright. Subclasses that speak to an endpoint without it flip this
+    # to False and inherit the prompt-based fallback.
+    supports_structured_output = True
 
     def __init__(
         self,
@@ -79,6 +112,15 @@ class AnthropicAdapter(APIProviderAdapter):
             "Content-Type": "application/json",
             "anthropic-version": "2023-06-01",
         }
+
+    def report_model_id(self, echoed: Optional[str]) -> str:
+        """Which model id to report on the response metadata.
+
+        The provider echo is preferred because it resolves an alias to the
+        concrete snapshot actually served. Subclasses whose endpoint echoes an id
+        in a *different namespace* than the one it accepts override this.
+        """
+        return echoed or self.model_name
 
     def _convert_content_to_anthropic_format(self, content: Any) -> Any:
         """
@@ -172,6 +214,12 @@ class AnthropicAdapter(APIProviderAdapter):
         budget = kwargs.get("thinking_budget")
         if not isinstance(budget, int) or budget <= 0:
             return None
+        if _anthropic_model_requires_adaptive_thinking(self.model_name):
+            # These models reject a fixed budget; the model decides depth itself.
+            # A positive budget keeps its framework meaning ("thinking on") and
+            # the size is dropped — depth is steered by `output_config.effort`,
+            # which rides `reasoning_effort` when a caller sets it.
+            return {"type": "adaptive"}
         max_tokens = kwargs.get("max_tokens") or self.max_tokens
         clamped = min(budget, max_tokens - self._THINKING_HEADROOM)
         if clamped < self._THINKING_MIN_BUDGET:
@@ -301,23 +349,50 @@ class AnthropicAdapter(APIProviderAdapter):
         if thinking_payload is not None:
             payload["thinking"] = thinking_payload
 
+        # Thinking depth on adaptive-thinking models is steered by effort, which
+        # replaced the fixed budget. Only sent for models that accept it (older
+        # models 400 on the key), and never alongside disabled thinking: Opus 5
+        # rejects effort above "high" when thinking is off, and the combination
+        # buys nothing anyway.
+        effort = kwargs.get("reasoning_effort")
+        if (
+            effort
+            and thinking_payload is not None
+            and _anthropic_model_requires_adaptive_thinking(self.model_name)
+        ):
+            payload.setdefault("output_config", {})["effort"] = str(effort).lower()
+
         if system_message:
             payload["system"] = system_message
 
-        # Handle structured output — native output_config.format (GA)
+        # Handle structured output — native output_config.format (GA).
+        # `supports_structured_output` is False where the endpoint rejects the
+        # key (Bedrock); there the schema degrades to the prompt-based fallback
+        # below rather than putting an illegal field on the wire.
         response_schema = kwargs.get("response_schema")
-        if response_schema:
-            payload["output_config"] = {
-                "format": {
-                    "type": "json_schema",
-                    "schema": self._ensure_additional_properties_false(response_schema)
-                }
+        if response_schema and self.supports_structured_output:
+            # Merge, never assign: `effort` may already own output_config, and
+            # the API takes exactly one such object per request.
+            payload.setdefault("output_config", {})["format"] = {
+                "type": "json_schema",
+                "schema": self._ensure_additional_properties_false(response_schema),
             }
-        elif kwargs.get("json_mode") and user_messages:
-            # No native json_object mode in Anthropic — use prompt-based fallback
+        elif (kwargs.get("json_mode") or response_schema) and user_messages:
+            # No native json_object mode in Anthropic — use prompt-based fallback.
+            # When a schema was requested but the endpoint cannot enforce it, the
+            # schema goes into the prompt: a bare "valid JSON" hint would satisfy
+            # the caller's parser only by luck.
             last_msg = user_messages[-1]
             if last_msg.get("role") == "user":
                 hint = "\n\nPlease respond with valid JSON only."
+                if response_schema:
+                    hint = (
+                        "\n\nRespond with valid JSON only — no prose, no code fence — "
+                        "conforming exactly to this JSON Schema:\n"
+                        + json.dumps(
+                            self._ensure_additional_properties_false(response_schema)
+                        )
+                    )
                 content = last_msg["content"]
                 if isinstance(content, list):
                     last_msg["content"] = content + [{"type": "text", "text": hint}]
@@ -484,8 +559,13 @@ class AnthropicAdapter(APIProviderAdapter):
             else stop_reason_raw
         )
         metadata = ResponseMetadata(
-            provider="anthropic",
-            model=raw_response.get("model", self.model_name),
+            provider=self._provider_name() or "anthropic",
+            # `metadata.model` is what cost meters price on, so it must be the id
+            # the caller's rate table is keyed by. Bedrock echoes a *bare* id for
+            # a request made with an `anthropic.`-prefixed one, so trusting the
+            # echo silently prices that whole provider at zero. `report_model_id`
+            # keeps the requested spelling where the echo would not round-trip.
+            model=self.report_model_id(raw_response.get("model")),
             request_id=raw_response.get("id"),
             usage=usage,
             finish_reason=finish_reason,

@@ -740,6 +740,7 @@ class ModelAPIError(ModelError):
                     "google": "Enable billing or upgrade from free tier at https://console.cloud.google.com",
                     "openrouter": "Add credits at https://openrouter.ai/credits",
                     "xai": "Check credits at https://console.x.ai/billing",
+                    "bedrock": "Check your AWS account limits and Bedrock model access in the AWS console",
                     "openai-oauth": "Upgrade to ChatGPT Plus/Pro at https://chatgpt.com/upgrade",
                     "anthropic-oauth": "Check your Claude Max subscription at https://claude.ai/settings"
                 }
@@ -860,7 +861,10 @@ class ModelAPIError(ModelError):
                         classification = APIErrorClassification.SERVICE_UNAVAILABLE.value
                         is_retryable = True
 
-            elif provider == "anthropic":
+            # Bedrock serves the Messages API and returns the same error
+            # envelope, so it classifies identically to first-party Anthropic —
+            # sharing the branch keeps one behaviour for one wire contract.
+            elif provider in ("anthropic", "bedrock"):
                 error_data = raw_response.get("error", {}) if raw_response else {}
                 if error_data:
                     message = error_data.get("message", message)

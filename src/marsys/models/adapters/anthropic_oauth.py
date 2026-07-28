@@ -6,6 +6,10 @@ import time
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
+from marsys.models.adapters.anthropic import (
+    _anthropic_model_rejects_temperature,
+    _anthropic_model_requires_adaptive_thinking,
+)
 from marsys.models.adapters.base import APIProviderAdapter, AsyncBaseAPIAdapter
 from marsys.models.response_models import (
     ErrorResponse,
@@ -55,6 +59,8 @@ class AnthropicOAuthAdapter(APIProviderAdapter):
 
     # Supported models
     SUPPORTED_MODELS = [
+        "claude-opus-5",
+        "claude-sonnet-5",
         "claude-opus-4-8",
         "claude-opus-4-7",
         "claude-opus-4-6",
@@ -68,6 +74,8 @@ class AnthropicOAuthAdapter(APIProviderAdapter):
     # Model aliases for convenience (OpenRouter convention with dots)
     MODEL_ALIASES = {
         # OpenRouter-style aliases (with dots)
+        "claude-opus-5.0": "claude-opus-5",
+        "claude-sonnet-5.0": "claude-sonnet-5",
         "claude-opus-4.8": "claude-opus-4-8",
         "claude-opus-4.7": "claude-opus-4-7",
         "claude-opus-4.6": "claude-opus-4-6",
@@ -82,8 +90,8 @@ class AnthropicOAuthAdapter(APIProviderAdapter):
         "claude-haiku-4-5": "claude-haiku-4-5-20251001",
         "claude-opus-4-1": "claude-opus-4-1-20250805",
         # Short aliases
-        "opus": "claude-opus-4-8",
-        "sonnet": "claude-sonnet-4-6",
+        "opus": "claude-opus-5",
+        "sonnet": "claude-sonnet-5",
         "haiku": "claude-haiku-4-5-20251001",
     }
 
@@ -506,17 +514,34 @@ class AnthropicOAuthAdapter(APIProviderAdapter):
             "stream": True,  # Always stream for OAuth
         }
 
-        # Add temperature if provided
-        temperature = kwargs.get("temperature", self.temperature)
-        if temperature is not None:
-            payload["temperature"] = temperature
+        # Thinking first: it decides whether sampling params are legal at all.
+        # A positive budget means "thinking on" (the framework convention that
+        # BaseAPIModel.arun injects); reasoning-capable models take
+        # `{"type": "adaptive"}` and reject a fixed budget, so the size is
+        # dropped for them and depth rides `output_config.effort` instead.
+        thinking_on = bool(self.enable_thinking or kwargs.get("enable_thinking"))
+        budget = kwargs.get("thinking_budget", self.thinking_budget)
+        if not thinking_on and isinstance(budget, int) and budget > 0:
+            thinking_on = True
+        if thinking_on:
+            if _anthropic_model_requires_adaptive_thinking(self.model_name):
+                payload["thinking"] = {"type": "adaptive"}
+                effort = kwargs.get("reasoning_effort")
+                if effort:
+                    payload.setdefault("output_config", {})["effort"] = str(effort).lower()
+            else:
+                payload["thinking"] = {"type": "enabled", "budget_tokens": budget}
 
-        # Add thinking if enabled
-        if self.enable_thinking or kwargs.get("enable_thinking"):
-            payload["thinking"] = {
-                "type": "enabled",
-                "budget_tokens": kwargs.get("thinking_budget", self.thinking_budget)
-            }
+        # Temperature only when the model accepts it AND thinking is off — the
+        # reasoning-capable models 400 on the key ("`temperature` is deprecated
+        # for this model."), and thinking forbids sampling params outright.
+        temperature = kwargs.get("temperature", self.temperature)
+        if (
+            temperature is not None
+            and "thinking" not in payload
+            and not _anthropic_model_rejects_temperature(self.model_name)
+        ):
+            payload["temperature"] = temperature
 
         # Convert tools to Anthropic format with reserved name transformation.
         # A per-tool ``defer_loading: true`` rides the tool dict top-level (deferred tool loading);

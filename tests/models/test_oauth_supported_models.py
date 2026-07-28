@@ -11,12 +11,19 @@ from marsys.models.adapters.openai_oauth import OpenAIOAuthAdapter
 
 
 def test_anthropic_oauth_supports_current_opus_generations():
-    for model in ("claude-opus-4-8", "claude-opus-4-7", "claude-sonnet-4-6"):
+    for model in (
+        "claude-opus-5",
+        "claude-sonnet-5",
+        "claude-opus-4-8",
+        "claude-opus-4-7",
+        "claude-sonnet-4-6",
+    ):
         assert model in AnthropicOAuthAdapter.SUPPORTED_MODELS, model
 
 
-def test_anthropic_oauth_opus_alias_resolves_to_4_8():
-    assert AnthropicOAuthAdapter.MODEL_ALIASES["opus"] == "claude-opus-4-8"
+def test_anthropic_oauth_short_aliases_resolve_to_current_generation():
+    assert AnthropicOAuthAdapter.MODEL_ALIASES["opus"] == "claude-opus-5"
+    assert AnthropicOAuthAdapter.MODEL_ALIASES["sonnet"] == "claude-sonnet-5"
 
 
 def test_openai_oauth_supports_current_gpt_generations():

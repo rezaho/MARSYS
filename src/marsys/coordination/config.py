@@ -383,6 +383,11 @@ class ErrorHandlingConfig:
             "base_delay": 1.0,
             "insufficient_quota_action": "notify",
         },
+        "bedrock": {
+            "max_retries": 3,
+            "base_delay": 1.0,
+            "insufficient_quota_action": "raise",
+        },
         "openrouter": {
             "max_retries": 2,
             "base_delay": 1.0,

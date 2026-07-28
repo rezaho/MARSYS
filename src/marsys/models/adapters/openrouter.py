@@ -4,6 +4,7 @@ import time
 import warnings
 from typing import Any, Dict, List, Optional
 
+from marsys.models.adapters.anthropic import _anthropic_model_rejects_temperature
 from marsys.models.adapters.base import APIProviderAdapter, AsyncBaseAPIAdapter
 from marsys.models.response_models import (
     ErrorResponse,
@@ -114,10 +115,18 @@ class OpenRouterAdapter(APIProviderAdapter):
 
         # Temperature must NOT use `or`: an explicit 0.0 is a valid value and
         # must survive to the wire. None-gate instead.
+        #
+        # Claude's reasoning-capable line rejects the parameter outright, and the
+        # gateway forwards it, so an `anthropic/claude-opus-5`-style route needs
+        # the same omission the direct Anthropic adapter applies. Reuses that
+        # adapter's predicate (it strips the `anthropic/` prefix itself) so one
+        # capability table governs the model wherever it is reached from.
         temperature = kwargs.get("temperature")
         if temperature is None:
             temperature = self.temperature
-        if temperature is not None:
+        if temperature is not None and not _anthropic_model_rejects_temperature(
+            self.model_name
+        ):
             payload["temperature"] = temperature
 
         if kwargs.get("top_p") is not None:
