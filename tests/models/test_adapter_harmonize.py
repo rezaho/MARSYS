@@ -87,8 +87,16 @@ def test_anthropic_format_request_payload_drops_message_level_name():
         assert set(m.keys()) <= {"role", "content"}, (
             f"Anthropic message must carry only role/content, got {sorted(m.keys())}"
         )
-    # content is preserved on the rebuilt messages
-    assert payload["messages"][-1]["content"] == "Here are the verified facts ..."
+    # content is preserved on the rebuilt messages. Read as TEXT, not as an exact
+    # container: the tail message carries the prompt-cache breakpoint, which promotes
+    # a plain string to a one-element text block (same bytes to the model, and the
+    # only shape a marker can ride). What this test is about is the dropped `name`.
+    tail_content = payload["messages"][-1]["content"]
+    tail_text = (
+        tail_content if isinstance(tail_content, str)
+        else "".join(b.get("text", "") for b in tail_content)
+    )
+    assert tail_text == "Here are the verified facts ..."
     assert payload["messages"][-1]["role"] == "assistant"
 
 

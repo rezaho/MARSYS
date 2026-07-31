@@ -77,6 +77,79 @@ def _anthropic_model_requires_adaptive_thinking(model_name: str) -> bool:
     return name.startswith(_ADAPTIVE_THINKING_MODEL_PREFIXES)
 
 
+# Block types the API accepts a `cache_control` marker on. A marker on anything
+# else is rejected, so an unrecognized tail block is skipped rather than guessed
+# at — a missed cache entry costs money, an illegal field costs the whole turn.
+_CACHEABLE_BLOCK_TYPES = frozenset(
+    {"text", "image", "tool_use", "tool_result", "document"}
+)
+
+CACHE_CONTROL_EPHEMERAL = {"type": "ephemeral"}
+
+
+def mark_conversation_tail_for_cache(messages: List[Dict[str, Any]]) -> None:
+    """Place ONE prompt-cache breakpoint on the last content block of the last
+    message, in place on ``messages`` — the platform's multi-turn caching pattern.
+
+    Adapter-owned and unconditional, matching the only other `cache_control` site
+    in this codebase (the OAuth adapter's static Claude-Code prefix block). Only
+    the payload builder knows the rendered block layout, and caching is prefix-match
+    arithmetic over exactly those bytes, so a caller cannot place this correctly
+    even if it wanted to — and a caller that forgets silently re-pays full price on
+    the whole conversation. The precedent is `defer_loading`: the framework's
+    nearest analogous feature deliberately took no new request parameter either.
+
+    Why the TAIL and why EVERY request: a breakpoint reads any entry written at or
+    before it, so marking the growing tail each time both reads the previous
+    request's entry and extends it by that turn's new blocks. It also satisfies the
+    20-block lookback window by construction — a per-request tail marker is always
+    a handful of blocks behind the last one, whereas a marker placed once silently
+    stops matching in an agentic turn that appends several blocks per step.
+
+    Never mutates a caller block dict: the durable conversation shares those dicts
+    (the same hazard `hydrate_messages` documents), so a marker stamped in place
+    would leak into persisted rows. The message's content list and the marked block
+    are copied instead — which also makes the placement idempotent, since building
+    a payload twice from the same input yields byte-identical output.
+
+    No-ops (leaving the payload byte-identical to the unmarked form) when there is
+    nothing safe to mark: an empty message list, empty content, a tail message that
+    already carries a marker, or a tail with no cacheable block type. A prompt under
+    the model's cacheable minimum silently writes nothing and costs nothing, so no
+    size check is needed here.
+    """
+    if not messages:
+        return
+    last = messages[-1]
+    content = last.get("content")
+
+    if isinstance(content, str):
+        # Promote to a one-block list so the marker has a block to ride. An empty
+        # string is left alone: the API rejects an empty text block, and a bare
+        # empty string is what this adapter already sends for a contentless message.
+        if not content:
+            return
+        last["content"] = [
+            {"type": "text", "text": content, "cache_control": dict(CACHE_CONTROL_EPHEMERAL)}
+        ]
+        return
+
+    if not isinstance(content, list) or not content:
+        return
+    # Idempotence + the 4-breakpoint budget: a message that already carries a
+    # marker never receives a second one.
+    if any(isinstance(b, dict) and b.get("cache_control") for b in content):
+        return
+    for index in range(len(content) - 1, -1, -1):
+        block = content[index]
+        if isinstance(block, dict) and block.get("type") in _CACHEABLE_BLOCK_TYPES:
+            marked = {**block, "cache_control": dict(CACHE_CONTROL_EPHEMERAL)}
+            new_content = list(content)
+            new_content[index] = marked
+            last["content"] = new_content
+            return
+
+
 class AnthropicAdapter(APIProviderAdapter):
     """Adapter for Anthropic Claude API"""
 
@@ -363,7 +436,20 @@ class AnthropicAdapter(APIProviderAdapter):
             payload.setdefault("output_config", {})["effort"] = str(effort).lower()
 
         if system_message:
-            payload["system"] = system_message
+            # ARRAY form, not a bare string. Both are accepted and carry identical
+            # text to the model, but only the array form has content blocks a
+            # `cache_control` marker could ever ride — the string form makes the
+            # system tier structurally unmarkable. No marker is placed here yet:
+            # on this leg the system content is the caller's per-turn prompt, which
+            # for Spren's six-axis overview changes every turn (a timestamp line and
+            # a budget line), so a marker here would write a fresh entry per call and
+            # read none — pure write premium. The shape lands now so the marker is a
+            # one-line change once that prompt is made byte-stable.
+            payload["system"] = (
+                [{"type": "text", "text": system_message}]
+                if isinstance(system_message, str)
+                else system_message
+            )
 
         # Handle structured output — native output_config.format (GA).
         # `supports_structured_output` is False where the endpoint rejects the
@@ -442,6 +528,12 @@ class AnthropicAdapter(APIProviderAdapter):
                 )
             if anthropic_tools:
                 payload["tools"] = anthropic_tools
+
+        # LAST, deliberately: the marker belongs on the final content block of the
+        # final message, and the json-mode fallback above may still append a hint
+        # block there. Placing it after every content mutation is what makes "the
+        # tail" mean the actual tail.
+        mark_conversation_tail_for_cache(user_messages)
 
         return payload
 
@@ -542,6 +634,13 @@ class AnthropicAdapter(APIProviderAdapter):
                 completion_tokens=usage_data.get("output_tokens"),
                 total_tokens=usage_data.get("input_tokens", 0)
                 + usage_data.get("output_tokens", 0),
+                # Prompt-cache accounting. `input_tokens` is the UNCACHED
+                # remainder, so a caller measuring the whole prompt needs these
+                # two alongside it (UsageInfo.full_prompt_tokens). Absent on a
+                # response that reports no cache activity → None, and
+                # total_tokens keeps its established meaning either way.
+                cache_read_input_tokens=usage_data.get("cache_read_input_tokens"),
+                cache_creation_input_tokens=usage_data.get("cache_creation_input_tokens"),
             )
 
         # Build metadata with Anthropic-specific fields. finish_reason carries the

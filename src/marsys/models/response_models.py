@@ -27,21 +27,56 @@ class ToolCall(BaseModel):
 
 
 class UsageInfo(BaseModel):
-    """Token usage information."""
+    """Token usage information.
+
+    ``prompt_tokens`` is the provider's *uncached* prompt count. With prompt
+    caching active it is NOT the whole prompt: the full prompt is
+    ``prompt_tokens + cache_creation_input_tokens + cache_read_input_tokens``
+    (Anthropic's own definition). A consumer that sizes a conversation, prices a
+    call, or bounds prompt growth must read ``full_prompt_tokens`` — reading
+    ``prompt_tokens`` alone silently under-measures by up to ~10x once a cached
+    prefix exists. Both cache fields are None on providers that report no cache
+    figures, which is why ``full_prompt_tokens`` coalesces rather than sums
+    blindly.
+    """
     prompt_tokens: Optional[int] = None
     completion_tokens: Optional[int] = None
     total_tokens: Optional[int] = None
     reasoning_tokens: Optional[int] = None  # For o1 models
-    
+    # Prompt-cache accounting. Populated by the providers that report it
+    # (Anthropic api-key, Bedrock, Anthropic OAuth); None everywhere else.
+    cache_read_input_tokens: Optional[int] = None
+    cache_creation_input_tokens: Optional[int] = None
+
     @model_validator(mode='after')
     def calculate_total(self):
-        """Calculate total tokens if not provided."""
+        """Calculate total tokens if not provided.
+
+        Deliberately unchanged by the cache fields: ``total_tokens`` keeps its
+        established meaning (prompt + completion + reasoning) so a response that
+        reports no cache figures harmonizes to the same number it always did.
+        The cache-aware reading is ``full_prompt_tokens``.
+        """
         if self.total_tokens is None:
             prompt = self.prompt_tokens or 0
             completion = self.completion_tokens or 0
             reasoning = self.reasoning_tokens or 0
             self.total_tokens = prompt + completion + reasoning
         return self
+
+    @property
+    def full_prompt_tokens(self) -> int:
+        """The whole prompt the provider processed, cached parts included.
+
+        The number a context bound, a spend ledger, and a runaway-growth backstop
+        all actually want. Equals ``prompt_tokens`` exactly when no cache was
+        involved, so it is a safe unconditional substitute at every such site.
+        """
+        return (
+            (self.prompt_tokens or 0)
+            + (self.cache_creation_input_tokens or 0)
+            + (self.cache_read_input_tokens or 0)
+        )
 
 
 class ResponseMetadata(BaseModel):

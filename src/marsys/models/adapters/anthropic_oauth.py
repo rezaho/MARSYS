@@ -9,6 +9,7 @@ from typing import Any, Dict, List, Optional
 from marsys.models.adapters.anthropic import (
     _anthropic_model_rejects_temperature,
     _anthropic_model_requires_adaptive_thinking,
+    mark_conversation_tail_for_cache,
 )
 from marsys.models.adapters.base import APIProviderAdapter, AsyncBaseAPIAdapter
 from marsys.models.response_models import (
@@ -604,6 +605,14 @@ class AnthropicOAuthAdapter(APIProviderAdapter):
                 elif isinstance(content, str):
                     last_msg["content"] = content + hint
 
+        # The conversation-tail prompt-cache breakpoint (mirrors the api-key twin;
+        # see ``mark_conversation_tail_for_cache``). Placed LAST, after the json-mode
+        # hint above, so it lands on the real tail block. This is the SECOND marker
+        # in an OAuth payload — the static Claude-Code prefix block in
+        # ``_build_system_array`` is the first — which keeps the payload two under
+        # the API's four-breakpoint ceiling.
+        mark_conversation_tail_for_cache(converted_messages)
+
         return payload
 
     def _sync_stream_response(
@@ -655,6 +664,11 @@ class AnthropicOAuthAdapter(APIProviderAdapter):
                             msg = data.get("message", {})
                             result["model"] = msg.get("model")
                             result["id"] = msg.get("id")
+                            # Usage is MERGED across events, never assigned (see
+                            # the async twin's arm for the full reasoning).
+                            start_usage = msg.get("usage")
+                            if isinstance(start_usage, dict):
+                                result["usage"].update(start_usage)
 
                         elif event_type == "content_block_start":
                             block = data.get("content_block", {})
@@ -688,7 +702,9 @@ class AnthropicOAuthAdapter(APIProviderAdapter):
                             # Nullable decoration on the terminal (refusal
                             # category etc.) — for error messages, never keyed on.
                             result["stop_details"] = delta.get("stop_details")
-                            result["usage"] = data.get("usage", {})
+                            delta_usage = data.get("usage")
+                            if isinstance(delta_usage, dict):
+                                result["usage"].update(delta_usage)
 
                         elif event_type == "error":
                             # Anthropic delivers stream failures as in-stream SSE error
@@ -775,6 +791,20 @@ class AnthropicOAuthAdapter(APIProviderAdapter):
                             msg = data.get("message", {})
                             result["model"] = msg.get("model")
                             result["id"] = msg.get("id")
+                            # Usage is MERGED across events, never assigned. The
+                            # grammar splits it: `message_start` is the only event
+                            # carrying the cache-TTL breakdown (`cache_creation`),
+                            # `service_tier` and `inference_geo`, while
+                            # `message_delta` carries the final `output_tokens`.
+                            # Assigning at `message_delta` therefore dropped
+                            # everything only `message_start` reports, and a stream
+                            # that ends WITHOUT a `message_delta` (an in-stream
+                            # error after prefill) harmonized with no usage at all.
+                            # Merging matches AnthropicStreamAccumulator, the
+                            # api-key leg's shared accumulator.
+                            start_usage = msg.get("usage")
+                            if isinstance(start_usage, dict):
+                                result["usage"].update(start_usage)
 
                         elif event_type == "content_block_start":
                             block = data.get("content_block", {})
@@ -811,7 +841,9 @@ class AnthropicOAuthAdapter(APIProviderAdapter):
                             result["stop_reason"] = delta.get("stop_reason")
                             # Twin of the sync reader: nullable terminal decoration.
                             result["stop_details"] = delta.get("stop_details")
-                            result["usage"] = data.get("usage", {})
+                            delta_usage = data.get("usage")
+                            if isinstance(delta_usage, dict):
+                                result["usage"].update(delta_usage)
 
                         elif event_type == "error":
                             # See the sync reader's twin arm: in-stream SSE failure under
@@ -893,6 +925,11 @@ class AnthropicOAuthAdapter(APIProviderAdapter):
         usage = UsageInfo(
             prompt_tokens=usage_data.get("input_tokens"),
             completion_tokens=usage_data.get("output_tokens"),
+            # Prompt-cache accounting — see the api-key twin. `input_tokens` is
+            # the uncached remainder; the whole prompt is
+            # UsageInfo.full_prompt_tokens.
+            cache_read_input_tokens=usage_data.get("cache_read_input_tokens"),
+            cache_creation_input_tokens=usage_data.get("cache_creation_input_tokens"),
         ) if usage_data else None
 
         # Build metadata. finish_reason carries the NORMALIZED vocabulary (the
