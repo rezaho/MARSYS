@@ -86,10 +86,34 @@ _CACHEABLE_BLOCK_TYPES = frozenset(
 
 CACHE_CONTROL_EPHEMERAL = {"type": "ephemeral"}
 
+# A caller marks a message row with this key to say "my content here changes every
+# request; do not put the cache breakpoint on me". Neutral and per-item, riding the
+# caller's own message dict — the `defer_loading` shape, which is this codebase's
+# established way for a caller to signal request structure without a new request
+# parameter. Stripped during conversion; it never reaches the wire.
+#
+# Why a caller needs this: the breakpoint's value is that the NEXT request can read
+# the entry this one writes, which requires the entry's hashed prefix to consist of
+# bytes the next request still contains. A row whose text is regenerated per request
+# (a clock, a budget figure, anything derived from "now") is by construction absent
+# from the next request, so an entry written at or after it is unreadable forever —
+# each turn writes a fresh entry and reads none. Measured on Bedrock/Opus 5, single-
+# step turns, tools present: marker on the volatile row → turn 2 `read=0`; marker on
+# the last durable row → turn 2 `read=8425`.
+CACHE_EXEMPT_KEY = "cache_exempt"
 
-def mark_conversation_tail_for_cache(messages: List[Dict[str, Any]]) -> None:
+
+def mark_conversation_tail_for_cache(
+    messages: List[Dict[str, Any]], *, volatile_tail: int = 0
+) -> None:
     """Place ONE prompt-cache breakpoint on the last content block of the last
     message, in place on ``messages`` — the platform's multi-turn caching pattern.
+
+    ``volatile_tail`` excludes that many trailing messages from carrying the marker,
+    for a caller that appends per-request content after the durable conversation (see
+    ``CACHE_EXEMPT_KEY``). The marker then lands on the last DURABLE row, which the
+    next request still contains verbatim, so the entry stays readable. Default 0 keeps
+    the payload byte-identical to the unparameterized form for every other caller.
 
     Adapter-owned and unconditional, matching the only other `cache_control` site
     in this codebase (the OAuth adapter's static Claude-Code prefix block). Only
@@ -118,6 +142,11 @@ def mark_conversation_tail_for_cache(messages: List[Dict[str, Any]]) -> None:
     the model's cacheable minimum silently writes nothing and costs nothing, so no
     size check is needed here.
     """
+    if volatile_tail:
+        # Step back past the per-request rows. Every row is volatile (a caller that
+        # marked the whole list) → nothing durable to anchor an entry to, so no marker:
+        # writing one would cost a fresh entry per request and read none.
+        messages = messages[:-volatile_tail]
     if not messages:
         return
     last = messages[-1]
@@ -316,6 +345,19 @@ class AnthropicAdapter(APIProviderAdapter):
         # Extract system message if present (Claude handles it differently)
         system_message = None
         user_messages = []
+
+        # How many TRAILING rows the caller marked as per-request (``CACHE_EXEMPT_KEY``),
+        # so the breakpoint below lands on the last durable row instead. Counted from the
+        # end and stopping at the first unmarked row: the exemption is about position (what
+        # the next request will still contain), so a marked row with durable rows after it
+        # is not a tail and does not shift the marker. Each of these converts 1:1 into
+        # ``user_messages``, so the count carries over. The key itself never reaches the
+        # wire — the regular-message branch rebuilds rows with only role/content.
+        volatile_tail = 0
+        for msg in reversed(messages):
+            if not msg.get(CACHE_EXEMPT_KEY):
+                break
+            volatile_tail += 1
 
         for msg in messages:
             if msg.get("role") == "system":
@@ -533,7 +575,7 @@ class AnthropicAdapter(APIProviderAdapter):
         # final message, and the json-mode fallback above may still append a hint
         # block there. Placing it after every content mutation is what makes "the
         # tail" mean the actual tail.
-        mark_conversation_tail_for_cache(user_messages)
+        mark_conversation_tail_for_cache(user_messages, volatile_tail=volatile_tail)
 
         return payload
 

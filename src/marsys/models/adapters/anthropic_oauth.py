@@ -7,6 +7,7 @@ from pathlib import Path
 from typing import Any, Dict, List, Optional
 
 from marsys.models.adapters.anthropic import (
+    CACHE_EXEMPT_KEY,
     _anthropic_model_rejects_temperature,
     _anthropic_model_requires_adaptive_thinking,
     mark_conversation_tail_for_cache,
@@ -443,6 +444,15 @@ class AnthropicOAuthAdapter(APIProviderAdapter):
         system_message = None
         converted_messages = []
 
+        # Trailing per-request rows the caller exempted from the breakpoint — twinned with
+        # the api-key adapter (this class is not a subclass of it, so the two payload
+        # builders are kept deliberately parallel). See ``CACHE_EXEMPT_KEY``.
+        volatile_tail = 0
+        for msg in reversed(messages):
+            if not msg.get(CACHE_EXEMPT_KEY):
+                break
+            volatile_tail += 1
+
         for msg in messages:
             role = msg.get("role")
             content = msg.get("content")
@@ -611,7 +621,7 @@ class AnthropicOAuthAdapter(APIProviderAdapter):
         # in an OAuth payload — the static Claude-Code prefix block in
         # ``_build_system_array`` is the first — which keeps the payload two under
         # the API's four-breakpoint ceiling.
-        mark_conversation_tail_for_cache(converted_messages)
+        mark_conversation_tail_for_cache(converted_messages, volatile_tail=volatile_tail)
 
         return payload
 

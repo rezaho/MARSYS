@@ -22,6 +22,7 @@ import json
 import pytest
 
 from marsys.models.adapters.anthropic import (
+    CACHE_EXEMPT_KEY,
     AnthropicAdapter,
     mark_conversation_tail_for_cache,
 )
@@ -502,3 +503,129 @@ def test_the_marker_lands_after_the_json_mode_hint_not_before_it():
     assert "JSON" in json.dumps(content)
     assert content[-1]["cache_control"] == EPHEMERAL
     assert sum(1 for b in content if "cache_control" in b) == 1
+
+
+# ── the per-request-content exemption (CACHE_EXEMPT_KEY) ─────────────────────────────
+#
+# A caller that appends per-request content after the durable conversation (a clock, a
+# budget figure — anything derived from "now") needs the breakpoint to stay on the last
+# DURABLE row. The entry's value is that the NEXT request can read it, which requires the
+# hashed prefix to be bytes the next request still contains; a regenerated row is absent
+# from it by construction, so an entry written at or after that row is unreadable forever.
+# Measured on Bedrock/Opus 5, single-step turns with tools present: marker on the volatile
+# row -> turn 2 read=0; marker on the last durable row -> turn 2 read=8425.
+
+
+def _marked_indices(payload) -> list[int]:
+    out = []
+    for i, msg in enumerate(payload["messages"]):
+        content = msg.get("content")
+        blocks = content if isinstance(content, list) else []
+        if any(isinstance(b, dict) and b.get("cache_control") for b in blocks):
+            out.append(i)
+    return out
+
+
+def test_an_exempt_tail_row_moves_the_marker_to_the_last_durable_row():
+    payload = _api().format_request_payload(
+        [
+            {"role": "user", "content": "durable question"},
+            {"role": "assistant", "content": "durable answer"},
+            {"role": "user", "content": "now: 09:00", CACHE_EXEMPT_KEY: True},
+        ]
+    )
+    assert _marked_indices(payload) == [1], "the marker must sit on the last durable row"
+    assert payload["messages"][2]["content"] == "now: 09:00", "the row still reaches the model"
+
+
+def test_several_exempt_trailing_rows_are_all_stepped_past():
+    payload = _api().format_request_payload(
+        [
+            {"role": "user", "content": "durable"},
+            {"role": "user", "content": "volatile a", CACHE_EXEMPT_KEY: True},
+            {"role": "user", "content": "volatile b", CACHE_EXEMPT_KEY: True},
+        ]
+    )
+    assert _marked_indices(payload) == [0]
+
+
+def test_an_exempt_row_with_durable_rows_after_it_does_not_move_the_marker():
+    """The exemption is about POSITION — what the next request will still contain. A marked
+    row that is not part of the trailing run is not a tail, so the marker stays at the end."""
+    payload = _api().format_request_payload(
+        [
+            {"role": "user", "content": "volatile", CACHE_EXEMPT_KEY: True},
+            {"role": "user", "content": "durable"},
+        ]
+    )
+    assert _marked_indices(payload) == [1]
+
+
+def test_an_all_exempt_list_writes_no_marker_at_all():
+    """Nothing durable to anchor an entry to: a marker would cost a fresh entry per request
+    and read none, so none is written."""
+    payload = _api().format_request_payload(
+        [{"role": "user", "content": "volatile", CACHE_EXEMPT_KEY: True}]
+    )
+    assert _marked_indices(payload) == []
+
+
+def test_the_exemption_key_never_reaches_the_wire():
+    payload = _api().format_request_payload(
+        [
+            {"role": "user", "content": "durable"},
+            {"role": "user", "content": "volatile", CACHE_EXEMPT_KEY: True},
+        ]
+    )
+    assert CACHE_EXEMPT_KEY not in json.dumps(payload)
+
+
+def test_the_no_key_path_is_byte_identical_to_the_unparameterized_form():
+    """Every other framework caller must be unaffected: with no exempt row the payload is
+    exactly what it was before this parameter existed."""
+    messages = [
+        {"role": "user", "content": "one"},
+        {"role": "assistant", "content": "two"},
+        {"role": "user", "content": "three"},
+    ]
+    payload = _api().format_request_payload([dict(m) for m in messages])
+    baseline = [dict(m) for m in messages]
+    mark_conversation_tail_for_cache(baseline)  # the default, volatile_tail=0
+    assert payload["messages"] == baseline
+
+
+def test_oauth_leg_honors_the_exemption_too():
+    """The OAuth adapter is not a subclass, so its payload builder is kept deliberately
+    twinned. Its static Claude-Code prefix block is the other marker."""
+    payload = _oauth().format_request_payload(
+        [
+            {"role": "user", "content": "durable"},
+            {"role": "user", "content": "volatile", CACHE_EXEMPT_KEY: True},
+        ]
+    )
+    assert _marked_indices(payload) == [0]
+    assert CACHE_EXEMPT_KEY not in json.dumps(payload)
+
+
+def test_bedrock_inherits_the_exemption():
+    """Bedrock does not override ``format_request_payload``, and it is the production leg
+    the measured figures come from."""
+    payload = BedrockAdapter(
+        model_name="claude-opus-5", api_key="tok"
+    ).format_request_payload(
+        [
+            {"role": "user", "content": "durable"},
+            {"role": "user", "content": "volatile", CACHE_EXEMPT_KEY: True},
+        ]
+    )
+    assert _marked_indices(payload) == [0]
+
+
+def test_the_exemption_is_deterministic_and_idempotent():
+    messages = [
+        {"role": "user", "content": "durable"},
+        {"role": "user", "content": "volatile", CACHE_EXEMPT_KEY: True},
+    ]
+    first = _api().format_request_payload([dict(m) for m in messages])
+    second = _api().format_request_payload([dict(m) for m in messages])
+    assert json.dumps(first, sort_keys=True) == json.dumps(second, sort_keys=True)
