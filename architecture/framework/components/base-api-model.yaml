@@ -1,0 +1,33 @@
+name: BaseAPIModel
+criticality: TRUNK-STABLE
+
+purpose: |
+  Source of truth for API model invocation via provider adapters.
+
+responsibilities:
+  - Create provider-specific adapters through ProviderAdapterFactory
+  - Expose run/arun with harmonized responses and error handling
+  - Support provider options (reasoning effort, thinking budget, tools)
+
+not_responsible_for:
+  - Response parsing into actions (-> ValidationProcessor)
+  - Prompt construction or topology decisions (-> SystemPromptBuilder/Router)
+  - Orchestration or branching (-> Orchestra)
+
+design_principles:
+  - DP-006
+
+relationships:
+  called_by:
+    - BaseAgent._run
+  calls:
+    - ProviderAdapterFactory.create_adapter
+    - APIProviderAdapter.run/arun
+  never_calls: []
+
+boundaries:
+  add_here:
+    - Provider-agnostic model invocation and response harmonization
+  not_here:
+    - Coordination or routing logic
+    - Response validation or parsing

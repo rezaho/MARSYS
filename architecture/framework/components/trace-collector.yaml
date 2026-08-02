@@ -1,0 +1,38 @@
+name: TraceCollector
+criticality: BRANCH
+
+purpose: |
+  EventBus consumer that builds hierarchical span trees from execution events
+  for post-hoc observability of multi-agent workflows.
+
+responsibilities:
+  - Subscribe to trace-relevant events on EventBus
+  - Create and manage spans (execution, branch, step, generation, tool)
+  - Build parent-child span relationships and convergence links
+  - Finalize traces and write via registered TraceWriters
+
+not_responsible_for:
+  - Emitting events (-> Orchestrator, RealRuntime, StepExecutor)
+  - Execution logic or routing decisions (-> Orchestrator, Router)
+  - Output format specifics (-> TraceWriter implementations)
+
+design_principles:
+  - DP-004
+
+relationships:
+  called_by:
+    - Orchestra.execute (finalize in try/finally)
+  calls:
+    - TraceWriter.write
+    - Span/TraceTree (data model)
+  never_calls: []
+
+boundaries:
+  add_here:
+    - Span lifecycle (create, update, close)
+    - Event-to-span mapping logic
+    - Trace finalization and writer dispatch
+  not_here:
+    - Event emission (belongs in execution components)
+    - Orchestration or routing logic
+    - Output serialization details (belongs in writers)
