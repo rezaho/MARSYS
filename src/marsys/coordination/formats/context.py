@@ -45,6 +45,10 @@ class CoordinationContext:
     next_agents: List[str] = field(default_factory=list)
     can_terminate_workflow: bool = False
     can_ask_user: bool = False
+    # ADR-013: gate for the escalate_to_user directive. Unlike can_ask_user
+    # (topology edge to a User node), this is set from the per-agent can_escalate
+    # grant in _build_coordination_context — escalate is granted, not topology-wired.
+    can_escalate_user: bool = False
     is_conversation_branch: bool = False
 
 

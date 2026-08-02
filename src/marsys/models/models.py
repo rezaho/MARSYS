@@ -47,6 +47,9 @@ from marsys.models.adapters import (  # noqa: E402
     # Anthropic
     AnthropicAdapter,
     AsyncAnthropicAdapter,
+    # Bedrock — resolved by name for the async twin, so it must be in scope here
+    BedrockAdapter,
+    AsyncBedrockAdapter,
     # Google
     GoogleAdapter,
     AsyncGoogleAdapter,
@@ -70,6 +73,16 @@ from marsys.models.adapters import (  # noqa: E402
 
 # --- Model Configuration Schema ---
 
+
+def _bedrock_default_base_url() -> str:
+    """Bedrock's base URL carries the AWS region, so it cannot be a fixed
+    literal like the other providers'. Imported lazily to keep this module
+    free of an adapter-module import at definition time."""
+    from marsys.models.adapters.bedrock import bedrock_base_url
+
+    return bedrock_base_url()
+
+
 # Define the provider base URLs dictionary
 PROVIDER_BASE_URLS = {
     "openai": "https://api.openai.com/v1/",
@@ -77,6 +90,10 @@ PROVIDER_BASE_URLS = {
     "google": "https://generativelanguage.googleapis.com/v1beta",  # Gemini API base URL
     "anthropic": "https://api.anthropic.com/v1",
     "xai": "https://api.x.ai/v1",  # xAI Grok API (OpenAI-compatible)
+    # Claude on Amazon Bedrock, Messages-API-shaped endpoint. Region-dependent,
+    # so this entry is the AWS_REGION-resolved default; the adapter re-resolves
+    # it per instance (see adapters/bedrock.bedrock_base_url).
+    "bedrock": _bedrock_default_base_url(),
     "openai-oauth": "https://chatgpt.com/backend-api/codex/responses",  # ChatGPT OAuth endpoint
     "anthropic-oauth": "https://api.anthropic.com/v1/messages?beta=true",  # Claude OAuth endpoint
 }
@@ -98,7 +115,7 @@ class ModelConfig(BaseModel):
         description="Model identifier (e.g., 'gpt-4o', 'mistralai/Mistral-7B-Instruct-v0.1')",
     )
     provider: Optional[
-        Literal["openai", "openrouter", "google", "anthropic", "xai", "openai-oauth", "anthropic-oauth"]
+        Literal["openai", "openrouter", "google", "anthropic", "xai", "bedrock", "openai-oauth", "anthropic-oauth"]
     ] = Field(
         None, description="API provider name (used to determine base_url if not set)"
     )
@@ -221,6 +238,9 @@ class ModelConfig(BaseModel):
                 "google": "GOOGLE_API_KEY",
                 "anthropic": "ANTHROPIC_API_KEY",
                 "xai": "XAI_API_KEY",
+                # Bedrock authenticates with a bearer token, not SigV4, on the
+                # Messages-API-shaped endpoint this stack targets.
+                "bedrock": "AWS_BEARER_TOKEN_BEDROCK",
             }
             # Providers that use OAuth or other credential mechanisms (not API keys)
             oauth_providers = {"openai-oauth", "anthropic-oauth"}
@@ -288,7 +308,10 @@ class ModelConfig(BaseModel):
 
             # Validate reasoning_effort values
             if self.reasoning_effort is not None:
-                valid_efforts = ["minimal", "low", "medium", "high"]
+                # "xhigh"/"max" are the upper tiers the reasoning-capable Claude
+                # models accept on `output_config.effort`; without them here the
+                # config layer rejects a value the provider supports.
+                valid_efforts = ["minimal", "low", "medium", "high", "xhigh", "max"]
                 if self.reasoning_effort.lower() not in valid_efforts:
                     raise ValueError(
                         f"Invalid reasoning_effort '{self.reasoning_effort}'. "
@@ -742,7 +765,13 @@ class BaseAPIModel:
             max_tokens: Overrides the default max_tokens for this specific call.
             temperature: Overrides the default temperature for this specific call.
             top_p: Overrides the default top_p for this specific call.
-            tools: Optional list of tools for function calling.
+            tools: Optional list of tools for function calling. A per-tool ``defer_loading: true``
+                flag on a tool dict marks it for DEFERRED loading: the provider's tool-search
+                built-in discovers it on demand and the definition rides the message tail, so its
+                schema stays out of the billed/cached prefix (the prompt cache survives a load).
+                Honored on Anthropic (api-key + OAuth) and OpenAI Responses (api-key + OAuth);
+                stripped on OpenRouter and warned-then-ignored on Google (no provider feature).
+                No signature change — the flag rides the existing ``tools`` array. Default: all eager.
             **kwargs: Additional parameters to pass to the API.
 
         Returns:

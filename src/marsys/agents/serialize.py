@@ -226,6 +226,9 @@ class AgentSpec(BaseModel):
     max_tokens: Optional[int] = 10000
     allowed_peers: List[str] = Field(default_factory=list)
     bidirectional_peers: bool = False
+    # ADR-013: the escalate_to_user grant, mirrored from Agent.can_escalate so it
+    # round-trips through a serialized workflow (the live Agent stays canonical).
+    can_escalate: bool = False
     is_convergence_point: Optional[bool] = None
     memory_retention: MemoryRetention = "session"
     memory_storage_path: Optional[str] = None
@@ -322,6 +325,7 @@ def agent_to_pydantic(agent: Any) -> AgentSpec:
         max_tokens=agent.max_tokens,
         allowed_peers=sorted(agent._allowed_peers_init),
         bidirectional_peers=agent._bidirectional_peers,
+        can_escalate=agent.can_escalate,
         is_convergence_point=agent._is_convergence_point,
         memory_retention=agent._memory_retention,
         memory_storage_path=agent._memory_storage_path,
@@ -433,6 +437,7 @@ async def pydantic_to_agents(
                 max_tokens=agent_spec.max_tokens,
                 allowed_peers=list(agent_spec.allowed_peers),
                 bidirectional_peers=agent_spec.bidirectional_peers,
+                can_escalate=agent_spec.can_escalate,
                 input_schema=agent_spec.input_schema,
                 output_schema=agent_spec.output_schema,
                 memory_retention=agent_spec.memory_retention,
@@ -484,6 +489,7 @@ async def pydantic_to_agents(
                 max_tokens=agent_spec.max_tokens,
                 allowed_peers=list(agent_spec.allowed_peers),
                 bidirectional_peers=agent_spec.bidirectional_peers,
+                can_escalate=agent_spec.can_escalate,
                 input_schema=agent_spec.input_schema,
                 output_schema=agent_spec.output_schema,
                 memory_retention=agent_spec.memory_retention,

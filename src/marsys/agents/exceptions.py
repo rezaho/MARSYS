@@ -633,6 +633,55 @@ class ModelTokenLimitError(ModelError):
         )
 
 
+# Transport-layer exception class names → the transient classification they map to.
+# Matched by NAME across the raised exception's MRO so ONE table spans httpx,
+# httpcore, aiohttp, and the stdlib without importing any of them (httpx is not a
+# declared dependency of this package). A transport failure carries no HTTP status
+# and no provider error body, so it reaches ``from_provider_response`` with
+# ``status_code=None`` and no ``error`` dict — without this it keeps the UNKNOWN,
+# non-retryable default, which inverts the truth for the most common transient
+# failure on a network-flaky host (DNS blip, dropped wifi, reset connection).
+# Names below are the stable public exception classes of those libraries; the
+# curated set deliberately EXCLUDES our-side/config faults that share the transport
+# tree (httpx ``LocalProtocolError``/``UnsupportedProtocol``, ``DecodingError``,
+# ``TooManyRedirects``) — those are not transient and must not be retried.
+_TIMEOUT_EXC_NAMES = frozenset({
+    "TimeoutException",   # httpx / httpcore base for Connect/Read/Write/PoolTimeout
+    "TimeoutError",       # stdlib + asyncio.TimeoutError alias; aiohttp Server/Socket timeouts subclass it
+})
+_NETWORK_EXC_NAMES = frozenset({
+    "NetworkError",             # httpx / httpcore base for Connect/Read/Write/CloseError
+    "ConnectError",             # httpx / httpcore connect failure (DNS included)
+    "ConnectionError",          # stdlib base: ConnectionReset/Aborted/RefusedError
+    "RemoteProtocolError",      # server disconnected / malformed response mid-stream — transient.
+                                # NOTE: match this leaf, NOT the shared base ``ProtocolError`` —
+                                # ``LocalProtocolError`` (our-side bad request framing) also derives
+                                # from it and is NOT transient; it must keep the non-retryable default.
+    "ProxyError",               # httpx proxy hop failed
+    "ClientConnectionError",    # aiohttp base for connector/OS/disconnect errors
+    "ClientConnectorError",     # aiohttp connect failure (DNS included)
+    "ClientOSError",            # aiohttp socket-level error
+    "ServerDisconnectedError",  # aiohttp server dropped the connection
+    "ServerConnectionError",    # aiohttp server connection lost
+    "ClientPayloadError",       # aiohttp connection broken mid-payload
+})
+
+
+def _classify_transport_exception(exception: BaseException) -> Optional[str]:
+    """Classify a transport-layer exception (no HTTP status, no error body) as a
+    transient ``TIMEOUT`` or ``NETWORK_ERROR``, or ``None`` if it isn't a recognized
+    transport failure. Walks the exception's MRO by class NAME (see the name tables)
+    so it spans httpx / httpcore / aiohttp / stdlib with no import of any of them.
+    Timeout wins over network when both names appear (aiohttp's timeout types
+    subclass its connection types) — 'timed out' is the more specific signal."""
+    names = {klass.__name__ for klass in type(exception).__mro__}
+    if names & _TIMEOUT_EXC_NAMES:
+        return APIErrorClassification.TIMEOUT.value
+    if names & _NETWORK_EXC_NAMES:
+        return APIErrorClassification.NETWORK_ERROR.value
+    return None
+
+
 class ModelAPIError(ModelError):
     """
     Enhanced API error with provider-specific error classification.
@@ -691,6 +740,7 @@ class ModelAPIError(ModelError):
                     "google": "Enable billing or upgrade from free tier at https://console.cloud.google.com",
                     "openrouter": "Add credits at https://openrouter.ai/credits",
                     "xai": "Check credits at https://console.x.ai/billing",
+                    "bedrock": "Check your AWS account limits and Bedrock model access in the AWS console",
                     "openai-oauth": "Upgrade to ChatGPT Plus/Pro at https://chatgpt.com/upgrade",
                     "anthropic-oauth": "Check your Claude Max subscription at https://claude.ai/settings"
                 }
@@ -811,7 +861,10 @@ class ModelAPIError(ModelError):
                         classification = APIErrorClassification.SERVICE_UNAVAILABLE.value
                         is_retryable = True
 
-            elif provider == "anthropic":
+            # Bedrock serves the Messages API and returns the same error
+            # envelope, so it classifies identically to first-party Anthropic —
+            # sharing the branch keeps one behaviour for one wire contract.
+            elif provider in ("anthropic", "bedrock"):
                 error_data = raw_response.get("error", {}) if raw_response else {}
                 if error_data:
                     message = error_data.get("message", message)
@@ -1029,9 +1082,11 @@ class ModelAPIError(ModelError):
             # ValidationError with the provider's terminal signal destroyed).
             # Classification branches on stop_reason — the documented contract;
             # stop_details is NULLABLE decoration, appended to the message when
-            # present and never keyed on. max_tokens/model_context_window_exceeded
-            # never arrive here: harmonization routes them to the truncation
-            # placeholder.
+            # present and never keyed on. Two terminals never arrive here, because
+            # harmonization represents them instead of raising:
+            # max_tokens/model_context_window_exceeded (→ truncation placeholder)
+            # and end_turn (→ a silent turn, content="": the model finished and
+            # chose to say nothing, which is a success, not a fault).
             stop_reason = raw_response.get("stop_reason")
             details = raw_response.get("stop_details")
             details = details if isinstance(details, dict) else {}
@@ -1049,17 +1104,6 @@ class ModelAPIError(ModelError):
                     "The provider declined to answer this request. Modify or "
                     "rephrase it; retrying unmodified will be refused again."
                 )
-            elif stop_reason == "end_turn":
-                # Anthropic's documented guidance: don't retry empty responses
-                # without modification — the model already decided it was done.
-                classification = APIErrorClassification.EMPTY_COMPLETION.value
-                is_retryable = False
-                message = "Anthropic returned an empty response (stop_reason 'end_turn', no content)"
-                suggested_action = (
-                    "Do not retry unmodified — the model decided it was done. "
-                    "Send a modified request, e.g. a continuation prompt asking "
-                    "it to produce the response."
-                )
             else:
                 # stop_sequence, never-seen stop reasons, or NO terminal at all
                 # (stream closed before message_delta): transient — retry.
@@ -1076,6 +1120,17 @@ class ModelAPIError(ModelError):
                         f"Anthropic returned an empty response "
                         f"(stop_reason '{stop_reason}', no content)"
                     )
+
+        # Transport-layer failure: a connect/DNS/timeout/reset error raised by the
+        # HTTP client before any HTTP status or provider error body exists. It falls
+        # through every status-code and SSE branch above and would otherwise keep the
+        # UNKNOWN, non-retryable default — wrong for what is a transient, self-healing
+        # fault. Only when we're still UNKNOWN with no status code do we classify by
+        # the raised exception's type, so this never overrides a real provider verdict.
+        if exception is not None and status_code is None and classification == APIErrorClassification.UNKNOWN.value:
+            transport_classification = _classify_transport_exception(exception)
+            if transport_classification is not None:
+                classification = transport_classification
 
         # Payload-too-large override: some providers return 400 with payload
         # hints instead of 413.  This runs unconditionally so it can override

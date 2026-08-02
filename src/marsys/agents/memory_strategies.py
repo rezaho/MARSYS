@@ -615,6 +615,7 @@ class ToolTruncationProcessor(CompactionProcessor):
 PROVIDER_PAYLOAD_LIMITS = {
     "anthropic": 32_000_000,
     "anthropic-oauth": 32_000_000,
+    "bedrock": 32_000_000,  # same Messages API body limit as first-party Anthropic
     "openai": 25_000_000,
     "openai-oauth": 25_000_000,
     "google": 100_000_000,

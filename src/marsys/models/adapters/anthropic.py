@@ -26,32 +26,138 @@ from marsys.models.response_models import (
 logger = logging.getLogger(__name__)
 
 
-def _anthropic_model_rejects_temperature(model_name: str) -> bool:
-    """Return True for Anthropic models that reject the `temperature`
-    parameter on the messages API.
+def _normalize_anthropic_model(model_name: str) -> str:
+    """Bare, lower-cased model id for capability matching.
 
-    Claude Opus 4.7 (and its 1M-context variants) treats `temperature`
-    as deprecated and 400s the request when it is set. The shape of
-    Anthropic's deprecation has been "reasoning-capable models drop
-    sampling parameters," so any future Opus 4.x line is expected to
-    behave the same way; we match by the documented prefix and let the
-    request fail loudly for a model name we have not seen yet.
+    The same model arrives under several spellings: an ``anthropic/`` prefix
+    (OpenRouter), an ``anthropic.`` / ``us.anthropic.`` prefix (Bedrock), and
+    with or without a date suffix. Capability is a property of the model, not
+    of the spelling, so all of them collapse to one key here.
     """
-    if not model_name:
+    name = (model_name or "").lower()
+    for prefix in ("us.anthropic.", "eu.anthropic.", "apac.anthropic.", "anthropic.", "anthropic/"):
+        if name.startswith(prefix):
+            name = name[len(prefix):]
+            break
+    return name
+
+
+# Reasoning-capable Claude models progressively dropped the sampling parameters
+# and the fixed thinking budget. Both are hard 400s, not ignored fields, so the
+# payload has to be shaped per model. Measured against the live API (Bedrock and
+# the OAuth/Messages endpoint): `temperature` is rejected by every model below,
+# and `thinking.type="enabled"` is rejected in favour of
+# `thinking.type="adaptive"` + `output_config.effort`. Matching is by prefix so
+# dated snapshots and 1M-context variants inherit the capability; a model we
+# have not seen yet keeps the legacy shape and fails loudly rather than silently.
+_ADAPTIVE_THINKING_MODEL_PREFIXES = (
+    "claude-opus-4-7",
+    "claude-opus-4-8",
+    "claude-opus-5",
+    "claude-sonnet-5",
+    "claude-fable-5",
+    "claude-mythos-5",
+)
+
+
+def _anthropic_model_rejects_temperature(model_name: str) -> bool:
+    """True for models that 400 when `temperature` is present."""
+    name = _normalize_anthropic_model(model_name)
+    if not name:
         return False
-    # Anthropic ships model names with or without the "anthropic/"
-    # prefix (OpenRouter etc.); strip it before comparing.
-    name = model_name.lower()
-    if name.startswith("anthropic/"):
-        name = name[len("anthropic/"):]
-    return (
-        name.startswith("claude-opus-4-7")
-        or name.startswith("claude-opus-4-8")
-    )
+    return name.startswith(_ADAPTIVE_THINKING_MODEL_PREFIXES)
+
+
+def _anthropic_model_requires_adaptive_thinking(model_name: str) -> bool:
+    """True for models where a fixed `budget_tokens` is rejected and thinking
+    is requested as `{"type": "adaptive"}` instead."""
+    name = _normalize_anthropic_model(model_name)
+    if not name:
+        return False
+    return name.startswith(_ADAPTIVE_THINKING_MODEL_PREFIXES)
+
+
+# Block types the API accepts a `cache_control` marker on. A marker on anything
+# else is rejected, so an unrecognized tail block is skipped rather than guessed
+# at — a missed cache entry costs money, an illegal field costs the whole turn.
+_CACHEABLE_BLOCK_TYPES = frozenset(
+    {"text", "image", "tool_use", "tool_result", "document"}
+)
+
+CACHE_CONTROL_EPHEMERAL = {"type": "ephemeral"}
+
+
+def mark_conversation_tail_for_cache(messages: List[Dict[str, Any]]) -> None:
+    """Place ONE prompt-cache breakpoint on the last content block of the last
+    message, in place on ``messages`` — the platform's multi-turn caching pattern.
+
+    Adapter-owned and unconditional, matching the only other `cache_control` site
+    in this codebase (the OAuth adapter's static Claude-Code prefix block). Only
+    the payload builder knows the rendered block layout, and caching is prefix-match
+    arithmetic over exactly those bytes, so a caller cannot place this correctly
+    even if it wanted to — and a caller that forgets silently re-pays full price on
+    the whole conversation. The precedent is `defer_loading`: the framework's
+    nearest analogous feature deliberately took no new request parameter either.
+
+    Why the TAIL and why EVERY request: a breakpoint reads any entry written at or
+    before it, so marking the growing tail each time both reads the previous
+    request's entry and extends it by that turn's new blocks. It also satisfies the
+    20-block lookback window by construction — a per-request tail marker is always
+    a handful of blocks behind the last one, whereas a marker placed once silently
+    stops matching in an agentic turn that appends several blocks per step.
+
+    Never mutates a caller block dict: the durable conversation shares those dicts
+    (the same hazard `hydrate_messages` documents), so a marker stamped in place
+    would leak into persisted rows. The message's content list and the marked block
+    are copied instead — which also makes the placement idempotent, since building
+    a payload twice from the same input yields byte-identical output.
+
+    No-ops (leaving the payload byte-identical to the unmarked form) when there is
+    nothing safe to mark: an empty message list, empty content, a tail message that
+    already carries a marker, or a tail with no cacheable block type. A prompt under
+    the model's cacheable minimum silently writes nothing and costs nothing, so no
+    size check is needed here.
+    """
+    if not messages:
+        return
+    last = messages[-1]
+    content = last.get("content")
+
+    if isinstance(content, str):
+        # Promote to a one-block list so the marker has a block to ride. An empty
+        # string is left alone: the API rejects an empty text block, and a bare
+        # empty string is what this adapter already sends for a contentless message.
+        if not content:
+            return
+        last["content"] = [
+            {"type": "text", "text": content, "cache_control": dict(CACHE_CONTROL_EPHEMERAL)}
+        ]
+        return
+
+    if not isinstance(content, list) or not content:
+        return
+    # Idempotence + the 4-breakpoint budget: a message that already carries a
+    # marker never receives a second one.
+    if any(isinstance(b, dict) and b.get("cache_control") for b in content):
+        return
+    for index in range(len(content) - 1, -1, -1):
+        block = content[index]
+        if isinstance(block, dict) and block.get("type") in _CACHEABLE_BLOCK_TYPES:
+            marked = {**block, "cache_control": dict(CACHE_CONTROL_EPHEMERAL)}
+            new_content = list(content)
+            new_content[index] = marked
+            last["content"] = new_content
+            return
 
 
 class AnthropicAdapter(APIProviderAdapter):
     """Adapter for Anthropic Claude API"""
+
+    # Endpoint capability, not model capability: the first-party Messages API
+    # enforces `output_config.format`, while the Bedrock endpoints reject the
+    # key outright. Subclasses that speak to an endpoint without it flip this
+    # to False and inherit the prompt-based fallback.
+    supports_structured_output = True
 
     def __init__(
         self,
@@ -79,6 +185,15 @@ class AnthropicAdapter(APIProviderAdapter):
             "Content-Type": "application/json",
             "anthropic-version": "2023-06-01",
         }
+
+    def report_model_id(self, echoed: Optional[str]) -> str:
+        """Which model id to report on the response metadata.
+
+        The provider echo is preferred because it resolves an alias to the
+        concrete snapshot actually served. Subclasses whose endpoint echoes an id
+        in a *different namespace* than the one it accepts override this.
+        """
+        return echoed or self.model_name
 
     def _convert_content_to_anthropic_format(self, content: Any) -> Any:
         """
@@ -172,6 +287,12 @@ class AnthropicAdapter(APIProviderAdapter):
         budget = kwargs.get("thinking_budget")
         if not isinstance(budget, int) or budget <= 0:
             return None
+        if _anthropic_model_requires_adaptive_thinking(self.model_name):
+            # These models reject a fixed budget; the model decides depth itself.
+            # A positive budget keeps its framework meaning ("thinking on") and
+            # the size is dropped — depth is steered by `output_config.effort`,
+            # which rides `reasoning_effort` when a caller sets it.
+            return {"type": "adaptive"}
         max_tokens = kwargs.get("max_tokens") or self.max_tokens
         clamped = min(budget, max_tokens - self._THINKING_HEADROOM)
         if clamped < self._THINKING_MIN_BUDGET:
@@ -301,23 +422,63 @@ class AnthropicAdapter(APIProviderAdapter):
         if thinking_payload is not None:
             payload["thinking"] = thinking_payload
 
-        if system_message:
-            payload["system"] = system_message
+        # Thinking depth on adaptive-thinking models is steered by effort, which
+        # replaced the fixed budget. Only sent for models that accept it (older
+        # models 400 on the key), and never alongside disabled thinking: Opus 5
+        # rejects effort above "high" when thinking is off, and the combination
+        # buys nothing anyway.
+        effort = kwargs.get("reasoning_effort")
+        if (
+            effort
+            and thinking_payload is not None
+            and _anthropic_model_requires_adaptive_thinking(self.model_name)
+        ):
+            payload.setdefault("output_config", {})["effort"] = str(effort).lower()
 
-        # Handle structured output — native output_config.format (GA)
+        if system_message:
+            # ARRAY form, not a bare string. Both are accepted and carry identical
+            # text to the model, but only the array form has content blocks a
+            # `cache_control` marker could ever ride — the string form makes the
+            # system tier structurally unmarkable. No marker is placed here yet:
+            # on this leg the system content is the caller's per-turn prompt, which
+            # for Spren's six-axis overview changes every turn (a timestamp line and
+            # a budget line), so a marker here would write a fresh entry per call and
+            # read none — pure write premium. The shape lands now so the marker is a
+            # one-line change once that prompt is made byte-stable.
+            payload["system"] = (
+                [{"type": "text", "text": system_message}]
+                if isinstance(system_message, str)
+                else system_message
+            )
+
+        # Handle structured output — native output_config.format (GA).
+        # `supports_structured_output` is False where the endpoint rejects the
+        # key (Bedrock); there the schema degrades to the prompt-based fallback
+        # below rather than putting an illegal field on the wire.
         response_schema = kwargs.get("response_schema")
-        if response_schema:
-            payload["output_config"] = {
-                "format": {
-                    "type": "json_schema",
-                    "schema": self._ensure_additional_properties_false(response_schema)
-                }
+        if response_schema and self.supports_structured_output:
+            # Merge, never assign: `effort` may already own output_config, and
+            # the API takes exactly one such object per request.
+            payload.setdefault("output_config", {})["format"] = {
+                "type": "json_schema",
+                "schema": self._ensure_additional_properties_false(response_schema),
             }
-        elif kwargs.get("json_mode") and user_messages:
-            # No native json_object mode in Anthropic — use prompt-based fallback
+        elif (kwargs.get("json_mode") or response_schema) and user_messages:
+            # No native json_object mode in Anthropic — use prompt-based fallback.
+            # When a schema was requested but the endpoint cannot enforce it, the
+            # schema goes into the prompt: a bare "valid JSON" hint would satisfy
+            # the caller's parser only by luck.
             last_msg = user_messages[-1]
             if last_msg.get("role") == "user":
                 hint = "\n\nPlease respond with valid JSON only."
+                if response_schema:
+                    hint = (
+                        "\n\nRespond with valid JSON only — no prose, no code fence — "
+                        "conforming exactly to this JSON Schema:\n"
+                        + json.dumps(
+                            self._ensure_additional_properties_false(response_schema)
+                        )
+                    )
                 content = last_msg["content"]
                 if isinstance(content, list):
                     last_msg["content"] = content + [{"type": "text", "text": hint}]
@@ -327,23 +488,52 @@ class AnthropicAdapter(APIProviderAdapter):
         # Handle tools - convert OpenAI format to Anthropic format
         # OpenAI: {"type": "function", "function": {"name": ..., "description": ..., "parameters": ...}}
         # Anthropic: {"name": ..., "description": ..., "input_schema": ...}
+        # A per-tool ``defer_loading: true`` (deferred tool loading) rides the OpenAI tool dict
+        # at the top level; it maps onto the Anthropic tool and triggers the Tool Search server
+        # tool so the model discovers deferred tools on demand — their schemas stay out of the
+        # billed/cached prefix until searched. With nothing deferred this branch is byte-identical
+        # to before (no defer_loading key emitted, no search tool added).
         if kwargs.get("tools"):
             anthropic_tools = []
+            any_deferred = False
             for tool in kwargs["tools"]:
                 if isinstance(tool, dict):
                     if tool.get("type") == "function" and "function" in tool:
                         # Convert from OpenAI format
                         func = tool["function"]
-                        anthropic_tools.append({
+                        converted = {
                             "name": func.get("name"),
                             "description": func.get("description", ""),
                             "input_schema": func.get("parameters", {"type": "object", "properties": {}})
-                        })
+                        }
+                        if tool.get("defer_loading"):
+                            converted["defer_loading"] = True
+                            any_deferred = True
+                        anthropic_tools.append(converted)
                     elif "name" in tool and "input_schema" in tool:
-                        # Already in Anthropic format
+                        # Already in Anthropic format (incl. a pre-marked defer_loading tool or a
+                        # caller-supplied tool-search server tool) — pass through verbatim.
                         anthropic_tools.append(tool)
+                        if tool.get("defer_loading"):
+                            any_deferred = True
+            if any_deferred and not any(
+                isinstance(t, dict) and str(t.get("type", "")).startswith("tool_search_tool")
+                for t in anthropic_tools
+            ):
+                # Auto-add the Tool Search server tool (regex variant) so deferred tools are
+                # discoverable. It is non-deferred by construction (the API requires >=1
+                # non-deferred tool). Suppressed if the caller supplied their own search tool.
+                anthropic_tools.append(
+                    {"type": "tool_search_tool_regex_20251119", "name": "tool_search_tool_regex"}
+                )
             if anthropic_tools:
                 payload["tools"] = anthropic_tools
+
+        # LAST, deliberately: the marker belongs on the final content block of the
+        # final message, and the json-mode fallback above may still append a hint
+        # block there. Placing it after every content mutation is what makes "the
+        # tail" mean the actual tail.
+        mark_conversation_tail_for_cache(user_messages)
 
         return payload
 
@@ -444,6 +634,13 @@ class AnthropicAdapter(APIProviderAdapter):
                 completion_tokens=usage_data.get("output_tokens"),
                 total_tokens=usage_data.get("input_tokens", 0)
                 + usage_data.get("output_tokens", 0),
+                # Prompt-cache accounting. `input_tokens` is the UNCACHED
+                # remainder, so a caller measuring the whole prompt needs these
+                # two alongside it (UsageInfo.full_prompt_tokens). Absent on a
+                # response that reports no cache activity → None, and
+                # total_tokens keeps its established meaning either way.
+                cache_read_input_tokens=usage_data.get("cache_read_input_tokens"),
+                cache_creation_input_tokens=usage_data.get("cache_creation_input_tokens"),
             )
 
         # Build metadata with Anthropic-specific fields. finish_reason carries the
@@ -461,8 +658,13 @@ class AnthropicAdapter(APIProviderAdapter):
             else stop_reason_raw
         )
         metadata = ResponseMetadata(
-            provider="anthropic",
-            model=raw_response.get("model", self.model_name),
+            provider=self._provider_name() or "anthropic",
+            # `metadata.model` is what cost meters price on, so it must be the id
+            # the caller's rate table is keyed by. Bedrock echoes a *bare* id for
+            # a request made with an `anthropic.`-prefixed one, so trusting the
+            # echo silently prices that whole provider at zero. `report_model_id`
+            # keeps the requested spelling where the echo would not round-trip.
+            model=self.report_model_id(raw_response.get("model")),
             request_id=raw_response.get("id"),
             usage=usage,
             finish_reason=finish_reason,
@@ -473,8 +675,9 @@ class AnthropicAdapter(APIProviderAdapter):
 
         # Empty-output contract (twin of anthropic_oauth.py): deterministic
         # truncation gets the cross-adapter placeholder (openai.py's convention)
-        # so callers see one shape, never None; every OTHER fully-empty terminal
-        # (refusal / empty end_turn / no stop_reason) raises a typed
+        # so callers see one shape, never None; a natural-completion terminal
+        # (end_turn) is a SILENT TURN and takes the content="" path below; every
+        # OTHER fully-empty terminal (refusal / no stop_reason) raises a typed
         # ModelAPIError classified by stop_reason instead of constructing a
         # content=None shell the model validator rejects as an UNKNOWN
         # ValidationError. Thinking-only responses are NOT empty — they take the
@@ -494,7 +697,7 @@ class AnthropicAdapter(APIProviderAdapter):
                     "[Response truncated due to token limit. Please increase max_tokens "
                     "or continue the conversation.]"
                 )
-            else:
+            elif stop_reason_raw != "end_turn":
                 from marsys.agents.exceptions import ModelAPIError
 
                 raise ModelAPIError.from_provider_response(
@@ -503,12 +706,14 @@ class AnthropicAdapter(APIProviderAdapter):
                 )
 
         content = text_content if text_content else None
-        # Thinking-only response (the latent gap anthropic_oauth.py:766 records,
-        # reachable now that thinking is enableable): the validator requires
-        # content-or-tool_calls and ignores thinking. An empty STRING is a valid
-        # content shape (the None check is what fails), so a response that is
-        # all thinking harmonizes instead of dying in validation.
-        if content is None and not tool_calls and (thinking_parts or reasoning_details):
+        # An empty STRING is a valid content shape (the validator's None check is
+        # what fails), so two responses that carry no text still harmonize rather
+        # than dying in validation: a thinking-only response, and a SILENT TURN —
+        # the model ran to natural completion (end_turn) and chose to produce
+        # nothing, which callers ask for and the provider bills as a success.
+        if content is None and not tool_calls and (
+            thinking_parts or reasoning_details or stop_reason_raw == "end_turn"
+        ):
             content = ""
 
         # Build harmonized response

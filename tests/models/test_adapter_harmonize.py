@@ -87,8 +87,16 @@ def test_anthropic_format_request_payload_drops_message_level_name():
         assert set(m.keys()) <= {"role", "content"}, (
             f"Anthropic message must carry only role/content, got {sorted(m.keys())}"
         )
-    # content is preserved on the rebuilt messages
-    assert payload["messages"][-1]["content"] == "Here are the verified facts ..."
+    # content is preserved on the rebuilt messages. Read as TEXT, not as an exact
+    # container: the tail message carries the prompt-cache breakpoint, which promotes
+    # a plain string to a one-element text block (same bytes to the model, and the
+    # only shape a marker can ride). What this test is about is the dropped `name`.
+    tail_content = payload["messages"][-1]["content"]
+    tail_text = (
+        tail_content if isinstance(tail_content, str)
+        else "".join(b.get("text", "") for b in tail_content)
+    )
+    assert tail_text == "Here are the verified facts ..."
     assert payload["messages"][-1]["role"] == "assistant"
 
 
@@ -287,10 +295,16 @@ def test_anthropic_truncation_empty_harmonizes_valid_with_placeholder():
 # empty `model_context_window_exceeded`, or a stream that closed without a terminal —
 # used to construct HarmonizedResponse(content=None), die in the model validator, and
 # surface as an UNKNOWN ValidationError with the provider's terminal signal destroyed
-# (the boot-replay crash). Contract now: deterministic truncation (max_tokens AND
-# model_context_window_exceeded) takes the placeholder; every OTHER empty terminal
-# raises a typed ModelAPIError classified by stop_reason. stop_details is nullable
-# decoration: captured by the readers, surfaced in messages, never keyed on.
+# (the boot-replay crash).
+#
+# Contract now, in three arms:
+#   - deterministic truncation (max_tokens AND model_context_window_exceeded) takes
+#     the placeholder;
+#   - `end_turn` is a SILENT TURN — the model ran to natural completion and chose to
+#     say nothing. A success, harmonized to content="" (see below);
+#   - every OTHER empty terminal raises a typed ModelAPIError classified by stop_reason.
+# stop_details is nullable decoration: captured by the readers, surfaced in messages,
+# never keyed on.
 
 
 def _empty_oauth_raw(stop_reason, stop_details=None, **overrides):
@@ -334,16 +348,34 @@ def test_oauth_empty_refusal_without_stop_details_still_classifies():
     assert "category" not in str(err)
 
 
-def test_oauth_empty_end_turn_raises_typed_with_recovery_action():
-    """Empty end_turn is non-retryable (Anthropic: don't retry empty responses
-    without modification); the suggested action carries the documented recovery."""
-    with pytest.raises(ModelAPIError) as exc:
-        _oauth_adapter().harmonize_response(_empty_oauth_raw("end_turn"), request_start_time=0.0)
-    err = exc.value
-    assert err.classification == APIErrorClassification.EMPTY_COMPLETION.value
-    assert err.is_retryable is False
-    assert "end_turn" in str(err)
-    assert "modif" in (err.suggested_action or "").lower()
+def test_oauth_empty_end_turn_is_a_silent_turn_not_an_error():
+    """A SILENT TURN, not a failure. An agent instructed to stay quiet when it has
+    nothing to report ends the turn with zero content blocks and stop_reason
+    'end_turn'; the provider bills that as a success. It must harmonize to the
+    empty-STRING content shape (the validator rejects None, never ""), so a caller
+    that supports a contentless reply gets one instead of a raised turn.
+
+    This INVERTS the original 2026-06-12 assertion (empty end_turn → non-retryable
+    ModelAPIError). That contract was wrong: it classified a success as a fault and
+    terminally killed every silent turn, which is a behaviour the prompt layer
+    explicitly asks for."""
+    resp = _oauth_adapter().harmonize_response(
+        _empty_oauth_raw("end_turn"), request_start_time=0.0
+    )
+    assert resp.content == ""            # the empty-string shape, NOT None
+    assert resp.tool_calls == []
+    assert resp.metadata.stop_reason == "end_turn"
+    assert resp.metadata.finish_reason == "end_turn"
+
+
+def test_anthropic_empty_end_turn_is_a_silent_turn_not_an_error():
+    """The API-key twin holds the same contract — one provider, one behaviour."""
+    raw = {"role": "assistant", "content": [], "stop_reason": "end_turn",
+           "usage": {"input_tokens": 1, "output_tokens": 2}}
+    resp = _adapter().harmonize_response(raw, request_start_time=0.0)
+    assert resp.content == ""
+    assert resp.tool_calls == []
+    assert resp.metadata.stop_reason == "end_turn"
 
 
 @pytest.mark.parametrize("stop_reason", [None, "stop_sequence", "never_seen_terminal"])

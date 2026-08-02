@@ -138,9 +138,14 @@ class UserNode(DeterministicNode):
 
     RESERVED_NAME = "User"
 
-    def __init__(self, name: str = "User", handler: Any = None):
+    def __init__(self, name: str = "User", handler: Any = None, durable: bool = False):
         self.name = name
         self.handler = handler  # UserNodeHandler bound at workflow construction
+        # ADR-012: when True the interaction suspends the run DURABLY (snapshot-
+        # and-exit, resumable via resume_session(user_response)) instead of the
+        # in-memory SYNC wait. Set from the topology spec by the legacy shim
+        # (and, post-v0.4, the generic det-node materialization).
+        self.durable = durable
 
     def _resume_agent_for(self, ctx, branch) -> str:
         """Pick the resume agent: first non-self successor, else fall back to
@@ -152,14 +157,19 @@ class UserNode(DeterministicNode):
         return branch.last_invoked_agent or branch.current_agent
 
     def on_single_invoke(self, ctx, branch, value):
-        if self.handler is None:
+        # A durable interaction bypasses the SYNC handler entirely (no _drive),
+        # so it needs no bound handler; only the SYNC path requires one.
+        if not self.durable and self.handler is None:
             ctx.fail(branch, f"UserNode {self.name!r} has no handler bound")
             return
         resume_agent = self._resume_agent_for(ctx, branch)
-        ctx.enqueue_user_interaction(branch, prompt=value, resume_agent=resume_agent)
+        ctx.enqueue_user_interaction(
+            branch, prompt=value, resume_agent=resume_agent, durable=self.durable
+        )
 
     def on_dispatch(self, ctx, fork, request):
-        if self.handler is None:
+        # Durable bypasses the SYNC handler (see on_single_invoke).
+        if not self.durable and self.handler is None:
             ctx.fail(fork.resolver_branch_obj, f"UserNode {self.name!r} has no handler bound")
             return
         # For the parallel-fork case, spawn a placeholder branch at User and
@@ -169,7 +179,9 @@ class UserNode(DeterministicNode):
             agent=self.name, input=request, delivery_target=fork.id,
         )
         resume_agent = self._resume_agent_for(ctx, placeholder)
-        ctx.enqueue_user_interaction(placeholder, prompt=request, resume_agent=resume_agent)
+        ctx.enqueue_user_interaction(
+            placeholder, prompt=request, resume_agent=resume_agent, durable=self.durable
+        )
 
 
 # --- Single source of truth -------------------------------------------------

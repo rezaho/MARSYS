@@ -97,6 +97,7 @@ def test_state_snapshot_top_level_field_set_is_stable():
         "completed_emitted",
         "user_interactions",
         "user_interaction_inflight",
+        "pending_user_interaction",  # ADR-012: the in-flight durable interaction
         "max_steps",
     }
     assert set(schema["properties"].keys()) == expected_fields
@@ -215,15 +216,17 @@ def test_state_snapshot_with_non_json_arrived_value_raises_on_dump():
 
 
 def test_user_interaction_state_shape():
-    """AC-10: UserInteractionState carries the four documented fields."""
+    """AC-10: UserInteractionState carries the documented fields (+ ADR-012's
+    durable bit, which defaults False)."""
     ui = UserInteractionState(
         suspended_branch_id="br_0003",
         prompt="please confirm",
         resume_agent="Coordinator",
         delivery_target="bar_0000",
     )
-    expected = {"suspended_branch_id", "prompt", "resume_agent", "delivery_target"}
+    expected = {"suspended_branch_id", "prompt", "resume_agent", "delivery_target", "durable"}
     assert set(ui.model_dump().keys()) == expected
+    assert ui.durable is False  # ADR-012: default keeps pre-feature snapshots valid
 
 
 def test_paused_session_metadata_shape():

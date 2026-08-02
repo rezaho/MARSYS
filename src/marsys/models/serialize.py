@@ -38,6 +38,7 @@ ApiProvider = Literal[
     "google",
     "anthropic",
     "xai",
+    "bedrock",
     "openai-oauth",
     "anthropic-oauth",
 ]

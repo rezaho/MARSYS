@@ -6,6 +6,11 @@ import time
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
+from marsys.models.adapters.anthropic import (
+    _anthropic_model_rejects_temperature,
+    _anthropic_model_requires_adaptive_thinking,
+    mark_conversation_tail_for_cache,
+)
 from marsys.models.adapters.base import APIProviderAdapter, AsyncBaseAPIAdapter
 from marsys.models.response_models import (
     ErrorResponse,
@@ -55,6 +60,8 @@ class AnthropicOAuthAdapter(APIProviderAdapter):
 
     # Supported models
     SUPPORTED_MODELS = [
+        "claude-opus-5",
+        "claude-sonnet-5",
         "claude-opus-4-8",
         "claude-opus-4-7",
         "claude-opus-4-6",
@@ -68,6 +75,8 @@ class AnthropicOAuthAdapter(APIProviderAdapter):
     # Model aliases for convenience (OpenRouter convention with dots)
     MODEL_ALIASES = {
         # OpenRouter-style aliases (with dots)
+        "claude-opus-5.0": "claude-opus-5",
+        "claude-sonnet-5.0": "claude-sonnet-5",
         "claude-opus-4.8": "claude-opus-4-8",
         "claude-opus-4.7": "claude-opus-4-7",
         "claude-opus-4.6": "claude-opus-4-6",
@@ -82,8 +91,8 @@ class AnthropicOAuthAdapter(APIProviderAdapter):
         "claude-haiku-4-5": "claude-haiku-4-5-20251001",
         "claude-opus-4-1": "claude-opus-4-1-20250805",
         # Short aliases
-        "opus": "claude-opus-4-8",
-        "sonnet": "claude-sonnet-4-6",
+        "opus": "claude-opus-5",
+        "sonnet": "claude-sonnet-5",
         "haiku": "claude-haiku-4-5-20251001",
     }
 
@@ -506,38 +515,73 @@ class AnthropicOAuthAdapter(APIProviderAdapter):
             "stream": True,  # Always stream for OAuth
         }
 
-        # Add temperature if provided
+        # Thinking first: it decides whether sampling params are legal at all.
+        # A positive budget means "thinking on" (the framework convention that
+        # BaseAPIModel.arun injects); reasoning-capable models take
+        # `{"type": "adaptive"}` and reject a fixed budget, so the size is
+        # dropped for them and depth rides `output_config.effort` instead.
+        thinking_on = bool(self.enable_thinking or kwargs.get("enable_thinking"))
+        budget = kwargs.get("thinking_budget", self.thinking_budget)
+        if not thinking_on and isinstance(budget, int) and budget > 0:
+            thinking_on = True
+        if thinking_on:
+            if _anthropic_model_requires_adaptive_thinking(self.model_name):
+                payload["thinking"] = {"type": "adaptive"}
+                effort = kwargs.get("reasoning_effort")
+                if effort:
+                    payload.setdefault("output_config", {})["effort"] = str(effort).lower()
+            else:
+                payload["thinking"] = {"type": "enabled", "budget_tokens": budget}
+
+        # Temperature only when the model accepts it AND thinking is off — the
+        # reasoning-capable models 400 on the key ("`temperature` is deprecated
+        # for this model."), and thinking forbids sampling params outright.
         temperature = kwargs.get("temperature", self.temperature)
-        if temperature is not None:
+        if (
+            temperature is not None
+            and "thinking" not in payload
+            and not _anthropic_model_rejects_temperature(self.model_name)
+        ):
             payload["temperature"] = temperature
 
-        # Add thinking if enabled
-        if self.enable_thinking or kwargs.get("enable_thinking"):
-            payload["thinking"] = {
-                "type": "enabled",
-                "budget_tokens": kwargs.get("thinking_budget", self.thinking_budget)
-            }
-
-        # Convert tools to Anthropic format with reserved name transformation
+        # Convert tools to Anthropic format with reserved name transformation.
+        # A per-tool ``defer_loading: true`` rides the tool dict top-level (deferred tool loading);
+        # it maps onto the Anthropic tool and triggers the Tool Search server tool so deferred
+        # tools are discovered on demand (their schemas stay out of the cached prefix). Nothing
+        # deferred → byte-identical to before (no defer_loading key, no search tool).
         if kwargs.get("tools"):
             anthropic_tools = []
+            any_deferred = False
             for tool in kwargs["tools"]:
                 if tool.get("type") == "function" and "function" in tool:
                     func = tool["function"]
                     original_name = func.get("name", "")
                     api_name = self._transform_tool_name_for_api(original_name)
-                    anthropic_tools.append({
+                    converted = {
                         "name": api_name,
                         "description": func.get("description", ""),
                         "input_schema": func.get("parameters", {"type": "object", "properties": {}})
-                    })
+                    }
+                    if tool.get("defer_loading"):
+                        converted["defer_loading"] = True
+                        any_deferred = True
+                    anthropic_tools.append(converted)
                 elif "name" in tool and "input_schema" in tool:
                     # Already in Anthropic format - still transform the name
                     original_name = tool.get("name", "")
                     api_name = self._transform_tool_name_for_api(original_name)
                     transformed_tool = {**tool, "name": api_name}
                     anthropic_tools.append(transformed_tool)
+                    if tool.get("defer_loading"):
+                        any_deferred = True
 
+            if any_deferred and not any(
+                isinstance(t, dict) and str(t.get("type", "")).startswith("tool_search_tool")
+                for t in anthropic_tools
+            ):
+                anthropic_tools.append(
+                    {"type": "tool_search_tool_regex_20251119", "name": "tool_search_tool_regex"}
+                )
             if anthropic_tools:
                 payload["tools"] = anthropic_tools
 
@@ -560,6 +604,14 @@ class AnthropicOAuthAdapter(APIProviderAdapter):
                     last_msg["content"] = content + [{"type": "text", "text": hint}]
                 elif isinstance(content, str):
                     last_msg["content"] = content + hint
+
+        # The conversation-tail prompt-cache breakpoint (mirrors the api-key twin;
+        # see ``mark_conversation_tail_for_cache``). Placed LAST, after the json-mode
+        # hint above, so it lands on the real tail block. This is the SECOND marker
+        # in an OAuth payload — the static Claude-Code prefix block in
+        # ``_build_system_array`` is the first — which keeps the payload two under
+        # the API's four-breakpoint ceiling.
+        mark_conversation_tail_for_cache(converted_messages)
 
         return payload
 
@@ -612,6 +664,11 @@ class AnthropicOAuthAdapter(APIProviderAdapter):
                             msg = data.get("message", {})
                             result["model"] = msg.get("model")
                             result["id"] = msg.get("id")
+                            # Usage is MERGED across events, never assigned (see
+                            # the async twin's arm for the full reasoning).
+                            start_usage = msg.get("usage")
+                            if isinstance(start_usage, dict):
+                                result["usage"].update(start_usage)
 
                         elif event_type == "content_block_start":
                             block = data.get("content_block", {})
@@ -645,7 +702,9 @@ class AnthropicOAuthAdapter(APIProviderAdapter):
                             # Nullable decoration on the terminal (refusal
                             # category etc.) — for error messages, never keyed on.
                             result["stop_details"] = delta.get("stop_details")
-                            result["usage"] = data.get("usage", {})
+                            delta_usage = data.get("usage")
+                            if isinstance(delta_usage, dict):
+                                result["usage"].update(delta_usage)
 
                         elif event_type == "error":
                             # Anthropic delivers stream failures as in-stream SSE error
@@ -732,6 +791,20 @@ class AnthropicOAuthAdapter(APIProviderAdapter):
                             msg = data.get("message", {})
                             result["model"] = msg.get("model")
                             result["id"] = msg.get("id")
+                            # Usage is MERGED across events, never assigned. The
+                            # grammar splits it: `message_start` is the only event
+                            # carrying the cache-TTL breakdown (`cache_creation`),
+                            # `service_tier` and `inference_geo`, while
+                            # `message_delta` carries the final `output_tokens`.
+                            # Assigning at `message_delta` therefore dropped
+                            # everything only `message_start` reports, and a stream
+                            # that ends WITHOUT a `message_delta` (an in-stream
+                            # error after prefill) harmonized with no usage at all.
+                            # Merging matches AnthropicStreamAccumulator, the
+                            # api-key leg's shared accumulator.
+                            start_usage = msg.get("usage")
+                            if isinstance(start_usage, dict):
+                                result["usage"].update(start_usage)
 
                         elif event_type == "content_block_start":
                             block = data.get("content_block", {})
@@ -768,7 +841,9 @@ class AnthropicOAuthAdapter(APIProviderAdapter):
                             result["stop_reason"] = delta.get("stop_reason")
                             # Twin of the sync reader: nullable terminal decoration.
                             result["stop_details"] = delta.get("stop_details")
-                            result["usage"] = data.get("usage", {})
+                            delta_usage = data.get("usage")
+                            if isinstance(delta_usage, dict):
+                                result["usage"].update(delta_usage)
 
                         elif event_type == "error":
                             # See the sync reader's twin arm: in-stream SSE failure under
@@ -804,15 +879,19 @@ class AnthropicOAuthAdapter(APIProviderAdapter):
         """Convert streaming response to HarmonizedResponse.
 
         Empty-output contract: a stream that terminated with NO text, NO tool
-        calls, and NO thinking either takes the truncation placeholder
+        calls, and NO thinking takes one of three arms. Deterministic truncation
         (normalized finish_reason ``length`` — ``max_tokens`` or
-        ``model_context_window_exceeded``) or raises a typed, classified
-        ``ModelAPIError`` built from the terminal signal (``refusal``, empty
-        ``end_turn``, no terminal at all). Together with the run paths'
-        in-stream ``error`` handling, every stream outcome maps to a valid
-        ``HarmonizedResponse`` or a typed ``ModelAPIError`` — never a
-        ``content=None`` shell that dies in the model validator as an
-        UNKNOWN ValidationError with the provider signal destroyed.
+        ``model_context_window_exceeded``) gets the truncation placeholder. A
+        natural-completion terminal (``end_turn``) is a SILENT TURN: the model
+        finished and chose to say nothing, which is a success, and harmonizes to
+        the empty-string content shape (the validator rejects ``None``, not
+        ``""``). Every OTHER empty terminal (``refusal``, no terminal at all)
+        raises a typed, classified ``ModelAPIError`` built from the terminal
+        signal. Together with the run paths' in-stream ``error`` handling, every
+        stream outcome maps to a valid ``HarmonizedResponse`` or a typed
+        ``ModelAPIError`` — never a ``content=None`` shell that dies in the model
+        validator as an UNKNOWN ValidationError with the provider signal
+        destroyed.
 
         (Latent gap, recorded 2026-06-11, still open: a thinking-only response —
         ``thinking`` set, no text, no tool calls, NON-length stop_reason — is
@@ -846,6 +925,11 @@ class AnthropicOAuthAdapter(APIProviderAdapter):
         usage = UsageInfo(
             prompt_tokens=usage_data.get("input_tokens"),
             completion_tokens=usage_data.get("output_tokens"),
+            # Prompt-cache accounting — see the api-key twin. `input_tokens` is
+            # the uncached remainder; the whole prompt is
+            # UsageInfo.full_prompt_tokens.
+            cache_read_input_tokens=usage_data.get("cache_read_input_tokens"),
+            cache_creation_input_tokens=usage_data.get("cache_creation_input_tokens"),
         ) if usage_data else None
 
         # Build metadata. finish_reason carries the NORMALIZED vocabulary (the
@@ -874,14 +958,24 @@ class AnthropicOAuthAdapter(APIProviderAdapter):
 
         # Empty-output contract (docstring above). Deterministic truncation gets
         # the cross-adapter placeholder (openai.py's convention) so callers see
-        # one shape, never None; every OTHER empty terminal is a typed failure
-        # classified by stop_reason (refusal / empty end_turn / no terminal).
+        # one shape, never None; a natural-completion terminal is a silent turn;
+        # every OTHER empty terminal is a typed failure classified by stop_reason
+        # (refusal / no terminal).
+        content = text_content if text_content else None
         if not text_content and not tool_calls and not raw_response.get("thinking"):
             if finish_reason == "length":
-                text_content = (
+                content = (
                     "[Response truncated due to token limit. Please increase max_tokens "
                     "or continue the conversation.]"
                 )
+            elif stop_reason_raw == "end_turn":
+                # A silent turn: the model ran to natural completion and produced
+                # nothing. Callers ask for this (an agent told to stay quiet when
+                # it has nothing to report), the provider bills it as a success,
+                # and the empty STRING is the content shape that carries it — the
+                # validator's rejection is of None, never of "". The API-key twin
+                # uses the same escape for its thinking-only responses.
+                content = ""
             else:
                 from marsys.agents.exceptions import ModelAPIError
                 from marsys.models.adapters.streaming import empty_completion_payload
@@ -894,7 +988,7 @@ class AnthropicOAuthAdapter(APIProviderAdapter):
         # Build response
         return HarmonizedResponse(
             role="assistant",
-            content=text_content if text_content else None,
+            content=content,
             tool_calls=tool_calls,
             thinking=raw_response.get("thinking") or None,
             metadata=metadata,

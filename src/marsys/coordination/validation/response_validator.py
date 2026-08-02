@@ -35,6 +35,7 @@ class ActionType(Enum):
     FINAL_RESPONSE = "final_response"
     TERMINATE_WORKFLOW = "terminate_workflow"
     ASK_USER = "ask_user"
+    ESCALATE_USER = "escalate_user"
     END_CONVERSATION = "end_conversation"
     ERROR_RECOVERY = "error_recovery"
     TERMINAL_ERROR = "terminal_error"
@@ -114,6 +115,8 @@ class ValidationProcessor:
             return await self._validate_return_final_response(data, agent)
         elif action == "ask_user":
             return await self._validate_ask_user(data, agent)
+        elif action == "escalate_to_user":
+            return await self._validate_escalate_user(data, agent)
         elif action == "end_conversation":
             return await self._validate_end_conversation(data, agent, branch)
         else:
@@ -247,6 +250,41 @@ class ValidationProcessor:
             parsed_response={
                 "question": question,
                 "action_input": {"question": question},
+            },
+        )
+
+    async def _validate_escalate_user(
+        self, data: Dict[str, Any], agent: BaseAgent
+    ) -> ValidationResult:
+        """Validate escalate_to_user: the agent must be granted `can_escalate`.
+
+        Unlike ask_user (gated on a topology edge to a User det-node), the
+        escalate directive is gated on a per-agent capability — it suspends the
+        run for a human WITHOUT a topology User node (ADR-013). Same gate axis at
+        both the schema offer (can_escalate_user) and here."""
+        if not getattr(agent, "can_escalate", False):
+            next_agents = self.topology_graph.get_next_agents(agent.name)
+            return ValidationResult(
+                is_valid=False,
+                error_message=f"Agent '{agent.name}' cannot escalate to the user (not granted can_escalate)",
+                retry_suggestion=f"You are not permitted to escalate to the user. Continue with one of: {next_agents}",
+                error_category=ValidationErrorCategory.PERMISSION_ERROR.value,
+            )
+
+        prompt = data.get("prompt", "")
+        if not prompt:
+            return ValidationResult(
+                is_valid=False,
+                error_message="escalate_to_user called with empty prompt",
+                error_category=ValidationErrorCategory.ACTION_ERROR.value,
+            )
+
+        return ValidationResult(
+            is_valid=True,
+            action_type=ActionType.ESCALATE_USER,
+            parsed_response={
+                "prompt": prompt,
+                "action_input": {"prompt": prompt},
             },
         )
 

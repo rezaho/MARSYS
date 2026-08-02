@@ -225,27 +225,44 @@ class OpenAIAdapter(APIProviderAdapter):
             payload["text"] = {"format": {"type": "json_object"}}
 
         # Handle tools - Responses API uses flattened structure (internally tagged)
-        # Converts externally tagged format to internally tagged format
+        # Converts externally tagged format to internally tagged format.
+        # A per-tool ``defer_loading: true`` rides the Chat-Completions tool dict top-level
+        # (deferred tool loading); it maps onto the flat Responses tool and triggers the
+        # ``tool_search`` built-in so deferred tools are discovered on demand (their schemas stay
+        # out of the cached prefix). Nothing deferred → byte-identical to before.
         if kwargs.get("tools"):
             tools = kwargs["tools"]
             converted_tools = []
+            any_deferred = False
             for tool in tools:
                 if isinstance(tool, dict):
                     if tool.get("type") == "function" and "function" in tool:
                         # Convert from Chat Completions format (externally tagged)
                         func = tool["function"]
-                        converted_tools.append({
+                        converted = {
                             "type": "function",
                             "name": func.get("name"),
                             "description": func.get("description"),
                             "parameters": func.get("parameters"),
                             # Note: strict is true by default in Responses API
-                        })
+                        }
+                        if tool.get("defer_loading"):
+                            converted["defer_loading"] = True
+                            any_deferred = True
+                        converted_tools.append(converted)
                     else:
                         # Already in Responses API format or other tool type
                         converted_tools.append(tool)
+                        if isinstance(tool, dict) and tool.get("defer_loading"):
+                            any_deferred = True
                 else:
                     converted_tools.append(tool)
+            if any_deferred and not any(
+                isinstance(t, dict) and t.get("type") == "tool_search" for t in converted_tools
+            ):
+                # Auto-add the Responses tool-search built-in so deferred tools are discoverable
+                # (gpt-5.4+). Suppressed if the caller supplied their own.
+                converted_tools.append({"type": "tool_search"})
             payload["tools"] = converted_tools
 
         # Handle OpenAI reasoning (effort-based for all models via Responses API)

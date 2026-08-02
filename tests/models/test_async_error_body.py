@@ -97,12 +97,19 @@ def test_body_less_400_classifies_invalid_request():
     assert result.classification["is_retryable"] is False
 
 
-def test_true_connection_error_no_status_stays_unknown():
-    """A genuine connection failure (no HTTP response, no status anywhere):
-    classification stays unknown and the message is the exception text.
-    This is the real no-regression case for 'no response at all'."""
+def test_true_connection_error_no_status_classifies_retryable_network():
+    """A genuine connection failure (no HTTP response, no status anywhere) is a
+    TRANSIENT, retryable network error — it must classify as ``network_error`` so
+    the caller's retry policy heals it, not the ``unknown`` non-retryable default.
+
+    This INVERTS the original assertion (connection error -> 'unknown'). That
+    default terminally dropped turns on any transport blip (a DNS hiccup:
+    '[Errno 11001] getaddrinfo failed'); a cannot-connect is definitionally
+    transient. The exception text is still preserved verbatim in the message —
+    only the classification is corrected."""
     result = _adapter().handle_api_error(
         ConnectionError("Cannot connect to host api.anthropic.com"), response=None
     )
     assert "Cannot connect to host" in result.error
-    assert result.classification["category"] == "unknown"
+    assert result.classification["category"] == "network_error"
+    assert result.classification["is_retryable"] is True

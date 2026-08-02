@@ -145,6 +145,7 @@ class BaseAgent(ABC):
         memory_retention: str = "session",  # New parameter
         memory_storage_path: Optional[str] = None,  # New parameter
         plan_config: Optional[Union[PlanningConfig, Dict, bool]] = None,  # Planning configuration
+        can_escalate: bool = False,  # ADR-013: grant for the escalate_to_user directive
     ) -> None:
         """
         Initializes the BaseAgent.
@@ -177,6 +178,12 @@ class BaseAgent(ABC):
         self.model = model
         self.goal = goal
         self.instruction = instruction
+        # ADR-013: per-agent grant for the escalate_to_user control directive.
+        # Default off — a granted agent may durably suspend the run for human
+        # input WITHOUT a topology User node. Gates the directive's schema offer
+        # (can_escalate_user) and its validation. Framework-generic; consumers
+        # grant it (SP-018).
+        self.can_escalate = can_escalate
 
         # Store planning config for later initialization
         self._planning_config = PlanningConfig.from_value(plan_config)
@@ -1646,6 +1653,7 @@ class BaseAgent(ABC):
                 can_ask_user=coordination_context.can_ask_user,
                 is_conversation_branch=getattr(coordination_context, 'is_conversation_branch', False),
                 output_schema=self._compiled_output_schema if hasattr(self, '_compiled_output_schema') else None,
+                can_escalate_user=getattr(coordination_context, 'can_escalate_user', False),
             )
         else:
             self._coordination_tool_schemas = []
@@ -2760,6 +2768,7 @@ class Agent(BaseAgent):
         memory_retention: str = "session",
         memory_storage_path: Optional[str] = None,
         plan_config: Optional[Union[PlanningConfig, Dict, bool]] = None,
+        can_escalate: bool = False,
     ) -> None:
         """
         Initializes the Agent.
@@ -2809,6 +2818,7 @@ class Agent(BaseAgent):
             memory_retention=memory_retention,  # Pass memory retention
             memory_storage_path=memory_storage_path,  # Pass storage path
             plan_config=plan_config,  # Pass planning configuration
+            can_escalate=can_escalate,  # ADR-013: forward the escalate grant
         )
         self._model_config = model_config
         self._compaction_model_config = compaction_model_config
