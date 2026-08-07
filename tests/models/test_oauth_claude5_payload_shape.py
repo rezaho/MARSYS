@@ -13,9 +13,15 @@ that is a deliberate choice, not a forced one.
 
 import pytest
 
+from marsys.models.adapters.anthropic import AnthropicAdapter
 from marsys.models.adapters.anthropic_oauth import AnthropicOAuthAdapter
 
 MESSAGES = [{"role": "user", "content": "hi"}]
+SCHEMA = {
+    "type": "object",
+    "properties": {"units": {"type": "array", "items": {"type": "string"}}},
+    "required": ["units"],
+}
 
 
 def _oauth(model_name: str, *, budget: int = 0, enable: bool = False):
@@ -27,6 +33,17 @@ def _oauth(model_name: str, *, budget: int = 0, enable: bool = False):
     adapter.enable_thinking = enable
     adapter.thinking_budget = budget
     return adapter
+
+
+def _api(model_name: str, *, max_tokens: int = 8192) -> AnthropicAdapter:
+    """The api-key twin, for the parity arms: the two builders are separate code and
+    only a test that drives BOTH can show they still agree."""
+    return AnthropicAdapter(
+        model_name=model_name,
+        api_key="not-a-real-key",
+        base_url="https://api.anthropic.com/v1",
+        max_tokens=max_tokens,
+    )
 
 
 @pytest.mark.parametrize("model_name", ["claude-opus-5", "claude-sonnet-5"])
@@ -98,3 +115,80 @@ def test_thinking_flag_without_budget_sends_no_null_budget():
     adapter = _oauth("claude-haiku-4-5-20251001", enable=True, budget=0)
     payload = adapter.format_request_payload(MESSAGES)
     assert "thinking" not in payload
+
+
+# --- structured output ------------------------------------------------------
+
+
+def test_schema_rides_output_config_natively():
+    """This endpoint IS the first-party Messages API, so the schema goes on the wire
+    rather than into the prompt."""
+    payload = _oauth("claude-opus-5").format_request_payload(
+        MESSAGES, thinking_budget=8192, response_schema=SCHEMA
+    )
+    assert payload["output_config"]["format"]["type"] == "json_schema"
+    assert payload["output_config"]["format"]["schema"]["additionalProperties"] is False
+    assert payload["output_config"]["format"]["schema"]["required"] == ["units"]
+    # …and the request text is untouched: no prompt fallback rides along with it.
+    assert "JSON Schema" not in str(payload["messages"][-1]["content"])
+
+
+def test_effort_and_schema_share_one_output_config():
+    """The regression this leg shipped: `output_config` was ASSIGNED here, so a request
+    carrying both a reasoning effort and a schema lost the effort silently. The API
+    takes exactly one such object per request — merge, never assign."""
+    payload = _oauth("claude-opus-5").format_request_payload(
+        MESSAGES, thinking_budget=8192, reasoning_effort="low", response_schema=SCHEMA
+    )
+    assert payload["output_config"]["effort"] == "low"
+    assert payload["output_config"]["format"]["type"] == "json_schema"
+
+
+def test_a_leg_without_native_enforcement_puts_the_whole_schema_in_the_prompt(monkeypatch):
+    """The house fallback (Bedrock's convention): an endpoint that cannot enforce
+    schemas must not put the illegal field on the wire, and must not degrade the ask to
+    a bare "please emit JSON" — the caller's parser would only be satisfied by luck."""
+    adapter = _oauth("claude-opus-5")
+    monkeypatch.setattr(adapter, "supports_structured_output", False, raising=False)
+    payload = adapter.format_request_payload(
+        MESSAGES, thinking_budget=8192, reasoning_effort="low", response_schema=SCHEMA
+    )
+    assert "format" not in payload.get("output_config", {})
+    assert payload["output_config"]["effort"] == "low"  # the effort still survives
+    text = str(payload["messages"][-1]["content"])
+    assert "JSON Schema" in text
+    assert '"properties"' in text and '"units"' in text
+
+
+# --- parity between the two builders ----------------------------------------
+
+
+@pytest.mark.parametrize("model_name", ["claude-opus-5", "claude-sonnet-4-6"])
+@pytest.mark.parametrize("native", [True, False])
+def test_both_anthropic_builders_emit_the_same_structured_output_shape(model_name, native, monkeypatch):
+    """The two payload builders are separate code kept deliberately parallel, and this
+    is the branch where the parallelism drifted twice. Identical inputs must produce an
+    identical structured-output shape — native config and prompt fallback alike."""
+    oauth, api = _oauth(model_name), _api(model_name)
+    for adapter in (oauth, api):
+        monkeypatch.setattr(adapter, "supports_structured_output", native, raising=False)
+    kwargs = dict(thinking_budget=8192, reasoning_effort="low", response_schema=SCHEMA)
+    oauth_payload = oauth.format_request_payload([dict(m) for m in MESSAGES], **kwargs)
+    api_payload = api.format_request_payload([dict(m) for m in MESSAGES], **kwargs)
+
+    assert oauth_payload.get("output_config") == api_payload.get("output_config")
+    assert oauth_payload["messages"][-1]["content"] == api_payload["messages"][-1]["content"]
+
+
+def test_both_builders_clamp_a_fixed_budget_to_the_same_number():
+    """The repair path's landmine: a background model built at max_tokens=4096 with the
+    default 8192 budget. The api-key leg clamped and the OAuth leg did not, so the same
+    settings were legal on one leg and a 400 on the other."""
+    oauth = _oauth("claude-haiku-4-5-20251001", budget=8192)
+    oauth.max_tokens = 4096
+    oauth_payload = oauth.format_request_payload(MESSAGES, thinking_budget=8192)
+    api_payload = _api("claude-haiku-4-5-20251001", max_tokens=4096).format_request_payload(
+        MESSAGES, thinking_budget=8192
+    )
+    assert oauth_payload["thinking"] == api_payload["thinking"]
+    assert oauth_payload["thinking"] == {"type": "enabled", "budget_tokens": 3072}
