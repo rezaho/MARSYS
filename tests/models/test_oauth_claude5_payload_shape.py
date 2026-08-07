@@ -73,3 +73,28 @@ def test_short_aliases_resolve_and_shape_as_claude5():
         )
         assert payload["thinking"] == {"type": "adaptive"}, alias
         assert "temperature" not in payload, alias
+
+
+def test_fixed_budget_is_clamped_under_max_tokens():
+    """Parity with the api-key twin: budget_tokens >= max_tokens is a live 400.
+    The shape that mattered: a background model built at max_tokens=4096 with the
+    default 8192 thinking budget — every call was an illegal payload on this leg."""
+    adapter = _oauth("claude-haiku-4-5-20251001", budget=8192)
+    adapter.max_tokens = 4096
+    payload = adapter.format_request_payload(MESSAGES, thinking_budget=8192)
+    assert payload["thinking"] == {"type": "enabled", "budget_tokens": 3072}
+
+
+def test_budget_that_cannot_fit_disables_thinking():
+    adapter = _oauth("claude-haiku-4-5-20251001", budget=8192)
+    adapter.max_tokens = 1536  # headroom leaves less than the documented minimum budget
+    payload = adapter.format_request_payload(MESSAGES, thinking_budget=8192)
+    assert "thinking" not in payload
+
+
+def test_thinking_flag_without_budget_sends_no_null_budget():
+    """enable_thinking with no usable budget used to put budget_tokens=None/0 on the
+    wire; thinking is dropped instead of sending an illegal payload."""
+    adapter = _oauth("claude-haiku-4-5-20251001", enable=True, budget=0)
+    payload = adapter.format_request_payload(MESSAGES)
+    assert "thinking" not in payload
