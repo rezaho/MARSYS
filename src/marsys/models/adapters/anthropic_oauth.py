@@ -10,6 +10,7 @@ from marsys.models.adapters.anthropic import (
     CACHE_EXEMPT_KEY,
     _anthropic_model_rejects_temperature,
     _anthropic_model_requires_adaptive_thinking,
+    apply_structured_output,
     mark_conversation_tail_for_cache,
 )
 from marsys.models.adapters.base import APIProviderAdapter, AsyncBaseAPIAdapter
@@ -52,6 +53,14 @@ class AnthropicOAuthAdapter(APIProviderAdapter):
 
     # Enable streaming mode - Claude OAuth uses SSE streaming
     streaming = True
+
+    # Endpoint capability, not model capability — the same flag the api-key adapter
+    # declares, read by the shared ``apply_structured_output``. This endpoint IS the
+    # first-party Messages API, which enforces `output_config.format`: verified live
+    # 2026-08-07 (haiku 4.5 under the Claude Code prefix returned schema-conformant
+    # output). A leg that turns out not to enforce it flips this to False and inherits
+    # the schema-in-prompt fallback, the way Bedrock does.
+    supports_structured_output = True
 
     # Anthropic's documented bounds for fixed-budget thinking: budget_tokens >= 1024 and
     # strictly less than max_tokens (thinking spends from the same output allowance).
@@ -626,25 +635,17 @@ class AnthropicOAuthAdapter(APIProviderAdapter):
             if anthropic_tools:
                 payload["tools"] = anthropic_tools
 
-        # Handle structured output — native output_config.format (GA)
-        response_schema = kwargs.get("response_schema")
-        if response_schema:
-            payload["output_config"] = {
-                "format": {
-                    "type": "json_schema",
-                    "schema": self._ensure_additional_properties_false(response_schema)
-                }
-            }
-        elif kwargs.get("json_mode") and converted_messages:
-            # No native json_object mode — prompt-based fallback
-            last_msg = converted_messages[-1]
-            if last_msg.get("role") == "user":
-                hint = "\n\nPlease respond with valid JSON only."
-                content = last_msg.get("content")
-                if isinstance(content, list):
-                    last_msg["content"] = content + [{"type": "text", "text": hint}]
-                elif isinstance(content, str):
-                    last_msg["content"] = content + hint
+        # Structured output — the SAME implementation the api-key builder uses. This
+        # branch used to be a hand-copied twin that ASSIGNED `output_config`, dropping
+        # the `effort` set above it, and degraded a schema request to a bare "reply with
+        # JSON" nudge.
+        apply_structured_output(
+            payload,
+            converted_messages,
+            response_schema=kwargs.get("response_schema"),
+            json_mode=bool(kwargs.get("json_mode")),
+            native=self.supports_structured_output,
+        )
 
         # The conversation-tail prompt-cache breakpoint (mirrors the api-key twin;
         # see ``mark_conversation_tail_for_cache``). Placed LAST, after the json-mode

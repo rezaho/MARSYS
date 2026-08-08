@@ -103,6 +103,58 @@ CACHE_CONTROL_EPHEMERAL = {"type": "ephemeral"}
 CACHE_EXEMPT_KEY = "cache_exempt"
 
 
+def apply_structured_output(
+    payload: Dict[str, Any],
+    user_messages: List[Dict[str, Any]],
+    *,
+    response_schema: Optional[Dict[str, Any]] = None,
+    json_mode: bool = False,
+    native: bool = True,
+) -> None:
+    """Put a caller's structured-output request on an Anthropic payload, in place.
+
+    THE implementation for both Anthropic payload builders — the api-key adapter below
+    and the OAuth one, which is not a subclass of it and builds its own payload. The two
+    are deliberately parallel, and this branch is exactly where the parallelism drifted:
+    the merge fix and the schema-in-prompt fallback landed on one leg and not the other,
+    so the OAuth leg clobbered ``output_config.effort`` with the schema and degraded a
+    schema request to a bare "reply with JSON" nudge. One function, one shape.
+
+    ``native`` is the ENDPOINT's capability (``supports_structured_output``): the
+    first-party Messages API enforces ``output_config.format``, while the Bedrock
+    endpoints reject the key outright. Without it the schema goes into the PROMPT, in
+    full — a bare "valid JSON" hint would satisfy the caller's parser only by luck.
+    """
+    if response_schema and native:
+        # Merge, never assign: `effort` may already own output_config, and the API
+        # takes exactly one such object per request.
+        payload.setdefault("output_config", {})["format"] = {
+            "type": "json_schema",
+            "schema": APIProviderAdapter._ensure_additional_properties_false(response_schema),
+        }
+        return
+    if not (json_mode or response_schema) or not user_messages:
+        return
+    last_msg = user_messages[-1]
+    if last_msg.get("role") != "user":
+        return
+    if response_schema:
+        hint = (
+            "\n\nRespond with valid JSON only — no prose, no code fence — "
+            "conforming exactly to this JSON Schema:\n"
+            + json.dumps(
+                APIProviderAdapter._ensure_additional_properties_false(response_schema)
+            )
+        )
+    else:
+        hint = "\n\nPlease respond with valid JSON only."
+    content = last_msg["content"]
+    if isinstance(content, list):
+        last_msg["content"] = content + [{"type": "text", "text": hint}]
+    else:
+        last_msg["content"] = str(content) + hint
+
+
 def mark_conversation_tail_for_cache(
     messages: List[Dict[str, Any]], *, volatile_tail: int = 0
 ) -> None:
@@ -493,39 +545,16 @@ class AnthropicAdapter(APIProviderAdapter):
                 else system_message
             )
 
-        # Handle structured output — native output_config.format (GA).
-        # `supports_structured_output` is False where the endpoint rejects the
-        # key (Bedrock); there the schema degrades to the prompt-based fallback
-        # below rather than putting an illegal field on the wire.
-        response_schema = kwargs.get("response_schema")
-        if response_schema and self.supports_structured_output:
-            # Merge, never assign: `effort` may already own output_config, and
-            # the API takes exactly one such object per request.
-            payload.setdefault("output_config", {})["format"] = {
-                "type": "json_schema",
-                "schema": self._ensure_additional_properties_false(response_schema),
-            }
-        elif (kwargs.get("json_mode") or response_schema) and user_messages:
-            # No native json_object mode in Anthropic — use prompt-based fallback.
-            # When a schema was requested but the endpoint cannot enforce it, the
-            # schema goes into the prompt: a bare "valid JSON" hint would satisfy
-            # the caller's parser only by luck.
-            last_msg = user_messages[-1]
-            if last_msg.get("role") == "user":
-                hint = "\n\nPlease respond with valid JSON only."
-                if response_schema:
-                    hint = (
-                        "\n\nRespond with valid JSON only — no prose, no code fence — "
-                        "conforming exactly to this JSON Schema:\n"
-                        + json.dumps(
-                            self._ensure_additional_properties_false(response_schema)
-                        )
-                    )
-                content = last_msg["content"]
-                if isinstance(content, list):
-                    last_msg["content"] = content + [{"type": "text", "text": hint}]
-                else:
-                    last_msg["content"] = str(content) + hint
+        # Structured output — native `output_config.format` where the endpoint
+        # enforces it, the schema-in-prompt fallback where it does not. Shared with
+        # the OAuth builder (see ``apply_structured_output``).
+        apply_structured_output(
+            payload,
+            user_messages,
+            response_schema=kwargs.get("response_schema"),
+            json_mode=bool(kwargs.get("json_mode")),
+            native=self.supports_structured_output,
+        )
 
         # Handle tools - convert OpenAI format to Anthropic format
         # OpenAI: {"type": "function", "function": {"name": ..., "description": ..., "parameters": ...}}
