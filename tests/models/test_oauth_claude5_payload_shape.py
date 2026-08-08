@@ -11,6 +11,9 @@ anyway — it is accepted on both and is the shape the models are tuned for — 
 that is a deliberate choice, not a forced one.
 """
 
+import json
+import time
+
 import pytest
 
 from marsys.models.adapters.anthropic import AnthropicAdapter
@@ -24,15 +27,36 @@ SCHEMA = {
 }
 
 
-def _oauth(model_name: str, *, budget: int = 0, enable: bool = False):
-    """Build the adapter without touching the credentials file on disk."""
-    adapter = AnthropicOAuthAdapter.__new__(AnthropicOAuthAdapter)
-    adapter.model_name = AnthropicOAuthAdapter.MODEL_ALIASES.get(model_name, model_name)
-    adapter.max_tokens = 8192
-    adapter.temperature = 0.7
-    adapter.enable_thinking = enable
-    adapter.thinking_budget = budget
-    return adapter
+@pytest.fixture(autouse=True)
+def _dummy_credentials(tmp_path, monkeypatch):
+    """A credentials file the real constructor can load, at the path it already reads from
+    the environment. The alternative — building the adapter through ``__new__`` and hand-setting
+    the five attributes the payload builder happens to read today — measures a hand-assembled
+    object: anything ``__init__`` does that shapes a payload (alias resolution, defaulting, a
+    capability read) is invisible to it, and the parity arms then compare that object against a
+    real ``AnthropicAdapter``. Nothing here reaches the network."""
+    path = tmp_path / ".credentials.json"
+    path.write_text(json.dumps({"claudeAiOauth": {
+        "accessToken": "dummy-access-token",
+        "refreshToken": "dummy-refresh-token",
+        "expiresAt": int((time.time() + 3600) * 1000),
+        "subscriptionType": "max",
+    }}))
+    monkeypatch.setenv("CLAUDE_AUTH_PATH", str(path))
+
+
+def _oauth(model_name: str, *, budget: int = 0, enable: bool = False) -> AnthropicOAuthAdapter:
+    """The real constructor, on the dummy credentials above. ``auto_refresh`` is off because a
+    refresh is an OAuth round-trip against a token this file invented — the only step in
+    ``__init__`` a payload-shape test has to keep out of."""
+    return AnthropicOAuthAdapter(
+        model_name=model_name,
+        max_tokens=8192,
+        temperature=0.7,
+        enable_thinking=enable,
+        thinking_budget=budget,
+        auto_refresh=False,
+    )
 
 
 def _api(model_name: str, *, max_tokens: int = 8192) -> AnthropicAdapter:
