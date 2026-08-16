@@ -24,6 +24,38 @@ from marsys.models.response_models import (
 
 logger = logging.getLogger(__name__)
 
+# The keys a Responses API `input` message item accepts. Anything else in a caller's
+# message dict is theirs, not the wire's, and the endpoint rejects it outright.
+_RESPONSES_INPUT_ITEM_KEYS = frozenset({"role", "content", "type"})
+
+# `thinking_budget` (a token allowance, the Anthropic-family knob every caller in this
+# stack already sets) mapped onto `reasoning.effort` (the bucket the Responses API
+# takes). Without this the budget is silently inert on every OpenAI-family leg and the
+# model runs at the provider default — `medium` — whatever the caller configured.
+# Boundaries follow the Anthropic minimum of 1024: below it the caller is asking for
+# as little deliberation as the provider offers.
+_THINKING_BUDGET_EFFORT_BUCKETS: tuple[tuple[int, str], ...] = (
+    (1024, "minimal"),
+    (4096, "low"),
+    (16384, "medium"),
+)
+_MAX_THINKING_EFFORT = "high"
+
+
+def thinking_budget_to_effort(budget: Optional[int]) -> Optional[str]:
+    """`reasoning.effort` for a token budget, or None to leave the provider default.
+
+    A non-positive budget means the caller turned thinking off, which is not the same
+    request as "think as little as possible" — it maps to None so the parameter is
+    omitted rather than pinned to `minimal`.
+    """
+    if budget is None or budget <= 0:
+        return None
+    for ceiling, effort in _THINKING_BUDGET_EFFORT_BUCKETS:
+        if budget < ceiling:
+            return effort
+    return _MAX_THINKING_EFFORT
+
 
 class OpenAIAdapter(APIProviderAdapter):
     """Adapter for OpenAI and OpenAI-compatible APIs (OpenRouter, Groq)"""
@@ -147,17 +179,38 @@ class OpenAIAdapter(APIProviderAdapter):
                     "call_id": msg.get("tool_call_id"),
                     "output": msg.get("content", "")
                 })
-            # Regular messages - convert content types and ensure content is not None
+            # Regular messages - rebuild from the keys this endpoint accepts.
+            #
+            # Rebuilt from an allow-list rather than copied-and-pruned. A caller's
+            # message dict is its own working object and routinely carries keys that
+            # mean something upstream and nothing to a provider — provenance tags,
+            # routing hints, cache-control markers. Copying the dict forwards all of
+            # them: the Responses API answers an unrecognized per-item key with
+            # `400 unknown_parameter: input[0].<key>`, so a caller that annotates its
+            # messages cannot talk to this endpoint at all. Pruning known offenders
+            # one at a time only defers that to the next key someone adds, which is
+            # why `name` was already being popped here by hand.
+            #
+            # The Anthropic adapter reached the same shape from the same 400 and
+            # rebuilds `{role, content}` only; `type` is kept here because the
+            # Responses input array uses it to discriminate item kinds.
             else:
-                cleaned_msg = msg.copy()
+                cleaned_msg = {
+                    key: value
+                    for key, value in msg.items()
+                    if key in _RESPONSES_INPUT_ITEM_KEYS
+                }
+                dropped = set(msg) - set(cleaned_msg)
+                if dropped:
+                    logger.debug(
+                        "Dropped non-wire message keys before send: %s",
+                        sorted(dropped),
+                    )
                 if cleaned_msg.get("content") is None:
                     cleaned_msg["content"] = ""
                 else:
                     # Convert content types (text -> input_text, image_url -> input_image)
                     cleaned_msg["content"] = convert_content_types(cleaned_msg["content"])
-                # Remove 'name' field - not supported in Responses API
-                # (was supported in Chat Completions for multi-user/multi-persona dialogues)
-                cleaned_msg.pop("name", None)
                 converted_messages.append(cleaned_msg)
 
         payload = {
@@ -265,8 +318,12 @@ class OpenAIAdapter(APIProviderAdapter):
                 converted_tools.append({"type": "tool_search"})
             payload["tools"] = converted_tools
 
-        # Handle OpenAI reasoning (effort-based for all models via Responses API)
+        # Handle OpenAI reasoning (effort-based for all models via Responses API).
+        # An explicit `reasoning_effort` wins; failing that, a caller's thinking budget
+        # selects the bucket, so the one knob this stack exposes reaches this leg too.
         reasoning_effort = kwargs.get("reasoning_effort")
+        if not reasoning_effort:
+            reasoning_effort = thinking_budget_to_effort(kwargs.get("thinking_budget"))
         if reasoning_effort and reasoning_effort.lower() in ["minimal", "low", "medium", "high"]:
             effort_value = reasoning_effort.lower()
             # Codex models don't support 'minimal' - map to 'low'
@@ -344,7 +401,12 @@ class OpenAIAdapter(APIProviderAdapter):
         from marsys.agents.exceptions import ModelAPIError
 
         # Create classified API error
-        api_error = ModelAPIError.from_provider_response(provider="openai", response=response, exception=error)
+        # The subclass's own provider id, matching what the retry path below already
+        # reports — a hardcoded "openai" mislabels an Azure-hosted failure. The
+        # classifier shares one branch for both, since they share one error envelope.
+        api_error = ModelAPIError.from_provider_response(
+            provider=self._provider_name() or "openai", response=response, exception=error
+        )
 
         # For critical errors, raise the exception to stop execution
         if api_error.is_critical():
@@ -460,25 +522,56 @@ class OpenAIAdapter(APIProviderAdapter):
         usage = None
         if usage_data:
             output_details = usage_data.get("output_tokens_details") or {}
+            input_details = usage_data.get("input_tokens_details") or {}
+            # Cache accounting, converted from this API's convention to UsageInfo's.
+            #
+            # The two conventions are inverses and both are internally consistent, so a
+            # naive field-to-field mapping produces numbers that look plausible and are
+            # wrong. Here, `cached_tokens` and `cache_write_tokens` are SLICES OF
+            # `input_tokens` — a measured call reads `input_tokens: 3398` with
+            # `cached_tokens: 3395` inside it, and `3398 + output 5 == total 3403`.
+            # `UsageInfo.prompt_tokens` means the opposite: the uncached REMAINDER, with
+            # the cache counts sitting beside it and `full_prompt_tokens` summing all
+            # three. Mapping `input_tokens` straight onto `prompt_tokens` therefore
+            # counts the cached slice twice — once inside the prompt figure and once
+            # again as a cache field — inflating the billable prompt by up to the whole
+            # cached prefix and charging that slice at the fresh-input rate on top.
+            #
+            # Subtracting here, once, keeps every downstream reading correct without a
+            # provider conditional: `full_prompt_tokens` recovers `input_tokens`
+            # exactly, and a price split over (fresh, read, write) sums to the same
+            # whole. Clamped because a vendor's slices must not exceed the whole they
+            # come from, and a negative prompt count would walk a spend ledger
+            # backwards.
+            reported_input = (
+                usage_data.get("input_tokens")
+                or usage_data.get("prompt_tokens")
+                or 0
+            )
+            cached_tokens = input_details.get("cached_tokens") or 0
+            cache_write_tokens = input_details.get("cache_write_tokens") or 0
+            uncached_input = max(0, reported_input - cached_tokens - cache_write_tokens)
             usage = UsageInfo(
-                prompt_tokens=(
-                    usage_data.get("input_tokens")
-                    or usage_data.get("prompt_tokens")
-                ),
+                prompt_tokens=uncached_input,
                 completion_tokens=(
                     usage_data.get("output_tokens")
                     or usage_data.get("completion_tokens")
                 ),
                 total_tokens=usage_data.get("total_tokens"),
+                # A subset of `completion_tokens`, billed as output. Recorded for
+                # visibility; a consumer that adds it to the completion count is
+                # double-counting.
                 reasoning_tokens=(
                     output_details.get("reasoning_tokens")
                     or usage_data.get("reasoning_tokens")
                 ),
+                cache_read_input_tokens=cached_tokens or None,
+                cache_creation_input_tokens=cache_write_tokens or None,
             )
 
         # Build metadata
         metadata = ResponseMetadata(
-            provider="openai",
+            provider=self._provider_name() or "openai",
             model=raw_response.get("model", self.model_name),
             request_id=raw_response.get("id"),
             created=raw_response.get("created") or raw_response.get("created_at"),
