@@ -4,6 +4,7 @@ from marsys.models.adapters.base import APIProviderAdapter, AsyncBaseAPIAdapter
 from marsys.models.adapters.openai import OpenAIAdapter, AsyncOpenAIAdapter
 from marsys.models.adapters.openrouter import OpenRouterAdapter, AsyncOpenRouterAdapter
 from marsys.models.adapters.anthropic import AnthropicAdapter, AsyncAnthropicAdapter
+from marsys.models.adapters.azure import AsyncAzureOpenAIAdapter, AzureOpenAIAdapter
 from marsys.models.adapters.bedrock import AsyncBedrockAdapter, BedrockAdapter
 from marsys.models.adapters.google import GoogleAdapter, AsyncGoogleAdapter
 from marsys.models.adapters.openai_oauth import OpenAIOAuthAdapter, AsyncOpenAIOAuthAdapter
@@ -33,6 +34,9 @@ __all__ = [
     # Bedrock (Claude on Amazon Bedrock)
     "BedrockAdapter",
     "AsyncBedrockAdapter",
+    # Azure OpenAI (OpenAI models on an Azure resource)
+    "AzureOpenAIAdapter",
+    "AsyncAzureOpenAIAdapter",
     # Google
     "GoogleAdapter",
     "AsyncGoogleAdapter",

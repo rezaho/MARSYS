@@ -839,7 +839,13 @@ class ModelAPIError(ModelError):
         # Provider-specific error parsing based on status code
         # This needs to work even when response is None (just using status_code)
         elif status_code:
-            if provider == "openai":
+            # Azure OpenAI serves the Responses API and returns the same error
+            # envelope, so it classifies identically to first-party OpenAI —
+            # sharing the branch keeps one behaviour for one wire contract, the
+            # way ``bedrock`` shares Anthropic's below. Without the share an
+            # Azure 429 falls past every branch unclassified and is treated as
+            # not retryable.
+            if provider in ("openai", "azure"):
                 error_data = raw_response.get("error", {}) if raw_response else {}
                 if error_data:
                     message = error_data.get("message", message)
