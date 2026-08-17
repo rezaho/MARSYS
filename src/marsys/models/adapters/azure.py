@@ -122,10 +122,13 @@ class AzureOpenAIAdapter(OpenAIAdapter):
         super().__init__(
             model_name=model_name,
             api_key=api_key or os.getenv("AZURE_OPENAI_API_KEY", "") or os.getenv("FOUNDRY_API_KEY", ""),
-            # An empty passed value falls through to the environment, which is what
-            # lets a caller whose model-construction path has no per-resource endpoint
-            # to hand still reach the right host.
-            base_url=base_url or azure_openai_base_url(endpoint),
+            # Both spellings of the same fact go through the one normalizer: it is
+            # idempotent on an already-normalized base, and a caller handing over the
+            # portal's project URL or the bare resource host gets a client that can reach
+            # ``/responses`` instead of one that 404s. An empty pair falls through to the
+            # environment, which is what lets a caller whose model-construction path has
+            # no per-resource endpoint to hand still reach the right host.
+            base_url=azure_openai_base_url(base_url or endpoint),
             max_tokens=max_tokens,
             temperature=temperature,
             **kwargs,

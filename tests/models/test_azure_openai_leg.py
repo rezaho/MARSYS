@@ -68,6 +68,28 @@ def test_base_url_normalizes_every_form_one_resource_arrives_as(given, expected)
     assert azure_openai_base_url(given) == expected
 
 
+def test_an_explicit_base_url_is_normalized_like_every_other_spelling(monkeypatch):
+    """The ``base_url`` argument and the ``endpoint`` argument are the same fact arriving
+    under two names, so one of them cannot skip the normalizer: a caller passing the bare
+    resource host would otherwise build a client that POSTs to ``/responses`` off the host
+    root and 404s on every call."""
+    monkeypatch.delenv("AZURE_OPENAI_ENDPOINT", raising=False)
+    monkeypatch.delenv("FOUNDRY_ENDPOINT", raising=False)
+    bare = AzureOpenAIAdapter(model_name="gpt-5.6-sol", api_key="k", base_url=RESOURCE)
+    assert bare.get_endpoint_url() == f"{RESOURCE}/openai/v1/responses"
+    project = AzureOpenAIAdapter(
+        model_name="gpt-5.6-sol",
+        api_key="k",
+        base_url=f"{RESOURCE}/api/projects/marsys-llm-api-01",
+    )
+    assert project.get_endpoint_url() == f"{RESOURCE}/openai/v1/responses"
+    # Still idempotent on the normalized form Spren actually threads in.
+    already = AzureOpenAIAdapter(
+        model_name="gpt-5.6-sol", api_key="k", base_url=f"{RESOURCE}/openai/v1"
+    )
+    assert already.get_endpoint_url() == f"{RESOURCE}/openai/v1/responses"
+
+
 def test_base_url_is_empty_when_nothing_is_configured(monkeypatch):
     monkeypatch.delenv("AZURE_OPENAI_ENDPOINT", raising=False)
     monkeypatch.delenv("FOUNDRY_ENDPOINT", raising=False)
