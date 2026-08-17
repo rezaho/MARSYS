@@ -308,6 +308,37 @@ def test_the_budget_kwarg_does_not_warn_as_unknown():
         _azure().format_request_payload(MESSAGES, thinking_budget=8192)
 
 
+def test_the_smallest_budget_asks_for_an_effort_this_surface_actually_serves():
+    """`minimal` is a 400 here — the endpoint's own reply lists none / low / medium /
+    high / xhigh / max — so the smallest bucket has to arrive as the smallest this
+    surface has. It must still ask for reasoning: a positive budget is "think a little",
+    and `none` would answer a question nobody asked."""
+    payload = _azure().format_request_payload(MESSAGES, thinking_budget=512)
+    assert payload["reasoning"] == {"effort": "low"}
+
+
+def test_an_explicit_minimal_is_substituted_too():
+    """The caller who names the effort outright is on the same endpoint as the one who
+    named a budget, and it rejects the value for both of them."""
+    payload = _azure().format_request_payload(MESSAGES, reasoning_effort="minimal")
+    assert payload["reasoning"] == {"effort": "low"}
+
+
+def test_the_first_party_leg_still_sends_minimal():
+    """The control, and the scope line: `minimal` is served by OpenAI's own endpoint and
+    the substitution above belongs to this re-hosting surface, not to the shared payload
+    builder. A run of this file that changed the first-party leg would be a silent change
+    to every OpenAI caller in the stack."""
+    payload = OpenAIAdapter(
+        model_name="gpt-5.6", api_key="k", base_url="https://api.openai.com/v1"
+    ).format_request_payload(MESSAGES, thinking_budget=512)
+    assert payload["reasoning"] == {"effort": "minimal"}
+    codex = OpenAIAdapter(
+        model_name="gpt-5.6-codex", api_key="k", base_url="https://api.openai.com/v1"
+    ).format_request_payload(MESSAGES, thinking_budget=512)
+    assert codex["reasoning"] == {"effort": "low"}  # the pre-existing codex exception
+
+
 # --- the meter ---------------------------------------------------------------
 
 

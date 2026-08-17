@@ -325,11 +325,9 @@ class OpenAIAdapter(APIProviderAdapter):
         if not reasoning_effort:
             reasoning_effort = thinking_budget_to_effort(kwargs.get("thinking_budget"))
         if reasoning_effort and reasoning_effort.lower() in ["minimal", "low", "medium", "high"]:
-            effort_value = reasoning_effort.lower()
-            # Codex models don't support 'minimal' - map to 'low'
-            if "codex" in model_lower and effort_value == "minimal":
-                effort_value = "low"
-            payload["reasoning"] = {"effort": effort_value}
+            payload["reasoning"] = {
+                "effort": self._served_effort(reasoning_effort.lower(), model_lower)
+            }
 
         # Only accept known OpenAI Responses API parameters - warn about unknown ones
         # Based on: https://platform.openai.com/docs/api-reference/responses/create
@@ -390,6 +388,24 @@ class OpenAIAdapter(APIProviderAdapter):
                 )
 
         return payload
+
+    def _served_effort(self, effort: str, model_lower: str) -> str:
+        """The nearest effort THIS surface will serve for the one the caller asked for.
+
+        `minimal` is not universal. Codex models reject it; so does GPT-5.6 on Azure's
+        re-hosted surface, which answers a request for it with
+        `Unsupported value: 'minimal' is not supported ... Supported values are: 'none',
+        'low', 'medium', 'high', 'xhigh', and 'max'` — a 400 on every call, for a caller
+        who only configured a small thinking budget.
+
+        `low` is the substitution and `none` is not: a positive budget means "think a
+        little", and turning that into no reasoning at all would answer a different
+        question than the one asked. A budget of zero never reaches here (it maps to no
+        parameter at all).
+        """
+        if effort == "minimal" and "codex" in model_lower:
+            return "low"
+        return effort
 
     def get_endpoint_url(self) -> str:
         # Migrate to OpenAI Responses API (unified endpoint for all models)

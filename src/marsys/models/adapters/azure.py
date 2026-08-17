@@ -16,7 +16,7 @@ body's ``model`` field, which is exactly the shape the inherited payload builder
 emits. Targeting the legacy surface would mean overriding endpoint construction to gain
 nothing.
 
-Three deltas from the first-party adapter, each measured against the live resource
+Four deltas from the first-party adapter, each measured against the live resource
 rather than assumed:
 
 * **base_url** — per-resource, so it cannot be a compiled-in constant. Resolved from
@@ -26,6 +26,10 @@ rather than assumed:
   accepted in ``Authorization: Bearer`` on this surface, measured; ``api-key`` is the
   documented spelling for a key, with Bearer reserved for Entra ID tokens, so the
   documented one is what this sends.)
+* **Reasoning-effort vocabulary** — this surface serves ``none``, ``low``, ``medium``,
+  ``high``, ``xhigh`` and ``max``, and answers ``minimal`` with a 400 that enumerates
+  those six. The smallest thinking budget therefore arrives as ``low`` here while the
+  first-party leg keeps sending ``minimal``.
 * **Model ids** — the ``model`` field carries an operator-chosen *deployment* name, and
   the response echoes that same deployment name back rather than an underlying model
   snapshot. Measured on ``gpt-5.6-sol`` and ``gpt-5.6-terra``: both echo themselves.
@@ -138,6 +142,17 @@ class AzureOpenAIAdapter(OpenAIAdapter):
         # the harmonized response's provider field both resolve under the provider id
         # the rest of the stack uses.
         return "azure"
+
+    def _served_effort(self, effort: str, model_lower: str) -> str:
+        # This surface serves none / low / medium / high / xhigh / max and answers
+        # `minimal` with a 400 (measured on `gpt-5.6-sol`, whose reply enumerates the
+        # six it takes). Unconditional rather than keyed on the model name: the name
+        # here is an operator-chosen deployment label and cannot be read as evidence
+        # about the generation underneath, and the smallest reasoning this endpoint has
+        # is what a request for the smallest should get either way.
+        if effort == "minimal":
+            return "low"
+        return super()._served_effort(effort, model_lower)
 
 
 class AsyncAzureOpenAIAdapter(AsyncOpenAIAdapter, AzureOpenAIAdapter):
