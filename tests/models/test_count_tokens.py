@@ -352,17 +352,25 @@ async def test_the_oauth_leg_refreshes_its_token_before_counting(monkeypatch):
     assert refreshed == [True]
 
 
-async def test_an_unauthorised_oauth_leg_answers_none_without_raising(monkeypatch):
-    """The state AC-10's probe exists to settle: if the subscription credential is
-    not accepted here, compaction reports "not measured" and the turn is untouched."""
-    _oauth_transport(
-        monkeypatch,
-        lambda request: httpx.Response(403, json={"error": {"type": "forbidden"}}),
-    )
+async def test_an_unauthorised_oauth_leg_answers_none_and_is_asked_again(monkeypatch):
+    """If the subscription credential is not accepted here, compaction reports "not
+    measured" and the turn is untouched — and the next turn asks again. This leg's
+    token file has several writers, so a refusal is as likely to be a refresh in
+    flight as a verdict, and a daemon that never restarts would otherwise stop
+    measuring for days on one blip."""
+    calls: list[int] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        calls.append(1)
+        return httpx.Response(403, json={"error": {"type": "forbidden"}})
+
+    _oauth_transport(monkeypatch, handler)
     adapter = _oauth()
     monkeypatch.setattr(adapter, "_ensure_fresh_token", lambda: None, raising=False)
 
     assert await adapter.acount_tokens(MESSAGES) is None
+    assert await adapter.acount_tokens(MESSAGES) is None
+    assert len(calls) == 2
 
 
 async def test_an_oauth_transport_failure_answers_none(monkeypatch):
