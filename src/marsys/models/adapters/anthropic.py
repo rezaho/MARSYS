@@ -214,8 +214,45 @@ def count_tokens_url_for(messages_url: str) -> str:
 
 
 def strip_for_count_tokens(payload: Dict[str, Any]) -> Dict[str, Any]:
-    """A Messages payload reduced to what the count endpoint accepts."""
-    return {k: v for k, v in payload.items() if k not in _COUNT_TOKENS_REJECTED_KEYS}
+    """A Messages payload reduced to a LEGAL count request.
+
+    Two things happen here, and the second is not cosmetic. The generation controls
+    come off because the endpoint rejects them. And the final assistant message is
+    right-trimmed because the API rejects one that ends in whitespace — a rule the
+    messages call rarely meets (something is almost always appended after the last
+    assistant turn) and a count meets constantly, since counting a conversation means
+    presenting its last row as final. A settled conversation ends with an assistant
+    reply by definition, and models end replies with a newline, so without this a
+    fold's post-fold count fails on exactly the conversations most likely to fold.
+    """
+    reduced = {k: v for k, v in payload.items() if k not in _COUNT_TOKENS_REJECTED_KEYS}
+    messages = reduced.get("messages")
+    if isinstance(messages, list) and messages:
+        trimmed = _trim_final_assistant(messages[-1])
+        reduced["messages"] = (
+            messages[:-1] if trimmed is None else [*messages[:-1], trimmed]
+        )
+    return reduced
+
+
+def _trim_final_assistant(message: Any) -> Optional[Dict[str, Any]]:
+    """The message with trailing whitespace off its last text block, or ``None`` when
+    nothing is left of it. Copies rather than mutating: the payload's blocks may be
+    the caller's own rows."""
+    if not isinstance(message, dict) or message.get("role") != "assistant":
+        return message
+    content = message.get("content")
+    if isinstance(content, str):
+        trimmed = content.rstrip()
+        return {**message, "content": trimmed} if trimmed else None
+    if not isinstance(content, list) or not content:
+        return message
+    last = content[-1]
+    if not isinstance(last, dict) or last.get("type") != "text":
+        return message
+    text = str(last.get("text", "")).rstrip()
+    blocks = list(content[:-1]) if not text else [*content[:-1], {**last, "text": text}]
+    return {**message, "content": blocks} if blocks else None
 
 
 def count_tokens_supported(url: str) -> bool:
@@ -245,8 +282,20 @@ def read_count_tokens_response(
             provider, url, status,
         )
         return None
-    logger.warning("%s count_tokens failed with HTTP %s", provider, status)
+    # The provider's own words, not just the status: a bare "HTTP 400" on a request
+    # nobody sees is undiagnosable, and this one answers in a sentence.
+    logger.warning(
+        "%s count_tokens failed with HTTP %s: %s", provider, status, _error_text(body)
+    )
     return None
+
+
+def _error_text(body: Any) -> str:
+    if isinstance(body, dict):
+        error = body.get("error")
+        if isinstance(error, dict) and error.get("message"):
+            return str(error["message"])
+    return "no error body"
 
 
 class AnthropicAdapter(APIProviderAdapter):

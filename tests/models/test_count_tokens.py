@@ -141,6 +141,55 @@ def test_the_count_url_sits_beside_the_messages_url_and_keeps_its_query():
     )
 
 
+def test_the_final_assistant_message_is_trimmed_of_trailing_whitespace():
+    """The API rejects a final assistant message that ends in whitespace, and a count
+    is the one request that routinely presents one: a settled conversation ends with
+    an assistant reply, and models end replies with a newline. Measured live — the
+    provider answers "final assistant content cannot end with trailing whitespace"."""
+    payload = {
+        "model": "m",
+        "messages": [
+            {"role": "user", "content": "ask"},
+            {"role": "assistant", "content": [{"type": "text", "text": "answered.\n\n"}]},
+        ],
+    }
+    stripped = strip_for_count_tokens(payload)
+    assert stripped["messages"][-1]["content"][-1]["text"] == "answered."
+    # …and the caller's own rows are untouched: the payload's blocks may be the
+    # durable conversation's dicts.
+    assert payload["messages"][-1]["content"][-1]["text"] == "answered.\n\n"
+
+
+def test_a_plain_string_final_assistant_message_is_trimmed_too():
+    stripped = strip_for_count_tokens(
+        {"model": "m", "messages": [{"role": "assistant", "content": "done  "}]}
+    )
+    assert stripped["messages"][-1]["content"] == "done"
+
+
+def test_a_whitespace_only_final_assistant_message_is_dropped():
+    """Nothing is left of it to count, and an empty text block is itself rejected."""
+    stripped = strip_for_count_tokens(
+        {
+            "model": "m",
+            "messages": [
+                {"role": "user", "content": "ask"},
+                {"role": "assistant", "content": [{"type": "text", "text": "   "}]},
+            ],
+        }
+    )
+    assert stripped["messages"] == [{"role": "user", "content": "ask"}]
+
+
+def test_a_final_user_message_is_left_exactly_as_it_is():
+    """The rule is about assistant content. Trimming a user row would change what is
+    being counted for no reason."""
+    stripped = strip_for_count_tokens(
+        {"model": "m", "messages": [{"role": "user", "content": "ask \n"}]}
+    )
+    assert stripped["messages"] == [{"role": "user", "content": "ask \n"}]
+
+
 def test_only_the_generation_controls_are_stripped():
     payload = {
         "model": "claude-opus-5",
