@@ -203,7 +203,7 @@ _COUNT_TOKENS_REJECTED_KEYS = (
 # permanent for the process; a credential-shaped refusal (401/403) is deliberately
 # NOT recorded here, because the OAuth token file has several writers and a refresh
 # in flight looks exactly like a rejection for one request.
-_COUNT_TOKENS_UNSUPPORTED: set = set()
+_COUNT_TOKENS_UNSUPPORTED: "set[str]" = set()
 
 
 def count_tokens_url_for(messages_url: str) -> str:
