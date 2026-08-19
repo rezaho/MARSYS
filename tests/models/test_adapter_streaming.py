@@ -379,6 +379,29 @@ def test_responses_failed_event_is_terminal():
     assert acc.error == {"code": "server_error", "message": "x"}
 
 
+def test_responses_flat_error_event_keeps_the_providers_words():
+    # The Responses `error` event is FLAT — code/message sit on the event itself, unlike
+    # Anthropic's nested {"error": {...}}. Reading it nested yields {} and the provider's
+    # verdict is destroyed before classification, so a retryable fault dispositions as
+    # unknown/terminal downstream. Production turns died exactly that way.
+    acc = ResponsesStreamAccumulator()
+    ok = acc.feed({"type": "error", "code": "rate_limit_exceeded",
+                   "message": "You exceeded your current quota of requests.",
+                   "param": None, "sequence_number": 7})
+    assert not ok
+    assert acc.error == {"code": "rate_limit_exceeded",
+                         "message": "You exceeded your current quota of requests."}
+
+
+def test_responses_bare_error_event_still_terminates():
+    # An error event carrying neither code nor message still ends the stream with a
+    # non-empty error marker (the pre-existing fallback).
+    acc = ResponsesStreamAccumulator()
+    ok = acc.feed({"type": "error"})
+    assert not ok
+    assert acc.error == {"type": "unknown"}
+
+
 # ---------------------------------------------------------------------------
 # end-to-end arun_streaming over a fake aiohttp session
 # ---------------------------------------------------------------------------
@@ -580,6 +603,46 @@ async def test_openai_stream_without_completion_is_a_typed_failure():
 
     with pytest.raises(ModelAPIError):
         await adapter.arun_streaming([{"role": "user", "content": "q"}], max_tokens=4096)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "fault_event, expected_classification",
+    [
+        # the flat top-level `error` event — the grammar the accumulator once read nested
+        ({"type": "error", "code": "rate_limit_exceeded",
+          "message": "You exceeded your current quota of requests."}, "rate_limit"),
+        # the enveloped `response.failed` grammar
+        ({"type": "response.failed", "response": {"error": {
+            "code": "server_error",
+            "message": "The server had an error while processing your request."}}},
+         "service_unavailable"),
+    ],
+)
+async def test_openai_in_stream_fault_surfaces_classified_with_the_providers_words(
+    fault_event, expected_classification
+):
+    # End-to-end over the fake session: a mid-stream fault under HTTP 200 must surface as a
+    # CLASSIFIED, retryable-aware ModelAPIError carrying the provider's real words — that verdict
+    # is the input the caller's turn-level retry ladder runs on, and an UNKNOWN/non-retryable
+    # default silently turns a transient provider blip into permanently destroyed work.
+    from marsys.agents.exceptions import ModelAPIError
+
+    faulted = RESPONSES_STREAM[:4] + [fault_event]  # never reaches response.completed
+    session = _FakeSession([_FakeStreamResponse(200, _sse_lines(faulted))])
+    adapter = AsyncOpenAIAdapter(
+        model_name="gpt-test", api_key="k",
+        base_url="https://api.openai.com/v1", max_tokens=4096, streaming=True,
+    )
+    adapter._session = session
+
+    with pytest.raises(ModelAPIError) as exc_info:
+        await adapter.arun_streaming([{"role": "user", "content": "q"}], max_tokens=4096)
+    err = exc_info.value
+    assert err.classification == expected_classification
+    assert err.is_retryable is True
+    words = fault_event.get("message") or fault_event["response"]["error"]["message"]
+    assert words in str(err)  # the provider's words, not a synthetic "API Error"
 
 
 # ---------------------------------------------------------------------------
