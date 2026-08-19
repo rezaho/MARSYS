@@ -4,6 +4,7 @@ from marsys.models.adapters.base import APIProviderAdapter
 from marsys.models.adapters.openai import OpenAIAdapter
 from marsys.models.adapters.openrouter import OpenRouterAdapter
 from marsys.models.adapters.anthropic import AnthropicAdapter
+from marsys.models.adapters.azure import AzureOpenAIAdapter
 from marsys.models.adapters.bedrock import BedrockAdapter
 from marsys.models.adapters.google import GoogleAdapter
 from marsys.models.adapters.openai_oauth import OpenAIOAuthAdapter
@@ -27,6 +28,7 @@ class ProviderAdapterFactory:
             "openai": OpenAIAdapter,
             "anthropic": AnthropicAdapter,
             "bedrock": BedrockAdapter,  # Claude on Amazon Bedrock (Messages-API-shaped)
+            "azure": AzureOpenAIAdapter,  # OpenAI models on Azure OpenAI (Responses-API-shaped)
             "google": GoogleAdapter,
             "openrouter": OpenRouterAdapter,  # OpenRouter with additional headers support
             "xai": OpenRouterAdapter,  # xAI Grok uses OpenAI-compatible /chat/completions

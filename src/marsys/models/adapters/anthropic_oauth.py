@@ -7,9 +7,14 @@ from pathlib import Path
 from typing import Any, Dict, List, Optional
 
 from marsys.models.adapters.anthropic import (
+    CACHE_EXEMPT_KEY,
     _anthropic_model_rejects_temperature,
     _anthropic_model_requires_adaptive_thinking,
+    count_tokens_supported,
+    count_tokens_url_for,
     mark_conversation_tail_for_cache,
+    read_count_tokens_response,
+    strip_for_count_tokens,
 )
 from marsys.models.adapters.base import APIProviderAdapter, AsyncBaseAPIAdapter
 from marsys.models.response_models import (
@@ -295,6 +300,14 @@ class AnthropicOAuthAdapter(APIProviderAdapter):
         """Return Claude API endpoint URL."""
         return self.API_URL
 
+    def get_count_tokens_url(self) -> str:
+        return count_tokens_url_for(self.get_endpoint_url())
+
+    def format_count_tokens_payload(
+        self, messages: List[Dict], **kwargs
+    ) -> Dict[str, Any]:
+        return strip_for_count_tokens(self.format_request_payload(messages, **kwargs))
+
     def _build_system_array(self, system_message: Optional[str] = None) -> List[Dict]:
         """
         Build system prompt array with required prefix.
@@ -442,6 +455,15 @@ class AnthropicOAuthAdapter(APIProviderAdapter):
         """
         system_message = None
         converted_messages = []
+
+        # Trailing per-request rows the caller exempted from the breakpoint — twinned with
+        # the api-key adapter (this class is not a subclass of it, so the two payload
+        # builders are kept deliberately parallel). See ``CACHE_EXEMPT_KEY``.
+        volatile_tail = 0
+        for msg in reversed(messages):
+            if not msg.get(CACHE_EXEMPT_KEY):
+                break
+            volatile_tail += 1
 
         for msg in messages:
             role = msg.get("role")
@@ -611,7 +633,7 @@ class AnthropicOAuthAdapter(APIProviderAdapter):
         # in an OAuth payload — the static Claude-Code prefix block in
         # ``_build_system_array`` is the first — which keeps the payload two under
         # the API's four-breakpoint ceiling.
-        mark_conversation_tail_for_cache(converted_messages)
+        mark_conversation_tail_for_cache(converted_messages, volatile_tail=volatile_tail)
 
         return payload
 
@@ -1138,4 +1160,47 @@ class AsyncAnthropicOAuthAdapter(AsyncBaseAPIAdapter, AnthropicOAuthAdapter):
                 exception=e
             )
 
+    async def acount_tokens(
+        self,
+        messages: List[Dict],
+        *,
+        tools: Optional[List[Dict[str, Any]]] = None,
+        system: Optional[str] = None,
+    ) -> Optional[int]:
+        """How many input tokens a Messages call with this body would carry, by the
+        model's own tokenizer, or ``None`` when the endpoint cannot say.
 
+        Built through this leg's own payload builder, which is why the method exists
+        here rather than once for both Anthropic legs: this one prepends the required
+        Claude-Code system block and renames tools, so a body assembled any other way
+        would count something the request never sends. The ``accept`` header is the
+        one deliberate difference from the messages call — that call is
+        streaming-always, and a count is a single JSON object.
+
+        No retry loop and no raise: the caller is sizing something, not producing the
+        turn's answer, and a count that fails must cost the turn nothing.
+        """
+        import httpx
+
+        url = self.get_count_tokens_url()
+        if not count_tokens_supported(url):
+            return None
+        if system is not None:
+            messages = [{"role": "system", "content": system}, *messages]
+        await asyncio.to_thread(self._ensure_fresh_token)
+        payload = self.format_count_tokens_payload(messages, tools=tools)
+        headers = {**self.get_headers(), "accept": "application/json"}
+        try:
+            async with httpx.AsyncClient(timeout=30.0) as client:
+                response = await client.post(url, headers=headers, json=payload)
+                status = response.status_code
+                try:
+                    body = response.json()
+                except ValueError:
+                    body = None
+        except httpx.HTTPError as exc:
+            logger.warning("anthropic-oauth count_tokens transport failure: %s", exc)
+            return None
+        return read_count_tokens_response(
+            url, status, body, provider="anthropic-oauth"
+        )

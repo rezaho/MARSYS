@@ -50,6 +50,9 @@ from marsys.models.adapters import (  # noqa: E402
     # Bedrock — resolved by name for the async twin, so it must be in scope here
     BedrockAdapter,
     AsyncBedrockAdapter,
+    # Azure OpenAI — same reason: the async twin is looked up by name in this module
+    AzureOpenAIAdapter,
+    AsyncAzureOpenAIAdapter,
     # Google
     GoogleAdapter,
     AsyncGoogleAdapter,
@@ -83,6 +86,43 @@ def _bedrock_default_base_url() -> str:
     return bedrock_base_url()
 
 
+def _azure_default_base_url() -> str:
+    """Azure OpenAI's base URL names a customer's own resource, so there is no
+    literal to write. Resolved from the environment the way Bedrock's region is,
+    and empty when nothing is configured — a caller that supplies the endpoint
+    per instance (the normal path) never reads this entry."""
+    from marsys.models.adapters.azure import azure_openai_base_url
+
+    return azure_openai_base_url()
+
+
+# The providers whose endpoint is not vendor-wide: Bedrock's carries an AWS region,
+# Azure OpenAI's names a customer's own resource. Both are read from the environment,
+# which is why they need to be re-readable rather than table literals.
+_PER_RESOURCE_BASE_URL_RESOLVERS = {
+    "bedrock": _bedrock_default_base_url,
+    "azure": _azure_default_base_url,
+}
+
+
+def default_base_url(provider: str) -> Optional[str]:
+    """The provider's default endpoint, re-resolving the per-resource ones.
+
+    ``PROVIDER_BASE_URLS`` is built once at import, so for the two providers above
+    its entry is only a snapshot of the environment as it stood then. A process that
+    learns its region or its resource *after* this module was imported — the usual
+    order, since configuration is injected at startup and this module is imported by
+    the package — would read that stale snapshot forever, and for Azure the snapshot
+    is typically the empty string. The cost of re-reading is one environment lookup;
+    the cost of not re-reading is an import-order dependency that is invisible until
+    it silently sends a request nowhere.
+    """
+    resolver = _PER_RESOURCE_BASE_URL_RESOLVERS.get(provider)
+    if resolver is not None:
+        return resolver() or PROVIDER_BASE_URLS.get(provider)
+    return PROVIDER_BASE_URLS.get(provider)
+
+
 # Define the provider base URLs dictionary
 PROVIDER_BASE_URLS = {
     "openai": "https://api.openai.com/v1/",
@@ -94,6 +134,11 @@ PROVIDER_BASE_URLS = {
     # so this entry is the AWS_REGION-resolved default; the adapter re-resolves
     # it per instance (see adapters/bedrock.bedrock_base_url).
     "bedrock": _bedrock_default_base_url(),
+    # OpenAI models on an Azure OpenAI resource. Per-resource rather than
+    # region-dependent, so this entry is only the environment-resolved default and
+    # is empty on a host that has none; the adapter re-resolves per instance (see
+    # adapters/azure.azure_openai_base_url).
+    "azure": _azure_default_base_url(),
     "openai-oauth": "https://chatgpt.com/backend-api/codex/responses",  # ChatGPT OAuth endpoint
     "anthropic-oauth": "https://api.anthropic.com/v1/messages?beta=true",  # Claude OAuth endpoint
 }
@@ -115,7 +160,7 @@ class ModelConfig(BaseModel):
         description="Model identifier (e.g., 'gpt-4o', 'mistralai/Mistral-7B-Instruct-v0.1')",
     )
     provider: Optional[
-        Literal["openai", "openrouter", "google", "anthropic", "xai", "bedrock", "openai-oauth", "anthropic-oauth"]
+        Literal["openai", "openrouter", "google", "anthropic", "xai", "bedrock", "azure", "openai-oauth", "anthropic-oauth"]
     ] = Field(
         None, description="API provider name (used to determine base_url if not set)"
     )
@@ -208,13 +253,22 @@ class ModelConfig(BaseModel):
             provider = data.get("provider")
             if provider:
                 # Look up base_url from the dictionary
-                base_url = PROVIDER_BASE_URLS.get(provider)
+                base_url = default_base_url(provider)
                 if base_url:
                     data["base_url"] = base_url
-                else:
-                    # Provider specified but not in our known dictionary
+                elif provider not in PROVIDER_BASE_URLS:
                     warnings.warn(
                         f"Unknown API provider '{provider}'. 'base_url' must be set explicitly if needed."
+                    )
+                else:
+                    # Known provider whose endpoint names a customer's own resource
+                    # (Azure OpenAI), unresolved on this host. Distinct from an
+                    # unknown provider, and said so: the fix is to supply the
+                    # endpoint, not to correct the provider name.
+                    warnings.warn(
+                        f"API provider '{provider}' has no default endpoint — its base URL is "
+                        "per-resource. Set 'base_url' explicitly or configure the provider's "
+                        "endpoint environment variable."
                     )
             else:
                 # Raise error only if type is API and neither provider nor base_url is set
@@ -241,6 +295,8 @@ class ModelConfig(BaseModel):
                 # Bedrock authenticates with a bearer token, not SigV4, on the
                 # Messages-API-shaped endpoint this stack targets.
                 "bedrock": "AWS_BEARER_TOKEN_BEDROCK",
+                # An Azure OpenAI resource key, sent in the `api-key` header.
+                "azure": "AZURE_OPENAI_API_KEY",
             }
             # Providers that use OAuth or other credential mechanisms (not API keys)
             oauth_providers = {"openai-oauth", "anthropic-oauth"}
@@ -870,6 +926,32 @@ class BaseAPIModel:
             # Execute in thread pool to avoid blocking
             response = await loop.run_in_executor(None, sync_run)
         return response
+
+    async def acount_tokens(
+        self,
+        messages: List[Dict[str, Any]],
+        *,
+        tools: Optional[List[Dict[str, Any]]] = None,
+        system: Optional[str] = None,
+    ) -> Optional[int]:
+        """How many input tokens this model would charge for that body, counted by
+        the provider rather than estimated, or ``None`` when the provider offers no
+        such service.
+
+        ``None`` is the default and the only honest answer for a provider without a
+        counting endpoint: a caller that needs a number can fall back to whatever
+        estimate it already has, but it must be able to tell an estimate from a
+        count. Providers that CAN answer implement ``acount_tokens`` on their async
+        adapter, where the payload rendering and credentials live.
+
+        This is not the per-message ``TokenCounter`` in ``marsys.utils.tokens``:
+        that protocol returns a count per message from a character heuristic, which
+        one endpoint call cannot produce. Two different capabilities.
+        """
+        counter = getattr(self.async_adapter, "acount_tokens", None)
+        if counter is None:
+            return None
+        return await counter(messages, tools=tools, system=system)
 
     async def cleanup(self):
         """Clean up async resources."""
