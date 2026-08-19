@@ -927,6 +927,32 @@ class BaseAPIModel:
             response = await loop.run_in_executor(None, sync_run)
         return response
 
+    async def acount_tokens(
+        self,
+        messages: List[Dict[str, Any]],
+        *,
+        tools: Optional[List[Dict[str, Any]]] = None,
+        system: Optional[str] = None,
+    ) -> Optional[int]:
+        """How many input tokens this model would charge for that body, counted by
+        the provider rather than estimated, or ``None`` when the provider offers no
+        such service.
+
+        ``None`` is the default and the only honest answer for a provider without a
+        counting endpoint: a caller that needs a number can fall back to whatever
+        estimate it already has, but it must be able to tell an estimate from a
+        count. Providers that CAN answer implement ``acount_tokens`` on their async
+        adapter, where the payload rendering and credentials live.
+
+        This is not the per-message ``TokenCounter`` in ``marsys.utils.tokens``:
+        that protocol returns a count per message from a character heuristic, which
+        one endpoint call cannot produce. Two different capabilities.
+        """
+        counter = getattr(self.async_adapter, "acount_tokens", None)
+        if counter is None:
+            return None
+        return await counter(messages, tools=tools, system=system)
+
     async def cleanup(self):
         """Clean up async resources."""
         if self.async_adapter and hasattr(self.async_adapter, 'cleanup'):

@@ -179,6 +179,125 @@ def mark_conversation_tail_for_cache(
             return
 
 
+# --- token counting (POST /v1/messages/count_tokens) -------------------------
+#
+# The endpoint takes the SAME body as message creation minus the generation
+# controls, and answers ``{"input_tokens": N}`` with the model's own tokenizer.
+# It is free of charge, rate-limited independently of message creation, and does
+# not participate in prompt caching, so a caller may count the exact payload it is
+# about to send without perturbing anything.
+#
+# Both Anthropic legs (api-key and OAuth) build their payload through their own
+# ``format_request_payload`` — that is the point: the OAuth leg injects a required
+# system block and renames tools, so a count assembled any other way would not be a
+# count of what the request actually sends. Only the generation-side keys come off.
+_COUNT_TOKENS_REJECTED_KEYS = (
+    "max_tokens",
+    "stream",
+    "temperature",
+    "top_p",
+    "top_k",
+    "output_config",
+)
+# Endpoints (by URL) that answered "there is no such route". Structural and
+# permanent for the process; a credential-shaped refusal (401/403) is deliberately
+# NOT recorded here, because the OAuth token file has several writers and a refresh
+# in flight looks exactly like a rejection for one request.
+_COUNT_TOKENS_UNSUPPORTED: "set[str]" = set()
+
+
+def count_tokens_url_for(messages_url: str) -> str:
+    """The count endpoint beside a Messages endpoint, query string preserved (the
+    OAuth leg's URL carries ``?beta=true`` and the count has to keep it)."""
+    base, sep, query = messages_url.partition("?")
+    return f"{base.rstrip('/')}/count_tokens" + (f"{sep}{query}" if sep else "")
+
+
+def strip_for_count_tokens(payload: Dict[str, Any]) -> Dict[str, Any]:
+    """A Messages payload reduced to a LEGAL count request.
+
+    Two things happen here, and the second is not cosmetic. The generation controls
+    come off because the endpoint rejects them. And the final assistant message is
+    right-trimmed because the API rejects one that ends in whitespace — a rule the
+    messages call rarely meets (something is almost always appended after the last
+    assistant turn) and a count meets constantly, since counting a conversation means
+    presenting its last row as final. A settled conversation ends with an assistant
+    reply by definition, and models end replies with a newline, so without this a
+    fold's post-fold count fails on exactly the conversations most likely to fold.
+    """
+    reduced = {k: v for k, v in payload.items() if k not in _COUNT_TOKENS_REJECTED_KEYS}
+    messages = reduced.get("messages")
+    if isinstance(messages, list) and messages:
+        trimmed = _trim_final_assistant(messages[-1])
+        reduced["messages"] = (
+            messages[:-1] if trimmed is None else [*messages[:-1], trimmed]
+        )
+    return reduced
+
+
+def _trim_final_assistant(message: Any) -> Optional[Dict[str, Any]]:
+    """The message with trailing whitespace off its last text block, or ``None`` when
+    nothing is left of it. Copies rather than mutating: the payload's blocks may be
+    the caller's own rows."""
+    if not isinstance(message, dict) or message.get("role") != "assistant":
+        return message
+    content = message.get("content")
+    if isinstance(content, str):
+        trimmed = content.rstrip()
+        return {**message, "content": trimmed} if trimmed else None
+    if not isinstance(content, list) or not content:
+        return message
+    last = content[-1]
+    if not isinstance(last, dict) or last.get("type") != "text":
+        return message
+    text = str(last.get("text", "")).rstrip()
+    blocks = list(content[:-1]) if not text else [*content[:-1], {**last, "text": text}]
+    return {**message, "content": blocks} if blocks else None
+
+
+def count_tokens_supported(url: str) -> bool:
+    return url not in _COUNT_TOKENS_UNSUPPORTED
+
+
+def read_count_tokens_response(
+    url: str, status: int, body: Any, *, provider: str
+) -> Optional[int]:
+    """One count response → a token count, or ``None``.
+
+    ``None`` is the whole error vocabulary: a count is an optimisation on the
+    caller's side, never the turn's business, so nothing here raises. A 404/405
+    says the route does not exist on this endpoint and is remembered for the
+    process; every other failure is treated as this-request-only.
+    """
+    if status == 200 and isinstance(body, dict):
+        count = body.get("input_tokens")
+        if isinstance(count, int) and count >= 0:
+            return count
+        logger.warning("%s count_tokens returned no input_tokens: %r", provider, body)
+        return None
+    if status in (404, 405):
+        _COUNT_TOKENS_UNSUPPORTED.add(url)
+        logger.warning(
+            "%s does not serve %s (HTTP %s); token counting is off for this process",
+            provider, url, status,
+        )
+        return None
+    # The provider's own words, not just the status: a bare "HTTP 400" on a request
+    # nobody sees is undiagnosable, and this one answers in a sentence.
+    logger.warning(
+        "%s count_tokens failed with HTTP %s: %s", provider, status, _error_text(body)
+    )
+    return None
+
+
+def _error_text(body: Any) -> str:
+    if isinstance(body, dict):
+        error = body.get("error")
+        if isinstance(error, dict) and error.get("message"):
+            return str(error["message"])
+    return "no error body"
+
+
 class AnthropicAdapter(APIProviderAdapter):
     """Adapter for Anthropic Claude API"""
 
@@ -582,6 +701,14 @@ class AnthropicAdapter(APIProviderAdapter):
     def get_endpoint_url(self) -> str:
         return f"{self.base_url.rstrip('/')}/messages"
 
+    def get_count_tokens_url(self) -> str:
+        return count_tokens_url_for(self.get_endpoint_url())
+
+    def format_count_tokens_payload(
+        self, messages: List[Dict], **kwargs
+    ) -> Dict[str, Any]:
+        return strip_for_count_tokens(self.format_request_payload(messages, **kwargs))
+
     def handle_api_error(self, error: Exception, response=None) -> ErrorResponse:
         """Enhanced error handling using ModelAPIError classification."""
         from marsys.agents.exceptions import ModelAPIError
@@ -887,3 +1014,50 @@ class AsyncAnthropicAdapter(AsyncBaseAPIAdapter, AnthropicAdapter):
             provider=self._provider_name() or "anthropic",
             response=stream_error_payload({"type": "max_retries"}, 0),
         )
+
+    async def acount_tokens(
+        self,
+        messages: List[Dict],
+        *,
+        tools: Optional[List[Dict[str, Any]]] = None,
+        system: Optional[str] = None,
+    ) -> Optional[int]:
+        """How many input tokens a Messages call with this body would carry, by the
+        model's own tokenizer, or ``None`` when the endpoint cannot say.
+
+        ``system`` rides in as the leading ``role:"system"`` message the payload
+        builder already knows how to hoist, so the counted body is assembled by the
+        same code the real request goes through — including this leg's tool
+        conversion and cache markers.
+
+        No retry loop and no raise: the caller is sizing something, not producing
+        the turn's answer, and a count that fails must cost the turn nothing.
+        """
+        import asyncio
+
+        import aiohttp
+
+        url = self.get_count_tokens_url()
+        if not count_tokens_supported(url):
+            return None
+        if system is not None:
+            messages = [{"role": "system", "content": system}, *messages]
+        payload = self.format_count_tokens_payload(messages, tools=tools)
+        headers = {**self.get_headers(), "accept": "application/json"}
+        session = await self._ensure_session()
+        try:
+            async with session.post(
+                url,
+                headers=headers,
+                json=payload,
+                timeout=aiohttp.ClientTimeout(total=30),
+            ) as response:
+                status = response.status
+                try:
+                    body = await response.json(content_type=None)
+                except ValueError:
+                    body = None
+        except (aiohttp.ClientError, asyncio.TimeoutError) as exc:
+            logger.warning("anthropic count_tokens transport failure: %s", exc)
+            return None
+        return read_count_tokens_response(url, status, body, provider="anthropic")
