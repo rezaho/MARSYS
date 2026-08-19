@@ -393,6 +393,16 @@ def test_responses_flat_error_event_keeps_the_providers_words():
                          "message": "You exceeded your current quota of requests."}
 
 
+def test_responses_failed_without_error_object_yields_the_marker():
+    # A `response.failed` carrying no error object yields the bare marker the classifier's
+    # code-less arm keys on — this pins the wire→classifier join for the "provider said it
+    # failed and not why" shape.
+    acc = ResponsesStreamAccumulator()
+    ok = acc.feed({"type": "response.failed", "response": {"id": "resp_x", "status": "failed"}})
+    assert not ok
+    assert acc.error == {"type": "response.failed"}
+
+
 def test_responses_bare_error_event_still_terminates():
     # An error event carrying neither code nor message still ends the stream with a
     # non-empty error marker (the pre-existing fallback).

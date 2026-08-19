@@ -247,6 +247,9 @@ def test_oauth_stream_error_event_raises_classified_retryable(monkeypatch):
         ("azure", {"code": "server_error"}, APIErrorClassification.SERVICE_UNAVAILABLE.value, True),
         ("azure", {"code": "rate_limit_exceeded"}, APIErrorClassification.RATE_LIMIT.value, True),
         ("azure", {"code": "rate_limit_exceeded", "type": "rate_limit_error"}, APIErrorClassification.RATE_LIMIT.value, True),
+        # code and type mapping DIFFERENTLY: the code must win (the Responses vocabulary names
+        # the fault; `type` is only the fallback key).
+        ("azure", {"code": "insufficient_quota", "type": "rate_limit_error"}, APIErrorClassification.INSUFFICIENT_CREDITS.value, False),
         ("openai", {"code": "insufficient_quota"}, APIErrorClassification.INSUFFICIENT_CREDITS.value, False),
         # a bare response.failed — the provider said the response failed and not why.
         ("azure", {"type": "response.failed"}, APIErrorClassification.SERVICE_UNAVAILABLE.value, True),
@@ -272,6 +275,10 @@ def test_status_less_stream_errors_classify_by_type(provider, error, expected_cl
     assert err.classification == expected_classification
     assert err.is_retryable is expected_retryable
     assert "the real provider words" in str(err)
+    if expected_retryable:
+        # A retryable verdict must carry a usable delay — a retry ladder reading
+        # retry_after=None/0 degenerates to a hot loop or a policy-side guess.
+        assert err.retry_after and err.retry_after > 0
 
 
 def test_oauth_truncation_empty_harmonizes_valid_with_placeholder():
