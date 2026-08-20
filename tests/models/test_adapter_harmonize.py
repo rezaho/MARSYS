@@ -259,7 +259,7 @@ def test_oauth_stream_error_event_raises_classified_retryable(monkeypatch):
         # retryable is a policy ruling, not a classification repair — these rows pin that a
         # future flip is deliberate, never drift.
         ("azure", {"type": "max_retries"}, APIErrorClassification.UNKNOWN.value, False),
-        ("azure", {"code": "incomplete_stream"}, APIErrorClassification.UNKNOWN.value, False),
+        ("azure", {"type": "incomplete_stream"}, APIErrorClassification.UNKNOWN.value, False),
         # A provider outside both families keeps UNKNOWN — but its words still survive.
         ("openrouter", {"code": "whatever"}, APIErrorClassification.UNKNOWN.value, False),
     ],

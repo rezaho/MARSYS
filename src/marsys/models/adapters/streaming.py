@@ -346,7 +346,7 @@ class ResponsesStreamAccumulator(_TapMixin):
             # dispositions as unknown/terminal. Normalize to the {code, message} shape the
             # `response.failed` arm above already yields: one shape downstream.
             flat = {k: data.get(k) for k in ("code", "message") if data.get(k) is not None}
-            self.error = flat or data.get("error", {}) or {"type": "unknown"}
+            self.error = flat or {"type": "unknown"}
             return False
 
         return True
