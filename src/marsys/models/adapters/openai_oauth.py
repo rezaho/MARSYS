@@ -439,6 +439,9 @@ class OpenAIOAuthAdapter(APIProviderAdapter):
                 "Install with: pip install httpx"
             )
 
+        from marsys.agents.exceptions import ModelAPIError
+        from marsys.models.adapters.streaming import stream_error_payload
+
         collected_content = ""
         collected_reasoning = []
         tool_call_map = {}
@@ -446,6 +449,7 @@ class OpenAIOAuthAdapter(APIProviderAdapter):
         usage = {}
         model_used = ""
         response_id = ""
+        saw_terminal = False
 
         with httpx.Client(timeout=120.0) as client:
             with client.stream(
@@ -504,23 +508,55 @@ class OpenAIOAuthAdapter(APIProviderAdapter):
                                     }
                                 current_call_id = None
 
-                        elif event_type == "response.completed":
+                        elif event_type in ("response.completed", "response.incomplete"):
+                            # An incomplete response (e.g. token limit) still carries a
+                            # usable terminal object; the collected deltas are the output.
                             resp = event.get("response", {})
                             usage = resp.get("usage", {})
                             if not model_used:
                                 model_used = resp.get("model", "")
                             if not response_id:
                                 response_id = resp.get("id", "")
+                            saw_terminal = True
+
+                        elif event_type == "response.failed":
+                            resp = event.get("response", {}) or {}
+                            err = resp.get("error") or {"type": "response.failed"}
+                            raise ModelAPIError.from_provider_response(
+                                provider="openai-oauth",
+                                response=stream_error_payload(err, len(collected_content)),
+                            )
 
                         elif event_type == "error":
-                            return {
-                                "error": True,
-                                "status_code": 500,
-                                "message": event.get("message", "Stream error")
+                            # Flat grammar: code/message sit on the event itself. The REAL
+                            # provider error must reach classification — this event used to
+                            # be packaged as a plain dict that flowed into harmonization and
+                            # surfaced a failed stream as an empty success.
+                            flat = {
+                                k: event.get(k)
+                                for k in ("code", "message")
+                                if event.get(k) is not None
                             }
+                            raise ModelAPIError.from_provider_response(
+                                provider="openai-oauth",
+                                response=stream_error_payload(
+                                    flat or {"type": "unknown"}, len(collected_content)
+                                ),
+                            )
 
                     except json.JSONDecodeError:
                         continue
+
+        if not saw_terminal:
+            # The stream closed without a terminal event and without a failure event —
+            # a transport-level truncation. Partials drop; recovery is a new request.
+            raise ModelAPIError.from_provider_response(
+                provider="openai-oauth",
+                response=stream_error_payload(
+                    {"type": "incomplete_stream", "message": "stream ended without completion"},
+                    len(collected_content),
+                ),
+            )
 
         # Convert tool_call_map to list
         tool_calls = []
@@ -576,7 +612,8 @@ class OpenAIOAuthAdapter(APIProviderAdapter):
                 "Install with: pip install httpx"
             )
 
-        from marsys.models.adapters.streaming import StreamEvent
+        from marsys.agents.exceptions import ModelAPIError
+        from marsys.models.adapters.streaming import StreamEvent, stream_error_payload
 
         def _tap(kind: str, delta: str) -> None:
             nonlocal on_stream_event
@@ -600,6 +637,7 @@ class OpenAIOAuthAdapter(APIProviderAdapter):
         usage = {}
         model_used = ""
         response_id = ""
+        saw_terminal = False
 
         async with httpx.AsyncClient() as client:
             async with client.stream(
@@ -673,25 +711,57 @@ class OpenAIOAuthAdapter(APIProviderAdapter):
                                     }
                                 current_call_id = None  # Reset after item is done
 
-                        elif event_type == "response.completed":
+                        elif event_type in ("response.completed", "response.incomplete"):
                             # Final response with usage - DON'T extract tool calls here
-                            # (already have complete data from output_item.done events)
+                            # (already have complete data from output_item.done events).
+                            # An incomplete response (e.g. token limit) still carries a
+                            # usable terminal object; the collected deltas are the output.
                             resp = event.get("response", {})
                             usage = resp.get("usage", {})
                             if not model_used:
                                 model_used = resp.get("model", "")
                             if not response_id:
                                 response_id = resp.get("id", "")
+                            saw_terminal = True
+
+                        elif event_type == "response.failed":
+                            resp = event.get("response", {}) or {}
+                            err = resp.get("error") or {"type": "response.failed"}
+                            raise ModelAPIError.from_provider_response(
+                                provider="openai-oauth",
+                                response=stream_error_payload(err, len(collected_content)),
+                            )
 
                         elif event_type == "error":
-                            return {
-                                "error": True,
-                                "status_code": 500,
-                                "message": event.get("message", "Stream error")
+                            # Flat grammar: code/message sit on the event itself. The REAL
+                            # provider error must reach classification — this event used to
+                            # be packaged as a plain dict that flowed into harmonization and
+                            # surfaced a failed stream as an empty success.
+                            flat = {
+                                k: event.get(k)
+                                for k in ("code", "message")
+                                if event.get(k) is not None
                             }
+                            raise ModelAPIError.from_provider_response(
+                                provider="openai-oauth",
+                                response=stream_error_payload(
+                                    flat or {"type": "unknown"}, len(collected_content)
+                                ),
+                            )
 
                     except json.JSONDecodeError:
                         continue
+
+        if not saw_terminal:
+            # The stream closed without a terminal event and without a failure event —
+            # a transport-level truncation. Partials drop; recovery is a new request.
+            raise ModelAPIError.from_provider_response(
+                provider="openai-oauth",
+                response=stream_error_payload(
+                    {"type": "incomplete_stream", "message": "stream ended without completion"},
+                    len(collected_content),
+                ),
+            )
 
         # Convert tool_call_map to list - only include entries with valid IDs
         tool_calls = []

@@ -251,16 +251,27 @@ def test_oauth_stream_error_event_raises_classified_retryable(monkeypatch):
         # the fault; `type` is only the fallback key).
         ("azure", {"code": "insufficient_quota", "type": "rate_limit_error"}, APIErrorClassification.INSUFFICIENT_CREDITS.value, False),
         ("openai", {"code": "insufficient_quota"}, APIErrorClassification.INSUFFICIENT_CREDITS.value, False),
-        # a bare response.failed — the provider said the response failed and not why.
+        # The ChatGPT OAuth backend serves the same Responses wire contract.
+        ("openai-oauth", {"code": "rate_limit_exceeded"}, APIErrorClassification.RATE_LIMIT.value, True),
+        # Code-less shapes unify: a bare response.failed, a message-only flat error, and
+        # the accumulator's bare-event fallback are all the provider aborting without
+        # naming a request-shaped cause — provider-side, so retryable.
         ("azure", {"type": "response.failed"}, APIErrorClassification.SERVICE_UNAVAILABLE.value, True),
+        ("azure", {}, APIErrorClassification.SERVICE_UNAVAILABLE.value, True),
+        ("openai", {"type": "unknown"}, APIErrorClassification.SERVICE_UNAVAILABLE.value, True),
         # Request-shaped codes stay UNKNOWN/non-retryable with the real words.
         ("azure", {"code": "invalid_prompt"}, APIErrorClassification.UNKNOWN.value, False),
-        # The adapters' synthetic markers keep today's disposition: flipping either to
-        # retryable is a policy ruling, not a classification repair — these rows pin that a
-        # future flip is deliberate, never drift.
-        ("azure", {"type": "max_retries"}, APIErrorClassification.UNKNOWN.value, False),
-        ("azure", {"type": "incomplete_stream"}, APIErrorClassification.UNKNOWN.value, False),
-        # A provider outside both families keeps UNKNOWN — but its words still survive.
+        # The adapters' synthetic markers, ruled retryable 2026-08-20: exhausting the
+        # adapter's quick in-call retry budget hands recovery to the caller's slower
+        # ladder, and a truncated stream is a transport fault. The marker arm sits above
+        # the provider dispatch — one disposition for every provider, pinned here by the
+        # openrouter row.
+        ("azure", {"type": "max_retries"}, APIErrorClassification.SERVICE_UNAVAILABLE.value, True),
+        ("anthropic", {"type": "max_retries"}, APIErrorClassification.SERVICE_UNAVAILABLE.value, True),
+        ("openrouter", {"type": "max_retries"}, APIErrorClassification.SERVICE_UNAVAILABLE.value, True),
+        ("azure", {"type": "incomplete_stream"}, APIErrorClassification.NETWORK_ERROR.value, True),
+        # A provider outside the families keeps UNKNOWN for its own codes — but its
+        # words still survive.
         ("openrouter", {"code": "whatever"}, APIErrorClassification.UNKNOWN.value, False),
     ],
 )
