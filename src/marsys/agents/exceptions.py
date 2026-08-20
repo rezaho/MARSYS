@@ -1058,7 +1058,25 @@ class ModelAPIError(ModelError):
             api_error_type = error_data.get("type")
             api_error_code = error_data.get("code")
 
-            if provider in ("anthropic", "anthropic-oauth", "bedrock"):
+            if api_error_type == "max_retries":
+                # The adapters' own synthetic exhaustion marker — the stream-open retry
+                # loop burned its budget on statuses the provider itself calls retryable.
+                # It is provider-independent (ours, not theirs), so it classifies ahead
+                # of the provider dispatch. Exhausting the adapter's quick in-call budget
+                # doesn't make the fault permanent; it hands recovery to the caller's
+                # slower retry ladder, with a wait long enough to outlive the blip the
+                # quick budget couldn't.
+                classification = APIErrorClassification.SERVICE_UNAVAILABLE.value
+                is_retryable = True
+                retry_after = 60
+            elif api_error_type == "incomplete_stream":
+                # The adapters' own truncation marker: the stream died mid-flight with
+                # no terminal event and no provider error — a transport fault, not a
+                # provider verdict. Partials were discarded; recovery is a new request.
+                classification = APIErrorClassification.NETWORK_ERROR.value
+                is_retryable = True
+                retry_after = 10
+            elif provider in ("anthropic", "anthropic-oauth", "bedrock"):
                 # Anthropic's documented stream error types — the official streaming docs equate
                 # overloaded_error to HTTP 529, so it must be retryable exactly like a 5xx.
                 # Bedrock serves the Messages API and emits the same error envelope, so it
@@ -1085,10 +1103,11 @@ class ModelAPIError(ModelError):
                     is_retryable = True
                     retry_after = 10
 
-            elif provider in ("openai", "azure"):
+            elif provider in ("openai", "azure", "openai-oauth"):
                 # The Responses API names a stream fault by its `code` (a closed vocabulary
-                # upstream); `type` is the fallback key. Azure serves the same wire contract as
-                # first-party OpenAI — the same share the status-code arm above already makes.
+                # upstream); `type` is the fallback key. Azure and the ChatGPT OAuth backend
+                # serve the same wire contract as first-party OpenAI — the same share the
+                # status-code arm above already makes.
                 key = api_error_code or api_error_type
                 if key == "insufficient_quota":
                     classification = APIErrorClassification.INSUFFICIENT_CREDITS.value
@@ -1096,17 +1115,19 @@ class ModelAPIError(ModelError):
                     classification = APIErrorClassification.RATE_LIMIT.value
                     is_retryable = True
                     retry_after = 60
-                elif key in ("server_error", "response.failed"):
-                    # `server_error` is the provider's own 5xx; a bare `response.failed` (no
-                    # code) is the provider saying the response failed without saying why —
-                    # the same provider-side-fault shape, so the same retryable disposition.
+                elif key in ("server_error", "response.failed", "unknown", None):
+                    # `server_error` is the provider's own 5xx. The code-less shapes unify
+                    # with it: a bare `response.failed`, a flat `error` event carrying only
+                    # a message, or an entirely bare one are all the provider aborting the
+                    # stream without naming a request-shaped cause — and request-shaped
+                    # faults always carry codes (invalid_prompt, image_*…). Code-less means
+                    # provider-side, so all of them get the same retryable disposition.
                     classification = APIErrorClassification.SERVICE_UNAVAILABLE.value
                     is_retryable = True
                     retry_after = 10
-                # Every other code — request-shaped faults (invalid_prompt, image_*…) and the
-                # adapters' synthetic max_retries / incomplete_stream markers — keeps UNKNOWN
-                # and non-retryable, real message intact: flipping any of them to retryable is
-                # a policy decision, not a classification repair.
+                # Every other code — the request-shaped faults — keeps UNKNOWN and
+                # non-retryable, real message intact: those name a cause retrying
+                # cannot cure.
 
         elif (
             provider in ("anthropic", "anthropic-oauth")
