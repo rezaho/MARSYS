@@ -1046,35 +1046,67 @@ class ModelAPIError(ModelError):
                 if "token" in message.lower() and ("expired" in message.lower() or "invalid" in message.lower()):
                     classification = APIErrorClassification.AUTHENTICATION_FAILED.value
 
-        elif provider in ("anthropic", "anthropic-oauth") and raw_response and raw_response.get("error"):
-            # NO status code: an in-stream SSE error event (Anthropic delivers stream
-            # failures as `{"type":"error","error":{...}}` under HTTP 200). Classify by
-            # the documented error type — the official streaming docs equate
-            # overloaded_error to HTTP 529, so it must be retryable exactly like a 5xx.
+        elif raw_response and raw_response.get("error"):
+            # NO status code: an in-stream SSE error event (providers deliver stream failures
+            # under HTTP 200, so there is no status to classify by). The message/type/code are
+            # read BEFORE the provider dispatch: whatever the provider, and however novel its
+            # error type, its real words survive to the caller — never a synthetic "API Error".
+            # A status-less fault that matches no provider arm below stays UNKNOWN and
+            # non-retryable, message intact.
             error_data = raw_response.get("error", {}) or {}
             message = error_data.get("message", message)
             api_error_type = error_data.get("type")
-            if api_error_type == "overloaded_error":
-                classification = APIErrorClassification.SERVICE_UNAVAILABLE.value
-                is_retryable = True
-                retry_after = 10
-            elif api_error_type == "rate_limit_error":
-                classification = APIErrorClassification.RATE_LIMIT.value
-                is_retryable = True
-                retry_after = 60
-            elif api_error_type == "authentication_error":
-                classification = APIErrorClassification.AUTHENTICATION_FAILED.value
-            elif api_error_type == "permission_error":
-                classification = APIErrorClassification.PERMISSION_DENIED.value
-            elif api_error_type == "invalid_request_error":
-                classification = APIErrorClassification.INVALID_REQUEST.value
-            elif api_error_type == "api_error":
-                # The provider's own "internal error" type (≙ HTTP 500).
-                classification = APIErrorClassification.SERVICE_UNAVAILABLE.value
-                is_retryable = True
-                retry_after = 10
-            # Unknown in-stream types keep UNKNOWN classification but the REAL
-            # provider message above — never a destroyed/synthetic one.
+            api_error_code = error_data.get("code")
+
+            if provider in ("anthropic", "anthropic-oauth", "bedrock"):
+                # Anthropic's documented stream error types — the official streaming docs equate
+                # overloaded_error to HTTP 529, so it must be retryable exactly like a 5xx.
+                # Bedrock serves the Messages API and emits the same error envelope, so it
+                # classifies identically to first-party Anthropic — the same share the
+                # status-code arm above already makes; without it a Bedrock in-stream fault
+                # falls through unclassified and a retryable overload dispositions as terminal.
+                if api_error_type == "overloaded_error":
+                    classification = APIErrorClassification.SERVICE_UNAVAILABLE.value
+                    is_retryable = True
+                    retry_after = 10
+                elif api_error_type == "rate_limit_error":
+                    classification = APIErrorClassification.RATE_LIMIT.value
+                    is_retryable = True
+                    retry_after = 60
+                elif api_error_type == "authentication_error":
+                    classification = APIErrorClassification.AUTHENTICATION_FAILED.value
+                elif api_error_type == "permission_error":
+                    classification = APIErrorClassification.PERMISSION_DENIED.value
+                elif api_error_type == "invalid_request_error":
+                    classification = APIErrorClassification.INVALID_REQUEST.value
+                elif api_error_type == "api_error":
+                    # The provider's own "internal error" type (≙ HTTP 500).
+                    classification = APIErrorClassification.SERVICE_UNAVAILABLE.value
+                    is_retryable = True
+                    retry_after = 10
+
+            elif provider in ("openai", "azure"):
+                # The Responses API names a stream fault by its `code` (a closed vocabulary
+                # upstream); `type` is the fallback key. Azure serves the same wire contract as
+                # first-party OpenAI — the same share the status-code arm above already makes.
+                key = api_error_code or api_error_type
+                if key == "insufficient_quota":
+                    classification = APIErrorClassification.INSUFFICIENT_CREDITS.value
+                elif key in ("rate_limit_exceeded", "rate_limit_error"):
+                    classification = APIErrorClassification.RATE_LIMIT.value
+                    is_retryable = True
+                    retry_after = 60
+                elif key in ("server_error", "response.failed"):
+                    # `server_error` is the provider's own 5xx; a bare `response.failed` (no
+                    # code) is the provider saying the response failed without saying why —
+                    # the same provider-side-fault shape, so the same retryable disposition.
+                    classification = APIErrorClassification.SERVICE_UNAVAILABLE.value
+                    is_retryable = True
+                    retry_after = 10
+                # Every other code — request-shaped faults (invalid_prompt, image_*…) and the
+                # adapters' synthetic max_retries / incomplete_stream markers — keeps UNKNOWN
+                # and non-retryable, real message intact: flipping any of them to retryable is
+                # a policy decision, not a classification repair.
 
         elif (
             provider in ("anthropic", "anthropic-oauth")

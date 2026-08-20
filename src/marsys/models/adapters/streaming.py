@@ -339,7 +339,14 @@ class ResponsesStreamAccumulator(_TapMixin):
                 return False
 
         elif event_type == "error":
-            self.error = data.get("error", {}) or {"type": "unknown"}
+            # The Responses `error` event is FLAT — code/message/param sit on the event itself,
+            # not under a nested "error" key (that nesting is Anthropic's grammar, and these
+            # accumulators exist precisely because the grammars differ). Reading it nested returns
+            # {} and destroys the provider's verdict before classification, so a retryable fault
+            # dispositions as unknown/terminal. Normalize to the {code, message} shape the
+            # `response.failed` arm above already yields: one shape downstream.
+            flat = {k: data.get(k) for k in ("code", "message") if data.get(k) is not None}
+            self.error = flat or {"type": "unknown"}
             return False
 
         return True

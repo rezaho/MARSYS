@@ -229,27 +229,56 @@ def test_oauth_stream_error_event_raises_classified_retryable(monkeypatch):
 
 
 @pytest.mark.parametrize(
-    "error_type, expected_classification, expected_retryable",
+    "provider, error, expected_classification, expected_retryable",
     [
-        ("overloaded_error", APIErrorClassification.SERVICE_UNAVAILABLE.value, True),
-        ("rate_limit_error", APIErrorClassification.RATE_LIMIT.value, True),
-        ("api_error", APIErrorClassification.SERVICE_UNAVAILABLE.value, True),
-        ("authentication_error", APIErrorClassification.AUTHENTICATION_FAILED.value, False),
-        ("invalid_request_error", APIErrorClassification.INVALID_REQUEST.value, False),
-        ("never_seen_before", APIErrorClassification.UNKNOWN.value, False),
+        # Anthropic family — classified by the documented stream error `type`.
+        ("anthropic-oauth", {"type": "overloaded_error"}, APIErrorClassification.SERVICE_UNAVAILABLE.value, True),
+        ("anthropic-oauth", {"type": "rate_limit_error"}, APIErrorClassification.RATE_LIMIT.value, True),
+        ("anthropic-oauth", {"type": "api_error"}, APIErrorClassification.SERVICE_UNAVAILABLE.value, True),
+        ("anthropic-oauth", {"type": "authentication_error"}, APIErrorClassification.AUTHENTICATION_FAILED.value, False),
+        ("anthropic-oauth", {"type": "invalid_request_error"}, APIErrorClassification.INVALID_REQUEST.value, False),
+        ("anthropic-oauth", {"type": "never_seen_before"}, APIErrorClassification.UNKNOWN.value, False),
+        # Bedrock shares Anthropic's wire contract — a bedrock in-stream overload is as
+        # retryable as a first-party one, not an unclassified terminal fault.
+        ("bedrock", {"type": "overloaded_error"}, APIErrorClassification.SERVICE_UNAVAILABLE.value, True),
+        ("bedrock", {"type": "rate_limit_error"}, APIErrorClassification.RATE_LIMIT.value, True),
+        # OpenAI family (azure serves the identical Responses contract) — classified by `code`
+        # first, `type` as the fallback key.
+        ("azure", {"code": "server_error"}, APIErrorClassification.SERVICE_UNAVAILABLE.value, True),
+        ("azure", {"code": "rate_limit_exceeded"}, APIErrorClassification.RATE_LIMIT.value, True),
+        ("azure", {"code": "rate_limit_exceeded", "type": "rate_limit_error"}, APIErrorClassification.RATE_LIMIT.value, True),
+        # code and type mapping DIFFERENTLY: the code must win (the Responses vocabulary names
+        # the fault; `type` is only the fallback key).
+        ("azure", {"code": "insufficient_quota", "type": "rate_limit_error"}, APIErrorClassification.INSUFFICIENT_CREDITS.value, False),
+        ("openai", {"code": "insufficient_quota"}, APIErrorClassification.INSUFFICIENT_CREDITS.value, False),
+        # a bare response.failed — the provider said the response failed and not why.
+        ("azure", {"type": "response.failed"}, APIErrorClassification.SERVICE_UNAVAILABLE.value, True),
+        # Request-shaped codes stay UNKNOWN/non-retryable with the real words.
+        ("azure", {"code": "invalid_prompt"}, APIErrorClassification.UNKNOWN.value, False),
+        # The adapters' synthetic markers keep today's disposition: flipping either to
+        # retryable is a policy ruling, not a classification repair — these rows pin that a
+        # future flip is deliberate, never drift.
+        ("azure", {"type": "max_retries"}, APIErrorClassification.UNKNOWN.value, False),
+        ("azure", {"type": "incomplete_stream"}, APIErrorClassification.UNKNOWN.value, False),
+        # A provider outside both families keeps UNKNOWN — but its words still survive.
+        ("openrouter", {"code": "whatever"}, APIErrorClassification.UNKNOWN.value, False),
     ],
 )
-def test_status_less_stream_errors_classify_by_type(error_type, expected_classification, expected_retryable):
+def test_status_less_stream_errors_classify_by_type(provider, error, expected_classification, expected_retryable):
     """`from_provider_response` accepts a plain error dict (no Response, no status —
-    the in-stream case) and classifies by the documented error type. Unknown types
-    keep UNKNOWN but the REAL provider message survives."""
+    the in-stream case) and classifies it per provider family. Unmapped codes/types
+    keep UNKNOWN but the REAL provider message survives for every provider."""
     err = ModelAPIError.from_provider_response(
-        provider="anthropic-oauth",
-        response={"error": {"type": error_type, "message": "the real provider words"}},
+        provider=provider,
+        response={"error": {**error, "message": "the real provider words"}},
     )
     assert err.classification == expected_classification
     assert err.is_retryable is expected_retryable
     assert "the real provider words" in str(err)
+    if expected_retryable:
+        # A retryable verdict must carry a usable delay — a retry ladder reading
+        # retry_after=None/0 degenerates to a hot loop or a policy-side guess.
+        assert err.retry_after and err.retry_after > 0
 
 
 def test_oauth_truncation_empty_harmonizes_valid_with_placeholder():
