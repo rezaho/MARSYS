@@ -57,6 +57,12 @@ class AnthropicOAuthAdapter(APIProviderAdapter):
     # Enable streaming mode - Claude OAuth uses SSE streaming
     streaming = True
 
+    # Anthropic's documented bounds for fixed-budget thinking: budget_tokens >= 1024 and
+    # strictly less than max_tokens (thinking spends from the same output allowance).
+    # Mirrors AnthropicAdapter — the two payload builders are kept deliberately parallel.
+    _THINKING_MIN_BUDGET = 1024
+    _THINKING_HEADROOM = 1024
+
     # CRITICAL: Exact prefix required - no trailing characters!
     CLAUDE_CODE_PREFIX = "You are Claude Code, Anthropic's official CLI for Claude."
 
@@ -552,8 +558,33 @@ class AnthropicOAuthAdapter(APIProviderAdapter):
                 effort = kwargs.get("reasoning_effort")
                 if effort:
                     payload.setdefault("output_config", {})["effort"] = str(effort).lower()
+            elif not isinstance(budget, int) or budget <= 0:
+                # Thinking requested without a usable fixed budget: sending a null/zero
+                # budget_tokens is an illegal payload, so thinking is dropped instead.
+                logger.warning(
+                    "thinking requested without a usable budget (budget=%r); "
+                    "thinking disabled for this call", budget,
+                )
             else:
-                payload["thinking"] = {"type": "enabled", "budget_tokens": budget}
+                # Clamp under max_tokens (parity with AnthropicAdapter._thinking_payload):
+                # the API 400s on budget_tokens >= max_tokens, and headroom keeps a usable
+                # text/tool allowance after a maximally-thinky step. A budget that cannot
+                # fit disables thinking for the call rather than failing it.
+                max_allowed = payload["max_tokens"]
+                clamped = min(budget, max_allowed - self._THINKING_HEADROOM)
+                if clamped < self._THINKING_MIN_BUDGET:
+                    logger.warning(
+                        "thinking_budget=%s cannot fit under max_tokens=%s "
+                        "(min budget %s + headroom); thinking disabled for this call",
+                        budget, max_allowed, self._THINKING_MIN_BUDGET,
+                    )
+                else:
+                    if clamped < budget:
+                        logger.warning(
+                            "thinking_budget=%s clamped to %s to fit under max_tokens=%s",
+                            budget, clamped, max_allowed,
+                        )
+                    payload["thinking"] = {"type": "enabled", "budget_tokens": clamped}
 
         # Temperature only when the model accepts it AND thinking is off — the
         # reasoning-capable models 400 on the key ("`temperature` is deprecated
