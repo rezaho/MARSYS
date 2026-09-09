@@ -7,7 +7,7 @@ from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
 from marsys.models.adapters.base import APIProviderAdapter, AsyncBaseAPIAdapter
-from marsys.models.adapters.openai import thinking_budget_to_effort
+from marsys.models.adapters.openai import served_reasoning_effort, thinking_budget_to_effort
 from marsys.models.response_models import (
     ErrorResponse,
     HarmonizedResponse,
@@ -369,10 +369,9 @@ class OpenAIOAuthAdapter(APIProviderAdapter):
         if not reasoning_effort:
             reasoning_effort = thinking_budget_to_effort(kwargs.get("thinking_budget"))
         if reasoning_effort and reasoning_effort.lower() in ["minimal", "low", "medium", "high"]:
-            effort = reasoning_effort.lower()
-            if effort == "minimal" and "codex" in self.model_name.lower():
-                effort = "low"
-            payload["reasoning"]["effort"] = effort
+            payload["reasoning"]["effort"] = served_reasoning_effort(
+                reasoning_effort.lower(), self.model_name.lower()
+            )
 
         if kwargs.get("prompt_cache_key") is not None:
             payload["prompt_cache_key"] = kwargs["prompt_cache_key"]
