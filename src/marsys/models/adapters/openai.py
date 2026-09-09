@@ -49,6 +49,7 @@ _LOW_MINIMUM_EFFORT_MODELS = frozenset({
     "gpt-5.2", "gpt-5.2-2025-12-11",
     "gpt-5.4", "gpt-5.4-2026-03-05",
     "gpt-5.4-mini", "gpt-5.4-mini-2026-03-17",
+    "gpt-5.4-nano", "gpt-5.4-nano-2026-03-17",
     "gpt-5.5", "gpt-5.5-2026-04-23",
 })
 

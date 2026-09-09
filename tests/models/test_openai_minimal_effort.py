@@ -16,9 +16,16 @@ RAW_RESPONSE = {
 }
 
 
-@pytest.mark.parametrize("provider", ["openai", "openai-oauth"])
 @pytest.mark.parametrize("asynchronous", [False, True], ids=["sync", "async"])
-@pytest.mark.parametrize("model_name", ["gpt-5.4-mini", "gpt-5.5", "gpt-5"])
+@pytest.mark.parametrize(
+    "provider, model_name",
+    [
+        ("openai", "gpt-5.4-mini"), ("openai-oauth", "gpt-5.4-mini"),
+        ("openai", "gpt-5.5"), ("openai-oauth", "gpt-5.5"),
+        ("openai", "gpt-5"), ("openai-oauth", "gpt-5"),
+        ("openai", "gpt-5.4-nano"),
+    ],
+)
 @pytest.mark.parametrize(
     "configured, expected",
     [
@@ -107,6 +114,8 @@ async def test_configured_effort_reaches_transport_in_supported_form(
         ("gpt-5.4-2026-03-05", "low"),
         ("gpt-5.4-mini", "low"),
         ("gpt-5.4-mini-2026-03-17", "low"),
+        ("gpt-5.4-nano", "low"),
+        ("gpt-5.4-nano-2026-03-17", "low"),
         ("gpt-5.5", "low"),
         ("gpt-5.5-2026-04-23", "low"),
         ("gpt-5.3-codex", "low"),
