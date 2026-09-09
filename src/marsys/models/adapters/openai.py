@@ -41,6 +41,27 @@ _THINKING_BUDGET_EFFORT_BUCKETS: tuple[tuple[int, str], ...] = (
 )
 _MAX_THINKING_EFFORT = "high"
 
+# These model pages list low as the least positive effort. Keep exact aliases
+# and documented snapshots: pro variants and future generations differ.
+# https://developers.openai.com/api/docs/models/gpt-5.4-mini (and each model below)
+_LOW_MINIMUM_EFFORT_MODELS = frozenset({
+    "gpt-5.1", "gpt-5.1-2025-11-13",
+    "gpt-5.2", "gpt-5.2-2025-12-11",
+    "gpt-5.4", "gpt-5.4-2026-03-05",
+    "gpt-5.4-mini", "gpt-5.4-mini-2026-03-17",
+    "gpt-5.4-nano", "gpt-5.4-nano-2026-03-17",
+    "gpt-5.5", "gpt-5.5-2026-04-23",
+})
+
+
+def served_reasoning_effort(effort: str, model_lower: str) -> str:
+    """Keep requested reasoning positive when a model does not serve minimal."""
+    if effort == "minimal" and (
+        "codex" in model_lower or model_lower in _LOW_MINIMUM_EFFORT_MODELS
+    ):
+        return "low"
+    return effort
+
 
 def thinking_budget_to_effort(budget: Optional[int]) -> Optional[str]:
     """`reasoning.effort` for a token budget, or None to leave the provider default.
@@ -393,22 +414,8 @@ class OpenAIAdapter(APIProviderAdapter):
         return payload
 
     def _served_effort(self, effort: str, model_lower: str) -> str:
-        """The nearest effort THIS surface will serve for the one the caller asked for.
-
-        `minimal` is not universal. Codex models reject it; so does GPT-5.6 on Azure's
-        re-hosted surface, which answers a request for it with
-        `Unsupported value: 'minimal' is not supported ... Supported values are: 'none',
-        'low', 'medium', 'high', 'xhigh', and 'max'` — a 400 on every call, for a caller
-        who only configured a small thinking budget.
-
-        `low` is the substitution and `none` is not: a positive budget means "think a
-        little", and turning that into no reasoning at all would answer a different
-        question than the one asked. A budget of zero never reaches here (it maps to no
-        parameter at all).
-        """
-        if effort == "minimal" and "codex" in model_lower:
-            return "low"
-        return effort
+        """Allow re-hosted surfaces to override the shared model compatibility rule."""
+        return served_reasoning_effort(effort, model_lower)
 
     def get_endpoint_url(self) -> str:
         # Migrate to OpenAI Responses API (unified endpoint for all models)
