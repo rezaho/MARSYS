@@ -329,6 +329,9 @@ class OpenAIAdapter(APIProviderAdapter):
                 "effort": self._served_effort(reasoning_effort.lower(), model_lower)
             }
 
+        if kwargs.get("prompt_cache_key") is not None:
+            payload["prompt_cache_key"] = kwargs["prompt_cache_key"]
+
         # Only accept known OpenAI Responses API parameters - warn about unknown ones
         # Based on: https://platform.openai.com/docs/api-reference/responses/create
         valid_openai_params = {
