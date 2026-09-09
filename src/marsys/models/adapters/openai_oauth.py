@@ -7,6 +7,7 @@ from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
 from marsys.models.adapters.base import APIProviderAdapter, AsyncBaseAPIAdapter
+from marsys.models.adapters.openai import thinking_budget_to_effort
 from marsys.models.response_models import (
     ErrorResponse,
     HarmonizedResponse,
@@ -361,6 +362,17 @@ class OpenAIOAuthAdapter(APIProviderAdapter):
             "stream": True,  # REQUIRED for ChatGPT backend
             "include": ["reasoning.encrypted_content"],
         }
+
+        # Summary controls visibility; depth uses the same effort/budget contract
+        # as the API-key Responses adapter.
+        reasoning_effort = kwargs.get("reasoning_effort")
+        if not reasoning_effort:
+            reasoning_effort = thinking_budget_to_effort(kwargs.get("thinking_budget"))
+        if reasoning_effort and reasoning_effort.lower() in ["minimal", "low", "medium", "high"]:
+            effort = reasoning_effort.lower()
+            if effort == "minimal" and "codex" in self.model_name.lower():
+                effort = "low"
+            payload["reasoning"]["effort"] = effort
 
         if kwargs.get("prompt_cache_key") is not None:
             payload["prompt_cache_key"] = kwargs["prompt_cache_key"]
