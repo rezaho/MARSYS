@@ -3,7 +3,6 @@ import json
 import logging
 import os
 import time
-import uuid
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
@@ -361,8 +360,10 @@ class OpenAIOAuthAdapter(APIProviderAdapter):
             "store": False,
             "stream": True,  # REQUIRED for ChatGPT backend
             "include": ["reasoning.encrypted_content"],
-            "prompt_cache_key": str(uuid.uuid4()),
         }
+
+        if kwargs.get("prompt_cache_key") is not None:
+            payload["prompt_cache_key"] = kwargs["prompt_cache_key"]
 
         # Handle structured output — text.format (Responses API). Strict mode here
         # demands BOTH additionalProperties:false AND required==every property; a
