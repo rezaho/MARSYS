@@ -238,6 +238,50 @@ def test_the_two_measured_providers_do_get_the_fields(provider):
     assert payload["prompt_cache_options"] == OPTIONS
 
 
+@pytest.mark.parametrize("provider", ["openrouter", "xai"])
+def test_a_provider_with_its_own_builder_is_never_handed_the_fields(provider):
+    """AC-1c over the rest of the factory table. These two route to
+    ``OpenRouterAdapter`` and get a chat-completions body of its own making, so the
+    routing withholds the fields here and the gate never runs. Pinned anyway: the claim
+    that has to stay true is "only openai and azure receive them", and that one spans
+    every provider the factory knows, however each is served."""
+    adapter = ProviderAdapterFactory.create_adapter(
+        provider=provider, model_name="gpt-5.6-terra",
+        api_key="not-a-real-key", base_url="https://example.invalid/v1",
+    )
+    payload = adapter.format_request_payload(CONVERSATION)
+    assert "prompt_cache_options" not in payload
+    assert "prompt_cache_breakpoint" not in json.dumps(payload)
+
+
+def test_a_hand_built_adapter_is_taken_at_its_class_name(builder):
+    """The gate reads the provider the factory stamped and falls back to the class name
+    when nothing stamped one, and the fallback is a decision rather than an accident.
+    Building ``OpenAIAdapter`` by hand says the request is bound for OpenAI's own
+    endpoint; ``AzureOpenAIAdapter`` pins ``azure`` the same way. Both name a surface
+    the fields were measured on. Only the factory ever aims this class at a foreign
+    endpoint, and it always stamps. So a later edit to ``_provider_name`` has to move
+    this test before it can move which endpoints receive the fields."""
+    adapter = _make(builder, "gpt-5.6-terra")
+    assert getattr(adapter, "provider", None) is None
+    payload = adapter.format_request_payload(CONVERSATION)
+    assert _markers(payload)
+    assert payload["prompt_cache_options"] == OPTIONS
+
+
+@pytest.mark.parametrize("provider", ["xai", "groq", "some-new-gateway"])
+def test_a_stamped_provider_beats_the_class_name(builder, provider):
+    """AC-1c at the level the gate actually reads. Routing every unrecognized provider
+    to the OpenAI builder is only safe because the stamp outranks class identity, which
+    a payload built through the factory cannot show on its own — the factory picks the
+    class and writes the stamp together. Here they disagree, and the stamp wins."""
+    adapter = _make(builder, "gpt-5.6-terra")
+    adapter.provider = provider
+    payload = adapter.format_request_payload(CONVERSATION)
+    assert "prompt_cache_options" not in payload
+    assert "prompt_cache_breakpoint" not in json.dumps(payload)
+
+
 # --- AC-2: the generation gate ------------------------------------------------------
 
 
