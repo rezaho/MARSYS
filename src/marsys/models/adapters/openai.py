@@ -1,10 +1,12 @@
 import json
 import logging
+import re
 import time
 import warnings
-from typing import Any, Callable, Dict, List, Optional
+from typing import Any, Callable, Collection, Dict, List, Optional
 
 from marsys.models.adapters.base import (
+    CACHE_EXEMPT_KEY,
     APIProviderAdapter,
     AsyncBaseAPIAdapter,
     _CapturedErrorResponse,
@@ -52,6 +54,223 @@ _LOW_MINIMUM_EFFORT_MODELS = frozenset({
     "gpt-5.4-nano", "gpt-5.4-nano-2026-03-17",
     "gpt-5.5", "gpt-5.5-2026-04-23",
 })
+
+
+# --- prompt caching -----------------------------------------------------------------
+#
+# The generation that serves explicit prompt caching. Earlier models answer
+# `prompt_cache_options` or `prompt_cache_breakpoint` with a 400, so the fields are
+# gated on the model name rather than sent everywhere.
+_EXPLICIT_PROMPT_CACHE_MIN_VERSION = (5, 6)
+
+# The providers whose endpoints were measured to serve these fields. The factory routes
+# an unrecognized provider to this adapter, so a third-party OpenAI-compatible endpoint
+# behind a GPT-5.6-shaped model name would otherwise receive them untested.
+_EXPLICIT_PROMPT_CACHE_PROVIDERS = frozenset({"openai", "azure"})
+
+# Request-level: use the request's own breakpoints instead of the provider's implicit
+# one on the latest message. `30m` is the default, the only accepted value and a
+# minimum; it is sent explicitly so the request says what it means.
+PROMPT_CACHE_OPTIONS_EXPLICIT = {"mode": "explicit", "ttl": "30m"}
+
+# Block-level: the cacheable prefix ends at the end of the block carrying this.
+PROMPT_CACHE_BREAKPOINT_EXPLICIT = {"mode": "explicit"}
+
+# The Responses content blocks that accept a breakpoint. An assistant/output block does
+# not, and neither does the request-level `instructions` field.
+_BREAKPOINT_BLOCK_TYPES = frozenset({"input_text", "input_image", "input_file"})
+
+# The input-message roles whose items may carry one. `assistant` is excluded: its items
+# are model output replayed back, and the provider takes a breakpoint only on input
+# content.
+_BREAKPOINT_ITEM_ROLES = frozenset({"system", "developer", "user"})
+
+_GENERATION_RE = re.compile(r"^gpt-(\d+)(?:\.(\d+))?")
+
+
+def supports_explicit_prompt_cache(model_lower: str) -> bool:
+    """Whether a model name is GPT-5.6 or later, the generation that serves the fields.
+
+    Reads the name the same way the temperature rule does (`format_request_payload`),
+    and carries the same honesty caveat: on Azure this is an operator-chosen deployment
+    label, so a deployment named after a model it does not serve lies to this check.
+    The two directions fail differently and both are acceptable. A pre-5.6 model behind
+    a 5.6-shaped name takes a 400 on its first call — loud, immediate, and impossible to
+    mistake for a cost problem. A 5.6 model behind an older-shaped name simply keeps
+    today's behaviour and pays today's price.
+    """
+    match = _GENERATION_RE.match(model_lower or "")
+    if not match:
+        return False
+    major = int(match.group(1))
+    minor = int(match.group(2) or 0)
+    return (major, minor) >= _EXPLICIT_PROMPT_CACHE_MIN_VERSION
+
+
+def _blocks_with_breakpoint(
+    blocks: List[Any],
+) -> Optional[List[Any]]:
+    """A copy of ``blocks`` carrying a breakpoint on the last block that can hold one.
+
+    ``None`` when no block can, so the caller can leave the item exactly as it arrived
+    rather than rewriting a shape for a marker it never placed. Copies rather than
+    stamping in place: the durable conversation shares these dicts (the same hazard
+    ``hydrate_messages`` documents), so a marker written in place would leak into
+    persisted rows, and copying is also what makes building a payload twice from the
+    same input byte-identical.
+    """
+    for index in range(len(blocks) - 1, -1, -1):
+        block = blocks[index]
+        if not isinstance(block, dict) or block.get("type") not in _BREAKPOINT_BLOCK_TYPES:
+            continue
+        if block.get("prompt_cache_breakpoint"):
+            # A caller placed one already; a second would buy nothing.
+            return list(blocks)
+        marked = list(blocks)
+        marked[index] = {
+            **block,
+            "prompt_cache_breakpoint": dict(PROMPT_CACHE_BREAKPOINT_EXPLICIT),
+        }
+        return marked
+    return None
+
+
+def _mark_item_for_prompt_cache(item: Dict[str, Any]) -> bool:
+    """Place one breakpoint on ``item`` in place, reporting whether it landed."""
+    if item.get("type") == "function_call_output":
+        output = item.get("output")
+        if isinstance(output, str):
+            if not output:
+                # An empty result has nothing to hash; the API rejects an empty text
+                # block, and a bare "" is what this adapter already sends.
+                return False
+            item["output"] = [{
+                "type": "input_text",
+                "text": output,
+                "prompt_cache_breakpoint": dict(PROMPT_CACHE_BREAKPOINT_EXPLICIT),
+            }]
+            return True
+        if not isinstance(output, list) or not output:
+            return False
+        # A list-form result is converted here rather than in the item builder above,
+        # so a model that does not serve the fields keeps receiving its blocks
+        # untouched: a breakpoint can only ride a Responses block, so the conversion
+        # exists for the marker and happens only where the marker does.
+        marked = _blocks_with_breakpoint(_convert_content_types(output))
+        if marked is None:
+            return False
+        item["output"] = marked
+        return True
+
+    if item.get("role") not in _BREAKPOINT_ITEM_ROLES:
+        return False
+    content = item.get("content")
+    if isinstance(content, str):
+        if not content:
+            return False
+        item["content"] = [{
+            "type": "input_text",
+            "text": content,
+            "prompt_cache_breakpoint": dict(PROMPT_CACHE_BREAKPOINT_EXPLICIT),
+        }]
+        return True
+    if not isinstance(content, list) or not content:
+        return False
+    marked = _blocks_with_breakpoint(content)
+    if marked is None:
+        return False
+    item["content"] = marked
+    return True
+
+
+def mark_items_for_prompt_cache(
+    items: List[Dict[str, Any]], *, exempt_indices: Collection[int] = frozenset()
+) -> bool:
+    """Breakpoint EVERY durable input item, in place on ``items``. True if any landed.
+
+    Adapter-owned and unconditional, the same position and the same argument as this
+    codebase's other cache-marker helper (:func:`~marsys.models.adapters.anthropic.
+    mark_conversation_tail_for_cache`): only the payload builder knows the rendered
+    block layout, caching is prefix-match arithmetic over exactly those bytes, and a
+    caller that forgets silently re-pays full price on the whole conversation.
+
+    Why EVERY item and not the tail, which is what the sibling helper does. On this
+    provider a breakpoint is matched only while it is still present in the request being
+    sent, so a single marker moved forward one row per request leaves nothing behind for
+    the next request to match: measured over three growing eight-round requests against
+    gpt-5.6-terra, a moving tail marker read 0 tokens every time and cost more than
+    sending nothing at all, while markers left on every durable row read 10,620 then
+    12,109 of a 13,717-token prompt. Marking every item makes the set of marked rows a
+    function of each row's own position from the START of the list, so applying the rule
+    to a conversation and to that conversation plus new rows marks the same rows on the
+    shared prefix. That is the whole reason it works, and it is why the rule needs no
+    memory of what an earlier request sent.
+
+    The provider's own limits are satisfied by construction rather than by arithmetic
+    here: at most four new cache writes per request (in explicit mode, the latest four
+    breakpoints, and a breakpoint covers everything before it, so the newest one writes
+    the whole new prefix), and reads consider the latest fifty breakpoints (the newest
+    marker is always within a handful of the end).
+
+    ``exempt_indices`` are the positions the caller flagged ``CACHE_EXEMPT_KEY`` — rows
+    it regenerates per request. They are skipped wherever they sit, not just at the
+    tail, and keep the shape they arrived in.
+    """
+    placed = False
+    for index, item in enumerate(items):
+        if index in exempt_indices:
+            continue
+        if isinstance(item, dict) and _mark_item_for_prompt_cache(item):
+            placed = True
+    return placed
+
+
+# --- content conversion -------------------------------------------------------------
+
+
+def _convert_content_types(content):
+    """Convert Chat Completions content types to Responses API content types.
+
+    Chat Completions format:
+        - {"type": "text", "text": "..."}
+        - {"type": "image_url", "image_url": {"url": "..."}}
+
+    Responses API format:
+        - {"type": "input_text", "text": "..."}
+        - {"type": "input_image", "image_url": "..."}
+    """
+    if isinstance(content, str):
+        return content
+    if isinstance(content, list):
+        converted = []
+        for item in content:
+            if isinstance(item, dict):
+                item_type = item.get("type")
+                if item_type == "text":
+                    # Convert "text" -> "input_text"
+                    converted.append({
+                        "type": "input_text",
+                        "text": item.get("text", "")
+                    })
+                elif item_type == "image_url":
+                    # Convert "image_url" -> "input_image"
+                    # Also flatten: {"image_url": {"url": "..."}} -> {"image_url": "..."}
+                    image_url_data = item.get("image_url", {})
+                    if isinstance(image_url_data, dict):
+                        url = image_url_data.get("url", "")
+                    else:
+                        url = image_url_data
+                    converted.append({
+                        "type": "input_image",
+                        "image_url": url
+                    })
+                else:
+                    # Keep other types as-is (input_text, input_image already correct)
+                    converted.append(item)
+            else:
+                converted.append(item)
+        return converted
+    return content
 
 
 def served_reasoning_effort(effort: str, model_lower: str) -> str:
@@ -113,8 +332,6 @@ class OpenAIAdapter(APIProviderAdapter):
         }
 
     def format_request_payload(self, messages: List[Dict], **kwargs) -> Dict[str, Any]:
-        import re
-
         # Check if this is a reasoning model (GPT-5+, o-series) that doesn't support temperature
         # Based on: https://learn.microsoft.com/en-us/azure/ai-foundry/openai/how-to/reasoning
         # Future-proof: Supports GPT-5.x, GPT-6+, GPT-10+, o1, o2, o10+, etc.
@@ -127,53 +344,16 @@ class OpenAIAdapter(APIProviderAdapter):
         # Convert Chat Completions format messages to Responses API format
         # The Responses API uses a different schema for tool calls and tool responses
 
-        def convert_content_types(content):
-            """Convert Chat Completions content types to Responses API content types.
-
-            Chat Completions format:
-                - {"type": "text", "text": "..."}
-                - {"type": "image_url", "image_url": {"url": "..."}}
-
-            Responses API format:
-                - {"type": "input_text", "text": "..."}
-                - {"type": "input_image", "image_url": "..."}
-            """
-            if isinstance(content, str):
-                return content
-            if isinstance(content, list):
-                converted = []
-                for item in content:
-                    if isinstance(item, dict):
-                        item_type = item.get("type")
-                        if item_type == "text":
-                            # Convert "text" -> "input_text"
-                            converted.append({
-                                "type": "input_text",
-                                "text": item.get("text", "")
-                            })
-                        elif item_type == "image_url":
-                            # Convert "image_url" -> "input_image"
-                            # Also flatten: {"image_url": {"url": "..."}} -> {"image_url": "..."}
-                            image_url_data = item.get("image_url", {})
-                            if isinstance(image_url_data, dict):
-                                url = image_url_data.get("url", "")
-                            else:
-                                url = image_url_data
-                            converted.append({
-                                "type": "input_image",
-                                "image_url": url
-                            })
-                        else:
-                            # Keep other types as-is (input_text, input_image already correct)
-                            converted.append(item)
-                    else:
-                        converted.append(item)
-                return converted
-            return content
-
         converted_messages = []
+        # Positions of the rows the caller flagged ``CACHE_EXEMPT_KEY``, recorded here
+        # because the allow-list rebuild below drops the flag before anything downstream
+        # could read it. A source message can expand into several items (an assistant
+        # turn with tool calls), so the positions are collected as items are appended
+        # rather than counted afterwards.
+        cache_exempt_indices = set()
         for msg in messages:
             role = msg.get("role")
+            item_start = len(converted_messages)
 
             # Handle assistant messages with tool_calls -> function_call items
             if role == "assistant" and msg.get("tool_calls"):
@@ -182,7 +362,7 @@ class OpenAIAdapter(APIProviderAdapter):
                 if content:
                     converted_messages.append({
                         "role": "assistant",
-                        "content": convert_content_types(content)
+                        "content": _convert_content_types(content)
                     })
                 # Convert each tool_call to a function_call item
                 for tc in msg["tool_calls"]:
@@ -231,8 +411,11 @@ class OpenAIAdapter(APIProviderAdapter):
                     cleaned_msg["content"] = ""
                 else:
                     # Convert content types (text -> input_text, image_url -> input_image)
-                    cleaned_msg["content"] = convert_content_types(cleaned_msg["content"])
+                    cleaned_msg["content"] = _convert_content_types(cleaned_msg["content"])
                 converted_messages.append(cleaned_msg)
+
+            if msg.get(CACHE_EXEMPT_KEY):
+                cache_exempt_indices.update(range(item_start, len(converted_messages)))
 
         payload = {
             "model": self.model_name,
@@ -353,6 +536,19 @@ class OpenAIAdapter(APIProviderAdapter):
         if kwargs.get("prompt_cache_key") is not None:
             payload["prompt_cache_key"] = kwargs["prompt_cache_key"]
 
+        # Prompt-cache breakpoints. LAST over the input items, after every content
+        # conversion above, so "the last block of an item" means the block actually
+        # being sent. Mode and placement are one decision made in one place: explicit
+        # mode with no breakpoint is the documented way to turn caching OFF (measured:
+        # zero written, zero read, the whole prompt at plain input price), so the
+        # request-level option is set only when a breakpoint was actually placed and a
+        # narrowed placement rule can never silently disable caching.
+        if self._supports_explicit_prompt_cache(model_lower):
+            if mark_items_for_prompt_cache(
+                converted_messages, exempt_indices=cache_exempt_indices
+            ):
+                payload["prompt_cache_options"] = dict(PROMPT_CACHE_OPTIONS_EXPLICIT)
+
         # Only accept known OpenAI Responses API parameters - warn about unknown ones
         # Based on: https://platform.openai.com/docs/api-reference/responses/create
         valid_openai_params = {
@@ -416,6 +612,21 @@ class OpenAIAdapter(APIProviderAdapter):
     def _served_effort(self, effort: str, model_lower: str) -> str:
         """Allow re-hosted surfaces to override the shared model compatibility rule."""
         return served_reasoning_effort(effort, model_lower)
+
+    def _supports_explicit_prompt_cache(self, model_lower: str) -> bool:
+        """Whether this request may carry the explicit prompt-cache fields.
+
+        Two gates, and the provider one is not redundant with the model one. The
+        factory routes every unrecognized provider to this class, so an
+        OpenAI-compatible third-party endpoint serving a GPT-5.6-shaped name would
+        otherwise receive fields only OpenAI's and Azure's surfaces have been measured
+        to accept. The adapter names itself the way the rest of the base class does:
+        the provider a model layer stamped on it, falling back to its own class name.
+        """
+        provider = getattr(self, "provider", None) or self._provider_name()
+        if provider not in _EXPLICIT_PROMPT_CACHE_PROVIDERS:
+            return False
+        return supports_explicit_prompt_cache(model_lower)
 
     def get_endpoint_url(self) -> str:
         # Migrate to OpenAI Responses API (unified endpoint for all models)

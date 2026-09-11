@@ -642,10 +642,9 @@ class BaseAPIModel:
             reasoning_effort=reasoning_effort,
             **kwargs,
         )
-        # The adapter emits the trace event and reports the provider in error
-        # fallbacks, but adapters don't otherwise carry ``provider`` — set it.
-        if self.adapter is not None:
-            self.adapter.provider = provider
+        # ``self.adapter.provider`` is stamped by the factory, which is the layer that
+        # knows which provider was asked for — several providers share one adapter
+        # class, so the class alone cannot say.
 
         # Try to create async adapter if available
         self.async_adapter = None
