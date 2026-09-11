@@ -38,13 +38,23 @@ rather than assumed:
 Two behaviours of this endpoint that are inherited rather than worked around, recorded
 because both are silent until they are not:
 
-* **Prompt caching is implicit and takes no request parameter.** ``prompt_cache_options``
-  accepts ``implicit`` (the default) and ``explicit``; a ``prompt_cache_breakpoint``
-  field is rejected as an unknown parameter in every position, and ``explicit`` mode
-  without one caches nothing. So the correct request is one that says nothing about
-  caching, and a measured pair of identical large calls reports
-  ``cache_write_tokens: 3395`` then ``cached_tokens: 3395`` with no parameter sent.
-  The inherited harmonizer reads both figures.
+* **Prompt cache breakpoints ride inside a content block, and the inherited builder
+  places them.** ``prompt_cache_breakpoint`` belongs on an ``input_text``,
+  ``input_image`` or ``input_file`` block — including the content parts of a
+  ``function_call_output`` — never at item level, never at request level, and never on
+  the top-level ``instructions`` field. An earlier reading of this surface recorded the
+  field as rejected in every position and concluded that the correct request says
+  nothing about caching; twenty live requests on ``gpt-5.6-terra`` refuted that, all
+  200, with the field inside content blocks. The limits that do bind: a request creates
+  at most four new cache writes (in explicit mode, its latest four breakpoints, and a
+  breakpoint covers everything before it), reads consider at most the latest fifty
+  breakpoints, the cacheable prefix is at least 1,024 tokens, breakpoints are served on
+  Standard pay-as-you-go deployments and silently not on PTU-M, and models before the
+  GPT-5.6 family answer either field with a 400 — which is why the inherited builder
+  gates both on the model name. ``explicit`` mode with no breakpoint is the documented
+  way to turn caching off and measures as exactly that: nothing written, nothing read,
+  the whole prompt at plain input price. The inherited harmonizer reads back both the
+  cached and the written figures.
 * **Reasoning-capable deployments reject ``temperature``.** The inherited capability
   check is a regex over the model name, which the real deployment names
   (``gpt-5.6-*``) satisfy. A deployment renamed to something not starting ``gpt-5``+

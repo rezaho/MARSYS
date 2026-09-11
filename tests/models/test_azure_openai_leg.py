@@ -271,15 +271,31 @@ def test_the_sanitize_is_the_shared_openai_behaviour_not_an_azure_special_case()
     assert set(payload["input"][0]) == {"role", "content"}
 
 
-def test_no_cache_option_field_is_sent():
-    """Prompt caching on this API is implicit and takes no request parameter. A
-    `prompt_cache_breakpoint` is rejected outright in every position, and `explicit`
-    mode without one caches nothing — so the correct request says nothing at all,
-    and the measured pair of identical calls still reports a write then a read."""
-    payload = _azure().format_request_payload(MESSAGES)
+@pytest.mark.parametrize("model", ["gpt-5", "gpt-5.4-mini", "gpt-5.5"])
+def test_a_deployment_before_the_5_6_generation_is_told_nothing_about_caching(model):
+    """Models before the GPT-5.6 family answer either cache field with a 400, so the
+    inherited builder gates both on the deployment name. An earlier reading of this
+    surface had the fields rejected in every position and concluded that the correct
+    request says nothing at all; twenty live requests on a 5.6 deployment refuted the
+    general claim, and this is the part of it that survived."""
+    payload = _azure(model_name=model).format_request_payload(MESSAGES)
     assert "prompt_cache_options" not in payload
-    assert "prompt_cache_breakpoint" not in payload
     assert not any("cache" in key for key in payload)
+    assert "prompt_cache_breakpoint" not in str(payload)
+
+
+@pytest.mark.parametrize("model", ["gpt-5.6-sol", "gpt-5.6-terra", "gpt-5.6-luna"])
+def test_a_5_6_deployment_asks_for_explicit_mode_and_carries_a_breakpoint(model):
+    """The control for the gate above, on the deployment names this fleet actually
+    runs. The breakpoint rides inside a content block, which is the placement the live
+    requests accepted; at item level or request level it is an unknown parameter."""
+    payload = _azure(model_name=model).format_request_payload(MESSAGES)
+    assert payload["prompt_cache_options"] == {"mode": "explicit", "ttl": "30m"}
+    assert payload["input"][0]["content"] == [{
+        "type": "input_text",
+        "text": "hi",
+        "prompt_cache_breakpoint": {"mode": "explicit"},
+    }]
 
 
 # --- the thinking knob -------------------------------------------------------

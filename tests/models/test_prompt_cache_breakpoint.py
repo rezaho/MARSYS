@@ -629,3 +629,72 @@ def test_the_exemption_is_deterministic_and_idempotent():
     first = _api().format_request_payload([dict(m) for m in messages])
     second = _api().format_request_payload([dict(m) for m in messages])
     assert json.dumps(first, sort_keys=True) == json.dumps(second, sort_keys=True)
+
+
+# ── the flag is family-neutral now, and the other family stays exactly as it was ─────
+
+
+def test_the_flag_has_one_value_under_both_names():
+    """It moved to ``base`` when a second adapter family began reading it. The Anthropic
+    name is kept because that is where every existing caller imports it from, and a
+    dropped re-export would break ``anthropic_oauth`` on import."""
+    from marsys.models.adapters import anthropic as anthropic_module
+    from marsys.models.adapters import base as base_module
+
+    assert anthropic_module.CACHE_EXEMPT_KEY is base_module.CACHE_EXEMPT_KEY
+    assert base_module.CACHE_EXEMPT_KEY == "cache_exempt"
+
+
+ANTHROPIC_CONVERSATION = [
+    {"role": "system", "content": "You are Spren, the founder's employee."},
+    {"role": "user", "content": "Book the room."},
+    {
+        "role": "assistant",
+        "content": "on it",
+        "tool_calls": [{"id": "call_1", "function": {"name": "search", "arguments": "{}"}}],
+    },
+    {"role": "tool", "tool_call_id": "call_1", "content": "three rooms free"},
+    {"role": "user", "content": "now 09:00 | spend 1.20", CACHE_EXEMPT_KEY: True},
+]
+
+
+@pytest.mark.parametrize("model_name", ["claude-opus-5", "gpt-5.6-terra"])
+def test_the_anthropic_family_learns_nothing_about_the_openai_fields(model_name):
+    """The OpenAI family's explicit breakpoints are a different provider's mechanism
+    with a different placement rule. Nothing about them may leak into these payloads —
+    including under a GPT-shaped name, because the model-family gate that scopes them
+    lives in the other builder and must not be reachable from here at all."""
+    for payload in (
+        _api(model_name).format_request_payload(ANTHROPIC_CONVERSATION),
+        _oauth().format_request_payload(ANTHROPIC_CONVERSATION),
+        BedrockAdapter(model_name=model_name, api_key="tok").format_request_payload(
+            ANTHROPIC_CONVERSATION
+        ),
+    ):
+        serialized = json.dumps(payload)
+        assert "prompt_cache_options" not in payload
+        assert "prompt_cache_breakpoint" not in serialized
+        assert "input_text" not in serialized
+
+
+@pytest.mark.parametrize("adapter_of", [
+    lambda: _api(),
+    lambda: _oauth(),
+    lambda: BedrockAdapter(model_name="claude-opus-5", api_key="tok"),
+])
+def test_the_anthropic_conversation_marker_is_still_one_and_still_on_the_tail(adapter_of):
+    """AC-9's substance: one conversation marker, on the last durable row, exactly where
+    it was. The OAuth leg's static Claude-Code prefix block carries the other marker and
+    is not part of the conversation."""
+    payload = adapter_of().format_request_payload(ANTHROPIC_CONVERSATION)
+    marked = [
+        block for message in payload["messages"]
+        if isinstance(message.get("content"), list)
+        for block in message["content"]
+        if isinstance(block, dict) and "cache_control" in block
+    ]
+    assert len(marked) == 1
+    assert marked[0]["cache_control"] == EPHEMERAL
+    # The tool result, which is the last durable row here — the volatile row after it is
+    # exempt, and a tool row converts into a trailing user message.
+    assert marked[0].get("type") == "tool_result"

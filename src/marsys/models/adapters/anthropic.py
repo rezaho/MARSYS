@@ -5,6 +5,7 @@ import warnings
 from typing import Any, Callable, Dict, List, Optional
 
 from marsys.models.adapters.base import (
+    CACHE_EXEMPT_KEY,
     APIProviderAdapter,
     AsyncBaseAPIAdapter,
     _CapturedErrorResponse,
@@ -86,21 +87,14 @@ _CACHEABLE_BLOCK_TYPES = frozenset(
 
 CACHE_CONTROL_EPHEMERAL = {"type": "ephemeral"}
 
-# A caller marks a message row with this key to say "my content here changes every
-# request; do not put the cache breakpoint on me". Neutral and per-item, riding the
-# caller's own message dict — the `defer_loading` shape, which is this codebase's
-# established way for a caller to signal request structure without a new request
-# parameter. Stripped during conversion; it never reaches the wire.
+# ``CACHE_EXEMPT_KEY`` — a caller marks a message row with this key to say "my content
+# here changes every request; do not put the cache breakpoint on me". Neutral and
+# per-item, riding the caller's own message dict — the `defer_loading` shape, which is
+# this codebase's established way for a caller to signal request structure without a new
+# request parameter. Stripped during conversion; it never reaches the wire.
 #
-# Why a caller needs this: the breakpoint's value is that the NEXT request can read
-# the entry this one writes, which requires the entry's hashed prefix to consist of
-# bytes the next request still contains. A row whose text is regenerated per request
-# (a clock, a budget figure, anything derived from "now") is by construction absent
-# from the next request, so an entry written at or after it is unreadable forever —
-# each turn writes a fresh entry and reads none. Measured on Bedrock/Opus 5, single-
-# step turns, tools present: marker on the volatile row → turn 2 `read=0`; marker on
-# the last durable row → turn 2 `read=8425`.
-CACHE_EXEMPT_KEY = "cache_exempt"
+# It lives in ``base`` now that both adapter families honour it, and is re-exported here
+# because this module is where it was first defined and where callers import it from.
 
 
 def mark_conversation_tail_for_cache(

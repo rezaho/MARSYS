@@ -22,6 +22,30 @@ if TYPE_CHECKING:
 logger = logging.getLogger(__name__)
 
 
+# A caller's per-request row: content this request renders fresh (a clock, a running
+# budget figure, anything derived from "now"), which the NEXT request will not contain
+# verbatim. Set it on a message dict and every payload builder that places prompt-cache
+# breakpoints will keep its markers off that row.
+#
+# Why a caller needs to say this and why it is the ONLY thing a caller says about
+# caching: a breakpoint is worth something because the next request can read the entry
+# this one writes, which requires the entry's hashed prefix to be bytes the next request
+# still sends. An entry written at or after a regenerated row is unreadable forever —
+# every request writes a fresh entry and reads none. Which rows may carry a marker,
+# which block types accept one, and whether a marker may move are provider facts the
+# payload builder knows and the caller does not, so placement stays adapter-side and
+# this flag stays the whole interface. Measured on Bedrock/Opus 5, single-step turns,
+# tools present: marker on the volatile row → turn 2 `read=0`; marker on the last
+# durable row → turn 2 `read=8425`. Measured on Azure/gpt-5.6-terra, eight-round turns:
+# markers left on every durable row → request 3 reads 12,109 of 13,717; the same single
+# marker moved forward each request → reads 0 on every request.
+#
+# Family-neutral by residence: the Anthropic family reads it to find the last durable
+# row, the OpenAI family reads it to skip a row entirely. Re-exported from
+# ``marsys.models.adapters.anthropic``, where it was first defined.
+CACHE_EXEMPT_KEY = "cache_exempt"
+
+
 # Hardcoded fallbacks used when no ErrorHandlingConfig is provided. Match the
 # pre-Phase-1 behaviour exactly so existing tests and ad-hoc adapter usage
 # (without an ExecutionConfig) keep working.

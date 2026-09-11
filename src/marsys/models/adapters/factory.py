@@ -43,9 +43,17 @@ class ProviderAdapterFactory:
 
         # OAuth providers don't use api_key/base_url - they load credentials from CLI
         if provider in ("openai-oauth", "anthropic-oauth"):
-            return adapter_class(model_name, **kwargs)
+            adapter = adapter_class(model_name, **kwargs)
+        else:
+            adapter = adapter_class(model_name, api_key, base_url, **kwargs)
 
-        return adapter_class(model_name, api_key, base_url, **kwargs)
+        # The requested provider, stamped here because this is the only layer that
+        # knows it: several providers share one adapter class, and the fallback above
+        # hands every unrecognized provider to the OpenAI class outright, so a class
+        # name is not evidence of which endpoint a request is bound for. Adapters that
+        # gate an endpoint-specific request field on provider identity read this.
+        adapter.provider = provider
+        return adapter
 
 
 class LocalAdapterFactory:
