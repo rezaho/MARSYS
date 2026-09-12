@@ -3,7 +3,7 @@ import logging
 import re
 import time
 import warnings
-from typing import Any, Callable, Collection, Dict, List, Optional
+from typing import Any, Callable, Collection, Dict, List, Optional, Tuple
 
 from marsys.models.adapters.base import (
     CACHE_EXEMPT_KEY,
@@ -102,6 +102,17 @@ _BREAKPOINT_ITEM_ROLES = frozenset({"system", "developer", "user"})
 _GENERATION_RE = re.compile(r"^gpt-(\d+)(?:\.(\d+))?")
 
 
+def _generation(model_lower: str) -> Optional[Tuple[int, int]]:
+    """``(major, minor)`` read off a model name, or None when the name is not GPT-shaped.
+
+    One reading for every feature gated on a generation, so the gates differ in their FLOOR and
+    in nothing else — which is the only thing that should ever separate two of them."""
+    match = _GENERATION_RE.match(model_lower or "")
+    if not match:
+        return None
+    return int(match.group(1)), int(match.group(2) or 0)
+
+
 # --- hosted tool search -------------------------------------------------------------
 #
 # The provider runs the search itself: the request carries deferred functions, grouped in
@@ -142,12 +153,8 @@ def supports_hosted_tool_search(provider: Optional[str], model_lower: str) -> bo
     """
     if provider not in _HOSTED_TOOL_SEARCH_PROVIDERS:
         return False
-    match = _GENERATION_RE.match(model_lower or "")
-    if not match:
-        return False
-    major = int(match.group(1))
-    minor = int(match.group(2) or 0)
-    return (major, minor) >= _HOSTED_TOOL_SEARCH_MIN_VERSION
+    generation = _generation(model_lower)
+    return generation is not None and generation >= _HOSTED_TOOL_SEARCH_MIN_VERSION
 
 
 def _namespace_label(tool: Any) -> Optional[Dict[str, Any]]:
@@ -254,12 +261,8 @@ def supports_explicit_prompt_cache(model_lower: str) -> bool:
     mistake for a cost problem. A 5.6 model behind an older-shaped name simply keeps
     today's behaviour and pays today's price.
     """
-    match = _GENERATION_RE.match(model_lower or "")
-    if not match:
-        return False
-    major = int(match.group(1))
-    minor = int(match.group(2) or 0)
-    return (major, minor) >= _EXPLICIT_PROMPT_CACHE_MIN_VERSION
+    generation = _generation(model_lower)
+    return generation is not None and generation >= _EXPLICIT_PROMPT_CACHE_MIN_VERSION
 
 
 def _blocks_with_breakpoint(
