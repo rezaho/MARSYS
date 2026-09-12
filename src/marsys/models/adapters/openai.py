@@ -102,6 +102,147 @@ _BREAKPOINT_ITEM_ROLES = frozenset({"system", "developer", "user"})
 _GENERATION_RE = re.compile(r"^gpt-(\d+)(?:\.(\d+))?")
 
 
+# --- hosted tool search -------------------------------------------------------------
+#
+# The provider runs the search itself: the request carries deferred functions, grouped in
+# namespace containers or standing alone, plus the `tool_search` built-in; the model searches,
+# the provider injects the loaded definitions at the end of the context, and the model calls in
+# the same reply.
+
+# The generation that serves it. Its OWN floor, two generations below the explicit prompt-cache
+# one beside it, because the two features shipped apart: one gate for both would either withhold
+# the search from models that serve it or send cache fields to models that answer them with a 400.
+_HOSTED_TOOL_SEARCH_MIN_VERSION = (5, 4)
+
+# The providers whose endpoints were measured to serve it. The factory routes an unrecognized
+# provider to this adapter, so a third-party OpenAI-compatible endpoint behind a GPT-5-shaped
+# model name would otherwise be told it serves a feature nobody asked it about.
+_HOSTED_TOOL_SEARCH_PROVIDERS = frozenset({"openai", "azure"})
+
+# The reply items a hosted search emits: the call, and its output carrying the definitions the
+# search loaded. Kept off the reply and replayed on the next request verbatim.
+_TOOL_SEARCH_ITEM_TYPES = frozenset({"tool_search_call", "tool_search_output"})
+
+# The key a caller puts on a Chat-Completions tool dict to say which container the rendered
+# function belongs in: `{"name": ..., "description": ...}`. The grouping travels per tool rather
+# than as a container the caller builds, so the legs that must not see it strip one key off a flat
+# dict — the move they already make for `defer_loading` — instead of unwrapping a tool type they
+# have no shape for.
+NAMESPACE_LABEL_KEY = "namespace"
+
+
+def supports_hosted_tool_search(provider: Optional[str], model_lower: str) -> bool:
+    """Whether this leg serves the provider-run tool search over deferred functions.
+
+    Carries the same honesty caveat as the prompt-cache gate above, and it bites harder here: on
+    Azure the model field is an operator-chosen deployment label rather than a model name, so a
+    deployment named after a model it does not serve lies to this check — and the failure is a 400
+    on `tools.defer_loading` for every call rather than a price. Ask the deployment before turning
+    the feature on for it.
+    """
+    if provider not in _HOSTED_TOOL_SEARCH_PROVIDERS:
+        return False
+    match = _GENERATION_RE.match(model_lower or "")
+    if not match:
+        return False
+    major = int(match.group(1))
+    minor = int(match.group(2) or 0)
+    return (major, minor) >= _HOSTED_TOOL_SEARCH_MIN_VERSION
+
+
+def _namespace_label(tool: Any) -> Optional[Dict[str, Any]]:
+    """The namespace label on a tool dict, or None. A label with no name names no container, so
+    it is no label at all."""
+    if not isinstance(tool, dict):
+        return None
+    label = tool.get(NAMESPACE_LABEL_KEY)
+    return label if isinstance(label, dict) and label.get("name") else None
+
+
+def _convert_tools_for_responses(tools: Collection[Any]) -> List[Any]:
+    """The Responses `tools` array for a caller's tool list.
+
+    Three jobs in one pass, because they read the same dicts. A Chat-Completions `function` tool
+    flattens to the internally-tagged Responses shape. A tool carrying a namespace label goes
+    inside a `namespace` container instead of standing at the top level — one container per
+    distinct label name, placed where its first member appeared, members in the order given, and
+    the container never carries the deferral flag its members do. And a request that defers
+    anything gains the hosted-search built-in: the provider refuses a deferred tool without it
+    ("Deferred tools require tools.tool_search") whether the flag sat at the top level or inside a
+    container, so reading only the top level makes a namespace request a refusal rather than a
+    degradation.
+
+    The caller's dicts are never mutated — a converted function is a new dict and a container is
+    built here — so a tool array a caller holds frozen across a turn stays what it was.
+    """
+    converted: List[Any] = []
+    containers: Dict[str, Dict[str, Any]] = {}
+    any_deferred = False
+    for tool in tools:
+        if not isinstance(tool, dict):
+            converted.append(tool)
+            continue
+        if tool.get("type") == "function" and "function" in tool:
+            # Convert from Chat Completions format (externally tagged)
+            func = tool["function"]
+            rendered: Any = {
+                "type": "function",
+                "name": func.get("name"),
+                "description": func.get("description"),
+                "parameters": func.get("parameters"),
+                # Note: strict is true by default in Responses API
+            }
+            if tool.get("defer_loading"):
+                rendered["defer_loading"] = True
+                any_deferred = True
+        else:
+            # Already in Responses API format or other tool type
+            rendered = (
+                {k: v for k, v in tool.items() if k != NAMESPACE_LABEL_KEY}
+                if NAMESPACE_LABEL_KEY in tool
+                else tool
+            )
+            if tool.get("defer_loading"):
+                any_deferred = True
+        label = _namespace_label(tool)
+        if label is None:
+            converted.append(rendered)
+            continue
+        container = containers.get(label["name"])
+        if container is None:
+            container = {
+                "type": "namespace",
+                "name": label["name"],
+                "description": label.get("description", ""),
+                "tools": [],
+            }
+            containers[label["name"]] = container
+            converted.append(container)
+        container["tools"].append(rendered)
+    if any_deferred and not any(
+        isinstance(t, dict) and t.get("type") == "tool_search" for t in converted
+    ):
+        # Auto-add the Responses tool-search built-in so deferred tools are discoverable
+        # (gpt-5.4+). Suppressed if the caller supplied their own.
+        converted.append({"type": "tool_search"})
+    return converted
+
+
+def _replayed_provider_items(msg: Dict[str, Any]) -> List[Dict[str, Any]]:
+    """This assistant row's provider items that belong back in the Responses input array.
+
+    Type-discriminated, the way every leg reads this channel: the field is shared with the other
+    providers' opaque blocks (extended-thinking blocks, thought signatures) and each payload
+    builder re-emits only the types its own endpoint emitted. Anything else on it is another
+    leg's and is left where it is.
+    """
+    return [
+        item
+        for item in (msg.get("reasoning_details") or [])
+        if isinstance(item, dict) and item.get("type") in _TOOL_SEARCH_ITEM_TYPES
+    ]
+
+
 def supports_explicit_prompt_cache(model_lower: str) -> bool:
     """Whether a model name is GPT-5.6 or later, the generation that serves the fields.
 
@@ -369,6 +510,16 @@ class OpenAIAdapter(APIProviderAdapter):
             role = msg.get("role")
             item_start = len(converted_messages)
 
+            # The provider's own items from this reply go back first: a hosted search's call and
+            # its output, the output carrying the definitions the search loaded. Ahead of the
+            # row's own message and calls because that is the order the provider emitted them in,
+            # and because the definitions have to reach the model's context before the call that
+            # uses them. Dropping them instead costs the model a second search of the same family
+            # the next time it wants the tool, and keeps the loaded definitions out of the cached
+            # prefix for good.
+            if role == "assistant":
+                converted_messages.extend(_replayed_provider_items(msg))
+
             # Handle assistant messages with tool_calls -> function_call items
             if role == "assistant" and msg.get("tool_calls"):
                 # First add any text content as a message
@@ -381,12 +532,17 @@ class OpenAIAdapter(APIProviderAdapter):
                 # Convert each tool_call to a function_call item
                 for tc in msg["tool_calls"]:
                     func = tc.get("function", {})
-                    converted_messages.append({
+                    call_item = {
                         "type": "function_call",
                         "call_id": tc.get("id"),
                         "name": func.get("name"),
                         "arguments": func.get("arguments", "{}")
-                    })
+                    }
+                    # The container the provider's search loaded this function from, when it named
+                    # one. The item that goes back is the provider's own, so it goes back whole.
+                    if tc.get(NAMESPACE_LABEL_KEY):
+                        call_item[NAMESPACE_LABEL_KEY] = tc[NAMESPACE_LABEL_KEY]
+                    converted_messages.append(call_item)
             # Handle tool role messages -> function_call_output items
             elif role == "tool":
                 converted_messages.append({
@@ -497,44 +653,13 @@ class OpenAIAdapter(APIProviderAdapter):
 
         # Handle tools - Responses API uses flattened structure (internally tagged)
         # Converts externally tagged format to internally tagged format.
-        # A per-tool ``defer_loading: true`` rides the Chat-Completions tool dict top-level
-        # (deferred tool loading); it maps onto the flat Responses tool and triggers the
-        # ``tool_search`` built-in so deferred tools are discovered on demand (their schemas stay
-        # out of the cached prefix). Nothing deferred → byte-identical to before.
+        # A per-tool ``defer_loading: true`` and a per-tool ``namespace`` label ride the
+        # Chat-Completions tool dict top-level; they map onto the flat Responses tool, its
+        # container, and the ``tool_search`` built-in, so deferred tools are discovered on demand
+        # and their schemas stay out of the cached prefix. Nothing deferred and nothing labelled →
+        # byte-identical to before.
         if kwargs.get("tools"):
-            tools = kwargs["tools"]
-            converted_tools = []
-            any_deferred = False
-            for tool in tools:
-                if isinstance(tool, dict):
-                    if tool.get("type") == "function" and "function" in tool:
-                        # Convert from Chat Completions format (externally tagged)
-                        func = tool["function"]
-                        converted = {
-                            "type": "function",
-                            "name": func.get("name"),
-                            "description": func.get("description"),
-                            "parameters": func.get("parameters"),
-                            # Note: strict is true by default in Responses API
-                        }
-                        if tool.get("defer_loading"):
-                            converted["defer_loading"] = True
-                            any_deferred = True
-                        converted_tools.append(converted)
-                    else:
-                        # Already in Responses API format or other tool type
-                        converted_tools.append(tool)
-                        if isinstance(tool, dict) and tool.get("defer_loading"):
-                            any_deferred = True
-                else:
-                    converted_tools.append(tool)
-            if any_deferred and not any(
-                isinstance(t, dict) and t.get("type") == "tool_search" for t in converted_tools
-            ):
-                # Auto-add the Responses tool-search built-in so deferred tools are discoverable
-                # (gpt-5.4+). Suppressed if the caller supplied their own.
-                converted_tools.append({"type": "tool_search"})
-            payload["tools"] = converted_tools
+            payload["tools"] = _convert_tools_for_responses(kwargs["tools"])
 
         # Handle OpenAI reasoning (effort-based for all models via Responses API).
         # An explicit `reasoning_effort` wins; failing that, a caller's thinking budget
@@ -743,6 +868,11 @@ class OpenAIAdapter(APIProviderAdapter):
         finish_reason = None
         reasoning_data = None
         tool_calls = []
+        # The hosted search's own output items, kept whole and in arrival order. They ride the
+        # opaque provider-items channel the other legs already use for the blocks their endpoints
+        # demand back verbatim; the next request replays them, which is what puts a loaded
+        # definition into the conversation body and, from the call after, into the cached prefix.
+        provider_items: List[Dict[str, Any]] = []
 
         # Parse output array from Responses API
         output_array = raw_response.get("output", [])
@@ -799,8 +929,14 @@ class OpenAIAdapter(APIProviderAdapter):
                             "name": item.get("name", ""),
                             "arguments": item.get("arguments", "")
                         },
+                        # Present only when the provider loaded this function out of a namespace.
+                        namespace=item.get("namespace") or None,
                     )
                 )
+
+            # The hosted search's two items, kept verbatim for the replay (see ``provider_items``).
+            elif item_type in _TOOL_SEARCH_ITEM_TYPES:
+                provider_items.append(item)
 
         # Responses API uses input_tokens/output_tokens (not prompt/
         # completion_tokens) and nests reasoning in output_tokens_details.
@@ -881,6 +1017,7 @@ class OpenAIAdapter(APIProviderAdapter):
             content=content,
             tool_calls=tool_calls,
             reasoning=reasoning_data,
+            reasoning_details=provider_items or None,
             metadata=metadata,
         )
 
