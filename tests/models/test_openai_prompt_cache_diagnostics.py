@@ -79,11 +79,12 @@ def test_a_model_before_the_serving_generation_never_sends_the_field(adapter_typ
     assert "prompt_cache_options" not in payload
 
 
-def test_the_capability_reads_the_resolved_family_and_the_provider_not_a_label():
-    """Two deployments with different labels resolving to the same family must behave the same —
-    so the predicate cannot be allowed to read the label. On a re-hosted surface the name is
-    whatever an operator typed, which is why that whole provider is out rather than its names
-    being sorted one by one."""
+def test_the_provider_set_is_what_keeps_a_deployment_label_out_of_the_capability():
+    """The gate is the first-party provider set plus the generation read from the model name. On a
+    first-party endpoint the name IS the model, so no deployment label is ever consulted; on a
+    re-hosted surface the name is whatever an operator typed, which is why that whole provider is
+    out rather than its names being sorted one by one. Nothing resolves a family at request time,
+    and nothing needs to — widen the set and the name check stops being sound."""
     first_party = _make(OpenAIAdapter)
     assert first_party._supports_prompt_cache_diagnostics("gpt-5.6-terra")
     assert first_party._supports_prompt_cache_diagnostics("gpt-6")

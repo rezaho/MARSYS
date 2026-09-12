@@ -663,10 +663,15 @@ class OpenAIAdapter(APIProviderAdapter):
         Narrower than the explicit markers above, and narrower in the way that matters: the
         markers degrade to today's behaviour where they are unsupported, while the comparison
         field takes the whole request down with a 400 on the one surface it was measured
-        against. So this reads the RESOLVED model family and a first-party provider, never a
-        deployment label — on a re-hosted surface the model name is whatever an operator typed,
-        so it is not evidence about the generation underneath and cannot be allowed to decide
-        whether a request carries a field that can fail it.
+        against.
+
+        The PROVIDER set is the guarantee, and it is what carries the whole weight here. Nothing
+        resolves a model family at request time: the generation is read off the model name by the
+        same regex the markers use, and on a re-hosted surface that name is whatever an operator
+        typed on the deployment. What keeps such a label out of this decision is that the set
+        admits first-party endpoints alone, where the name IS the model — so no deployment label
+        is ever consulted. Widen the set and the name check stops being sound, which is the 400
+        this gate was measured to avoid.
         """
         provider = getattr(self, "provider", None) or self._provider_name()
         if provider not in _PROMPT_CACHE_DIAGNOSTICS_PROVIDERS:
