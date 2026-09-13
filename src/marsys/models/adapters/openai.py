@@ -68,6 +68,20 @@ _EXPLICIT_PROMPT_CACHE_MIN_VERSION = (5, 6)
 # behind a GPT-5.6-shaped model name would otherwise receive them untested.
 _EXPLICIT_PROMPT_CACHE_PROVIDERS = frozenset({"openai", "azure"})
 
+# The narrower set for the prompt-cache DIAGNOSTICS — a caller-supplied comparison response id
+# on the request, and the provider's own reason for the outcome on the reply. First-party only,
+# and Azure's absence is measured rather than assumed: on 2026-09-12 an Azure v1 Responses
+# deployment answered `prompt_cache_options.comparison_response_id` with HTTP 400,
+# `invalid_request_error`, code `unknown_parameter`, and returned no diagnostics object on any
+# reply. A request that carries the field there does not degrade — it fails — so the gate is the
+# difference between a diagnostic and an outage.
+_PROMPT_CACHE_DIAGNOSTICS_PROVIDERS = frozenset({"openai"})
+
+# What the caller passes to ask the provider to compare this request against an earlier one, and
+# where it lands inside the request's prompt-cache options.
+PROMPT_CACHE_COMPARISON_KWARG = "prompt_cache_comparison_response_id"
+_PROMPT_CACHE_COMPARISON_FIELD = "comparison_response_id"
+
 # Request-level: use the request's own breakpoints instead of the provider's implicit
 # one on the latest message. `30m` is the default, the only accepted value and a
 # minimum; it is sent explicitly so the request says what it means.
@@ -549,6 +563,17 @@ class OpenAIAdapter(APIProviderAdapter):
             ):
                 payload["prompt_cache_options"] = dict(PROMPT_CACHE_OPTIONS_EXPLICIT)
 
+        # The diagnostics ask: name an earlier response and the provider says whether this
+        # request matched its prefix and why not. Folded into the options the request already
+        # carries rather than sent as a field of its own, because that is the shape the surface
+        # documents — and forwarded ONLY where the endpoint serves it, since the one that does
+        # not answers the whole request with a 400 rather than ignoring the field.
+        comparison = kwargs.get(PROMPT_CACHE_COMPARISON_KWARG)
+        if comparison and self._supports_prompt_cache_diagnostics(model_lower):
+            options = dict(payload.get("prompt_cache_options") or PROMPT_CACHE_OPTIONS_EXPLICIT)
+            options[_PROMPT_CACHE_COMPARISON_FIELD] = comparison
+            payload["prompt_cache_options"] = options
+
         # Only accept known OpenAI Responses API parameters - warn about unknown ones
         # Based on: https://platform.openai.com/docs/api-reference/responses/create
         valid_openai_params = {
@@ -584,6 +609,10 @@ class OpenAIAdapter(APIProviderAdapter):
             "safety_identifier",
             "prompt_cache_key",
             "prompt_cache_retention",
+            # Folded into `prompt_cache_options` above where the endpoint serves the
+            # diagnostics; named here so a caller that asks for them on a leg that does not
+            # is quietly ignored rather than warned about a parameter this adapter knows.
+            PROMPT_CACHE_COMPARISON_KWARG,
             "user",  # Deprecated, but still accepted
             # Service tier
             "service_tier",
@@ -625,6 +654,27 @@ class OpenAIAdapter(APIProviderAdapter):
         """
         provider = getattr(self, "provider", None) or self._provider_name()
         if provider not in _EXPLICIT_PROMPT_CACHE_PROVIDERS:
+            return False
+        return supports_explicit_prompt_cache(model_lower)
+
+    def _supports_prompt_cache_diagnostics(self, model_lower: str) -> bool:
+        """Whether this request may ask the provider to diagnose its own cache outcome.
+
+        Narrower than the explicit markers above, and narrower in the way that matters: the
+        markers degrade to today's behaviour where they are unsupported, while the comparison
+        field takes the whole request down with a 400 on the one surface it was measured
+        against.
+
+        The PROVIDER set is the guarantee, and it is what carries the whole weight here. Nothing
+        resolves a model family at request time: the generation is read off the model name by the
+        same regex the markers use, and on a re-hosted surface that name is whatever an operator
+        typed on the deployment. What keeps such a label out of this decision is that the set
+        admits first-party endpoints alone, where the name IS the model — so no deployment label
+        is ever consulted. Widen the set and the name check stops being sound, which is the 400
+        this gate was measured to avoid.
+        """
+        provider = getattr(self, "provider", None) or self._provider_name()
+        if provider not in _PROMPT_CACHE_DIAGNOSTICS_PROVIDERS:
             return False
         return supports_explicit_prompt_cache(model_lower)
 
@@ -806,7 +856,10 @@ class OpenAIAdapter(APIProviderAdapter):
                 cache_creation_input_tokens=cache_write_tokens or None,
             )
 
-        # Build metadata
+        # Build metadata. ``request_id`` already carries the Responses `resp_…` id, which is
+        # what a later request names as its comparison — so the diagnostics need no second
+        # response-id field, only the provider's own verdict beside it when one is returned.
+        diagnostics = raw_response.get("prompt_cache_diagnostics")
         metadata = ResponseMetadata(
             provider=self._provider_name() or "openai",
             model=raw_response.get("model", self.model_name),
@@ -815,6 +868,7 @@ class OpenAIAdapter(APIProviderAdapter):
             usage=usage,
             finish_reason=finish_reason,
             response_time=time.time() - request_start_time,
+            **({"prompt_cache_diagnostics": diagnostics} if diagnostics else {}),
         )
 
         # Handle content - provide a default message if truncated
