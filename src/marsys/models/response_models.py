@@ -6,7 +6,14 @@ Provides validation and structure for all provider responses.
 from datetime import datetime
 from typing import Any, Dict, List, Optional, Union
 
-from pydantic import BaseModel, Field, field_validator, model_validator, ConfigDict
+from pydantic import (
+    BaseModel,
+    ConfigDict,
+    Field,
+    field_validator,
+    model_serializer,
+    model_validator,
+)
 
 
 class ToolCall(BaseModel):
@@ -14,7 +21,11 @@ class ToolCall(BaseModel):
     id: str
     type: str = "function"
     function: Dict[str, Any] = Field(default_factory=dict)
-    
+    # The container the provider loaded this function out of, when the leg names one: a hosted
+    # tool search returns the namespace it searched and stamps the call with it. Carried so the
+    # item can go back to that provider whole on the next request.
+    namespace: Optional[str] = None
+
     @field_validator('function')
     @classmethod
     def validate_function(cls, v):
@@ -24,6 +35,19 @@ class ToolCall(BaseModel):
         if 'arguments' not in v:
             v['arguments'] = {}
         return v
+
+    @model_serializer(mode="wrap")
+    def _omit_absent_namespace(self, handler):
+        """Drop ``namespace`` from the serialized form when the provider named none.
+
+        Every leg but one sends no namespace, and a tool call's serialized form becomes a durable
+        conversation row on the way back: a key that is always there and always null would change
+        those bytes on every call of every leg, which is a cache re-write for a field nobody
+        reads. Absent means absent."""
+        data = handler(self)
+        if isinstance(data, dict) and data.get("namespace") is None:
+            data.pop("namespace", None)
+        return data
 
 
 class UsageInfo(BaseModel):
@@ -111,12 +135,17 @@ class HarmonizedResponse(BaseModel):
     tool_calls: List[ToolCall] = Field(default_factory=list)
     reasoning: Optional[str] = None  # For o1 models or reasoning traces
     thinking: Optional[str] = None  # For thinking/planning content
-    # Opaque provider reasoning blocks that must round-trip VERBATIM on the
-    # next request: Gemini 3 thought signatures ({"type": "text"|"function_call",
-    # "thought_signature": ...}) and Anthropic extended-thinking blocks
+    # Opaque provider-emitted blocks that must round-trip VERBATIM on the next
+    # request: Gemini 3 thought signatures ({"type": "text"|"function_call",
+    # "thought_signature": ...}), Anthropic extended-thinking blocks
     # ({"type": "thinking", "thinking", "signature"} / {"type":
-    # "redacted_thinking", "data"}). Type-discriminated — each provider's
-    # payload builder re-emits only its own block types.
+    # "redacted_thinking", "data"}), and the OpenAI Responses hosted tool search's
+    # own two output items ({"type": "tool_search_call"} and
+    # {"type": "tool_search_output"}, the output carrying the definitions the
+    # search loaded). Type-discriminated — each provider's payload builder
+    # re-emits only its own block types. The name says reasoning and the channel
+    # means provider output the next request owes back; renaming it reaches four
+    # adapters, the agent memory and the tracing, and every row already written.
     reasoning_details: Optional[List[Dict[str, Any]]] = None
     metadata: ResponseMetadata
     
