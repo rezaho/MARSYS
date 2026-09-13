@@ -348,7 +348,10 @@ RESPONSES_STREAM = [
     {"type": "response.completed", "response": {
         "id": "resp_1", "model": "gpt-test",
         "output": [
-            {"type": "reasoning", "content": [], "summary": ["Weighing options."]},
+            # The wire shape: a summary is a list of objects, not of strings, which is
+            # what the terminal object carries once the request asks for one.
+            {"type": "reasoning", "content": [],
+             "summary": [{"type": "summary_text", "text": "Weighing options."}]},
             {"type": "message", "role": "assistant", "status": "completed",
              "content": [{"type": "output_text", "text": "Hello world."}]},
         ],
@@ -368,7 +371,15 @@ def test_responses_accumulator_taps_and_captures_the_terminal_object():
         ("text_delta", "Hello "),
         ("text_delta", "world."),
     ]
-    assert acc.to_rest_response()["id"] == "resp_1"
+    rest = acc.to_rest_response()
+    assert rest["id"] == "resp_1"
+    # The rebuilt REST shape carries the terminal reasoning item as it arrived, so it is
+    # read back through the same harmonizer the non-streaming path uses: an accumulator
+    # that dropped or flattened the summary part would hand over a dict repr here.
+    harmonized = AsyncOpenAIAdapter(
+        model_name="gpt-test", api_key="k", base_url="https://api.openai.com/v1",
+    ).harmonize_response(rest, request_start_time=0.0)
+    assert harmonized.reasoning == "Weighing options."
 
 
 def test_responses_failed_event_is_terminal():

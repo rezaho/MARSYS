@@ -91,9 +91,15 @@ async def test_configured_effort_reaches_transport_in_supported_form(
     payload = captured[0]
     if expected == "minimal" and model_name != "gpt-5":
         expected = "low"
+    # The OAuth leg's object exists with or without an effort and always says `auto`.
+    # The api-key leg's object exists only when an effort resolved, and then carries the
+    # summary its model generation is documented to serve; every model name here is that
+    # generation, so the two rows that resolve no effort still send nothing at all.
     reasoning = {"summary": "auto"} if oauth else {}
     if expected is not None:
         reasoning["effort"] = expected
+        if not oauth:
+            reasoning["summary"] = "detailed"
     assert payload.get("reasoning", {}) == reasoning
     assert payload["prompt_cache_key"] == "install:owner"
     if oauth:

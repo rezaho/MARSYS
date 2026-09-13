@@ -99,6 +99,29 @@ _BREAKPOINT_BLOCK_TYPES = frozenset({"input_text", "input_image", "input_file"})
 # content.
 _BREAKPOINT_ITEM_ROLES = frozenset({"system", "developer", "user"})
 
+
+# --- reasoning summaries ------------------------------------------------------------
+#
+# The generation documented to serve a provider-authored reasoning summary. Azure's
+# reasoning page marks the field on all twenty-one gpt-5.x deployments, carries no such
+# row at all for the gpt-6 family, and splits the o-series three-for-six; only the
+# gpt-5 generation is written down here because only it is uniformly documented, and
+# opening it upward is a measurement rather than a guess.
+_REASONING_SUMMARY_GENERATION = 5
+
+# The providers whose endpoints were measured to serve the field, on the same reasoning
+# as the prompt-cache set above: the factory routes an unrecognized provider to this
+# adapter, so a third-party OpenAI-compatible endpoint behind a gpt-5-shaped model name
+# would otherwise be asked for a field nobody has asked it for.
+_REASONING_SUMMARY_PROVIDERS = frozenset({"openai", "azure"})
+
+# The word sent when a served leg says nothing else. Measured against a live Azure
+# resource over eleven streaming requests: on one deployment `detailed` came back with a
+# summary three times out of three and `auto` twice out of four, at no measurable
+# difference in reasoning or output tokens. Arrival is not guaranteed either way, which
+# the provider documents, so a request that draws no summary is not a fault.
+_DEFAULT_REASONING_SUMMARY = "detailed"
+
 _GENERATION_RE = re.compile(r"^gpt-(\d+)(?:\.(\d+))?")
 
 
@@ -263,6 +286,45 @@ def supports_explicit_prompt_cache(model_lower: str) -> bool:
     """
     generation = _generation(model_lower)
     return generation is not None and generation >= _EXPLICIT_PROMPT_CACHE_MIN_VERSION
+
+
+def supports_reasoning_summary(model_lower: str) -> bool:
+    """Whether a model name is one the provider documents as serving a summary.
+
+    Closed at the gpt-5 generation, which is the whole of what the two provider pages
+    state: every gpt-5.x deployment is marked, the gpt-6 family has no such row, and the
+    o-series is marked on three of six names this regex cannot match anyway.
+
+    Reads the name the way the caching rule beside it does, and fails in the one
+    direction that is worth naming here. On Azure the name is an operator-chosen
+    deployment label, so a deployment renamed away from the model it serves stops being
+    asked for a summary, and the person watching then sees the generic cue for every
+    turn, forever, with no error anywhere to read. The pilots' deployments are named
+    `gpt-5.6-sol` and `gpt-5.6-terra`, which this matches. The other direction is loud
+    and cheap by comparison: a name shaped like the generation on a leg that does not
+    serve the field takes a 400 on its first call.
+    """
+    generation = _generation(model_lower)
+    return generation is not None and generation[0] == _REASONING_SUMMARY_GENERATION
+
+
+def _reasoning_parts_text(parts: List[Any]) -> str:
+    """A reasoning item's ``summary`` or ``content`` list read as text, one part a line.
+
+    The wire part is an object, ``{"type": "summary_text", "text": ...}`` on a summary
+    and ``{"type": "reasoning_text", "text": ...}`` on the content list, so rendering a
+    part with ``str()`` puts a Python dict repr where the model's own words belong. A
+    plain string part is its own text and stays readable, which is the shape older
+    fixtures and re-hosted surfaces still hand over.
+    """
+    texts = []
+    for part in parts:
+        if not part:
+            continue
+        text = part.get("text") if isinstance(part, dict) else part
+        if text:
+            texts.append(str(text))
+    return "\n".join(texts)
 
 
 def _blocks_with_breakpoint(
@@ -667,13 +729,20 @@ class OpenAIAdapter(APIProviderAdapter):
         # Handle OpenAI reasoning (effort-based for all models via Responses API).
         # An explicit `reasoning_effort` wins; failing that, a caller's thinking budget
         # selects the bucket, so the one knob this stack exposes reaches this leg too.
+        # The summary rides this object and never creates it: a request that asks for no
+        # thinking must not be told to show its thinking, and there is one creation site
+        # for `reasoning` on this builder.
         reasoning_effort = kwargs.get("reasoning_effort")
         if not reasoning_effort:
             reasoning_effort = thinking_budget_to_effort(kwargs.get("thinking_budget"))
         if reasoning_effort and reasoning_effort.lower() in ["minimal", "low", "medium", "high"]:
-            payload["reasoning"] = {
+            reasoning = {
                 "effort": self._served_effort(reasoning_effort.lower(), model_lower)
             }
+            summary = self._reasoning_summary(model_lower, kwargs.get("reasoning_summary"))
+            if summary:
+                reasoning["summary"] = summary
+            payload["reasoning"] = reasoning
 
         if kwargs.get("prompt_cache_key") is not None:
             payload["prompt_cache_key"] = kwargs["prompt_cache_key"]
@@ -722,6 +791,7 @@ class OpenAIAdapter(APIProviderAdapter):
             "tool_choice",
             "parallel_tool_calls",
             "reasoning_effort",  # Converted to reasoning.effort
+            "reasoning_summary",  # Converted to reasoning.summary
             # Streaming and logging
             "stream",
             "stream_options",
@@ -769,6 +839,31 @@ class OpenAIAdapter(APIProviderAdapter):
     def _served_effort(self, effort: str, model_lower: str) -> str:
         """Allow re-hosted surfaces to override the shared model compatibility rule."""
         return served_reasoning_effort(effort, model_lower)
+
+    def _reasoning_summary(self, model_lower: str, requested: Any) -> Optional[str]:
+        """The summary word this request carries, or ``None`` for no ``summary`` field.
+
+        The caller's three states and the gate resolve together here, so the payload
+        sets the effort and the summary side by side and decides nothing in place.
+
+        An explicit ``reasoning_summary`` wins in both directions, because the gate
+        exists to protect the default from legs nobody measured and a caller who names a
+        word knows their own leg: a string is passed through untouched, and ``False``
+        sends nothing at all while leaving the effort exactly as it was. Absent, the
+        gate answers: the provider the factory stamped (falling back to this class's own
+        name, the way the caching gate beside it does), then the documented generation.
+        Returns the value rather than a verdict, following ``_served_effort``, so a
+        re-hosted surface whose table splits inside the generation overrides one method
+        instead of growing a second conditional in the builder.
+        """
+        if requested is not None:
+            return requested or None
+        provider = getattr(self, "provider", None) or self._provider_name()
+        if provider not in _REASONING_SUMMARY_PROVIDERS:
+            return None
+        if not supports_reasoning_summary(model_lower):
+            return None
+        return _DEFAULT_REASONING_SUMMARY
 
     def _supports_explicit_prompt_cache(self, model_lower: str) -> bool:
         """Whether this request may carry the explicit prompt-cache fields.
@@ -890,9 +985,9 @@ class OpenAIAdapter(APIProviderAdapter):
 
                 # Prefer summary (key insights) over detailed content
                 if summary:
-                    reasoning_data = "\n".join(str(s) for s in summary if s)
+                    reasoning_data = _reasoning_parts_text(summary)
                 elif content_array:
-                    reasoning_data = "\n".join(str(c) for c in content_array if c)
+                    reasoning_data = _reasoning_parts_text(content_array)
                 else:
                     reasoning_data = None
 
