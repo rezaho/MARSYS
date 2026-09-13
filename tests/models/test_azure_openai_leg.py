@@ -323,16 +323,19 @@ def test_a_thinking_budget_selects_a_reasoning_effort(budget, expected):
 def test_the_configured_thinking_budget_reaches_this_leg():
     """The only deliberation knob this stack exposes is a token budget. Unmapped, a
     caller's setting is inert and every call runs at the provider default (`medium`),
-    which is indistinguishable from the knob working."""
+    which is indistinguishable from the knob working.
+
+    The object carries a summary beside the effort because this deployment's generation
+    is documented to serve one and the request is the only place it can be asked for."""
     payload = _azure().format_request_payload(MESSAGES, thinking_budget=32768)
-    assert payload["reasoning"] == {"effort": "high"}
+    assert payload["reasoning"] == {"effort": "high", "summary": "detailed"}
 
 
 def test_an_explicit_effort_beats_the_budget():
     payload = _azure().format_request_payload(
         MESSAGES, thinking_budget=32768, reasoning_effort="low"
     )
-    assert payload["reasoning"] == {"effort": "low"}
+    assert payload["reasoning"] == {"effort": "low", "summary": "detailed"}
 
 
 def test_thinking_off_sends_no_reasoning_block():
@@ -350,31 +353,41 @@ def test_the_smallest_budget_asks_for_an_effort_this_surface_actually_serves():
     """`minimal` is a 400 here — the endpoint's own reply lists none / low / medium /
     high / xhigh / max — so the smallest bucket has to arrive as the smallest this
     surface has. It must still ask for reasoning: a positive budget is "think a little",
-    and `none` would answer a question nobody asked."""
+    and `none` would answer a question nobody asked.
+
+    The summary rides along for the same reason as above; the two fields are resolved
+    independently and the effort substitution is what this case is about."""
     payload = _azure().format_request_payload(MESSAGES, thinking_budget=512)
-    assert payload["reasoning"] == {"effort": "low"}
+    assert payload["reasoning"] == {"effort": "low", "summary": "detailed"}
 
 
 def test_an_explicit_minimal_is_substituted_too():
     """The caller who names the effort outright is on the same endpoint as the one who
     named a budget, and it rejects the value for both of them."""
     payload = _azure().format_request_payload(MESSAGES, reasoning_effort="minimal")
-    assert payload["reasoning"] == {"effort": "low"}
+    assert payload["reasoning"] == {"effort": "low", "summary": "detailed"}
 
 
 def test_the_first_party_leg_still_sends_minimal():
     """The control, and the scope line: `minimal` is served by OpenAI's own endpoint and
     the substitution above belongs to this re-hosting surface, not to the shared payload
     builder. A run of this file that changed the first-party leg would be a silent change
-    to every OpenAI caller in the stack."""
+    to every OpenAI caller in the stack.
+
+    Both names carry a summary: the gate is the model generation and the provider, and a
+    hand-built `OpenAIAdapter` names OpenAI's own endpoint by its class. `gpt-5.6-codex`
+    is a fixture name here rather than a deployment either provider publishes, kept
+    because it is the one case that exercises the codex effort exception; it pins the
+    exception and the new default together on one row."""
     payload = OpenAIAdapter(
         model_name="gpt-5.6", api_key="k", base_url="https://api.openai.com/v1"
     ).format_request_payload(MESSAGES, thinking_budget=512)
-    assert payload["reasoning"] == {"effort": "minimal"}
+    assert payload["reasoning"] == {"effort": "minimal", "summary": "detailed"}
     codex = OpenAIAdapter(
         model_name="gpt-5.6-codex", api_key="k", base_url="https://api.openai.com/v1"
     ).format_request_payload(MESSAGES, thinking_budget=512)
-    assert codex["reasoning"] == {"effort": "low"}  # the pre-existing codex exception
+    # the pre-existing codex effort exception, beside the summary the generation serves
+    assert codex["reasoning"] == {"effort": "low", "summary": "detailed"}
 
 
 # --- the meter ---------------------------------------------------------------

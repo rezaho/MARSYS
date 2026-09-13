@@ -348,7 +348,10 @@ RESPONSES_STREAM = [
     {"type": "response.completed", "response": {
         "id": "resp_1", "model": "gpt-test",
         "output": [
-            {"type": "reasoning", "content": [], "summary": ["Weighing options."]},
+            # The wire shape: a summary is a list of objects, not of strings, which is
+            # what the terminal object carries once the request asks for one.
+            {"type": "reasoning", "content": [],
+             "summary": [{"type": "summary_text", "text": "Weighing options."}]},
             {"type": "message", "role": "assistant", "status": "completed",
              "content": [{"type": "output_text", "text": "Hello world."}]},
         ],
