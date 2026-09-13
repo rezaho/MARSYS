@@ -77,20 +77,22 @@ def builder(request):
 @pytest.mark.parametrize("provider", ["openai", "azure"])
 @pytest.mark.parametrize("model", SERVED)
 @pytest.mark.parametrize(
-    "configured", [{"reasoning_effort": "medium"}, {"thinking_budget": 8192}],
+    "configured, served_effort",
+    [({"reasoning_effort": "medium"}, "medium"), ({"thinking_budget": 8192}, "medium")],
     ids=["effort", "budget"],
 )
-def test_a_served_leg_asks_for_a_detailed_summary(builder, provider, model, configured):
+def test_a_served_leg_asks_for_a_detailed_summary(
+    builder, provider, model, configured, served_effort
+):
     """Either route to an effort brings the summary with it, and the object carries the
-    two fields and nothing else."""
+    two fields and nothing else.
+
+    The effort each row expects is written out rather than computed, so a substitution
+    that went wrong fails here instead of agreeing with itself. Nothing on these rows is
+    substituted: only `minimal` ever is, on either surface."""
     adapter = _make(builder, model, provider=provider)
     payload = adapter.format_request_payload(MESSAGES, **configured)
-    assert payload["reasoning"] == {
-        "effort": adapter._served_effort(
-            configured.get("reasoning_effort", "medium"), model.lower()
-        ),
-        "summary": "detailed",
-    }
+    assert payload["reasoning"] == {"effort": served_effort, "summary": "detailed"}
 
 
 @pytest.mark.parametrize("model", SERVED + NOT_SERVED)
@@ -125,10 +127,13 @@ def test_a_request_that_asks_for_no_thinking_is_never_told_to_show_it(builder, c
 @pytest.mark.parametrize("model", NOT_SERVED)
 def test_a_model_outside_the_generation_is_asked_for_nothing(builder, provider, model):
     """Unknown rather than unsupported, in every case here, and an unsupported value on a
-    known field is a 400 on this surface rather than a field quietly ignored."""
+    known field is a 400 on this surface rather than a field quietly ignored.
+
+    `medium` is served unchanged by every name and surface on these rows, so the effort is
+    written out rather than asked of the code under test."""
     adapter = _make(builder, model, provider=provider)
     payload = adapter.format_request_payload(MESSAGES, reasoning_effort="medium")
-    assert payload["reasoning"] == {"effort": adapter._served_effort("medium", model)}
+    assert payload["reasoning"] == {"effort": "medium"}
 
 
 @pytest.mark.parametrize("provider", ["groq", "together", "some-new-gateway"])
@@ -182,14 +187,15 @@ def test_a_named_word_on_a_served_leg_is_sent_as_given(builder, word):
 @pytest.mark.parametrize("model, provider", [("gpt-6-astra", "azure"), ("gpt-5.6-terra", "groq")])
 def test_a_named_word_off_the_gate_is_sent_too(builder, model, provider):
     """The other direction. The gate protects the default from legs nobody measured; a
-    caller who has measured one says so and is believed."""
+    caller who has measured one says so and is believed.
+
+    `medium` again arrives unsubstituted on both rows, so the expected effort is a
+    literal."""
     adapter = _make(builder, model, provider=provider)
     payload = adapter.format_request_payload(
         MESSAGES, reasoning_effort="medium", reasoning_summary="detailed"
     )
-    assert payload["reasoning"] == {
-        "effort": adapter._served_effort("medium", model), "summary": "detailed",
-    }
+    assert payload["reasoning"] == {"effort": "medium", "summary": "detailed"}
 
 
 def test_the_off_word_sends_no_summary_and_leaves_the_effort_alone(builder):

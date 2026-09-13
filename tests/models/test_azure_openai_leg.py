@@ -332,6 +332,8 @@ def test_the_configured_thinking_budget_reaches_this_leg():
 
 
 def test_an_explicit_effort_beats_the_budget():
+    """The object carries a summary beside the effort for the same reason as above: this
+    deployment's generation is documented to serve one, whichever route set the effort."""
     payload = _azure().format_request_payload(
         MESSAGES, thinking_budget=32768, reasoning_effort="low"
     )
@@ -363,7 +365,10 @@ def test_the_smallest_budget_asks_for_an_effort_this_surface_actually_serves():
 
 def test_an_explicit_minimal_is_substituted_too():
     """The caller who names the effort outright is on the same endpoint as the one who
-    named a budget, and it rejects the value for both of them."""
+    named a budget, and it rejects the value for both of them.
+
+    The summary rides along here too, resolved independently of the substitution this
+    case is about."""
     payload = _azure().format_request_payload(MESSAGES, reasoning_effort="minimal")
     assert payload["reasoning"] == {"effort": "low", "summary": "detailed"}
 

@@ -304,10 +304,8 @@ def supports_reasoning_summary(model_lower: str) -> bool:
     and cheap by comparison: a name shaped like the generation on a leg that does not
     serve the field takes a 400 on its first call.
     """
-    match = _GENERATION_RE.match(model_lower or "")
-    if not match:
-        return False
-    return int(match.group(1)) == _REASONING_SUMMARY_GENERATION
+    generation = _generation(model_lower)
+    return generation is not None and generation[0] == _REASONING_SUMMARY_GENERATION
 
 
 def _reasoning_parts_text(parts: List[Any]) -> str:
