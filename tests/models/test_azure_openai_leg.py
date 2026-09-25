@@ -32,7 +32,7 @@ from marsys.models.models import PROVIDER_BASE_URLS
 from marsys.models.serialize import ApiProvider
 
 MESSAGES = [{"role": "user", "content": "hi"}]
-RESOURCE = "https://marsys-dev-fn-01.services.ai.azure.com"
+RESOURCE = "https://example-resource.services.ai.azure.com"
 
 
 def _azure(model_name: str = "gpt-5.6-sol", **kwargs) -> AzureOpenAIAdapter:
