@@ -288,8 +288,8 @@ def _reconcile_replayed_call_namespaces(
     built fresh each time, and a caller is free to move a function between the top level, a
     container and nowhere from one request to the next. The payload is sent with ``store:
     False``, so the provider keeps nothing between requests: a replayed call can only agree or
-    disagree with the request it rides in, and one that disagrees refuses the WHOLE request,
-    every time, until the conversation changes.
+    disagree with the request it rides in, and over one that disagrees the provider refuses the
+    WHOLE request, every time, until the conversation changes.
 
     What the provider checks, as observed: a call with no namespace to a function that a
     ``tool_search_output`` replayed in the same input loaded into a container is refused ("Missing
