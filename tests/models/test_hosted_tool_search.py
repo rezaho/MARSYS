@@ -18,12 +18,14 @@ No network anywhere in this file.
 """
 import copy
 import json
+import pathlib
 
 import pytest
 
 from marsys.models.adapters.anthropic import AnthropicAdapter
 from marsys.models.adapters.anthropic_oauth import AnthropicOAuthAdapter
-from marsys.models.adapters.azure import AzureOpenAIAdapter
+from marsys.models.adapters.azure import AsyncAzureOpenAIAdapter, AzureOpenAIAdapter
+from marsys.models.adapters.base import CACHE_EXEMPT_KEY
 from marsys.models.adapters.google import GoogleAdapter
 from marsys.models.adapters.openai import (
     AsyncOpenAIAdapter,
@@ -702,19 +704,45 @@ def test_a_lone_deferred_function_nothing_loaded_goes_bare(openai, recorded, sen
     assert _sent(payload) == _wire("ledger_close", "c1", sent)
 
 
+LONE_SEARCH = [SEARCH_CALL, _search_output({"type": "function", "name": "ledger_close", "defer_loading": True})]
+
+
 @pytest.mark.parametrize("recorded", [None, "ledger_close", "ledger"],
                          ids=["recorded bare", "recorded with its own name", "recorded in a family container"])
-def test_a_lone_deferred_function_an_earlier_search_loaded_takes_its_own_name(openai, recorded):
+@pytest.mark.parametrize("array", ["not carried", "deferred alone"])
+def test_a_lone_deferred_function_an_earlier_search_loaded_takes_its_own_name(openai, array, recorded):
     """A search that loads a deferred function on its own makes the provider stamp the call with
-    the function's own name. After such a search, that is the one placement the call has."""
-    lone = {"type": "function", "name": "ledger_close", "defer_loading": True}
+    the function's own name. After such a search, that is the one placement the call has, and it
+    is the same whether or not the array also defers the function alone: the array's deferred
+    entry adds nothing, the search's load is what puts the function in context."""
+    tools = [_tool("workspace_read")]
+    if array == "deferred alone":
+        tools.append(_tool("ledger_close", defer=True))
     payload = openai.format_request_payload(
         [{"role": "user", "content": "go"},
-         _call_row("ledger_close", namespace=recorded, search=[SEARCH_CALL, _search_output(lone)]),
+         _call_row("ledger_close", namespace=recorded, search=LONE_SEARCH),
          _result()],
-        tools=[_tool("workspace_read")],
+        tools=tools,
     )
     assert _sent(payload) == _wire("ledger_close", "c1", "ledger_close")
+
+
+def test_an_own_name_call_before_the_search_that_loads_its_function_alone_goes_bare(openai):
+    """The own-name stamp belongs after the search that loaded the function alone. Where the only
+    such search comes later in the input, nothing before the call loaded it, and the call goes
+    out bare; the call after the search keeps its stamp."""
+    payload = openai.format_request_payload(
+        [
+            {"role": "user", "content": "go"},
+            _call_row("ledger_close", call_id="c_early", namespace="ledger_close"),
+            _result("c_early"),
+            _call_row("ledger_close", call_id="c_late", namespace="ledger_close", search=LONE_SEARCH),
+            _result("c_late"),
+        ],
+        tools=[_tool("ledger_close", defer=True)],
+    )
+    assert _sent(payload, "c_early") == _wire("ledger_close", "c_early")
+    assert _sent(payload, "c_late") == _wire("ledger_close", "c_late", "ledger_close")
 
 
 def test_a_re_stamp_takes_the_first_placement_and_is_stable(openai):
@@ -744,6 +772,198 @@ def test_a_re_stamp_takes_the_first_placement_and_is_stable(openai):
     assert json.dumps(build(BOOKS, LEDGER)) == json.dumps(build(BOOKS, LEDGER))
 
 
+@pytest.mark.parametrize("recorded, sent", [
+    (None, "ledger"),
+    ("books", "books"),
+    ("people", "ledger"),
+], ids=["recorded bare", "recorded with the searched container", "recorded with a stale container"])
+def test_the_arrays_own_container_comes_before_one_an_earlier_search_loaded(openai, recorded, sent):
+    """The array carries the function without deferral in one container, and an earlier search
+    loaded it into another (the family was renamed, the old name still in the input). Both hold
+    it, so a call naming either goes back as recorded; a call that must be re-stamped takes the
+    array's container, which comes first."""
+    payload = openai.format_request_payload(
+        [
+            {"role": "user", "content": "go"},
+            _call_row("ledger_close", call_id="c_found", namespace="books",
+                      search=[SEARCH_CALL, _search_output(_namespace_entry("books", "ledger_close"))]),
+            _result("c_found"),
+            _call_row("ledger_close", namespace=recorded),
+            _result(),
+        ],
+        tools=[_tool("ledger_close", label=LEDGER)],
+    )
+    assert _sent(payload) == _wire("ledger_close", "c1", sent)
+    assert _sent(payload, "c_found") == _wire("ledger_close", "c_found", "books")
+
+
+def test_a_call_without_a_name_passes_through_untouched(openai):
+    row = _call_row("ledger_close", namespace="ledger")
+    del row["tool_calls"][0]["function"]["name"]
+    payload = openai.format_request_payload(
+        [{"role": "user", "content": "go"}, row, _result()],
+        tools=[_tool("ledger_close", defer=True, label=LEDGER)],
+    )
+    assert _sent(payload) == json.dumps({
+        "type": "function_call", "call_id": "c1", "name": None, "arguments": "{}",
+        "namespace": "ledger",
+    })
+
+
+def test_built_ins_and_other_tool_types_place_nothing(openai):
+    """Only functions and namespace containers place a name. A built-in, or another tool type
+    that happens to carry the function's name, puts nothing in context for a function call."""
+    payload = openai.format_request_payload(
+        [{"role": "user", "content": "go"},
+         _call_row("ledger_close", namespace="ledger"), _result(),
+         _call_row("ledger_close", call_id="c2"), _result("c2")],
+        tools=[{"type": "tool_search"}, {"type": "web_search_preview"},
+               {"type": "custom", "name": "ledger_close"}],
+    )
+    assert _sent(payload) == _wire("ledger_close")
+    assert _sent(payload, "c2") == _wire("ledger_close", "c2")
+
+
+# --- the kept shapes, against the bytes the builder sent before this change -----------
+#
+# Every shape the reconciliation leaves alone must go out exactly as it did before it existed,
+# or the first request after an upgrade misses the prompt cache from the first changed row. The
+# golden file holds each shape's `input` items, serialized with json.dumps, as the builder at
+# 40f46c0 (the commit before the reconciliation) built them from the rows below, on
+# gpt-5.6-terra so the prompt-cache markers are placed too. It was captured once, by loading
+# this module against that commit's source and serializing what its OpenAIAdapter built. It is
+# never regenerated from a newer builder: its whole point is the old bytes.
+
+GOLDEN = pathlib.Path(__file__).parent / "fixtures" / "replay_kept_shapes_before_reconciliation.json"
+
+
+def _kept_rung_6(exempt_tail=False):
+    messages = [{"role": "user", "content": "close the quarter"},
+                _call_row("ledger_close", namespace="ledger", search=LEDGER_SEARCH), _result()]
+    if exempt_tail:
+        messages.append({"role": "user", "content": "and the next one", CACHE_EXEMPT_KEY: True})
+    return messages, [_tool("workspace_read"), _tool("ledger_close", defer=True, label=LEDGER)]
+
+
+KEPT_SHAPES = {
+    "a namespaced call after the search that loaded its container": lambda: _kept_rung_6(),
+    "the same, with a cache-exempt row after it": lambda: _kept_rung_6(exempt_tail=True),
+    "a bare call whose container only the array defers": lambda: (
+        [{"role": "user", "content": "go"}, _call_row("ledger_close"), _result()],
+        [_tool("ledger_close", defer=True, label=LEDGER)],
+    ),
+    "a bare call before the only search that loads its container": lambda: (
+        [{"role": "user", "content": "go"},
+         _call_row("ledger_close", call_id="c_early"), _result("c_early"),
+         _call_row("ledger_close", call_id="c_late", namespace="ledger", search=LEDGER_SEARCH),
+         _result("c_late")],
+        [_tool("ledger_close", defer=True, label=LEDGER)],
+    ),
+    "a namespaced call whose container carries it without deferral": lambda: (
+        [{"role": "user", "content": "go"}, _call_row("ledger_close", namespace="ledger"), _result()],
+        [_tool("ledger_close", label=LEDGER)],
+    ),
+    "a function at the top level and search-loaded, in both forms": lambda: (
+        [{"role": "user", "content": "go"},
+         _call_row("ledger_close", namespace="ledger", search=LEDGER_SEARCH), _result(),
+         _call_row("ledger_close", call_id="c2"), _result("c2")],
+        [_tool("ledger_close"), _tool("ledger_reopen", defer=True, label=LEDGER)],
+    ),
+    "a bare call to a function nothing places": lambda: (
+        [{"role": "user", "content": "go"}, _call_row("ledger_close"), _result()],
+        None,
+    ),
+    "a bare call to a lone deferred function nothing loaded": lambda: (
+        [{"role": "user", "content": "go"}, _call_row("ledger_close"), _result()],
+        [_tool("ledger_close", defer=True)],
+    ),
+    "an own-name call after the search that loaded its function alone": lambda: (
+        [{"role": "user", "content": "go"},
+         _call_row("ledger_close", namespace="ledger_close", search=LONE_SEARCH), _result()],
+        [_tool("ledger_close", defer=True)],
+    ),
+    "a plain request": lambda: (
+        [{"role": "user", "content": "go"}, _call_row("a"), _result()],
+        [_tool("a")],
+    ),
+}
+
+
+def _golden():
+    return json.loads(GOLDEN.read_text(encoding="utf-8"))
+
+
+def test_the_golden_file_holds_exactly_the_kept_shapes():
+    assert sorted(_golden()["shapes"]) == sorted(KEPT_SHAPES)
+
+
+@pytest.mark.parametrize("shape", sorted(KEPT_SHAPES))
+def test_the_kept_shapes_go_out_as_the_builder_before_this_change_sent_them(openai, shape):
+    messages, tools = KEPT_SHAPES[shape]()
+    payload = openai.format_request_payload(messages, **({"tools": tools} if tools else {}))
+    assert [json.dumps(item) for item in payload["input"]] == _golden()["shapes"][shape]
+
+
+class _RecordingSession:
+    """Stands in for an async adapter's HTTP session: records each request body it is handed and
+    answers with a 400, so the call returns without a stream to read."""
+
+    closed = False
+
+    def __init__(self):
+        self.payloads = []
+
+    def post(self, url, headers=None, json=None, timeout=None):
+        self.payloads.append(json)
+
+        class _Response:
+            status = 400
+            headers = {}
+
+            async def json(self, content_type=None):
+                return {"error": {"message": "refused", "type": "invalid_request_error"}}
+
+            def raise_for_status(self):
+                error = Exception("Bad Request")
+                error.status = 400
+                raise error
+
+        class _Context:
+            async def __aenter__(self):
+                return _Response()
+
+            async def __aexit__(self, *exc):
+                return False
+
+        return _Context()
+
+
+@pytest.mark.parametrize("streaming", [True, False], ids=["streaming", "standard"])
+@pytest.mark.parametrize("adapter_type", [AsyncOpenAIAdapter, AsyncAzureOpenAIAdapter])
+async def test_every_async_request_path_sends_the_reconciled_call(adapter_type, streaming):
+    """The body that goes on the wire, read off the session, on the streaming path and the
+    standard one: both build it through the same payload builder, so both carry the re-stamp."""
+    adapter = adapter_type(
+        model_name="gpt-5.6-terra", api_key="x", base_url="https://example.invalid/openai/v1",
+        streaming=streaming,
+    )
+    session = _RecordingSession()
+    adapter._session = session
+    await adapter.arun(
+        messages=[
+            {"role": "user", "content": "close the quarter"},
+            _call_row("ledger_close", call_id="c_found", namespace="ledger", search=LEDGER_SEARCH),
+            _result("c_found"),
+            _call_row("ledger_close", call_id="c_late"),
+            _result("c_late"),
+        ],
+        tools=[_tool("ledger_close", defer=True, label=LEDGER)],
+    )
+    assert len(session.payloads) == 1
+    assert session.payloads[0].get("stream") is (True if streaming else None)
+    assert _sent(session.payloads[0], "c_late") == _wire("ledger_close", "c_late", "ledger")
+
+
 def test_the_callers_rows_are_not_mutated_by_the_replay(openai):
     messages = [
         {"role": "user", "content": "go"},
@@ -767,6 +987,10 @@ def test_the_callers_rows_are_not_mutated_by_the_replay(openai):
     assert tools == tools_before
     assert messages[3]["tool_calls"][0].get("namespace") is None
     assert messages[5]["tool_calls"][0]["namespace"] == "people"
+    # The search items go on the wire as the caller's own objects, unchanged and in order.
+    replayed = [i for i in payload["input"] if i.get("type") in ("tool_search_call", "tool_search_output")]
+    assert replayed == LEDGER_SEARCH
+    assert all(sent is kept for sent, kept in zip(replayed, messages[1]["reasoning_details"]))
 
 
 # --- the round trip ------------------------------------------------------------------

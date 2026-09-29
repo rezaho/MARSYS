@@ -162,6 +162,29 @@ def test_a_too_large_400_still_classifies_request_too_large(leg):
     assert result.classification["is_retryable"] is False
 
 
+@pytest.mark.parametrize("status, category, retryable", [
+    (429, "rate_limit", True),
+    (401, "authentication_failed", False),
+    (403, "unknown", False),
+    (404, "invalid_model", False),
+    (500, "service_unavailable", True),
+    (503, "service_unavailable", True),
+])
+@pytest.mark.parametrize("leg", ["openai", "azure"])
+def test_the_other_openai_and_azure_status_arms_classify_as_before(leg, status, category, retryable):
+    """Only the 400 arm is new. Read through the classifier itself, because two of these verdicts
+    are critical and the adapter's handler raises them rather than returning."""
+    from marsys.agents.exceptions import ModelAPIError
+
+    shim = _CapturedErrorResponse(
+        status_code=status, body=_responses_error_body("refused"), headers=CIMultiDict()
+    )
+    error = ModelAPIError.from_provider_response(provider=leg, response=shim)
+
+    assert error.classification == category
+    assert error.is_retryable is retryable
+
+
 def test_true_connection_error_no_status_classifies_retryable_network():
     """A genuine connection failure (no HTTP response, no status anywhere) is a
     TRANSIENT, retryable network error — it must classify as ``network_error`` so
