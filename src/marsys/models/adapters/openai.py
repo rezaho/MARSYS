@@ -273,6 +273,92 @@ def _replayed_provider_items(msg: Dict[str, Any]) -> List[Dict[str, Any]]:
     ]
 
 
+def _add_placement(
+    placements: Dict[str, List[Optional[str]]], name: str, namespace: Optional[str]
+) -> None:
+    held = placements.setdefault(name, [])
+    if namespace not in held:
+        held.append(namespace)
+
+
+def _reconcile_replayed_call_namespaces(
+    items: List[Dict[str, Any]], tools: Optional[Collection[Any]]
+) -> None:
+    """Make each replayed ``function_call``'s namespace agree with the request carrying it.
+
+    A call's namespace is fixed when the provider emits it, but the request that replays it is
+    built fresh each time, and a caller is free to move a function between the top level, a
+    container and nowhere from one request to the next. The payload is sent with ``store:
+    False``, so the provider keeps nothing between requests: it checks a replayed call against
+    the request it rides in, and over one it cannot resolve it refuses the WHOLE request, every
+    time, until the conversation changes.
+
+    The provider resolves a call against what the request has put in the model's context by the
+    point where the call sits: the functions the tools array carries without deferral, and
+    whatever a ``tool_search_output`` earlier in the input loaded, into a container or on its own
+    under the function's own name. A deferred entry on the array is not in context until a search
+    loads it. As observed: a call with no namespace to a function an earlier search loaded into a
+    container is refused ("Missing namespace for function_call ... It does not exist in the
+    default namespace"); a call with no namespace to a deferred function nothing has loaded is
+    accepted; a namespaced call after the search that loaded its container is accepted. A search
+    counts only for the calls after it, which is the order the builder replays a reply's own
+    items in, so an item added at the end of the input never rewrites an earlier call.
+
+    A call's placements are therefore the array's in-context entries (the default namespace for a
+    top-level function, its container for a container member), then what the earlier searches
+    loaded, in input order:
+
+    - A recorded value that is one of them goes back exactly as recorded, and so does a call with
+      no namespace whose function has no placement at all. Nothing the provider accepts today
+      changes, and the cached prefix does not move.
+    - Otherwise the call takes its first placement: the key is dropped for the default namespace
+      and set for a container or an own name.
+    - A namespaced call whose function has no placement goes back with none. That is the form the
+      provider has been shown to accept for a function nothing loaded; a namespaced call that
+      nothing before it loaded has not been.
+
+    Writes only ``function_call`` items, which the builder creates fresh for this payload, and
+    adds, drops or reorders nothing. Everything else, the replayed search items included, is the
+    caller's own and is only read.
+    """
+    placements: Dict[str, List[Optional[str]]] = {}
+    for tool in tools or ():
+        if not isinstance(tool, dict) or tool.get("defer_loading"):
+            continue
+        if tool.get("type") == "function" and isinstance(tool.get("name"), str):
+            _add_placement(placements, tool["name"], None)
+        elif tool.get("type") == "namespace" and isinstance(tool.get("name"), str):
+            for member in tool.get("tools") or ():
+                if (
+                    isinstance(member, dict)
+                    and isinstance(member.get("name"), str)
+                    and not member.get("defer_loading")
+                ):
+                    _add_placement(placements, member["name"], tool["name"])
+
+    for item in items:
+        if item.get("type") == "tool_search_output":
+            for entry in item.get("tools") or ():
+                if not isinstance(entry, dict) or not isinstance(entry.get("name"), str):
+                    continue
+                if entry.get("type") == "namespace":
+                    for member in entry.get("tools") or ():
+                        if isinstance(member, dict) and isinstance(member.get("name"), str):
+                            _add_placement(placements, member["name"], entry["name"])
+                elif entry.get("type") == "function":
+                    # A deferred function loaded on its own: the provider names it by itself.
+                    _add_placement(placements, entry["name"], entry["name"])
+        elif item.get("type") == "function_call" and isinstance(item.get("name"), str):
+            held = placements.get(item["name"], [])
+            recorded = item.get(NAMESPACE_LABEL_KEY)
+            if recorded in held or (recorded is None and not held):
+                continue
+            if held and held[0] is not None:
+                item[NAMESPACE_LABEL_KEY] = held[0]
+            else:
+                item.pop(NAMESPACE_LABEL_KEY, None)
+
+
 def supports_explicit_prompt_cache(model_lower: str) -> bool:
     """Whether a model name is GPT-5.6 or later, the generation that serves the fields.
 
@@ -603,8 +689,10 @@ class OpenAIAdapter(APIProviderAdapter):
                         "name": func.get("name"),
                         "arguments": func.get("arguments", "{}")
                     }
-                    # The container the provider's search loaded this function from, when it named
-                    # one. The item that goes back is the provider's own, so it goes back whole.
+                    # The namespace the provider stamped on this call when it emitted it, carried
+                    # as recorded. It was true of the request it came back from, which need not be
+                    # this one; the reconciliation below, once the tools are rendered, makes it
+                    # agree with this request.
                     if tc.get(NAMESPACE_LABEL_KEY):
                         call_item[NAMESPACE_LABEL_KEY] = tc[NAMESPACE_LABEL_KEY]
                     converted_messages.append(call_item)
@@ -725,6 +813,10 @@ class OpenAIAdapter(APIProviderAdapter):
         # byte-identical to before.
         if kwargs.get("tools"):
             payload["tools"] = _convert_tools_for_responses(kwargs["tools"])
+
+        # Every replayed call names a namespace this request can resolve. Here, after the tools
+        # render, because the rendered array is what the provider checks the calls against.
+        _reconcile_replayed_call_namespaces(converted_messages, payload.get("tools"))
 
         # Handle OpenAI reasoning (effort-based for all models via Responses API).
         # An explicit `reasoning_effort` wins; failing that, a caller's thinking budget

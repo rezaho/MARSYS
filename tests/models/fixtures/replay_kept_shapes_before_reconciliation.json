@@ -1,0 +1,71 @@
+{
+  "_about": "The Responses payload input items of each kept shape in test_hosted_tool_search.py's KEPT_SHAPES, each serialized with json.dumps, as OpenAIAdapter.format_request_payload at 40f46c0 (the commit before the replayed-call reconciliation) built them on gpt-5.6-terra. Captured once from that commit's source; never regenerate it from a newer builder.",
+  "captured_from": "40f46c0",
+  "shapes": {
+    "a namespaced call after the search that loaded its container": [
+      "{\"role\": \"user\", \"content\": [{\"type\": \"input_text\", \"text\": \"close the quarter\", \"prompt_cache_breakpoint\": {\"mode\": \"explicit\"}}]}",
+      "{\"type\": \"tool_search_call\", \"id\": \"ts_1\", \"status\": \"completed\", \"paths\": [\"ledger\"]}",
+      "{\"type\": \"tool_search_output\", \"id\": \"tso_1\", \"status\": \"completed\", \"tools\": [{\"type\": \"namespace\", \"name\": \"ledger\", \"tools\": [{\"type\": \"function\", \"name\": \"ledger_close\"}]}]}",
+      "{\"type\": \"function_call\", \"call_id\": \"c1\", \"name\": \"ledger_close\", \"arguments\": \"{}\", \"namespace\": \"ledger\"}",
+      "{\"type\": \"function_call_output\", \"call_id\": \"c1\", \"output\": [{\"type\": \"input_text\", \"text\": \"{}\", \"prompt_cache_breakpoint\": {\"mode\": \"explicit\"}}]}"
+    ],
+    "the same, with a cache-exempt row after it": [
+      "{\"role\": \"user\", \"content\": [{\"type\": \"input_text\", \"text\": \"close the quarter\", \"prompt_cache_breakpoint\": {\"mode\": \"explicit\"}}]}",
+      "{\"type\": \"tool_search_call\", \"id\": \"ts_1\", \"status\": \"completed\", \"paths\": [\"ledger\"]}",
+      "{\"type\": \"tool_search_output\", \"id\": \"tso_1\", \"status\": \"completed\", \"tools\": [{\"type\": \"namespace\", \"name\": \"ledger\", \"tools\": [{\"type\": \"function\", \"name\": \"ledger_close\"}]}]}",
+      "{\"type\": \"function_call\", \"call_id\": \"c1\", \"name\": \"ledger_close\", \"arguments\": \"{}\", \"namespace\": \"ledger\"}",
+      "{\"type\": \"function_call_output\", \"call_id\": \"c1\", \"output\": [{\"type\": \"input_text\", \"text\": \"{}\", \"prompt_cache_breakpoint\": {\"mode\": \"explicit\"}}]}",
+      "{\"role\": \"user\", \"content\": \"and the next one\"}"
+    ],
+    "a bare call whose container only the array defers": [
+      "{\"role\": \"user\", \"content\": [{\"type\": \"input_text\", \"text\": \"go\", \"prompt_cache_breakpoint\": {\"mode\": \"explicit\"}}]}",
+      "{\"type\": \"function_call\", \"call_id\": \"c1\", \"name\": \"ledger_close\", \"arguments\": \"{}\"}",
+      "{\"type\": \"function_call_output\", \"call_id\": \"c1\", \"output\": [{\"type\": \"input_text\", \"text\": \"{}\", \"prompt_cache_breakpoint\": {\"mode\": \"explicit\"}}]}"
+    ],
+    "a bare call before the only search that loads its container": [
+      "{\"role\": \"user\", \"content\": [{\"type\": \"input_text\", \"text\": \"go\", \"prompt_cache_breakpoint\": {\"mode\": \"explicit\"}}]}",
+      "{\"type\": \"function_call\", \"call_id\": \"c_early\", \"name\": \"ledger_close\", \"arguments\": \"{}\"}",
+      "{\"type\": \"function_call_output\", \"call_id\": \"c_early\", \"output\": [{\"type\": \"input_text\", \"text\": \"{}\", \"prompt_cache_breakpoint\": {\"mode\": \"explicit\"}}]}",
+      "{\"type\": \"tool_search_call\", \"id\": \"ts_1\", \"status\": \"completed\", \"paths\": [\"ledger\"]}",
+      "{\"type\": \"tool_search_output\", \"id\": \"tso_1\", \"status\": \"completed\", \"tools\": [{\"type\": \"namespace\", \"name\": \"ledger\", \"tools\": [{\"type\": \"function\", \"name\": \"ledger_close\"}]}]}",
+      "{\"type\": \"function_call\", \"call_id\": \"c_late\", \"name\": \"ledger_close\", \"arguments\": \"{}\", \"namespace\": \"ledger\"}",
+      "{\"type\": \"function_call_output\", \"call_id\": \"c_late\", \"output\": [{\"type\": \"input_text\", \"text\": \"{}\", \"prompt_cache_breakpoint\": {\"mode\": \"explicit\"}}]}"
+    ],
+    "a namespaced call whose container carries it without deferral": [
+      "{\"role\": \"user\", \"content\": [{\"type\": \"input_text\", \"text\": \"go\", \"prompt_cache_breakpoint\": {\"mode\": \"explicit\"}}]}",
+      "{\"type\": \"function_call\", \"call_id\": \"c1\", \"name\": \"ledger_close\", \"arguments\": \"{}\", \"namespace\": \"ledger\"}",
+      "{\"type\": \"function_call_output\", \"call_id\": \"c1\", \"output\": [{\"type\": \"input_text\", \"text\": \"{}\", \"prompt_cache_breakpoint\": {\"mode\": \"explicit\"}}]}"
+    ],
+    "a function at the top level and search-loaded, in both forms": [
+      "{\"role\": \"user\", \"content\": [{\"type\": \"input_text\", \"text\": \"go\", \"prompt_cache_breakpoint\": {\"mode\": \"explicit\"}}]}",
+      "{\"type\": \"tool_search_call\", \"id\": \"ts_1\", \"status\": \"completed\", \"paths\": [\"ledger\"]}",
+      "{\"type\": \"tool_search_output\", \"id\": \"tso_1\", \"status\": \"completed\", \"tools\": [{\"type\": \"namespace\", \"name\": \"ledger\", \"tools\": [{\"type\": \"function\", \"name\": \"ledger_close\"}]}]}",
+      "{\"type\": \"function_call\", \"call_id\": \"c1\", \"name\": \"ledger_close\", \"arguments\": \"{}\", \"namespace\": \"ledger\"}",
+      "{\"type\": \"function_call_output\", \"call_id\": \"c1\", \"output\": [{\"type\": \"input_text\", \"text\": \"{}\", \"prompt_cache_breakpoint\": {\"mode\": \"explicit\"}}]}",
+      "{\"type\": \"function_call\", \"call_id\": \"c2\", \"name\": \"ledger_close\", \"arguments\": \"{}\"}",
+      "{\"type\": \"function_call_output\", \"call_id\": \"c2\", \"output\": [{\"type\": \"input_text\", \"text\": \"{}\", \"prompt_cache_breakpoint\": {\"mode\": \"explicit\"}}]}"
+    ],
+    "a bare call to a function nothing places": [
+      "{\"role\": \"user\", \"content\": [{\"type\": \"input_text\", \"text\": \"go\", \"prompt_cache_breakpoint\": {\"mode\": \"explicit\"}}]}",
+      "{\"type\": \"function_call\", \"call_id\": \"c1\", \"name\": \"ledger_close\", \"arguments\": \"{}\"}",
+      "{\"type\": \"function_call_output\", \"call_id\": \"c1\", \"output\": [{\"type\": \"input_text\", \"text\": \"{}\", \"prompt_cache_breakpoint\": {\"mode\": \"explicit\"}}]}"
+    ],
+    "a bare call to a lone deferred function nothing loaded": [
+      "{\"role\": \"user\", \"content\": [{\"type\": \"input_text\", \"text\": \"go\", \"prompt_cache_breakpoint\": {\"mode\": \"explicit\"}}]}",
+      "{\"type\": \"function_call\", \"call_id\": \"c1\", \"name\": \"ledger_close\", \"arguments\": \"{}\"}",
+      "{\"type\": \"function_call_output\", \"call_id\": \"c1\", \"output\": [{\"type\": \"input_text\", \"text\": \"{}\", \"prompt_cache_breakpoint\": {\"mode\": \"explicit\"}}]}"
+    ],
+    "an own-name call after the search that loaded its function alone": [
+      "{\"role\": \"user\", \"content\": [{\"type\": \"input_text\", \"text\": \"go\", \"prompt_cache_breakpoint\": {\"mode\": \"explicit\"}}]}",
+      "{\"type\": \"tool_search_call\", \"id\": \"ts_1\", \"status\": \"completed\", \"paths\": [\"ledger\"]}",
+      "{\"type\": \"tool_search_output\", \"id\": \"tso_1\", \"status\": \"completed\", \"tools\": [{\"type\": \"function\", \"name\": \"ledger_close\", \"defer_loading\": true}]}",
+      "{\"type\": \"function_call\", \"call_id\": \"c1\", \"name\": \"ledger_close\", \"arguments\": \"{}\", \"namespace\": \"ledger_close\"}",
+      "{\"type\": \"function_call_output\", \"call_id\": \"c1\", \"output\": [{\"type\": \"input_text\", \"text\": \"{}\", \"prompt_cache_breakpoint\": {\"mode\": \"explicit\"}}]}"
+    ],
+    "a plain request": [
+      "{\"role\": \"user\", \"content\": [{\"type\": \"input_text\", \"text\": \"go\", \"prompt_cache_breakpoint\": {\"mode\": \"explicit\"}}]}",
+      "{\"type\": \"function_call\", \"call_id\": \"c1\", \"name\": \"a\", \"arguments\": \"{}\"}",
+      "{\"type\": \"function_call_output\", \"call_id\": \"c1\", \"output\": [{\"type\": \"input_text\", \"text\": \"{}\", \"prompt_cache_breakpoint\": {\"mode\": \"explicit\"}}]}"
+    ]
+  }
+}

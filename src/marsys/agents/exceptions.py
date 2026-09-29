@@ -859,6 +859,13 @@ class ModelAPIError(ModelError):
                         classification = APIErrorClassification.RATE_LIMIT.value
                         is_retryable = True
                         retry_after = int(response.headers.get("retry-after", 60)) if hasattr(response, 'headers') else 60
+                elif status_code == 400:
+                        # The provider refused the request as built, and sending it again sends
+                        # the same bytes. Terminal, the same verdict as the Anthropic, OpenRouter
+                        # and Anthropic-OAuth 400 arms. `message` was already read from the
+                        # provider's body at the top of this branch, so its own words surface.
+                        classification = APIErrorClassification.INVALID_REQUEST.value
+                        is_retryable = False
                 elif status_code == 401:
                         classification = APIErrorClassification.AUTHENTICATION_FAILED.value
                 elif status_code == 404:
