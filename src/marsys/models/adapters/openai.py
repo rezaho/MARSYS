@@ -273,6 +273,101 @@ def _replayed_provider_items(msg: Dict[str, Any]) -> List[Dict[str, Any]]:
     ]
 
 
+def _append_once(placements: Dict[str, List[str]], name: str, namespace: str) -> None:
+    held = placements.setdefault(name, [])
+    if namespace not in held:
+        held.append(namespace)
+
+
+def _reconcile_replayed_call_namespaces(
+    items: List[Any], tools: Optional[Collection[Any]]
+) -> None:
+    """Make each replayed ``function_call``'s namespace agree with the request carrying it.
+
+    A call's namespace is fixed when the provider emits it, but the request that replays it is
+    built fresh each time, and a caller is free to move a function between the top level, a
+    container and nowhere from one request to the next. The payload is sent with ``store:
+    False``, so the provider keeps nothing between requests: a replayed call can only agree or
+    disagree with the request it rides in, and one that disagrees refuses the WHOLE request,
+    every time, until the conversation changes.
+
+    What the provider checks, as observed: a call with no namespace to a function that a
+    ``tool_search_output`` replayed in the same input loaded into a container is refused ("Missing
+    namespace for function_call ... It does not exist in the default namespace"); a call with no
+    namespace whose container only the tools array defers it in is accepted. So:
+
+    - A recorded value that still resolves on this request goes back exactly as recorded, so the
+      cached prefix does not move and no shape changes that the provider already accepts. It
+      resolves when it names a container (or, for a function deferred alone, the function's own
+      name, which is how the provider stamps such a call) holding the function on this request,
+      or when it is absent and the function is either at the top level here or loaded into no
+      container by a replayed search.
+    - Otherwise the call names the first container a replayed search output loaded its function
+      into, in input order: the provider has the definitions from that search in the same request.
+    - Otherwise a function the tools array defers alone takes its own name.
+    - Otherwise the namespace is dropped: a container that does not hold the function cannot
+      resolve it, and a call that names a container no search in this request loaded is a shape
+      the provider has not been shown to accept, whereas the bare form is.
+
+    Writes only ``function_call`` items, which the builder creates fresh for this payload, and
+    only reads everything else, including the replayed search items, which are the caller's own
+    objects.
+    """
+    holders: Dict[str, List[str]] = {}  # name -> the namespaces that hold it on this request
+    loaded: Dict[str, List[str]] = {}  # name -> where a replayed search put it, in input order
+    reachable_bare: set = set()  # names this request carries at the top level
+    deferred_alone: set = set()  # names the tools array defers at the top level
+
+    for tool in tools or ():
+        if not isinstance(tool, dict) or not isinstance(tool.get("name"), str):
+            continue
+        if tool.get("type") == "function":
+            reachable_bare.add(tool["name"])
+            if tool.get("defer_loading"):
+                deferred_alone.add(tool["name"])
+                _append_once(holders, tool["name"], tool["name"])
+        elif tool.get("type") == "namespace":
+            for member in tool.get("tools") or ():
+                if isinstance(member, dict) and isinstance(member.get("name"), str):
+                    _append_once(holders, member["name"], tool["name"])
+
+    for item in items:
+        if not isinstance(item, dict) or item.get("type") != "tool_search_output":
+            continue
+        for entry in item.get("tools") or ():
+            if not isinstance(entry, dict) or not isinstance(entry.get("name"), str):
+                continue
+            if entry.get("type") == "namespace":
+                for member in entry.get("tools") or ():
+                    if isinstance(member, dict) and isinstance(member.get("name"), str):
+                        _append_once(holders, member["name"], entry["name"])
+                        _append_once(loaded, member["name"], entry["name"])
+            elif entry.get("type") == "function":
+                # A deferred function the search loaded on its own, outside any container.
+                reachable_bare.add(entry["name"])
+                _append_once(holders, entry["name"], entry["name"])
+                _append_once(loaded, entry["name"], entry["name"])
+
+    for item in items:
+        if not isinstance(item, dict) or item.get("type") != "function_call":
+            continue
+        name = item.get("name")
+        if not isinstance(name, str):
+            continue
+        recorded = item.get(NAMESPACE_LABEL_KEY)
+        if recorded is None:
+            if name in reachable_bare or name not in loaded:
+                continue
+        elif recorded in holders.get(name, ()):
+            continue
+        if name in loaded:
+            item[NAMESPACE_LABEL_KEY] = loaded[name][0]
+        elif name in deferred_alone:
+            item[NAMESPACE_LABEL_KEY] = name
+        else:
+            item.pop(NAMESPACE_LABEL_KEY, None)
+
+
 def supports_explicit_prompt_cache(model_lower: str) -> bool:
     """Whether a model name is GPT-5.6 or later, the generation that serves the fields.
 
@@ -603,8 +698,10 @@ class OpenAIAdapter(APIProviderAdapter):
                         "name": func.get("name"),
                         "arguments": func.get("arguments", "{}")
                     }
-                    # The container the provider's search loaded this function from, when it named
-                    # one. The item that goes back is the provider's own, so it goes back whole.
+                    # The namespace the provider stamped on this call when it emitted it, carried
+                    # as recorded. It was true of the request it came back from, which need not be
+                    # this one; the reconciliation below, once the tools are rendered, makes it
+                    # agree with this request.
                     if tc.get(NAMESPACE_LABEL_KEY):
                         call_item[NAMESPACE_LABEL_KEY] = tc[NAMESPACE_LABEL_KEY]
                     converted_messages.append(call_item)
@@ -725,6 +822,10 @@ class OpenAIAdapter(APIProviderAdapter):
         # byte-identical to before.
         if kwargs.get("tools"):
             payload["tools"] = _convert_tools_for_responses(kwargs["tools"])
+
+        # Every replayed call names a namespace this request can resolve. Here, after the tools
+        # render, because the rendered array is what the provider checks the calls against.
+        _reconcile_replayed_call_namespaces(converted_messages, payload.get("tools"))
 
         # Handle OpenAI reasoning (effort-based for all models via Responses API).
         # An explicit `reasoning_effort` wins; failing that, a caller's thinking budget
