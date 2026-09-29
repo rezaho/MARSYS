@@ -17,7 +17,9 @@ import pytest
 from multidict import CIMultiDict
 
 from marsys.models.adapters.anthropic import AnthropicAdapter
+from marsys.models.adapters.azure import AzureOpenAIAdapter
 from marsys.models.adapters.base import _CapturedErrorResponse
+from marsys.models.adapters.openai import OpenAIAdapter
 
 _BODY = {
     "type": "error",
@@ -94,6 +96,69 @@ def test_body_less_400_classifies_invalid_request():
     result = _adapter().handle_api_error(err, response=None)
     assert result.error == "Bad Request"
     assert result.classification["category"] == "invalid_request"
+    assert result.classification["is_retryable"] is False
+
+
+_RESPONSES_REFUSAL = (
+    "Missing namespace for function_call 'ledger_close'. It does not exist in the default "
+    "namespace. Round-trip the model's function_call item with its namespace field included."
+)
+
+
+def _responses_adapter(leg: str):
+    if leg == "azure":
+        return AzureOpenAIAdapter(
+            model_name="gpt-5.6-terra", api_key="not-a-real-key",
+            base_url="https://example.invalid/openai/v1",
+        )
+    return OpenAIAdapter(
+        model_name="gpt-5.6-terra", api_key="not-a-real-key",
+        base_url="https://api.openai.com/v1",
+    )
+
+
+def _responses_error_body(message: str) -> dict:
+    """The Responses API's error envelope, the one both legs share."""
+    return {"error": {"message": message, "type": "invalid_request_error",
+                      "param": None, "code": None}}
+
+
+@pytest.mark.parametrize("with_body", [True, False], ids=["with its body", "body unread"])
+@pytest.mark.parametrize("leg", ["openai", "azure"])
+def test_an_openai_or_azure_400_classifies_invalid_request(leg, with_body):
+    """A 400 is the provider refusing the request as built: sending it again sends the same
+    bytes and draws the same refusal, so it is terminal, the same verdict every other
+    provider's 400 arm already gives. The provider's own words survive when the body was read."""
+    err = _FakeClientResponseError(status=400, message="Bad Request")
+    shim = (
+        _CapturedErrorResponse(
+            status_code=400, body=_responses_error_body(_RESPONSES_REFUSAL), headers=CIMultiDict()
+        )
+        if with_body else None
+    )
+
+    result = _responses_adapter(leg).handle_api_error(err, response=shim)
+
+    assert result.classification["category"] == "invalid_request"
+    assert result.classification["is_retryable"] is False
+    assert result.provider == leg
+    assert result.error == (_RESPONSES_REFUSAL if with_body else "Bad Request")
+
+
+@pytest.mark.parametrize("leg", ["openai", "azure"])
+def test_a_too_large_400_still_classifies_request_too_large(leg):
+    """The payload-size override runs after the provider's arms and still wins over the 400 arm,
+    so a request that is too big keeps the verdict that lets a caller shrink it."""
+    err = _FakeClientResponseError(status=400, message="Bad Request")
+    shim = _CapturedErrorResponse(
+        status_code=400,
+        body=_responses_error_body("The request body is too large for this deployment."),
+        headers=CIMultiDict(),
+    )
+
+    result = _responses_adapter(leg).handle_api_error(err, response=shim)
+
+    assert result.classification["category"] == "request_too_large"
     assert result.classification["is_retryable"] is False
 
 
