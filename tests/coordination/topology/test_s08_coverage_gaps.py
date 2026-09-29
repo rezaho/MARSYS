@@ -218,10 +218,11 @@ def test_node_type_symbol_removed_from_core_and_package():
 def test_pattern_converter_has_no_nodetype_user_constructor():
     """AC-43 structural half: no ``NodeType.USER`` / ``node_type=`` remains in
     pattern_converter (it must build ``kind=NodeKind.USER``)."""
-    src = pathlib.Path(
-        "packages/framework/src/marsys/coordination/topology/converters/"
-        "pattern_converter.py"
-    ).read_text()
+    from marsys.coordination.topology.converters import pattern_converter
+
+    # Read through the imported module, not a path relative to the working directory, so the
+    # check holds from any directory the suite is run in.
+    src = pathlib.Path(pattern_converter.__file__).read_text(encoding="utf-8")
     assert "NodeType" not in src, "stale NodeType reference in pattern_converter"
     assert "node_type=" not in src, "stale node_type= kwarg in pattern_converter"
     assert "kind=NodeKind.USER" in src or "kind=NodeKind" in src
