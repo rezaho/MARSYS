@@ -17,6 +17,7 @@ the function call comes back stamped with the container it was loaded from.
 No network anywhere in this file.
 """
 import copy
+import json
 
 import pytest
 
@@ -444,10 +445,15 @@ def test_a_text_answering_reply_replays_its_search_items_too(openai):
 # A call's namespace is recorded once, when the provider emitted it, while the request that
 # replays it is built fresh every time and places the function wherever the caller put it
 # this time. The request is not stored on the provider's side, so the replayed call is checked
-# against the request carrying it and nothing else. The provider refuses a namespace-less call
-# to a function that a replayed search output in the same request loaded into a container
-# ("Missing namespace for function_call 'ledger_close'. It does not exist in the default
-# namespace."), and it accepts one whose container only the tools array defers it in.
+# against the request carrying it and nothing else: against what that request has put in
+# context by the point where the call sits. The array's entries that are not deferred are in
+# context throughout; a deferred entry is not, until a search output earlier in the input
+# loads it. The provider refuses a namespace-less call to a function an earlier search loaded
+# into a container ("Missing namespace for function_call 'ledger_close'. It does not exist in
+# the default namespace."), and it accepts one to a deferred function nothing has loaded.
+#
+# The byte-identity assertions compare the serialized item, so a change of key order fails
+# them as surely as a change of value.
 
 BOOKS = {"name": "books", "description": "the old name of the ledger family"}
 
@@ -492,22 +498,50 @@ def _as_recorded(name, call_id="c1", namespace=None):
     return item
 
 
+def _sent(payload, call_id="c1"):
+    """The call item as it goes on the wire, key order included."""
+    return json.dumps(_call(payload, call_id))
+
+
+def _wire(name, call_id="c1", namespace=None):
+    return json.dumps(_as_recorded(name, call_id, namespace))
+
+
 LEDGER_SEARCH = [SEARCH_CALL, _search_output(_namespace_entry("ledger", "ledger_close"))]
 
 
 @pytest.mark.parametrize("carried", ["deferred in that container", "not carried at all"])
 @pytest.mark.parametrize("leg", ["openai", "azure"])
-def test_a_bare_call_names_the_container_a_replayed_search_loaded_its_function_into(
+def test_a_bare_call_names_the_container_an_earlier_search_loaded_its_function_into(
     request, leg, carried
 ):
-    """The call was made while its function stood at the top level; a later search loaded the
-    function into its container, and that search is replayed in the same input. Sent bare, the
-    provider refuses the whole request. It does not matter where the search sits relative to the
-    call: the provider reads the request as one."""
+    """The function was searched for and called in its container; a later call to it was made
+    while it stood at the top level, so it carries no namespace. Replayed after the search that
+    loaded the container, the bare call is refused, so it goes out naming the container."""
     adapter = request.getfixturevalue(leg)
     tools = [_tool("workspace_read")]
     if carried == "deferred in that container":
         tools.append(_tool("ledger_close", defer=True, label=LEDGER))
+    payload = adapter.format_request_payload(
+        [
+            {"role": "user", "content": "close the quarter"},
+            _call_row("ledger_close", call_id="c_found", namespace="ledger", search=LEDGER_SEARCH),
+            _result("c_found"),
+            {"role": "user", "content": "and the next one"},
+            _call_row("ledger_close", call_id="c_late"),
+            _result("c_late"),
+        ],
+        tools=tools,
+    )
+    assert _sent(payload, "c_late") == _wire("ledger_close", "c_late", "ledger")
+    assert _sent(payload, "c_found") == _wire("ledger_close", "c_found", "ledger")
+
+
+@pytest.mark.parametrize("leg", ["openai", "azure"])
+def test_a_bare_call_before_the_only_search_that_loads_its_container_stays_bare(request, leg):
+    """A search counts only for the calls after it. The bare call comes first, when nothing had
+    loaded its function, and it stays exactly as recorded; nothing appended later rewrites it."""
+    adapter = request.getfixturevalue(leg)
     payload = adapter.format_request_payload(
         [
             {"role": "user", "content": "close the quarter"},
@@ -517,10 +551,28 @@ def test_a_bare_call_names_the_container_a_replayed_search_loaded_its_function_i
             _call_row("ledger_close", call_id="c_late", namespace="ledger", search=LEDGER_SEARCH),
             _result("c_late"),
         ],
-        tools=tools,
+        tools=[_tool("ledger_close", defer=True, label=LEDGER)],
     )
-    assert _call(payload, "c_early") == _as_recorded("ledger_close", "c_early", "ledger")
-    assert _call(payload, "c_late") == _as_recorded("ledger_close", "c_late", "ledger")
+    assert _sent(payload, "c_early") == _wire("ledger_close", "c_early")
+    assert _sent(payload, "c_late") == _wire("ledger_close", "c_late", "ledger")
+
+
+def test_a_namespaced_call_before_its_containers_first_loading_search_goes_bare(openai):
+    """Nothing before this call loaded its container; the only search that does comes later. A
+    namespaced call that nothing before it loaded has not been shown to be accepted, while the
+    bare form of a call to a function nothing loaded has."""
+    payload = openai.format_request_payload(
+        [
+            {"role": "user", "content": "go"},
+            _call_row("ledger_close", call_id="c_early", namespace="ledger"),
+            _result("c_early"),
+            _call_row("ledger_close", call_id="c_late", namespace="ledger", search=LEDGER_SEARCH),
+            _result("c_late"),
+        ],
+        tools=[_tool("ledger_close", defer=True, label=LEDGER)],
+    )
+    assert _sent(payload, "c_early") == _wire("ledger_close", "c_early")
+    assert _sent(payload, "c_late") == _wire("ledger_close", "c_late", "ledger")
 
 
 def test_a_namespaced_call_goes_bare_when_this_request_carries_its_function_top_level(openai):
@@ -531,31 +583,33 @@ def test_a_namespaced_call_goes_bare_when_this_request_carries_its_function_top_
         [{"role": "user", "content": "go"}, _call_row("ledger_close", namespace="ledger"), _result()],
         tools=[_tool("ledger_close"), _tool("ledger_reopen", defer=True, label=LEDGER)],
     )
-    assert _call(payload) == _as_recorded("ledger_close")
+    assert _sent(payload) == _wire("ledger_close")
 
 
+@pytest.mark.parametrize("earlier", [None, "another container"], ids=["nothing loaded", "another container loaded"])
 @pytest.mark.parametrize("leg", ["openai", "azure"])
-def test_a_bare_call_stays_bare_when_no_replayed_search_loaded_its_container(request, leg):
-    """The tools array defers the function in a container, and no replayed search loaded that
-    container: the provider accepts the bare call there, so it goes back exactly as recorded. A
-    search that loaded some other container changes nothing for it."""
+def test_a_bare_call_stays_bare_when_no_earlier_search_loaded_its_container(request, leg, earlier):
+    """The tools array defers the function in a container and nothing before the call loaded
+    it: the provider accepts the bare call there, so it goes back exactly as recorded."""
     adapter = request.getfixturevalue(leg)
-    payload = adapter.format_request_payload(
-        [
-            {"role": "user", "content": "go"},
+    messages = [{"role": "user", "content": "go"}]
+    if earlier:
+        messages += [
             _call_row("people_list", call_id="c_people", namespace="people",
                       search=[SEARCH_CALL, _search_output(_namespace_entry("people", "people_list"))]),
             _result("c_people"),
-            _call_row("ledger_close"),
-            _result(),
-        ],
+        ]
+    messages += [_call_row("ledger_close"), _result()]
+    payload = adapter.format_request_payload(
+        messages,
         tools=[
             _tool("ledger_close", defer=True, label=LEDGER),
             _tool("people_list", defer=True, label=PEOPLE),
         ],
     )
-    assert _call(payload) == _as_recorded("ledger_close")
-    assert _call(payload, "c_people") == _as_recorded("people_list", "c_people", "people")
+    assert _sent(payload) == _wire("ledger_close")
+    if earlier:
+        assert _sent(payload, "c_people") == _wire("people_list", "c_people", "people")
 
 
 @pytest.mark.parametrize("tools", [None, [_tool("workspace_read")]], ids=["no tools", "other tools"])
@@ -567,37 +621,47 @@ def test_a_namespaced_call_goes_bare_when_this_request_places_its_function_nowhe
         [{"role": "user", "content": "go"}, _call_row("ledger_close", namespace="ledger"), _result()],
         **kwargs,
     )
-    assert _call(payload) == _as_recorded("ledger_close")
+    assert _sent(payload) == _wire("ledger_close")
 
 
-def test_a_stale_container_is_dropped_not_moved_to_one_no_search_loaded(openai):
+def test_a_namespaced_call_whose_loading_search_is_gone_goes_bare(openai):
+    """A fold kept the call but not the row whose search loaded its container, and the array
+    still defers the function there. The container is not in context until something loads it,
+    so the call goes back bare, the form the provider accepts for a function nothing loaded."""
+    payload = openai.format_request_payload(
+        [{"role": "user", "content": "go"}, _call_row("ledger_close", namespace="ledger"), _result()],
+        tools=[_tool("ledger_close", defer=True, label=LEDGER)],
+    )
+    assert _sent(payload) == _wire("ledger_close")
+
+
+def test_a_stale_container_is_dropped_not_moved_to_one_nothing_loaded(openai):
     """The family was renamed: the call names the old container, the array defers the function in
-    the new one, and nothing in this request loaded the new one. The provider accepts the bare
-    call there; a call naming a container that no search in the request loaded has never been
-    sent, so the stale name is dropped rather than moved."""
+    the new one, and nothing in this request loaded the new one. The stale name is dropped rather
+    than moved to a container that is not in context."""
     payload = openai.format_request_payload(
         [{"role": "user", "content": "go"}, _call_row("ledger_close", namespace="books"), _result()],
         tools=[_tool("ledger_close", defer=True, label=LEDGER)],
     )
-    assert _call(payload) == _as_recorded("ledger_close")
+    assert _sent(payload) == _wire("ledger_close")
 
 
 @pytest.mark.parametrize("case", [
-    "namespaced, its container loaded by a replayed search",
-    "namespaced, its container deferring it on the array",
+    "namespaced, after the search that loaded its container",
+    "namespaced, its container carrying it without deferral",
     "top level and loaded into a container, both forms",
 ])
 def test_a_call_whose_recorded_placement_still_holds_goes_out_byte_identical(openai, case):
-    if case == "namespaced, its container loaded by a replayed search":
+    if case == "namespaced, after the search that loaded its container":
         messages = [{"role": "user", "content": "go"},
                     _call_row("ledger_close", namespace="ledger", search=LEDGER_SEARCH), _result()]
         tools = [_tool("ledger_close", defer=True, label=LEDGER)]
-        expected = {"c1": _as_recorded("ledger_close", "c1", "ledger")}
-    elif case == "namespaced, its container deferring it on the array":
+        expected = {"c1": _wire("ledger_close", "c1", "ledger")}
+    elif case == "namespaced, its container carrying it without deferral":
         messages = [{"role": "user", "content": "go"},
                     _call_row("ledger_close", namespace="ledger"), _result()]
-        tools = [_tool("ledger_close", defer=True, label=LEDGER)]
-        expected = {"c1": _as_recorded("ledger_close", "c1", "ledger")}
+        tools = [_tool("ledger_close", label=LEDGER)]
+        expected = {"c1": _wire("ledger_close", "c1", "ledger")}
     else:
         # Searched for and called in its container, then pinned to the top level and called
         # there: the provider stamped the first and not the second, and both still resolve.
@@ -605,45 +669,59 @@ def test_a_call_whose_recorded_placement_still_holds_goes_out_byte_identical(ope
                     _call_row("ledger_close", namespace="ledger", search=LEDGER_SEARCH), _result(),
                     _call_row("ledger_close", call_id="c2"), _result("c2")]
         tools = [_tool("ledger_close"), _tool("ledger_reopen", defer=True, label=LEDGER)]
-        expected = {"c1": _as_recorded("ledger_close", "c1", "ledger"),
-                    "c2": _as_recorded("ledger_close", "c2")}
+        expected = {"c1": _wire("ledger_close", "c1", "ledger"),
+                    "c2": _wire("ledger_close", "c2")}
     payload = openai.format_request_payload(messages, tools=tools)
     for call_id, item in expected.items():
-        assert _call(payload, call_id) == item
+        assert _sent(payload, call_id) == item
+
+
+def test_a_bare_call_to_a_member_the_array_carries_without_deferral_names_its_container(openai):
+    """A container member that is not deferred is in context from the start, in its container
+    and not in the default namespace, so a bare call to it names the container."""
+    payload = openai.format_request_payload(
+        [{"role": "user", "content": "go"}, _call_row("ledger_close"), _result()],
+        tools=[_tool("ledger_close", label=LEDGER)],
+    )
+    assert _sent(payload) == _wire("ledger_close", "c1", "ledger")
 
 
 @pytest.mark.parametrize("recorded, sent", [
     (None, None),
-    ("ledger_close", "ledger_close"),
-    ("ledger", "ledger_close"),
+    ("ledger_close", None),
+    ("ledger", None),
 ], ids=["recorded bare", "recorded with its own name", "recorded in a family container"])
-@pytest.mark.parametrize("where", ["deferred alone on the array", "loaded alone by a search"])
-def test_a_call_to_a_lone_deferred_function_keeps_the_providers_own_stamp(
-    openai, where, recorded, sent
-):
-    """A function deferred at the top level, in no container, comes back from the provider stamped
-    with its own name as its namespace. Both that stamp and the bare form still resolve and go
-    back untouched; a family container that does not hold it is re-stamped to the own name."""
-    if where == "deferred alone on the array":
-        messages = [{"role": "user", "content": "go"},
-                    _call_row("ledger_close", namespace=recorded), _result()]
-        tools = [_tool("ledger_close", defer=True)]
-    else:
-        lone = {"type": "function", "name": "ledger_close", "defer_loading": True}
-        messages = [{"role": "user", "content": "go"},
-                    _call_row("ledger_close", namespace=recorded,
-                              search=[SEARCH_CALL, _search_output(lone)]),
-                    _result()]
-        tools = [_tool("workspace_read")]
-    payload = openai.format_request_payload(messages, tools=tools)
-    assert _call(payload) == _as_recorded("ledger_close", "c1", sent)
+def test_a_lone_deferred_function_nothing_loaded_goes_bare(openai, recorded, sent):
+    """Deferred at the top level, in no container, and no search before the call loaded it: the
+    function is not in context, so the call goes back bare, the shape the provider accepted for a
+    deferred function nothing loaded. No namespace, its own name included, resolves there."""
+    payload = openai.format_request_payload(
+        [{"role": "user", "content": "go"}, _call_row("ledger_close", namespace=recorded), _result()],
+        tools=[_tool("ledger_close", defer=True)],
+    )
+    assert _sent(payload) == _wire("ledger_close", "c1", sent)
 
 
-def test_a_re_stamp_takes_the_first_container_a_replayed_search_loaded_and_is_stable(openai):
-    """Two replayed searches loaded the function into two containers (the family was renamed
-    between them). The bare call takes the first in input order, and the same input always
-    builds the same payload."""
-    def build(first, second):
+@pytest.mark.parametrize("recorded", [None, "ledger_close", "ledger"],
+                         ids=["recorded bare", "recorded with its own name", "recorded in a family container"])
+def test_a_lone_deferred_function_an_earlier_search_loaded_takes_its_own_name(openai, recorded):
+    """A search that loads a deferred function on its own makes the provider stamp the call with
+    the function's own name. After such a search, that is the one placement the call has."""
+    lone = {"type": "function", "name": "ledger_close", "defer_loading": True}
+    payload = openai.format_request_payload(
+        [{"role": "user", "content": "go"},
+         _call_row("ledger_close", namespace=recorded, search=[SEARCH_CALL, _search_output(lone)]),
+         _result()],
+        tools=[_tool("workspace_read")],
+    )
+    assert _sent(payload) == _wire("ledger_close", "c1", "ledger_close")
+
+
+def test_a_re_stamp_takes_the_first_placement_and_is_stable(openai):
+    """Two earlier searches loaded the function into two containers (the family was renamed
+    between them): a bare call takes the first in input order. The array's own in-context
+    placement comes before any search's. The same input always builds the same payload."""
+    def build(first, second, *, pinned=False, recorded=None):
         messages = [
             {"role": "user", "content": "go"},
             _call_row("ledger_close", call_id="c_first", namespace=first["name"],
@@ -654,27 +732,27 @@ def test_a_re_stamp_takes_the_first_container_a_replayed_search_loaded_and_is_st
                       search=[SEARCH_CALL, _search_output(
                           _namespace_entry(second["name"], "ledger_close"), item_id="tso_b")]),
             _result("c_second"),
-            _call_row("ledger_close"),
+            _call_row("ledger_close", namespace=recorded),
             _result(),
         ]
-        return openai.format_request_payload(
-            messages, tools=[_tool("ledger_close", defer=True, label=LEDGER)]
-        )
+        tools = [_tool("ledger_close")] if pinned else [_tool("ledger_close", defer=True, label=LEDGER)]
+        return openai.format_request_payload(messages, tools=tools)
 
     assert _call(build(BOOKS, LEDGER))["namespace"] == "books"
     assert _call(build(LEDGER, BOOKS))["namespace"] == "ledger"
-    assert build(BOOKS, LEDGER) == build(BOOKS, LEDGER)
+    assert "namespace" not in _call(build(BOOKS, LEDGER, pinned=True, recorded="people"))
+    assert json.dumps(build(BOOKS, LEDGER)) == json.dumps(build(BOOKS, LEDGER))
 
 
 def test_the_callers_rows_are_not_mutated_by_the_replay(openai):
     messages = [
         {"role": "user", "content": "go"},
+        _call_row("ledger_close", namespace="ledger", search=LEDGER_SEARCH),
+        _result(),
         _call_row("ledger_close", call_id="c_bare"),
         _result("c_bare"),
         _call_row("people_list", call_id="c_gone", namespace="people"),
         _result("c_gone"),
-        _call_row("ledger_close", namespace="ledger", search=LEDGER_SEARCH),
-        _result(),
     ]
     tools = [_tool("ledger_close", defer=True, label=LEDGER), _tool("workspace_read")]
     messages_before, tools_before = copy.deepcopy(messages), copy.deepcopy(tools)
@@ -687,8 +765,8 @@ def test_the_callers_rows_are_not_mutated_by_the_replay(openai):
     # …and neither reached the caller's rows, its search items or its tool dicts.
     assert messages == messages_before
     assert tools == tools_before
-    assert messages[1]["tool_calls"][0].get("namespace") is None
-    assert messages[3]["tool_calls"][0]["namespace"] == "people"
+    assert messages[3]["tool_calls"][0].get("namespace") is None
+    assert messages[5]["tool_calls"][0]["namespace"] == "people"
 
 
 # --- the round trip ------------------------------------------------------------------
