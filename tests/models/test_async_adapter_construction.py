@@ -20,6 +20,7 @@ import json
 import sys
 import threading
 import time
+import warnings
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 
@@ -30,7 +31,7 @@ from marsys.models.adapters.anthropic_oauth import AnthropicOAuthAdapter
 from marsys.models.adapters.factory import ProviderAdapterFactory
 from marsys.models.adapters.openai_oauth import OpenAIOAuthAdapter
 from marsys.models.credentials import OAuthCredentialStore
-from marsys.models.models import BaseAPIModel
+from marsys.models.models import BaseAPIModel, ModelConfig
 
 # Spelled out here rather than read from the factory, so a wrong row in the factory's table is
 # a failing test instead of the test agreeing with it.
@@ -268,6 +269,23 @@ def test_a_provider_the_factory_builds_as_oauth_has_its_profile_resolved(monkeyp
     assert asked == [("work", added)]
     assert model.adapter._credentials_path == "profiles/work.json"
     assert model.async_adapter._credentials_path == "profiles/work.json"
+
+
+def test_the_config_asks_no_key_of_exactly_the_providers_the_factory_builds_as_oauth(monkeypatch):
+    """A model config needs no API key, and warns about none, for a provider the factory builds
+    as OAuth. The rule follows the factory's set: the same provider taken out of it is checked
+    like any provider without a known key variable."""
+    with warnings.catch_warnings():
+        warnings.simplefilter("error")
+        config = ModelConfig(type="api", name="claude-haiku-4-5", provider="anthropic-oauth")
+    assert config.api_key is None
+
+    monkeypatch.setattr(
+        ProviderAdapterFactory, "OAUTH_PROVIDERS",
+        ProviderAdapterFactory.OAUTH_PROVIDERS - {"anthropic-oauth"},
+    )
+    with pytest.warns(UserWarning, match="No known environment variable for provider 'anthropic-oauth'"):
+        ModelConfig(type="api", name="claude-haiku-4-5", provider="anthropic-oauth")
 
 
 @pytest.mark.parametrize("provider", STREAMING_OPT_IN_PROVIDERS)

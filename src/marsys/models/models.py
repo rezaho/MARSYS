@@ -298,8 +298,6 @@ class ModelConfig(BaseModel):
                 # An Azure OpenAI resource key, sent in the `api-key` header.
                 "azure": "AZURE_OPENAI_API_KEY",
             }
-            # Providers that use OAuth or other credential mechanisms (not API keys)
-            oauth_providers = {"openai-oauth", "anthropic-oauth"}
 
             env_var = env_var_map.get(self.provider) if self.provider else None
 
@@ -318,9 +316,9 @@ class ModelConfig(BaseModel):
                         f"API key for provider '{self.provider}' not found. "
                         f"Set the '{env_var}' environment variable or provide 'api_key' directly."
                     )
-            elif self.provider in oauth_providers:
-                # OAuth providers use Codex CLI or other credential mechanisms, not API keys
-                # No warning needed - adapter will load credentials itself
+            elif self.provider in ProviderAdapterFactory.OAUTH_PROVIDERS:
+                # The providers the factory builds as OAuth load their credentials from a CLI
+                # login, not an API key, so no warning is needed: the adapter loads them itself.
                 pass
             elif self.provider:
                 # Provider specified, but no known env var and no key provided
