@@ -902,9 +902,8 @@ class BaseAPIModel:
         return await counter(messages, tools=tools, system=system)
 
     async def cleanup(self):
-        """Clean up async resources."""
-        if self.async_adapter and hasattr(self.async_adapter, 'cleanup'):
-            await self.async_adapter.cleanup()
+        """Close the async adapter's client session, if it opened one."""
+        await self.async_adapter.cleanup()
 
 
 class PeftHead:

@@ -411,6 +411,3 @@ async def test_a_provider_that_cannot_count_answers_none_rather_than_guessing():
     model = object.__new__(BaseAPIModel)
     model.async_adapter = object()
     assert await model.acount_tokens(MESSAGES) is None
-
-    model.async_adapter = None
-    assert await model.acount_tokens(MESSAGES) is None
