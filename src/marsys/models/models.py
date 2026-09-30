@@ -612,8 +612,9 @@ class BaseAPIModel:
         self.model_name = model_name
         self.provider = provider
 
-        # Resolve OAuth profile to credentials_path for OAuth providers
-        if provider in ("openai-oauth", "anthropic-oauth"):
+        # Resolve OAuth profile to credentials_path for the providers the factory builds as
+        # OAuth, read from its one set so a provider added there needs no second list here.
+        if provider in ProviderAdapterFactory.OAUTH_PROVIDERS:
             _oauth_profile = kwargs.pop("oauth_profile", None)
             if _oauth_profile and "credentials_path" not in kwargs:
                 from marsys.models.credentials import OAuthCredentialStore

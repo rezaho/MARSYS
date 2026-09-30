@@ -242,6 +242,34 @@ def test_an_oauth_async_adapter_reads_the_credentials_its_sync_twin_reads(provid
     assert model.async_adapter.auto_refresh is model.adapter.auto_refresh is False
 
 
+def test_a_provider_the_factory_builds_as_oauth_has_its_profile_resolved(monkeypatch):
+    """The model resolves an OAuth profile for exactly the providers the factory builds as OAuth,
+    so a provider added to the factory's set gets its named profile, not the default login."""
+    added = "anthropic-oauth-second-seat"
+    monkeypatch.setitem(
+        ProviderAdapterFactory.ADAPTERS, added, ProviderAdapterFactory.ADAPTERS["anthropic-oauth"],
+    )
+    monkeypatch.setattr(
+        ProviderAdapterFactory, "OAUTH_PROVIDERS", ProviderAdapterFactory.OAUTH_PROVIDERS | {added},
+    )
+    asked = []
+
+    class _Profiles:
+        def resolve_credentials_path(self, profile, provider, auto_refresh=True):
+            asked.append((profile, provider))
+            return f"profiles/{profile}.json"
+
+    monkeypatch.setattr(
+        OAuthCredentialStore, "get_instance", classmethod(lambda cls, store_path=None: _Profiles()),
+    )
+
+    model = ApplicationModel(**_config(added, oauth_profile="work", auto_refresh=False))
+
+    assert asked == [("work", added)]
+    assert model.adapter._credentials_path == "profiles/work.json"
+    assert model.async_adapter._credentials_path == "profiles/work.json"
+
+
 @pytest.mark.parametrize("provider", STREAMING_OPT_IN_PROVIDERS)
 def test_the_streaming_opt_in_reaches_the_async_adapter(provider):
     streamed = ApplicationModel(**_config(provider, streaming=True))
