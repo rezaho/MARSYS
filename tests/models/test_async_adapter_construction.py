@@ -12,13 +12,16 @@ defined here, and the async adapter they get must not be one this module put in 
 expected classes are read off the adapters package by name instead.
 
 No network: the one test that completes a call answers it from a server on the loopback
-interface.
+interface. No credential on the machine is read: every test runs with the home directory, the
+CLI login paths and the profile store moved under its own temporary folder.
 """
 
 import json
 import sys
 import threading
+import time
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+from pathlib import Path
 
 import pytest
 
@@ -26,6 +29,7 @@ import marsys.models.adapters as adapters_package
 from marsys.models.adapters.anthropic_oauth import AnthropicOAuthAdapter
 from marsys.models.adapters.factory import ProviderAdapterFactory
 from marsys.models.adapters.openai_oauth import OpenAIOAuthAdapter
+from marsys.models.credentials import OAuthCredentialStore
 from marsys.models.models import BaseAPIModel
 
 # Spelled out here rather than read from the factory, so a wrong row in the factory's table is
@@ -62,11 +66,26 @@ class RunCountingModel(BaseAPIModel):
         return super().run(*args, **kwargs)
 
 
+#: The real login reads, kept so the fence test below can prove where they look.
+_READ_CLAUDE_LOGIN = AnthropicOAuthAdapter._load_claude_credentials
+_READ_CODEX_LOGIN = OpenAIOAuthAdapter._load_codex_credentials
+
+
 @pytest.fixture(autouse=True)
-def _no_real_oauth_credentials(monkeypatch):
-    """The OAuth adapters read a CLI login at construction. Every test here passes a
-    placeholder path with refresh off, and the load itself answers from memory, so no
-    credential file on the machine is opened."""
+def fenced_home(monkeypatch, tmp_path):
+    """No credential file on the machine is opened by any test here.
+
+    The home directory, both CLI login paths and the profile store point under the test's own
+    temporary folder, and the profile store is re-read from there. The OAuth adapters' login
+    read also answers from memory, so the placeholder path most tests pass is never opened."""
+    home = tmp_path / "home"
+    home.mkdir()
+    for name in ("HOME", "USERPROFILE"):
+        monkeypatch.setenv(name, str(home))
+    monkeypatch.setenv("CLAUDE_AUTH_PATH", str(home / ".claude" / ".credentials.json"))
+    monkeypatch.setenv("CODEX_AUTH_PATH", str(home / ".codex" / "auth.json"))
+    monkeypatch.setenv("MARSYS_CREDENTIALS_PATH", str(home / ".marsys" / "credentials.json"))
+    monkeypatch.setattr(OAuthCredentialStore, "_instance", None)
     monkeypatch.setattr(
         AnthropicOAuthAdapter, "_load_claude_credentials",
         lambda self, path=None: {"access_token": "fake-claude-token"},
@@ -75,6 +94,46 @@ def _no_real_oauth_credentials(monkeypatch):
         OpenAIOAuthAdapter, "_load_codex_credentials",
         lambda self, path=None: {"access_token": "fake-codex-token", "account_id": "fake-account"},
     )
+    return home
+
+
+def _write_logins(home):
+    """A CLI login of each kind under ``home``, far from expiry and with no refresh token, so
+    nothing tries to refresh it."""
+    claude = home / ".claude" / ".credentials.json"
+    codex = home / ".codex" / "auth.json"
+    claude.parent.mkdir(parents=True)
+    codex.parent.mkdir(parents=True)
+    far_future_ms = int((time.time() + 365 * 86400) * 1000)
+    claude.write_text(json.dumps({"claudeAiOauth": {
+        "accessToken": "fenced-claude-token", "expiresAt": far_future_ms,
+    }}), encoding="utf-8")
+    codex.write_text(json.dumps({"tokens": {
+        "access_token": "fenced-codex-token", "account_id": "fenced-account",
+    }}), encoding="utf-8")
+
+
+def test_every_credential_location_is_under_the_tests_own_home(fenced_home):
+    """The fence above, proved location by location: the home directory, each CLI login the
+    OAuth adapters read when given no path, and the profile store with the logins it discovers.
+    The home directory is checked first and each login path before its read, so a fence that
+    failed to move one fails here before a real file is opened."""
+    home = fenced_home
+    assert Path.home() == home
+    _write_logins(home)
+
+    claude = AnthropicOAuthAdapter("claude-haiku-4-5", auto_refresh=False)
+    codex = OpenAIOAuthAdapter("gpt-5.5", auto_refresh=False)
+    assert Path(claude._credentials_path).is_relative_to(home)
+    assert Path(codex._credentials_path).is_relative_to(home)
+    assert _READ_CLAUDE_LOGIN(claude)["access_token"] == "fenced-claude-token"
+    assert _READ_CODEX_LOGIN(codex)["access_token"] == "fenced-codex-token"
+
+    store = OAuthCredentialStore.get_instance()
+    assert store._store_path.is_relative_to(home)
+    discovered = store.list_profiles()
+    assert {profile.provider for profile in discovered} == set(OAUTH_PROVIDERS)
+    assert all(profile.resolved_path.is_relative_to(home) for profile in discovered)
 
 
 def _config(provider, **overrides):
