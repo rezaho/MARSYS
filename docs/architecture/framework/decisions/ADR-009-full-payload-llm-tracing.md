@@ -4,6 +4,7 @@
 **Date**: 2026-06-04
 **Implements**: Framework tracing — full-payload LLM capture at the provider-adapter layer (one event per attempt), built on the streaming NDJSON span pipeline.
 **Related**: ADR-005 (unified-barrier algorithm — defines the `execution` / `branch` / `step` span tree this ADR populates with `generation` / `compaction` / `tool` children).
+**Amended**: 2026-10-01. The `run_in_executor` fallback in `BaseAPIModel.arun` that D1, the executor note and the Consequences describe no longer exists: `ProviderAdapterFactory` gives every provider, and the unknown-provider default, an async adapter, so every `arun` is on the traced path. The factory, not the model wrapper, now stamps `provider` on both adapters.
 
 ## Context
 
