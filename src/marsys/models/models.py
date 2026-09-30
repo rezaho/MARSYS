@@ -47,10 +47,10 @@ from marsys.models.adapters import (  # noqa: E402
     # Anthropic
     AnthropicAdapter,
     AsyncAnthropicAdapter,
-    # Bedrock — resolved by name for the async twin, so it must be in scope here
+    # Bedrock (Claude on Amazon Bedrock)
     BedrockAdapter,
     AsyncBedrockAdapter,
-    # Azure OpenAI — same reason: the async twin is looked up by name in this module
+    # Azure OpenAI (OpenAI models on an Azure resource)
     AzureOpenAIAdapter,
     AsyncAzureOpenAIAdapter,
     # Google
@@ -629,8 +629,11 @@ class BaseAPIModel:
                 if resolved_path:
                     kwargs["credentials_path"] = resolved_path
 
-        # Create appropriate adapter based on provider
-        self.adapter = ProviderAdapterFactory.create_adapter(
+        # Both adapters come from the factory's one provider table, built from the SAME
+        # configuration, so the async twin can never run on class defaults or speak to a
+        # different provider than the sync one. The factory stamps ``provider`` on each:
+        # several providers share one adapter class, so the class alone cannot say.
+        adapter_config = dict(
             provider=provider,
             model_name=model_name,
             api_key=api_key,
@@ -642,39 +645,8 @@ class BaseAPIModel:
             reasoning_effort=reasoning_effort,
             **kwargs,
         )
-        # ``self.adapter.provider`` is stamped by the factory, which is the layer that
-        # knows which provider was asked for — several providers share one adapter
-        # class, so the class alone cannot say.
-
-        # Try to create async adapter if available
-        self.async_adapter = None
-        if self.adapter:
-            adapter_class_name = self.adapter.__class__.__name__
-            async_adapter_class_name = f"Async{adapter_class_name}"
-
-            # Look for async adapter class in the current module
-            import sys
-            current_module = sys.modules[self.__module__]
-            if hasattr(current_module, async_adapter_class_name):
-                async_adapter_class = getattr(current_module, async_adapter_class_name)
-                # Create async adapter with same configuration — the SAME
-                # named sampling params the sync factory receives above;
-                # **kwargs alone silently dropped them, so async adapters
-                # ran on their class defaults regardless of the model's
-                # configured values.
-                self.async_adapter = async_adapter_class(
-                    model_name=model_name,
-                    api_key=api_key,
-                    base_url=base_url,
-                    max_tokens=max_tokens,
-                    temperature=temperature,
-                    top_p=top_p,
-                    thinking_budget=thinking_budget,
-                    reasoning_effort=reasoning_effort,
-                    **kwargs  # Pass through any provider-specific kwargs
-                )
-                # Async adapter is the one that actually emits the trace event.
-                self.async_adapter.provider = provider
+        self.adapter = ProviderAdapterFactory.create_adapter(**adapter_config)
+        self.async_adapter = ProviderAdapterFactory.create_async_adapter(**adapter_config)
 
     # REMOVED: _robust_json_loads method - moved to src/utils/parsing.py
     # REMOVED: _close_json_braces method - moved to src/utils/parsing.py
@@ -808,10 +780,10 @@ class BaseAPIModel:
         **kwargs,
     ) -> HarmonizedResponse:
         """
-        Async version of run method.
+        Async counterpart of ``run``, sent through the model's async adapter.
 
-        Uses async adapter if available, otherwise falls back to running
-        sync adapter in thread executor.
+        ``arun`` does not pass through ``run``: the two are independent entry points,
+        so a subclass that customizes a model's calls overrides both.
 
         Args:
             messages: A list of message dictionaries, following the OpenAI format.
@@ -848,82 +820,58 @@ class BaseAPIModel:
         ):
             kwargs["reasoning_effort"] = self.reasoning_effort
 
-        import asyncio
-
-        # Trace emission lives in the adapter now. Pop ``trace_ctx`` here and
-        # forward it to the async adapter, which emits one event per attempt.
-        # The sync fallback path stays untraced (sync ``run`` can't await emit).
+        # Trace emission lives in the adapter. Pop ``trace_ctx`` here and forward it
+        # to the async adapter, which emits one event per attempt.
         trace_ctx = kwargs.pop("trace_ctx", None)
-        if self.async_adapter:
-            # Use native async adapter for best performance
-            response = await self.async_adapter.arun(
-                messages=messages,
-                json_mode=json_mode,
-                response_schema=response_schema,
-                max_tokens=max_tokens,
-                temperature=temperature,
-                top_p=top_p,
-                tools=tools,
-                trace_ctx=trace_ctx,
-                **kwargs
+        response = await self.async_adapter.arun(
+            messages=messages,
+            json_mode=json_mode,
+            response_schema=response_schema,
+            max_tokens=max_tokens,
+            temperature=temperature,
+            top_p=top_p,
+            tools=tools,
+            trace_ctx=trace_ctx,
+            **kwargs
+        )
+
+        # Log model output for debugging/analysis
+        logger.debug(f"Model {self.async_adapter.model_name} response: {response}")
+
+        # Check if response is an ErrorResponse. The adapter already emitted
+        # the terminal error event; this raise is pure control flow.
+        if isinstance(response, ErrorResponse):
+            # Use ModelAPIError with classification instead of generic ModelError
+            from marsys.agents.exceptions import ModelAPIError
+
+            # Extract classification data if available
+            classification = None
+            is_retryable = False
+            retry_after = None
+            suggested_action = None
+
+            if hasattr(response, "classification") and isinstance(response.classification, dict):
+                classification = response.classification.get("category")
+                is_retryable = response.classification.get("is_retryable", False)
+                retry_after = response.classification.get("retry_after")
+                suggested_action = response.classification.get("suggested_action")
+
+            raise ModelAPIError(
+                message=f"API Error: {response.error}",
+                provider=response.provider,
+                api_error_code=response.error_code,
+                api_error_type=response.error_type,
+                classification=classification,
+                is_retryable=is_retryable,
+                retry_after=retry_after,
+                suggested_action=suggested_action,
+                status_code=getattr(response, "status_code", None),
+                raw_response={"error": response.error},
             )
 
-            # Log model output for debugging/analysis
-            logger.debug(f"Model {self.async_adapter.model_name} response: {response}")
-
-            # Check if response is an ErrorResponse. The adapter already emitted
-            # the terminal error event; this raise is pure control flow.
-            if isinstance(response, ErrorResponse):
-                # Use ModelAPIError with classification instead of generic ModelError
-                from marsys.agents.exceptions import ModelAPIError
-
-                # Extract classification data if available
-                classification = None
-                is_retryable = False
-                retry_after = None
-                suggested_action = None
-
-                if hasattr(response, "classification") and isinstance(response.classification, dict):
-                    classification = response.classification.get("category")
-                    is_retryable = response.classification.get("is_retryable", False)
-                    retry_after = response.classification.get("retry_after")
-                    suggested_action = response.classification.get("suggested_action")
-
-                raise ModelAPIError(
-                    message=f"API Error: {response.error}",
-                    provider=response.provider,
-                    api_error_code=response.error_code,
-                    api_error_type=response.error_type,
-                    classification=classification,
-                    is_retryable=is_retryable,
-                    retry_after=retry_after,
-                    suggested_action=suggested_action,
-                    status_code=getattr(response, "status_code", None),
-                    raw_response={"error": response.error},
-                )
-
-            # Apply post-processing if configured
-            if self._response_processor and response.content:
-                response.content = self._response_processor(response.content)
-        else:
-            # Fallback: run sync adapter in thread executor (untraced)
-            loop = asyncio.get_running_loop()
-
-            # Create a wrapper function that calls the sync method
-            def sync_run():
-                return self.run(
-                    messages=messages,
-                    json_mode=json_mode,
-                    response_schema=response_schema,
-                    max_tokens=max_tokens,
-                    temperature=temperature,
-                    top_p=top_p,
-                    tools=tools,
-                    **kwargs
-                )
-
-            # Execute in thread pool to avoid blocking
-            response = await loop.run_in_executor(None, sync_run)
+        # Apply post-processing if configured
+        if self._response_processor and response.content:
+            response.content = self._response_processor(response.content)
         return response
 
     async def acount_tokens(
