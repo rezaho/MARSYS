@@ -407,53 +407,44 @@ uv pip install marsys[production]
 
 ### Custom API Models
 
-For proprietary or specialized endpoints:
+A `BaseAPIModel` has two entry points, `run` for synchronous calls and `arun` for asynchronous ones. Each sends its request through the adapter the provider maps to, and `arun` does not pass through `run`: an override of `run` alone applies to synchronous calls only. To customize every call a model makes, override both, and let each call its own `super()`:
 
 ```python
+import time
+from typing import Any
+
 from marsys.models import BaseAPIModel
-from typing import List, Dict, Any, Optional
 
-class CustomAPIModel(BaseAPIModel):
-    def __init__(self, api_key: str, endpoint: str):
-        super().__init__(api_key=api_key, base_url=endpoint)
-        self.endpoint = endpoint
 
-    def run(
-        self,
-        messages: List[Dict[str, str]],
-        json_mode: bool = False,
-        max_tokens: Optional[int] = None,
-        temperature: Optional[float] = None,
-        tools: Optional[List[Dict]] = None,
-        **kwargs
-    ) -> Dict[str, Any]:
-        """Custom API implementation."""
+class TimedAPIModel(BaseAPIModel):
+    """Records how long each call took, whichever entry point it came through."""
 
-        # Prepare request
-        payload = {
-            "messages": messages,
-            "max_tokens": max_tokens or 1024,
-            "temperature": temperature or 0.7,
-            "response_format": {"type": "json"} if json_mode else None
-        }
+    def __init__(self, *args: Any, **kwargs: Any) -> None:
+        super().__init__(*args, **kwargs)
+        self.call_seconds: list[float] = []
 
-        # Make API call
-        response = self._make_request(payload)
+    def run(self, *args: Any, **kwargs: Any):
+        started = time.monotonic()
+        response = super().run(*args, **kwargs)
+        self.call_seconds.append(time.monotonic() - started)
+        return response
 
-        # Format response to standard format
-        return {
-            "role": "assistant",
-            "content": response.get("text", ""),
-            "tool_calls": response.get("functions", [])
-        }
+    async def arun(self, *args: Any, **kwargs: Any):
+        started = time.monotonic()
+        response = await super().arun(*args, **kwargs)
+        self.call_seconds.append(time.monotonic() - started)
+        return response
 
-# Use custom model
-custom_config = ModelConfig(
-    type="api",
-    name="custom-model-v1",
-    base_url="https://api.custom.ai/v1"
+
+model = TimedAPIModel(
+    model_name="gpt-5.5",
+    api_key="sk-...",
+    base_url="https://api.openai.com/v1",
+    provider="openai",
 )
 ```
+
+A subclass gets the same adapters a plain `BaseAPIModel` gets for its `provider`, wherever the subclass is defined. An endpoint that speaks the OpenAI-compatible format needs no subclass at all: pass its `base_url`, and a provider name the framework does not know is served by the OpenAI adapters.
 
 ## 🔧 Model Features
 

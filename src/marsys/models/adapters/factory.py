@@ -1,14 +1,16 @@
 """Factory classes for creating provider adapters."""
 
-from marsys.models.adapters.base import APIProviderAdapter
-from marsys.models.adapters.openai import OpenAIAdapter
-from marsys.models.adapters.openrouter import OpenRouterAdapter
-from marsys.models.adapters.anthropic import AnthropicAdapter
-from marsys.models.adapters.azure import AzureOpenAIAdapter
-from marsys.models.adapters.bedrock import BedrockAdapter
-from marsys.models.adapters.google import GoogleAdapter
-from marsys.models.adapters.openai_oauth import OpenAIOAuthAdapter
-from marsys.models.adapters.anthropic_oauth import AnthropicOAuthAdapter
+from typing import Dict, Tuple, Type
+
+from marsys.models.adapters.base import APIProviderAdapter, AsyncBaseAPIAdapter
+from marsys.models.adapters.openai import OpenAIAdapter, AsyncOpenAIAdapter
+from marsys.models.adapters.openrouter import OpenRouterAdapter, AsyncOpenRouterAdapter
+from marsys.models.adapters.anthropic import AnthropicAdapter, AsyncAnthropicAdapter
+from marsys.models.adapters.azure import AzureOpenAIAdapter, AsyncAzureOpenAIAdapter
+from marsys.models.adapters.bedrock import BedrockAdapter, AsyncBedrockAdapter
+from marsys.models.adapters.google import GoogleAdapter, AsyncGoogleAdapter
+from marsys.models.adapters.openai_oauth import OpenAIOAuthAdapter, AsyncOpenAIOAuthAdapter
+from marsys.models.adapters.anthropic_oauth import AnthropicOAuthAdapter, AsyncAnthropicOAuthAdapter
 from marsys.models.adapters.local import (
     LocalProviderAdapter,
     HuggingFaceLLMAdapter,
@@ -18,38 +20,67 @@ from marsys.models.adapters.local import (
 
 
 class ProviderAdapterFactory:
-    """Factory to create the right adapter based on provider"""
+    """Factory to create the right adapter based on provider.
 
-    @staticmethod
+    One table maps each provider to its sync adapter class and its async twin, and both are
+    built by the same rules, so a model's two adapters can never disagree about the provider
+    they speak to or the configuration they were given.
+    """
+
+    # provider -> (sync adapter class, async adapter class)
+    ADAPTERS: Dict[str, Tuple[Type[APIProviderAdapter], Type[AsyncBaseAPIAdapter]]] = {
+        "openai": (OpenAIAdapter, AsyncOpenAIAdapter),
+        "anthropic": (AnthropicAdapter, AsyncAnthropicAdapter),
+        # Claude on Amazon Bedrock (Messages-API-shaped)
+        "bedrock": (BedrockAdapter, AsyncBedrockAdapter),
+        # OpenAI models on Azure OpenAI (Responses-API-shaped)
+        "azure": (AzureOpenAIAdapter, AsyncAzureOpenAIAdapter),
+        "google": (GoogleAdapter, AsyncGoogleAdapter),
+        # OpenRouter with additional headers support
+        "openrouter": (OpenRouterAdapter, AsyncOpenRouterAdapter),
+        # xAI Grok uses OpenAI-compatible /chat/completions
+        "xai": (OpenRouterAdapter, AsyncOpenRouterAdapter),
+        # ChatGPT OAuth via Codex CLI
+        "openai-oauth": (OpenAIOAuthAdapter, AsyncOpenAIOAuthAdapter),
+        # Claude OAuth via Claude CLI
+        "anthropic-oauth": (AnthropicOAuthAdapter, AsyncAnthropicOAuthAdapter),
+    }
+
+    # Unknown providers are served as an OpenAI-compatible endpoint.
+    DEFAULT_ADAPTERS: Tuple[Type[APIProviderAdapter], Type[AsyncBaseAPIAdapter]] = (
+        OpenAIAdapter,
+        AsyncOpenAIAdapter,
+    )
+
+    # OAuth providers don't use api_key/base_url - they load credentials from CLI
+    OAUTH_PROVIDERS = frozenset({"openai-oauth", "anthropic-oauth"})
+
+    @classmethod
     def create_adapter(
-        provider: str, model_name: str, api_key: str, base_url: str, **kwargs
+        cls, provider: str, model_name: str, api_key: str, base_url: str, **kwargs
     ) -> APIProviderAdapter:
-        adapters = {
-            "openai": OpenAIAdapter,
-            "anthropic": AnthropicAdapter,
-            "bedrock": BedrockAdapter,  # Claude on Amazon Bedrock (Messages-API-shaped)
-            "azure": AzureOpenAIAdapter,  # OpenAI models on Azure OpenAI (Responses-API-shaped)
-            "google": GoogleAdapter,
-            "openrouter": OpenRouterAdapter,  # OpenRouter with additional headers support
-            "xai": OpenRouterAdapter,  # xAI Grok uses OpenAI-compatible /chat/completions
-            "openai-oauth": OpenAIOAuthAdapter,  # ChatGPT OAuth via Codex CLI
-            "anthropic-oauth": AnthropicOAuthAdapter,  # Claude OAuth via Claude CLI
-        }
+        sync_class, _ = cls.ADAPTERS.get(provider, cls.DEFAULT_ADAPTERS)
+        return cls._build(sync_class, provider, model_name, api_key, base_url, **kwargs)
 
-        adapter_class = adapters.get(provider)
-        if not adapter_class:
-            # Default to OpenAI adapter for unknown providers
-            adapter_class = OpenAIAdapter
+    @classmethod
+    def create_async_adapter(
+        cls, provider: str, model_name: str, api_key: str, base_url: str, **kwargs
+    ) -> AsyncBaseAPIAdapter:
+        _, async_class = cls.ADAPTERS.get(provider, cls.DEFAULT_ADAPTERS)
+        return cls._build(async_class, provider, model_name, api_key, base_url, **kwargs)
 
-        # OAuth providers don't use api_key/base_url - they load credentials from CLI
-        if provider in ("openai-oauth", "anthropic-oauth"):
+    @classmethod
+    def _build(
+        cls, adapter_class, provider: str, model_name: str, api_key: str, base_url: str, **kwargs
+    ):
+        if provider in cls.OAUTH_PROVIDERS:
             adapter = adapter_class(model_name, **kwargs)
         else:
             adapter = adapter_class(model_name, api_key, base_url, **kwargs)
 
         # The requested provider, stamped here because this is the only layer that
-        # knows it: several providers share one adapter class, and the fallback above
-        # hands every unrecognized provider to the OpenAI class outright, so a class
+        # knows it: several providers share one adapter class, and every unrecognized
+        # provider is handed to the OpenAI classes outright, so a class
         # name is not evidence of which endpoint a request is bound for. Adapters that
         # gate an endpoint-specific request field on provider identity read this.
         adapter.provider = provider
