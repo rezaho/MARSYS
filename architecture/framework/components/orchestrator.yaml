@@ -1,0 +1,63 @@
+name: Orchestrator
+criticality: TRUNK-CRITICAL
+
+purpose: |
+  The single execution loop for every multi-agent workflow. Implements
+  the unified-barrier algorithm: one Barrier type, two creation paths
+  (parallel_invoke fork vs lazy ensure_barrier rendezvous), with a fixed
+  ordered set of fire gates. Implements the DetNodeContext Protocol so
+  deterministic nodes (Start / End / User) interact through a narrow
+  surface.
+
+responsibilities:
+  - Drive each branch through runtime.step until settled
+  - Maintain the Branch / Barrier graph (candidates, arrived, failed, upstream, downstream)
+  - Apply the fire gates in order (status, ROOT-defer, upstream, pending, vestigial-cancel, ratio)
+  - Cascade failures up the wait-graph via _fail_to until ROOT
+  - Emit lifecycle events on event_bus (BranchCreated, BranchCompleted, ParallelGroup, Convergence)
+  - Spawn rendezvous resolver branches via lazy ensure_barrier
+  - Dispatch parallel children as concurrent asyncio.Tasks
+
+not_responsible_for:
+  - Step execution itself (-> Runtime: RealRuntime in production, DeterministicRuntime in tests)
+  - Topology graph construction (-> TopologyGraph)
+  - Coordination action validation (-> ValidationProcessor inside RealRuntime)
+  - System prompt construction (-> SystemPromptBuilder)
+  - Per-step memory transfer between agent and Branch (-> RealRuntime)
+
+design_principles:
+  - DP-003 (unified-barrier orchestration)
+  - DP-004 (branch isolation: each Branch has own memory + state)
+  - DP-005 (topology-driven: reach/preds + rendezvous detection from TopologyGraph)
+
+relationships:
+  called_by:
+    - Orchestra.execute (src/marsys/coordination/orchestra.py)
+  calls:
+    - TopologyGraph (reachable_convergence_points, predecessor_convergences,
+                     get_det_node, get_start_node, is_convergence)
+    - Runtime.step (RealRuntime in production)
+    - DeterministicNode.on_workflow_start / on_single_invoke / on_dispatch
+    - EventBus.emit_nowait
+  never_calls:
+    - Agent / model APIs directly
+    - StepExecutor or ValidationProcessor directly (those live behind RealRuntime)
+
+boundaries:
+  add_here:
+    - New fire gates (must be in fixed order, documented invariants)
+    - Branch / Barrier state mutations
+    - DetNodeContext methods (when adding a det-node type)
+  not_here:
+    - LLM invocation logic
+    - Format-specific parsing
+    - Per-agent memory management beyond branch.memory snapshot
+
+invariants:
+  - Every Branch has exactly one delivery_target (a barrier id, never null).
+  - Every Barrier is OPEN exactly once and FIRED or CANCELLED exactly once.
+  - Every non-ROOT Barrier has resolver_branch set at creation.
+  - Branch settles in exactly one of {TERMINATED, FAILED, ABANDONED}.
+  - When a branch settles, every barrier with it as candidate is notified.
+  - fire(barrier) is idempotent.
+  - arrived ∩ failed = ∅ at any barrier.

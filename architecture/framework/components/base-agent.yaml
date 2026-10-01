@@ -1,0 +1,35 @@
+name: BaseAgent
+criticality: TRUNK-STABLE
+
+purpose: |
+  Source of truth for the agent interface and pure `_run()` execution contract.
+
+responsibilities:
+  - Define the pure `_run()` contract for model execution
+  - Manage tool schemas, registration, and agent metadata
+  - Provide memory policy hooks and run_step orchestration
+  - Orchestrate payload-too-large recovery in `run_step` (bounded retries + memory compaction trigger)
+
+not_responsible_for:
+  - Response parsing and routing decisions (-> ValidationProcessor)
+  - Tool execution and retries (-> StepExecutor)
+  - Topology routing or branch scheduling (-> Router/Orchestra)
+
+design_principles:
+  - DP-001
+
+relationships:
+  called_by:
+    - StepExecutor.execute_step (agent.run_step)
+  calls:
+    - BaseAPIModel/BaseLocalModel (model run/arun)
+    - AgentRegistry.register
+  never_calls: []
+
+boundaries:
+  add_here:
+    - Agent contract and pure model execution logic
+    - Tool schema construction and agent metadata
+  not_here:
+    - Action parsing or validation
+    - Orchestration and branching logic

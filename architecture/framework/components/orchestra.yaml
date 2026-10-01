@@ -1,0 +1,50 @@
+name: Orchestra
+criticality: TRUNK-CRITICAL
+
+purpose: |
+  Public entry point for multi-agent workflow execution. Constructs the
+  unified-barrier Orchestrator + RealRuntime per run, drives it to
+  completion, and translates the WorkflowResult into the public
+  OrchestraResult shape.
+
+responsibilities:
+  - Convert input topology (string / dict / object / pattern) to canonical Topology and analyze it
+  - Initialize per-run coordination components (ValidationProcessor, Router, RulesEngine, RealRuntime, Orchestrator)
+  - Resolve workflow entry point (Start det-node when present; legacy User-as-entry shim otherwise)
+  - Drive Orchestrator.run to completion and translate WorkflowResult to OrchestraResult
+  - Manage session context, emit FinalResponseEvent, and trigger auto-cleanup
+
+not_responsible_for:
+  - The execution loop itself (-> Orchestrator)
+  - Agent step execution (-> RealRuntime + StepExecutor)
+  - Response parsing and action validation (-> ValidationProcessor)
+  - Barrier semantics, branch lifecycle, fire gates (-> Orchestrator)
+
+design_principles:
+  - DP-002
+  - DP-003
+  - DP-005
+
+relationships:
+  called_by:
+    - BaseAgent.auto_run (src/marsys/agents/agents.py)
+    - Examples and tests using Orchestra.run (examples/*, tests/*)
+  calls:
+    - TopologyAnalyzer.analyze
+    - ValidationProcessor
+    - Router
+    - RuleFactory.create_rules_engine
+    - RealRuntime (constructed inline)
+    - Orchestrator.run
+  never_calls: []
+
+boundaries:
+  add_here:
+    - Orchestration/session lifecycle logic
+    - Component wiring and execution configuration
+    - WorkflowResult -> OrchestraResult translation
+  not_here:
+    - The execution loop (Orchestrator owns this)
+    - Agent-specific logic or memory mutation
+    - Response format parsing rules
+    - Provider API calls

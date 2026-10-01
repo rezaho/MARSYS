@@ -1,0 +1,38 @@
+name: ValidationProcessor
+criticality: TRUNK-CRITICAL
+
+purpose: |
+  Source of truth for response parsing and action validation.
+
+responsibilities:
+  - Parse agent responses using registered response format processors
+  - Validate actions against topology permissions and allowed actions
+  - Produce ValidationResult with routing decisions and error metadata
+
+not_responsible_for:
+  - Tool execution or native tool call handling (-> StepExecutor)
+  - Branch execution or scheduling (-> Orchestrator/RealRuntime)
+  - Prompt construction (-> SystemPromptBuilder)
+
+design_principles:
+  - DP-002
+  - DP-007
+
+relationships:
+  called_by:
+    - RealRuntime.step (src/marsys/coordination/execution/real_runtime.py)
+    - Orchestra (initialization per run)
+  calls:
+    - formats.get_format
+    - ResponseProcessor.process
+    - TopologyGraph (get_next_agents, has_edge_to_endnode, has_edge_to_usernode; legacy has_user_access during migration window)
+  never_calls: []
+
+boundaries:
+  add_here:
+    - Response parsing and validation logic
+    - Action eligibility checks
+  not_here:
+    - Tool execution
+    - Agent memory mutation
+    - Branch scheduling
