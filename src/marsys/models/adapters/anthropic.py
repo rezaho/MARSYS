@@ -2,6 +2,7 @@ import json
 import logging
 import time
 import warnings
+from copy import deepcopy
 from typing import Any, Callable, Dict, List, Optional
 
 from marsys.models.adapters.base import (
@@ -76,6 +77,66 @@ def _anthropic_model_requires_adaptive_thinking(model_name: str) -> bool:
     if not name:
         return False
     return name.startswith(_ADAPTIVE_THINKING_MODEL_PREFIXES)
+
+
+def _anthropic_model_defaults_to_adaptive_thinking(model_name: str) -> bool:
+    """Models where omitting thinking still enables adaptive thinking.
+
+    These are fixed IDs, not prefixes for unknown future models. Opus 5.5
+    cannot disable thinking; Sonnet 5.5 also defaults to adaptive, though its
+    separate ``between_tools`` mode is not exposed by the legacy budget flag.
+    """
+    return _normalize_anthropic_model(model_name) in {
+        "claude-opus-5-5",
+        "claude-sonnet-5-5",
+    }
+
+
+def _anthropic_native_reasoning_details(
+    model_name: str, raw_response: Dict[str, Any], text: Any,
+    tool_calls: List[ToolCall], *, provider: str,
+) -> Optional[List[Dict[str, Any]]]:
+    """Capture Claude 5.5 native content and its portable message projection.
+
+    The opaque channel survives Message.to_llm_dict/JSON/Message conversion;
+    this does not promise retention by generic MemoryManager file helpers.
+    """
+    if (
+        not _anthropic_model_defaults_to_adaptive_thinking(model_name)
+        or not isinstance(raw_response.get("content"), list)
+    ):
+        return None
+    return [{
+        "type": "anthropic_native_content",
+        "provider": provider,
+        "model": raw_response.get("model") or model_name,
+        "content": deepcopy(raw_response["content"]),
+        "text": text,
+        "tool_calls": [call.model_dump() for call in tool_calls],
+    }]
+
+
+def _anthropic_native_replay(
+    model_name: str, message: Dict[str, Any], *, provider: str,
+) -> Optional[List[Dict[str, Any]]]:
+    """Replay unchanged assistant content only for its model and adapter leg."""
+    if (
+        message.get("role") != "assistant"
+        or not _anthropic_model_defaults_to_adaptive_thinking(model_name)
+    ):
+        return None
+    for detail in message.get("reasoning_details") or []:
+        if (
+            isinstance(detail, dict)
+            and detail.get("type") == "anthropic_native_content"
+            and detail.get("provider") == provider
+            and _normalize_anthropic_model(detail.get("model")) == _normalize_anthropic_model(model_name)
+            and isinstance(detail.get("content"), list)
+            and detail.get("text") == message.get("content")
+            and detail.get("tool_calls") == (message.get("tool_calls") or [])
+        ):
+            return deepcopy(detail["content"])
+    return None
 
 
 # Block types the API accepts a `cache_control` marker on. A marker on anything
@@ -419,13 +480,17 @@ class AnthropicAdapter(APIProviderAdapter):
         """Extended-thinking enablement for this call, or None.
 
         Convention (models.py BaseAPIModel): a positive ``thinking_budget``
-        enables thinking; 0/None disables. ``BaseAPIModel.arun`` auto-injects
+        enables thinking; 0/None disables for legacy models. Claude 5.5
+        defaults to adaptive thinking even at 0/None. ``BaseAPIModel.arun`` auto-injects
         the instance's budget into every call's kwargs, so per-call and
         per-instance configuration arrive through the SAME key. The budget is
         clamped under max_tokens (the API 400s otherwise); a max_tokens too
         small to leave the minimum budget disables thinking with a warning
         rather than failing the call.
         """
+        # These IDs use adaptive thinking even with a zero or absent legacy budget.
+        if _anthropic_model_defaults_to_adaptive_thinking(self.model_name):
+            return {"type": "adaptive"}
         budget = kwargs.get("thinking_budget")
         if not isinstance(budget, int) or budget <= 0:
             return None
@@ -473,6 +538,12 @@ class AnthropicAdapter(APIProviderAdapter):
             volatile_tail += 1
 
         for msg in messages:
+            native = _anthropic_native_replay(
+                self.model_name, msg, provider=self._provider_name() or "anthropic",
+            )
+            if native is not None:
+                user_messages.append({"role": "assistant", "content": native})
+                continue
             if msg.get("role") == "system":
                 system_message = msg.get("content")
             elif msg.get("role") == "tool":
@@ -878,6 +949,13 @@ class AnthropicAdapter(APIProviderAdapter):
             thinking_parts or reasoning_details or stop_reason_raw == "end_turn"
         ):
             content = ""
+
+        native_details = _anthropic_native_reasoning_details(
+            self.model_name, raw_response, content, tool_calls,
+            provider=self._provider_name() or "anthropic",
+        )
+        if native_details is not None:
+            reasoning_details = native_details
 
         # Build harmonized response
         return HarmonizedResponse(

@@ -8,6 +8,9 @@ from typing import Any, Dict, List, Optional
 
 from marsys.models.adapters.anthropic import (
     CACHE_EXEMPT_KEY,
+    _anthropic_model_defaults_to_adaptive_thinking,
+    _anthropic_native_reasoning_details,
+    _anthropic_native_replay,
     _anthropic_model_rejects_temperature,
     _anthropic_model_requires_adaptive_thinking,
     count_tokens_supported,
@@ -17,6 +20,7 @@ from marsys.models.adapters.anthropic import (
     strip_for_count_tokens,
 )
 from marsys.models.adapters.base import APIProviderAdapter, AsyncBaseAPIAdapter
+from marsys.models.adapters.streaming import AnthropicStreamAccumulator
 from marsys.models.response_models import (
     ErrorResponse,
     HarmonizedResponse,
@@ -44,6 +48,8 @@ class AnthropicOAuthAdapter(APIProviderAdapter):
     - All requests must use streaming (for reliable SSE parsing)
 
     Supported models:
+    - claude-opus-5-5
+    - claude-sonnet-5-5
     - claude-opus-4-8
     - claude-opus-4-7
     - claude-opus-4-6
@@ -65,6 +71,8 @@ class AnthropicOAuthAdapter(APIProviderAdapter):
 
     # Supported models
     SUPPORTED_MODELS = [
+        "claude-opus-5-5",
+        "claude-sonnet-5-5",
         "claude-opus-5",
         "claude-sonnet-5",
         "claude-opus-4-8",
@@ -474,6 +482,16 @@ class AnthropicOAuthAdapter(APIProviderAdapter):
                 system_message = content
                 continue
 
+            # Claude 5.5 signs thinking in the surrounding conversation. Keep
+            # the complete native assistant content in its original order,
+            # including empty thinking, redacted blocks and interleaved tools.
+            # The envelope survives Message conversion/JSON serialization;
+            # it is never sent as a wire field.
+            native = _anthropic_native_replay(self.model_name, msg, provider="anthropic-oauth")
+            if native is not None:
+                converted_messages.append({"role": "assistant", "content": native})
+                continue
+
             # Convert tool response
             if role == "tool":
                 converted_messages.append({
@@ -542,7 +560,11 @@ class AnthropicOAuthAdapter(APIProviderAdapter):
         # BaseAPIModel.arun injects); reasoning-capable models take
         # `{"type": "adaptive"}` and reject a fixed budget, so the size is
         # dropped for them and depth rides `output_config.effort` instead.
-        thinking_on = bool(self.enable_thinking or kwargs.get("enable_thinking"))
+        thinking_on = bool(
+            _anthropic_model_defaults_to_adaptive_thinking(self.model_name)
+            or self.enable_thinking
+            or kwargs.get("enable_thinking")
+        )
         budget = kwargs.get("thinking_budget", self.thinking_budget)
         if not thinking_on and isinstance(budget, int) and budget > 0:
             thinking_on = True
@@ -663,6 +685,13 @@ class AnthropicOAuthAdapter(APIProviderAdapter):
             "id": None,
         }
 
+        native = (
+            AnthropicStreamAccumulator()
+            if _anthropic_model_defaults_to_adaptive_thinking(self.model_name)
+            else None
+        )
+        if native is not None:
+            result["content"] = native.content
         current_tool = None
 
         with httpx.Client(timeout=120.0) as client:
@@ -680,6 +709,8 @@ class AnthropicOAuthAdapter(APIProviderAdapter):
 
                     try:
                         data = json.loads(line[6:])
+                        if native is not None:
+                            native.feed(data)
                         event_type = data.get("type")
 
                         if event_type == "message_start":
@@ -790,6 +821,13 @@ class AnthropicOAuthAdapter(APIProviderAdapter):
             "id": None,
         }
 
+        native = (
+            AnthropicStreamAccumulator()
+            if _anthropic_model_defaults_to_adaptive_thinking(self.model_name)
+            else None
+        )
+        if native is not None:
+            result["content"] = native.content
         current_tool = None
 
         async with httpx.AsyncClient(timeout=120.0) as client:
@@ -807,6 +845,8 @@ class AnthropicOAuthAdapter(APIProviderAdapter):
 
                     try:
                         data = json.loads(line[6:])
+                        if native is not None:
+                            native.feed(data)
                         event_type = data.get("type")
 
                         if event_type == "message_start":
@@ -1007,12 +1047,24 @@ class AnthropicOAuthAdapter(APIProviderAdapter):
                     response=empty_completion_payload(raw_response),
                 )
 
+        # Claude 5.5 signatures bind the complete ordered assistant content.
+        reasoning_details = _anthropic_native_reasoning_details(
+            self.model_name, raw_response, content if content is not None or tool_calls else "",
+            tool_calls, provider="anthropic-oauth",
+        )
+        if reasoning_details is not None:
+            # A thinking-only natural completion has no display text, but its
+            # signed blocks still need to survive in memory.
+            if content is None and not tool_calls and stop_reason_raw == "end_turn":
+                content = ""
+
         # Build response
         return HarmonizedResponse(
             role="assistant",
             content=content,
             tool_calls=tool_calls,
             thinking=raw_response.get("thinking") or None,
+            reasoning_details=reasoning_details,
             metadata=metadata,
         )
 
@@ -1116,8 +1168,7 @@ class AsyncAnthropicOAuthAdapter(AsyncBaseAPIAdapter, AnthropicOAuthAdapter):
         Claude OAuth uses SSE streaming, so we collect all events
         and return the final harmonized response. ``on_stream_event`` is the
         caller's delta tap (``adapters.streaming.StreamTap``) — tap-only
-        adoption here; the structural thinking-block capture stays with the
-        API-key adapter (this adapter's reader flattens thinking to text).
+        adoption plus native block capture for Claude 5.5 continuations.
         """
         from marsys.agents.exceptions import ModelAPIError
 
