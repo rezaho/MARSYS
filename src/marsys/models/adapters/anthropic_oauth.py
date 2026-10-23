@@ -32,6 +32,19 @@ from marsys.models.response_models import (
 logger = logging.getLogger(__name__)
 
 
+def _complete_oauth_tool_input(tool, initial_input):
+    """Keep streamed JSON verbatim; otherwise serialize an explicit native object.
+
+    An empty buffer is not itself evidence of empty arguments. Only a completed
+    block with an actual initial object and exactly empty text uses that object.
+    Zero-length fragments retain the initial object; whitespace does not.
+    Missing/wrong-type initial input and malformed deltas stay unchanged.
+    """
+    if tool["input"] == "" and isinstance(initial_input, dict):
+        tool["input"] = json.dumps(initial_input)
+    return tool
+
+
 # --- Anthropic OAuth Adapter (Claude Max Subscription) ---
 
 
@@ -731,6 +744,7 @@ class AnthropicOAuthAdapter(APIProviderAdapter):
                                     "name": block.get("name"),
                                     "input": ""
                                 }
+                                initial_tool_input = block.get("input")
 
                         elif event_type == "content_block_delta":
                             delta = data.get("delta", {})
@@ -746,7 +760,9 @@ class AnthropicOAuthAdapter(APIProviderAdapter):
                         elif event_type == "content_block_stop":
                             if current_tool:
                                 # Keep input as JSON string - ToolCallMsg expects string arguments
-                                result["tool_use"].append(current_tool)
+                                result["tool_use"].append(
+                                    _complete_oauth_tool_input(current_tool, initial_tool_input)
+                                )
                                 current_tool = None
 
                         elif event_type == "message_delta":
@@ -876,6 +892,7 @@ class AnthropicOAuthAdapter(APIProviderAdapter):
                                     "name": block.get("name"),
                                     "input": ""
                                 }
+                                initial_tool_input = block.get("input")
 
                         elif event_type == "content_block_delta":
                             delta = data.get("delta", {})
@@ -895,7 +912,9 @@ class AnthropicOAuthAdapter(APIProviderAdapter):
                         elif event_type == "content_block_stop":
                             if current_tool:
                                 # Keep input as JSON string - ToolCallMsg expects string arguments
-                                result["tool_use"].append(current_tool)
+                                result["tool_use"].append(
+                                    _complete_oauth_tool_input(current_tool, initial_tool_input)
+                                )
                                 current_tool = None
 
                         elif event_type == "message_delta":

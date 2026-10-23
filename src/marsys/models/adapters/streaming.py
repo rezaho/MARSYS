@@ -22,6 +22,7 @@ non-streaming paths — there is no second harmonization to drift.
 from __future__ import annotations
 
 import json
+from copy import deepcopy
 import logging
 from dataclasses import dataclass
 from typing import Any, Callable, Dict, List, Optional
@@ -199,7 +200,7 @@ class AnthropicStreamAccumulator(_TapMixin):
                     "type": "tool_use",
                     "id": block.get("id"),
                     "name": block.get("name"),
-                    "input": {},
+                    "input": deepcopy(block["input"]) if isinstance(block.get("input"), dict) else {},
                 }
                 self._current_tool_json = ""
                 self.content.append(self._current)
@@ -227,7 +228,7 @@ class AnthropicStreamAccumulator(_TapMixin):
 
         elif event_type == "content_block_stop":
             cur = self._current
-            if cur is not None and cur.get("type") == "tool_use":
+            if cur is not None and cur.get("type") == "tool_use" and self._current_tool_json != "":
                 try:
                     cur["input"] = (
                         json.loads(self._current_tool_json)
